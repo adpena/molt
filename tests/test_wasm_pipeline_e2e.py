@@ -7,6 +7,7 @@ Exercises the full compilation pipeline:
   4. Run with wasmtime (if available)
   5. Report sizes at each stage
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -60,9 +61,7 @@ def _molt_build(
     repo_src = str(ROOT / "src")
     current_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath
-        if current_pythonpath
-        else repo_src
+        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
     )
     env["MOLT_BACKEND_DAEMON"] = "0"
     if linked:
@@ -207,13 +206,13 @@ def pipeline_results() -> dict:
         print("\n=== WASM Pipeline Size Report ===")
         for stage, info in results["stages"].items():
             size = info["size"]
-            print(f"  {stage:<25s} {size:>12,} bytes ({size/1024/1024:.2f} MB)")
+            print(f"  {stage:<25s} {size:>12,} bytes ({size / 1024 / 1024:.2f} MB)")
 
         if "standalone" in results["stages"] and "optimized" in results["stages"]:
             orig = results["stages"]["standalone"]["size"]
             opt = results["stages"]["optimized"]["size"]
             print(
-                f"  standalone->optimized: {(orig-opt)/orig*100:.1f}% reduction"
+                f"  standalone->optimized: {(orig - opt) / orig * 100:.1f}% reduction"
             )
 
         # Copy results before tmpdir cleanup
@@ -254,9 +253,7 @@ class TestWasmPipelineE2E:
     def test_linked_build_succeeds(self, pipeline_results: dict) -> None:
         if _find_wasm_ld() is None:
             pytest.skip("wasm-ld not available")
-        assert "linked" in pipeline_results["stages"], (
-            "Linked WASM build failed"
-        )
+        assert "linked" in pipeline_results["stages"], "Linked WASM build failed"
 
     def test_wasm_opt_reduces_size(self, pipeline_results: dict) -> None:
         stages = pipeline_results["stages"]

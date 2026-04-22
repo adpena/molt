@@ -14,17 +14,22 @@ import pytest
 
 # Import the transpiler
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "tools"))
 from luau_physics_to_ir import (  # noqa: E402
-    OpIR,
     SimpleIR,
     parse_luau_file,
-    parse_physics_directory,
     tokenize,
-    LuauPhysicsParser,
 )
 
-VERTIGO_PHYSICS_DIR = Path(__file__).parent.parent.parent / "vertigo" / "src" / "Shared" / "Util" / "Physics"
+VERTIGO_PHYSICS_DIR = (
+    Path(__file__).parent.parent.parent
+    / "vertigo"
+    / "src"
+    / "Shared"
+    / "Util"
+    / "Physics"
+)
 TRAJECTORY_LUAU = VERTIGO_PHYSICS_DIR / "Trajectory.luau"
 SPRING_LUAU = VERTIGO_PHYSICS_DIR / "Spring.luau"
 
@@ -172,9 +177,7 @@ class TestSpringModuleIR:
     def test_solver_has_math_intrinsics(self, spring_ir: SimpleIR):
         """solveSpringNumber must call sqrt, exp, cos, sin."""
         solver = next(f for f in spring_ir.functions if f.name == "solveSpringNumber")
-        intrinsics = {
-            op.s_value for op in solver.ops if op.kind == "call_intrinsic"
-        }
+        intrinsics = {op.s_value for op in solver.ops if op.kind == "call_intrinsic"}
         assert "math_sqrt" in intrinsics
         assert "math_exp" in intrinsics
         assert "math_cos" in intrinsics
@@ -213,17 +216,21 @@ class TestTrajectoryModuleIR:
 
     def test_function_names(self, trajectory_ir: SimpleIR):
         names = sorted(f.name for f in trajectory_ir.functions)
-        assert names == sorted([
-            "Trajectory_predict",
-            "Trajectory_predictWithDrag",
-            "Trajectory_timeToTarget",
-            "Trajectory_launchAngle",
-            "Trajectory_applyDrag",
-        ])
+        assert names == sorted(
+            [
+                "Trajectory_predict",
+                "Trajectory_predictWithDrag",
+                "Trajectory_timeToTarget",
+                "Trajectory_launchAngle",
+                "Trajectory_applyDrag",
+            ]
+        )
 
     def test_predict_has_loop(self, trajectory_ir: SimpleIR):
         """predict() uses a for loop over steps."""
-        predict = next(f for f in trajectory_ir.functions if f.name == "Trajectory_predict")
+        predict = next(
+            f for f in trajectory_ir.functions if f.name == "Trajectory_predict"
+        )
         labels = [op for op in predict.ops if op.kind == "label"]
         jumps = [op for op in predict.ops if op.kind == "jump"]
         assert len(labels) >= 2  # loop start + end
@@ -231,7 +238,9 @@ class TestTrajectoryModuleIR:
 
     def test_launch_angle_has_discriminant_check(self, trajectory_ir: SimpleIR):
         """launchAngle() must check discriminant < 0."""
-        la = next(f for f in trajectory_ir.functions if f.name == "Trajectory_launchAngle")
+        la = next(
+            f for f in trajectory_ir.functions if f.name == "Trajectory_launchAngle"
+        )
         compares = [op for op in la.ops if op.kind.startswith("compare")]
         assert len(compares) >= 2  # R < 1e-9 and discriminant < 0
 

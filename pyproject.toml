@@ -38,6 +38,16 @@ extend-exclude = ["third_party", "tests/differential", "tests/harness/corpus"]
 "src/molt/stdlib/encodings/punycode.py" = ["E741"]
 "src/molt/stdlib/encodings/quopri_codec.py" = ["F401"]
 "src/molt/stdlib/http/client.py" = ["F822"]
+"src/molt/stdlib/_sys_impl.py" = ["F822"]  # __all__ names are bootstrap-populated.
+"src/molt/stdlib/sys.py" = ["F822"]        # __all__ names are bootstrap-populated.
+"examples/cloudflare-demo/src/app.py" = ["E402"]  # Route handlers intentionally follow large GPT weights.
+"tests/e2e/falcon_ocr_baseline.py" = ["E402"]     # Standalone script path setup precedes sibling imports.
+"tests/e2e/test_falcon_ocr_parity.py" = ["E402"]  # Standalone script path setup precedes sibling imports.
+"tests/e2e/test_falcon_ocr_real.py" = ["E402"]    # Standalone script path setup precedes sibling imports.
+"tests/e2e/test_falcon_ocr_targets.py" = ["E402"] # Standalone script path setup precedes sibling imports.
+"tests/parity/**/*.py" = ["E402"]                 # Executable parity scripts test import timing/order.
+"tests/parity/test_exceptions.py" = ["E402", "E722"]  # Bare except is parity corpus input.
+"tests/runtime_compat/scripts/*.py" = ["E402"]    # Harness scripts are executed directly by compatibility runner.
 
 [tool.ty.src]
 exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]

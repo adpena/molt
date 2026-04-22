@@ -25,13 +25,17 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
             **os.environ,
             "PYTHONPATH": str(SRC_DIR),
             "MOLT_EXT_ROOT": str(ROOT),
-            "CARGO_TARGET_DIR": os.environ.get("CARGO_TARGET_DIR", str(ROOT / "target")),
+            "CARGO_TARGET_DIR": os.environ.get(
+                "CARGO_TARGET_DIR", str(ROOT / "target")
+            ),
             "MOLT_DIFF_CARGO_TARGET_DIR": os.environ.get(
                 "MOLT_DIFF_CARGO_TARGET_DIR",
                 os.environ.get("CARGO_TARGET_DIR", str(ROOT / "target")),
             ),
             "MOLT_CACHE": os.environ.get("MOLT_CACHE", str(ROOT / ".molt_cache")),
-            "MOLT_DIFF_ROOT": os.environ.get("MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff")),
+            "MOLT_DIFF_ROOT": os.environ.get(
+                "MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff")
+            ),
             "MOLT_DIFF_TMPDIR": os.environ.get("MOLT_DIFF_TMPDIR", str(ROOT / "tmp")),
             "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", str(ROOT / ".uv-cache")),
             "TMPDIR": os.environ.get("TMPDIR", str(ROOT / "tmp")),
@@ -418,7 +422,9 @@ def test_native_llvm_generator_expression_next_matches_cpython(profile: str) -> 
     reason="LLVM backend toolchain is unavailable",
 )
 @pytest.mark.parametrize("profile", ["dev", "release"])
-def test_native_llvm_call_result_or_tuple_fallback_matches_cpython(profile: str) -> None:
+def test_native_llvm_call_result_or_tuple_fallback_matches_cpython(
+    profile: str,
+) -> None:
     source = textwrap.dedent(
         """
         class T(tuple):

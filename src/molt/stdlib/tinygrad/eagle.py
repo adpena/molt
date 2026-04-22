@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import math
 import random as _random
-from tinygrad.tensor import Tensor
-from tinygrad.dtypes import dtypes
 
 _LOG2E = math.log2(math.e)
 _LN2 = math.log(2.0)
@@ -110,8 +108,7 @@ class EagleDraftHead:
             # Xavier initialization
             std = math.sqrt(2.0 / (hidden_dim + vocab_size))
             self._weights = [
-                _random.gauss(0.0, std)
-                for _ in range(hidden_dim * vocab_size)
+                _random.gauss(0.0, std) for _ in range(hidden_dim * vocab_size)
             ]
 
         if bias is not None:
@@ -133,8 +130,7 @@ class EagleDraftHead:
         """
         if len(hidden_states) != self.hidden_dim:
             raise ValueError(
-                f"Expected hidden_dim={self.hidden_dim}, "
-                f"got {len(hidden_states)}"
+                f"Expected hidden_dim={self.hidden_dim}, got {len(hidden_states)}"
             )
 
         logits = list(self._bias)  # copy bias

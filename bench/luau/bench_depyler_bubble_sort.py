@@ -4,6 +4,7 @@ Ported from: https://github.com/paiml/depyler/blob/main/tests/fixtures/python_sa
 Measures: nested loops, array element swaps, comparison-heavy workload.
 """
 
+
 def bubble_sort(arr: list[int]) -> list[int]:
     n: int = len(arr)
     i: int = 0

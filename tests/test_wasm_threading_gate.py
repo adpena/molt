@@ -14,10 +14,7 @@ and conditionally when a WASM runner is available.
 
 import shutil
 import subprocess
-import sys
 from pathlib import Path
-
-import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,7 +40,10 @@ def test_wasm_thread_submit_gate_defined() -> None:
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
     content = threads_rs.read_text()
     # The WASM version should raise RuntimeError
-    assert 'raise_exception::<u64>(_py, "RuntimeError", "thread submit unsupported on wasm")' in content
+    assert (
+        'raise_exception::<u64>(_py, "RuntimeError", "thread submit unsupported on wasm")'
+        in content
+    )
 
 
 def test_wasm_thread_start_gate_defined() -> None:
@@ -66,7 +66,9 @@ def test_wasm_module_gate_blocks_expected_modules() -> None:
         "multiprocessing",
     ]
     for mod_name in blocked_modules:
-        assert f'"{mod_name}"' in content, f"Module {mod_name} should be in the block list"
+        assert f'"{mod_name}"' in content, (
+            f"Module {mod_name} should be in the block list"
+        )
 
 
 def test_wasm_module_gate_references_mol184() -> None:

@@ -20,15 +20,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 # Running-loop intrinsics (existing)
 # ---------------------------------------------------------------------------
 
-_MOLT_ASYNCIO_RUNNING_LOOP_GET = _require_intrinsic(
-    "molt_asyncio_running_loop_get"
-)
-_MOLT_ASYNCIO_RUNNING_LOOP_SET = _require_intrinsic(
-    "molt_asyncio_running_loop_set"
-)
-_MOLT_ASYNCIO_EVENT_LOOP_GET = _require_intrinsic(
-    "molt_asyncio_event_loop_get"
-)
+_MOLT_ASYNCIO_RUNNING_LOOP_GET = _require_intrinsic("molt_asyncio_running_loop_get")
+_MOLT_ASYNCIO_RUNNING_LOOP_SET = _require_intrinsic("molt_asyncio_running_loop_set")
+_MOLT_ASYNCIO_EVENT_LOOP_GET = _require_intrinsic("molt_asyncio_event_loop_get")
 _MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET = _require_intrinsic(
     "molt_asyncio_event_loop_policy_get"
 )
@@ -45,12 +39,8 @@ _MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP = _require_intrinsic(
 )
 _MOLT_ASYNCIO_ENTER_TASK = _require_intrinsic("molt_asyncio_enter_task")
 _MOLT_ASYNCIO_LEAVE_TASK = _require_intrinsic("molt_asyncio_leave_task")
-_MOLT_ASYNCIO_REGISTER_TASK = _require_intrinsic(
-    "molt_asyncio_register_task"
-)
-_MOLT_ASYNCIO_UNREGISTER_TASK = _require_intrinsic(
-    "molt_asyncio_unregister_task"
-)
+_MOLT_ASYNCIO_REGISTER_TASK = _require_intrinsic("molt_asyncio_register_task")
+_MOLT_ASYNCIO_UNREGISTER_TASK = _require_intrinsic("molt_asyncio_unregister_task")
 
 # ---------------------------------------------------------------------------
 # Public API — running-loop
@@ -61,9 +51,7 @@ def _get_running_loop(_get_running_loop_intrinsic=_MOLT_ASYNCIO_RUNNING_LOOP_GET
     return _get_running_loop_intrinsic()
 
 
-def _set_running_loop(
-    loop, _set_running_loop_intrinsic=_MOLT_ASYNCIO_RUNNING_LOOP_SET
-):
+def _set_running_loop(loop, _set_running_loop_intrinsic=_MOLT_ASYNCIO_RUNNING_LOOP_SET):
     _set_running_loop_intrinsic(loop)
     return None
 
@@ -155,9 +143,7 @@ def _register_task(task, _register_task_intrinsic=_MOLT_ASYNCIO_REGISTER_TASK):
     _register_task_intrinsic(task)
 
 
-def _unregister_task(
-    task, _unregister_task_intrinsic=_MOLT_ASYNCIO_UNREGISTER_TASK
-):
+def _unregister_task(task, _unregister_task_intrinsic=_MOLT_ASYNCIO_UNREGISTER_TASK):
     """Remove *task* from the global set of all tasks.
 
     Mirrors CPython ``_asyncio._unregister_task``.

@@ -13,15 +13,11 @@ import importlib.machinery as machinery
 import importlib.util as util
 
 _require_intrinsic("molt_stdlib_probe")
-_MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic(
-    "molt_importlib_resolve_name"
-)
+_MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic("molt_importlib_resolve_name")
 _MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME = _require_intrinsic(
     "molt_importlib_known_absent_missing_name"
 )
-_MOLT_IMPORTLIB_RUNTIME_MODULES = _require_intrinsic(
-    "molt_importlib_runtime_modules"
-)
+_MOLT_IMPORTLIB_RUNTIME_MODULES = _require_intrinsic("molt_importlib_runtime_modules")
 _MOLT_IMPORTLIB_INVALIDATE_CACHES = _require_intrinsic(
     "molt_importlib_invalidate_caches"
 )
@@ -134,5 +130,6 @@ def invalidate_caches() -> None:
 
 def reload(module):
     return _MOLT_IMPORTLIB_RELOAD(module, util, machinery, import_module)
+
 
 globals().pop("_require_intrinsic", None)

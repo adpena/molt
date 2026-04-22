@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_TOMLLIB_RUNTIME_READY = _require_intrinsic(
-    "molt_tomllib_runtime_ready")
+_MOLT_TOMLLIB_RUNTIME_READY = _require_intrinsic("molt_tomllib_runtime_ready")
 
 
 class TOMLDecodeError(ValueError):

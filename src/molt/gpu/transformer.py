@@ -6,7 +6,7 @@ CausalMask, and a complete TransformerDecoder for text generation.
 """
 
 from .tensor import Tensor, tensor_scaled_dot_product_attention
-from .nn import Linear, LayerNorm, Dropout, Sequential, GELU
+from .nn import Linear, LayerNorm, Sequential, GELU
 import math
 
 
@@ -16,6 +16,7 @@ class MultiHeadAttention:
     Q, K, V projections + output projection.
     Supports causal masking for autoregressive generation.
     """
+
     def __init__(self, embed_dim, num_heads, causal=False):
         assert embed_dim % num_heads == 0
         self.embed_dim = embed_dim
@@ -38,9 +39,21 @@ class MultiHeadAttention:
             raise ValueError(f"attention input must be 2D or 3D, got {x.shape}")
 
         batch, seq_len, _ = x.shape
-        q = self.q_proj(x).reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k = self.k_proj(x).reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        v = self.v_proj(x).reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        q = (
+            self.q_proj(x)
+            .reshape(batch, seq_len, self.num_heads, self.head_dim)
+            .permute(0, 2, 1, 3)
+        )
+        k = (
+            self.k_proj(x)
+            .reshape(batch, seq_len, self.num_heads, self.head_dim)
+            .permute(0, 2, 1, 3)
+        )
+        v = (
+            self.v_proj(x)
+            .reshape(batch, seq_len, self.num_heads, self.head_dim)
+            .permute(0, 2, 1, 3)
+        )
 
         attn_mask = mask
         if kv_cache is not None:
@@ -48,13 +61,17 @@ class MultiHeadAttention:
             kv_cache.append(k, v)
             try:
                 if self.causal and attn_mask is None:
-                    attn_mask = _causal_cache_attention_mask(seq_len, len(kv_cache), prefix_len)
+                    attn_mask = _causal_cache_attention_mask(
+                        seq_len, len(kv_cache), prefix_len
+                    )
                 elif (
                     attn_mask is not None
                     and isinstance(attn_mask, Tensor)
                     and attn_mask.ndim == 2
                 ):
-                    attn_mask = attn_mask.reshape(1, 1, attn_mask.shape[0], attn_mask.shape[1])
+                    attn_mask = attn_mask.reshape(
+                        1, 1, attn_mask.shape[0], attn_mask.shape[1]
+                    )
                 out = tensor_scaled_dot_product_attention(
                     q,
                     kv_cache.keys(),
@@ -70,7 +87,11 @@ class MultiHeadAttention:
         else:
             if self.causal and attn_mask is None:
                 attn_mask = _causal_attention_mask(seq_len)
-            elif attn_mask is not None and isinstance(attn_mask, Tensor) and attn_mask.ndim == 2:
+            elif (
+                attn_mask is not None
+                and isinstance(attn_mask, Tensor)
+                and attn_mask.ndim == 2
+            ):
                 attn_mask = attn_mask.reshape(1, 1, seq_len, seq_len)
 
             out = tensor_scaled_dot_product_attention(q, k, v, attn_mask, self.scale)
@@ -82,17 +103,18 @@ class MultiHeadAttention:
 
     def load_weights(self, prefix, weights):
         self.q_proj.load_weights(
-            weights.get(f"{prefix}.q_proj.weight"),
-            weights.get(f"{prefix}.q_proj.bias"))
+            weights.get(f"{prefix}.q_proj.weight"), weights.get(f"{prefix}.q_proj.bias")
+        )
         self.k_proj.load_weights(
-            weights.get(f"{prefix}.k_proj.weight"),
-            weights.get(f"{prefix}.k_proj.bias"))
+            weights.get(f"{prefix}.k_proj.weight"), weights.get(f"{prefix}.k_proj.bias")
+        )
         self.v_proj.load_weights(
-            weights.get(f"{prefix}.v_proj.weight"),
-            weights.get(f"{prefix}.v_proj.bias"))
+            weights.get(f"{prefix}.v_proj.weight"), weights.get(f"{prefix}.v_proj.bias")
+        )
         self.out_proj.load_weights(
             weights.get(f"{prefix}.out_proj.weight"),
-            weights.get(f"{prefix}.out_proj.bias"))
+            weights.get(f"{prefix}.out_proj.bias"),
+        )
 
 
 def apply_causal_mask(scores: Tensor, seq_len: int) -> Tensor:
@@ -102,7 +124,7 @@ def apply_causal_mask(scores: Tensor, seq_len: int) -> Tensor:
         for i in range(min(seq_len, len(data))):
             for j in range(min(seq_len, len(data[i]))):
                 if j > i:
-                    data[i][j] = float('-inf')
+                    data[i][j] = float("-inf")
         # Flatten nested list for Tensor constructor
         flat = []
         for row in data:
@@ -120,7 +142,9 @@ def _causal_attention_mask(seq_len: int) -> Tensor:
     return Tensor(flat, shape=(1, 1, seq_len, seq_len))
 
 
-def _causal_cache_attention_mask(query_len: int, total_len: int, prefix_len: int) -> Tensor:
+def _causal_cache_attention_mask(
+    query_len: int, total_len: int, prefix_len: int
+) -> Tensor:
     flat = []
     for query_index in range(query_len):
         allowed = prefix_len + query_index
@@ -165,7 +189,9 @@ class TransformerDecoder:
         self.embed_dim = embed_dim
         self.token_embedding = Embedding(vocab_size, embed_dim)
         self.position_embedding = Embedding(max_seq_len, embed_dim)
-        self.blocks = [TransformerBlock(embed_dim, num_heads) for _ in range(num_layers)]
+        self.blocks = [
+            TransformerBlock(embed_dim, num_heads) for _ in range(num_layers)
+        ]
         self.ln_final = LayerNorm(embed_dim)
         self.lm_head = Linear(embed_dim, vocab_size, bias=False)
 
@@ -174,12 +200,16 @@ class TransformerDecoder:
         prefix_len = 0
         if kv_caches is not None:
             if len(kv_caches) != len(self.blocks):
-                raise ValueError("kv_caches length must match number of transformer blocks")
+                raise ValueError(
+                    "kv_caches length must match number of transformer blocks"
+                )
             if kv_caches:
                 prefix_len = len(kv_caches[0])
                 for cache in kv_caches[1:]:
                     if len(cache) != prefix_len:
-                        raise ValueError("all kv_caches must have the same prefix length")
+                        raise ValueError(
+                            "all kv_caches must have the same prefix length"
+                        )
 
         # Token + position embeddings
         tok_emb = self.token_embedding(token_ids)
@@ -202,8 +232,10 @@ class Embedding:
 
     Accepts raw lists or Tensors as indices, converting as needed.
     """
+
     def __init__(self, num_embeddings, embedding_dim):
         from .nn import Embedding as _Emb
+
         self._emb = _Emb(num_embeddings, embedding_dim)
 
     def __call__(self, indices):

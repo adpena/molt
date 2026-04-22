@@ -4,37 +4,25 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_UNICODEDATA_RUNTIME_READY = _require_intrinsic(
-    "molt_unicodedata_runtime_ready"
-)
+_MOLT_UNICODEDATA_RUNTIME_READY = _require_intrinsic("molt_unicodedata_runtime_ready")
 _MOLT_UNICODEDATA_UNIDATA_VERSION = _require_intrinsic(
     "molt_unicodedata_unidata_version"
 )
 _MOLT_UNICODEDATA_NAME = _require_intrinsic("molt_unicodedata_name")
 _MOLT_UNICODEDATA_LOOKUP = _require_intrinsic("molt_unicodedata_lookup")
 _MOLT_UNICODEDATA_CATEGORY = _require_intrinsic("molt_unicodedata_category")
-_MOLT_UNICODEDATA_BIDIRECTIONAL = _require_intrinsic(
-    "molt_unicodedata_bidirectional"
-)
-_MOLT_UNICODEDATA_COMBINING = _require_intrinsic(
-    "molt_unicodedata_combining"
-)
+_MOLT_UNICODEDATA_BIDIRECTIONAL = _require_intrinsic("molt_unicodedata_bidirectional")
+_MOLT_UNICODEDATA_COMBINING = _require_intrinsic("molt_unicodedata_combining")
 _MOLT_UNICODEDATA_MIRRORED = _require_intrinsic("molt_unicodedata_mirrored")
-_MOLT_UNICODEDATA_DECOMPOSITION = _require_intrinsic(
-    "molt_unicodedata_decomposition"
-)
+_MOLT_UNICODEDATA_DECOMPOSITION = _require_intrinsic("molt_unicodedata_decomposition")
 _MOLT_UNICODEDATA_DECIMAL = _require_intrinsic("molt_unicodedata_decimal")
 _MOLT_UNICODEDATA_DIGIT = _require_intrinsic("molt_unicodedata_digit")
 _MOLT_UNICODEDATA_NUMERIC = _require_intrinsic("molt_unicodedata_numeric")
 _MOLT_UNICODEDATA_EAST_ASIAN_WIDTH = _require_intrinsic(
     "molt_unicodedata_east_asian_width"
 )
-_MOLT_UNICODEDATA_NORMALIZE = _require_intrinsic(
-    "molt_unicodedata_normalize"
-)
-_MOLT_UNICODEDATA_IS_NORMALIZED = _require_intrinsic(
-    "molt_unicodedata_is_normalized"
-)
+_MOLT_UNICODEDATA_NORMALIZE = _require_intrinsic("molt_unicodedata_normalize")
+_MOLT_UNICODEDATA_IS_NORMALIZED = _require_intrinsic("molt_unicodedata_is_normalized")
 
 _SENTINEL = object()
 

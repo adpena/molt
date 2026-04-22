@@ -12,21 +12,15 @@ _molt_platform_release = _require_intrinsic("molt_platform_release")
 _molt_platform_version = _require_intrinsic("molt_platform_version")
 _molt_platform_machine = _require_intrinsic("molt_platform_machine")
 _molt_platform_processor = _require_intrinsic("molt_platform_processor")
-_molt_platform_architecture = _require_intrinsic(
-    "molt_platform_architecture"
-)
-_molt_platform_python_version = _require_intrinsic(
-    "molt_platform_python_version"
-)
+_molt_platform_architecture = _require_intrinsic("molt_platform_architecture")
+_molt_platform_python_version = _require_intrinsic("molt_platform_python_version")
 _molt_platform_python_version_tuple = _require_intrinsic(
     "molt_platform_python_version_tuple"
 )
 _molt_platform_python_implementation = _require_intrinsic(
     "molt_platform_python_implementation"
 )
-_molt_platform_python_compiler = _require_intrinsic(
-    "molt_platform_python_compiler"
-)
+_molt_platform_python_compiler = _require_intrinsic("molt_platform_python_compiler")
 _molt_platform_platform = _require_intrinsic("molt_platform_platform")
 _molt_platform_uname = _require_intrinsic("molt_platform_uname")
 
@@ -102,5 +96,6 @@ def uname() -> uname_result:
             proc,
         )
     raise RuntimeError("platform.uname intrinsic returned unexpected value")
+
 
 globals().pop("_require_intrinsic", None)

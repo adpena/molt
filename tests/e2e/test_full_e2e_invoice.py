@@ -10,7 +10,6 @@ and cache behavior.
 
 import base64
 import io
-import json
 import os
 import time
 import unittest
@@ -142,7 +141,11 @@ class TestFullE2EInvoice(unittest.TestCase):
     def test_ocr_endpoint_returns_text(self):
         """POST /ocr returns 200 with text containing key invoice fields."""
         resp = self._post_ocr()
-        self.assertEqual(resp.status_code, 200, f"Expected 200, got {resp.status_code}: {resp.text[:200]}")
+        self.assertEqual(
+            resp.status_code,
+            200,
+            f"Expected 200, got {resp.status_code}: {resp.text[:200]}",
+        )
         data = resp.json()
 
         # Must have text or tokens
@@ -187,11 +190,15 @@ class TestFullE2EInvoice(unittest.TestCase):
     def test_structured_ocr_returns_invoice_object(self):
         """POST /ocr/structured returns a parsed invoice JSON with required fields."""
         resp = self._post_ocr(path="/ocr/structured")
-        self.assertEqual(resp.status_code, 200, f"Got {resp.status_code}: {resp.text[:200]}")
+        self.assertEqual(
+            resp.status_code, 200, f"Got {resp.status_code}: {resp.text[:200]}"
+        )
         data = resp.json()
 
         invoice = data.get("invoice")
-        self.assertIsNotNone(invoice, f"No 'invoice' key in response: {list(data.keys())}")
+        self.assertIsNotNone(
+            invoice, f"No 'invoice' key in response: {list(data.keys())}"
+        )
         self.assertIsInstance(invoice, dict)
 
         # Required schema fields
@@ -213,7 +220,9 @@ class TestFullE2EInvoice(unittest.TestCase):
             self.assertIn("acme", invoice["vendor"].lower())
         if invoice.get("total") and invoice["total"] > 0:
             self.assertAlmostEqual(
-                invoice["total"], 9580.13, delta=200,
+                invoice["total"],
+                9580.13,
+                delta=200,
                 msg="Total should be approximately $9,580.13",
             )
         if invoice.get("currency"):
@@ -233,7 +242,9 @@ class TestFullE2EInvoice(unittest.TestCase):
         # Template endpoint may not exist yet — skip gracefully
         if resp.status_code == 404:
             self.skipTest("Template endpoint not deployed yet")
-        self.assertEqual(resp.status_code, 200, f"Got {resp.status_code}: {resp.text[:200]}")
+        self.assertEqual(
+            resp.status_code, 200, f"Got {resp.status_code}: {resp.text[:200]}"
+        )
         data = resp.json()
         self.assertIn("fields", data)
 
@@ -252,13 +263,16 @@ class TestFullE2EInvoice(unittest.TestCase):
         self.assertEqual(resp2.status_code, 200)
 
         # Verify responses are identical (cache hit)
-        self.assertEqual(resp1.json(), resp2.json(), "Cached response should match original")
+        self.assertEqual(
+            resp1.json(), resp2.json(), "Cached response should match original"
+        )
 
         # Cache hit should be faster (allow generous tolerance for network jitter)
         # If cold was > 2s, warm should be noticeably faster
         if cold_ms > 2000:
             self.assertLess(
-                warm_ms, cold_ms * 0.8,
+                warm_ms,
+                cold_ms * 0.8,
                 f"Cache miss? cold={cold_ms:.0f}ms warm={warm_ms:.0f}ms",
             )
 
@@ -284,7 +298,9 @@ class TestFullE2EInvoice(unittest.TestCase):
             timeout=15,
         )
         # Should be 400 (bad request) not 500 (server error)
-        self.assertIn(resp.status_code, (400, 422), f"Expected 4xx, got {resp.status_code}")
+        self.assertIn(
+            resp.status_code, (400, 422), f"Expected 4xx, got {resp.status_code}"
+        )
 
     def test_missing_image_field_returns_error(self):
         """Missing 'image' field should return 400."""

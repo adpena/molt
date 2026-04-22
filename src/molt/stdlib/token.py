@@ -6,9 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["tok_name", "ISTERMINAL", "ISNONTERMINAL", "ISEOF", "EXACT_TOKEN_TYPES"]
 
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
-    "molt_import_smoke_runtime_ready"
-)
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
 _MOLT_TOKEN_PAYLOAD_312 = _require_intrinsic("molt_token_payload_312")
 
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
@@ -144,5 +142,6 @@ def ISNONTERMINAL(x: int) -> bool:
 
 def ISEOF(x: int) -> bool:
     return x == ENDMARKER
+
 
 globals().pop("_require_intrinsic", None)

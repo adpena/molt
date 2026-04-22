@@ -7,16 +7,12 @@ currency detection, and full end-to-end template filling.
 
 from __future__ import annotations
 
-import re
-from datetime import date, timedelta
+from datetime import date
 
-import pytest
 
 from molt.stdlib.tinygrad.nl_template_filler import (
-    char_accuracy,
     fill_template_from_nl,
     generate_invoice_number,
-    levenshtein,
     parse_all_amounts,
     parse_amount_cents,
     parse_client_name,
@@ -29,6 +25,7 @@ from molt.stdlib.tinygrad.nl_template_filler import (
 # ---------------------------------------------------------------------------
 # Amount parsing
 # ---------------------------------------------------------------------------
+
 
 class TestParseAmount:
     def test_dollar_with_comma(self):
@@ -79,6 +76,7 @@ class TestParseAmount:
 # Date parsing
 # ---------------------------------------------------------------------------
 
+
 class TestParseDate:
     def test_month_day(self):
         ref = date(2026, 4, 14)
@@ -117,6 +115,7 @@ class TestParseDate:
 # Payment terms
 # ---------------------------------------------------------------------------
 
+
 class TestPaymentTerms:
     def test_net_30(self):
         terms, days = parse_payment_terms("Net 30")
@@ -148,6 +147,7 @@ class TestPaymentTerms:
 # Client name parsing
 # ---------------------------------------------------------------------------
 
+
 class TestParseClientName:
     def test_invoice_prefix(self):
         assert parse_client_name("Invoice Acme Corp $4,200") == "Acme Corp"
@@ -168,12 +168,16 @@ class TestParseClientName:
         assert result is not None or result is None  # no crash
 
     def test_multi_word_corp(self):
-        assert parse_client_name("Invoice Acme Widget Corp LLC for work") == "Acme Widget Corp LLC"
+        assert (
+            parse_client_name("Invoice Acme Widget Corp LLC for work")
+            == "Acme Widget Corp LLC"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Line items
 # ---------------------------------------------------------------------------
+
 
 class TestParseLineItems:
     def test_for_clause(self):
@@ -196,6 +200,7 @@ class TestParseLineItems:
 # Invoice number generation
 # ---------------------------------------------------------------------------
 
+
 class TestInvoiceNumber:
     def test_format(self):
         inv = generate_invoice_number()
@@ -210,6 +215,7 @@ class TestInvoiceNumber:
 # ---------------------------------------------------------------------------
 # End-to-end template filling
 # ---------------------------------------------------------------------------
+
 
 class TestFillTemplate:
     def test_full_utterance(self):

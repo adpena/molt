@@ -22,11 +22,8 @@ from __future__ import annotations
 
 import math
 import random as _random
-from typing import Callable, Optional
+from typing import Callable
 
-from tinygrad.tensor import Tensor
-from tinygrad.dtypes import dtypes
-from tinygrad.lazy import LazyOp, LazyBuffer
 
 _LOG2E = math.log2(math.e)
 _LN2 = math.log(2.0)
@@ -74,9 +71,7 @@ def _top_kappa(logits: list[float], kappa: int) -> list[tuple[int, float]]:
     return result
 
 
-def _sample_from_logits(
-    logits: list[float], temperature: float = 1.0
-) -> int:
+def _sample_from_logits(logits: list[float], temperature: float = 1.0) -> int:
     """Sample a token from logits with temperature.
 
     Composed from: EXP2, MUL, RECIPROCAL, REDUCE_SUM.
@@ -140,8 +135,7 @@ class EarlyExitProxy:
         else:
             std = math.sqrt(2.0 / (hidden_dim + vocab_size))
             self._weights = [
-                _random.gauss(0.0, std)
-                for _ in range(hidden_dim * vocab_size)
+                _random.gauss(0.0, std) for _ in range(hidden_dim * vocab_size)
             ]
 
         if lm_head_bias is not None:
@@ -164,8 +158,7 @@ class EarlyExitProxy:
         """
         if len(hidden_state) != self.hidden_dim:
             raise ValueError(
-                f"Expected hidden_dim={self.hidden_dim}, "
-                f"got {len(hidden_state)}"
+                f"Expected hidden_dim={self.hidden_dim}, got {len(hidden_state)}"
             )
         logits = list(self._bias)
         for v in range(self.vocab_size):
@@ -231,9 +224,7 @@ class HypothesisTree:
         """
         self._branches[root_token] = continuation
 
-    def get_branch(
-        self, root_token: int
-    ) -> list[tuple[int, list[float]]] | None:
+    def get_branch(self, root_token: int) -> list[tuple[int, list[float]]] | None:
         """Get the continuation branch for a root token, or None."""
         return self._branches.get(root_token)
 
@@ -380,7 +371,9 @@ def speculative_streaming_draft(
 
         # Next step: use the last n_streams tokens as input for the next
         # multi-stream step
-        pending_tokens = new_tokens[-n_streams:] if len(new_tokens) >= n_streams else new_tokens
+        pending_tokens = (
+            new_tokens[-n_streams:] if len(new_tokens) >= n_streams else new_tokens
+        )
 
     return result[:gamma]
 
@@ -596,9 +589,7 @@ class MirrorSpeculativeDecoder:
         self._total_steps += 1
 
         # Step 1: Extract token channel M_t from early-exit proxy
-        token_channel = self.early_exit_proxy.extract_token_channel(
-            hidden_state_mid
-        )
+        token_channel = self.early_exit_proxy.extract_token_channel(hidden_state_mid)
 
         if not token_channel:
             return [], 0
@@ -619,15 +610,11 @@ class MirrorSpeculativeDecoder:
         if best_branch is None:
             return [], 0
 
-        draft_tokens = [best_root_token] + [
-            entry[0] for entry in best_branch
-        ]
+        draft_tokens = [best_root_token] + [entry[0] for entry in best_branch]
         # Draft logits: first position uses context logits projected through
         # early-exit proxy, remaining from branch rollout
         first_logits = self.early_exit_proxy.forward(hidden_state_mid)
-        draft_logits = [first_logits] + [
-            entry[1] for entry in best_branch
-        ]
+        draft_logits = [first_logits] + [entry[1] for entry in best_branch]
 
         # Truncate to gamma tokens
         draft_tokens = draft_tokens[: self.gamma]

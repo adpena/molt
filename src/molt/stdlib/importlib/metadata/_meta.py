@@ -49,4 +49,5 @@ class SimplePath(Protocol):
 class PackageMetadata(Protocol):
     pass
 
+
 globals().pop("_require_intrinsic", None)

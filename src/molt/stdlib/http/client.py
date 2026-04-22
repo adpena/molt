@@ -16,49 +16,41 @@ _require_intrinsic("molt_stdlib_probe")
 _MOLT_HTTP_EXECUTE = _require_intrinsic("molt_http_client_execute")
 _MOLT_HTTP_CONN_NEW = _require_intrinsic("molt_http_client_connection_new")
 _MOLT_HTTP_CONN_PUTREQUEST = _require_intrinsic(
-    "molt_http_client_connection_putrequest")
-_MOLT_HTTP_CONN_PUTHEADER = _require_intrinsic(
-    "molt_http_client_connection_putheader")
+    "molt_http_client_connection_putrequest"
+)
+_MOLT_HTTP_CONN_PUTHEADER = _require_intrinsic("molt_http_client_connection_putheader")
 _MOLT_HTTP_CONN_ENDHEADERS = _require_intrinsic(
-    "molt_http_client_connection_endheaders")
+    "molt_http_client_connection_endheaders"
+)
 _MOLT_HTTP_CONN_SEND = _require_intrinsic("molt_http_client_connection_send")
-_MOLT_HTTP_CONN_REQUEST = _require_intrinsic(
-    "molt_http_client_connection_request")
+_MOLT_HTTP_CONN_REQUEST = _require_intrinsic("molt_http_client_connection_request")
 _MOLT_HTTP_CONN_GETRESPONSE = _require_intrinsic(
-    "molt_http_client_connection_getresponse")
-_MOLT_HTTP_CONN_CLOSE = _require_intrinsic(
-    "molt_http_client_connection_close")
+    "molt_http_client_connection_getresponse"
+)
+_MOLT_HTTP_CONN_CLOSE = _require_intrinsic("molt_http_client_connection_close")
 _MOLT_HTTP_CONN_DROP = _require_intrinsic("molt_http_client_connection_drop")
 _MOLT_HTTP_CONN_GET_BUFFER = _require_intrinsic(
-    "molt_http_client_connection_get_buffer")
+    "molt_http_client_connection_get_buffer"
+)
 _MOLT_HTTP_MESSAGE_NEW = _require_intrinsic("molt_http_message_new")
 _MOLT_HTTP_MESSAGE_PARSE = _require_intrinsic("molt_http_message_parse")
 _MOLT_HTTP_MESSAGE_SET_RAW = _require_intrinsic("molt_http_message_set_raw")
 _MOLT_HTTP_MESSAGE_GET = _require_intrinsic("molt_http_message_get")
 _MOLT_HTTP_MESSAGE_GET_ALL = _require_intrinsic("molt_http_message_get_all")
 _MOLT_HTTP_MESSAGE_ITEMS = _require_intrinsic("molt_http_message_items")
-_MOLT_HTTP_MESSAGE_CONTAINS = _require_intrinsic(
-    "molt_http_message_contains")
+_MOLT_HTTP_MESSAGE_CONTAINS = _require_intrinsic("molt_http_message_contains")
 _MOLT_HTTP_MESSAGE_LEN = _require_intrinsic("molt_http_message_len")
 _MOLT_HTTP_MESSAGE_DROP = _require_intrinsic("molt_http_message_drop")
 _MOLT_HTTP_RESP_READ = _require_intrinsic("molt_http_client_response_read")
 _MOLT_HTTP_RESP_CLOSE = _require_intrinsic("molt_http_client_response_close")
 _MOLT_HTTP_RESP_DROP = _require_intrinsic("molt_http_client_response_drop")
-_MOLT_HTTP_RESP_STATUS = _require_intrinsic(
-    "molt_http_client_response_getstatus")
-_MOLT_HTTP_RESP_REASON = _require_intrinsic(
-    "molt_http_client_response_getreason")
-_MOLT_HTTP_RESP_GETHEADER = _require_intrinsic(
-    "molt_http_client_response_getheader")
-_MOLT_HTTP_RESP_GETHEADERS = _require_intrinsic(
-    "molt_http_client_response_getheaders")
-_MOLT_HTTP_RESP_MESSAGE = _require_intrinsic(
-    "molt_http_client_response_message"
-)
-_MOLT_HTTP_STATUS_CONSTANTS = _require_intrinsic(
-    "molt_http_status_constants")
-_MOLT_HTTP_STATUS_RESPONSES = _require_intrinsic(
-    "molt_http_status_responses")
+_MOLT_HTTP_RESP_STATUS = _require_intrinsic("molt_http_client_response_getstatus")
+_MOLT_HTTP_RESP_REASON = _require_intrinsic("molt_http_client_response_getreason")
+_MOLT_HTTP_RESP_GETHEADER = _require_intrinsic("molt_http_client_response_getheader")
+_MOLT_HTTP_RESP_GETHEADERS = _require_intrinsic("molt_http_client_response_getheaders")
+_MOLT_HTTP_RESP_MESSAGE = _require_intrinsic("molt_http_client_response_message")
+_MOLT_HTTP_STATUS_CONSTANTS = _require_intrinsic("molt_http_status_constants")
+_MOLT_HTTP_STATUS_RESPONSES = _require_intrinsic("molt_http_status_responses")
 _MOLT_HTTP_CLIENT_URLSPLIT = _require_intrinsic("molt_http_client_urlsplit")
 
 

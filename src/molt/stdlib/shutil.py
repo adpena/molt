@@ -28,14 +28,10 @@ _MOLT_SHUTIL_COPY = _require_intrinsic("molt_shutil_copy")
 _MOLT_SHUTIL_COPY2 = _require_intrinsic("molt_shutil_copy2")
 _MOLT_SHUTIL_COPYTREE = _require_intrinsic("molt_shutil_copytree")
 _MOLT_SHUTIL_DISK_USAGE = _require_intrinsic("molt_shutil_disk_usage")
-_MOLT_SHUTIL_GET_TERMINAL_SIZE = _require_intrinsic(
-    "molt_shutil_get_terminal_size"
-)
+_MOLT_SHUTIL_GET_TERMINAL_SIZE = _require_intrinsic("molt_shutil_get_terminal_size")
 _MOLT_SHUTIL_MAKE_ARCHIVE = _require_intrinsic("molt_shutil_make_archive")
 _MOLT_SHUTIL_MOVE = _require_intrinsic("molt_shutil_move")
-_MOLT_SHUTIL_UNPACK_ARCHIVE = _require_intrinsic(
-    "molt_shutil_unpack_archive"
-)
+_MOLT_SHUTIL_UNPACK_ARCHIVE = _require_intrinsic("molt_shutil_unpack_archive")
 
 
 def copyfile(src: str, dst: str) -> str:
@@ -148,5 +144,6 @@ def unpack_archive(
 ) -> None:
     """Unpack an archive (via Rust intrinsic)."""
     _MOLT_SHUTIL_UNPACK_ARCHIVE(filename, extract_dir)
+
 
 globals().pop("_require_intrinsic", None)

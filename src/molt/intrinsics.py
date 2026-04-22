@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import _intrinsics as _loader
+
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
@@ -9,8 +11,6 @@ if TYPE_CHECKING:
 else:
     Any = object()  # type: ignore[assignment]
     Mapping = object()  # type: ignore[assignment]
-
-import _intrinsics as _loader
 
 
 def runtime_active() -> bool:

@@ -62,7 +62,9 @@ def test_builtin_features_from_import_graph_enable_tk_for_tkinter_submodules() -
     assert "stdlib_tk" in features
 
 
-def test_builtin_features_from_import_graph_enable_gpu_primitives_for_tinygrad() -> None:
+def test_builtin_features_from_import_graph_enable_gpu_primitives_for_tinygrad() -> (
+    None
+):
     features = cli._builtin_features_from_import_graph(
         {"tinygrad.tensor", "molt.stdlib.tinygrad.examples.falcon_ocr"},
         "micro",
@@ -151,7 +153,9 @@ def test_runtime_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     assert calls == 0
 
 
-def test_artifact_needs_rebuild_stats_artifact_once(tmp_path: Path, monkeypatch) -> None:
+def test_artifact_needs_rebuild_stats_artifact_once(
+    tmp_path: Path, monkeypatch
+) -> None:
     artifact = tmp_path / "artifact.o"
     artifact.write_bytes(b"obj")
     original_stat = Path.stat
@@ -179,7 +183,10 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     source = tmp_path / "backend_source.rs"
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
-        cli, "_backend_source_paths", lambda _project_root, _features=(): [source], raising=True
+        cli,
+        "_backend_source_paths",
+        lambda _project_root, _features=(): [source],
+        raising=True,
     )
     monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
 
@@ -253,13 +260,17 @@ def test_runtime_fingerprint_read_reuses_process_cache(
     monkeypatch.setattr(Path, "read_text", fail_read_text)
     second = cli._read_runtime_fingerprint(fingerprint_path)
 
-    assert first == second == {
-        "version": 2,
-        "hash": "abc",
-        "rustc": "rustc-test",
-        "inputs_digest": "digest",
-        "meta_digest": None,
-    }
+    assert (
+        first
+        == second
+        == {
+            "version": 2,
+            "hash": "abc",
+            "rustc": "rustc-test",
+            "inputs_digest": "digest",
+            "meta_digest": None,
+        }
+    )
     assert first is second
 
 
@@ -433,7 +444,9 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
     seen_cmds: list[list[str]] = []
 
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
-    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _project_root: [source], raising=True)
+    monkeypatch.setattr(
+        cli, "_runtime_source_paths", lambda _project_root: [source], raising=True
+    )
     monkeypatch.setattr(
         cli,
         "_runtime_fingerprint",

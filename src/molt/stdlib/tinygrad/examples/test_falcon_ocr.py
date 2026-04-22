@@ -22,13 +22,12 @@ from __future__ import annotations
 import array
 import json
 import math
-import sys
-import os
 
 
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
+
 
 def _close(a: float, b: float, atol: float = 1e-4) -> bool:
     return abs(a - b) < atol
@@ -38,8 +37,10 @@ def _close(a: float, b: float, atol: float = 1e-4) -> bool:
 # FalconOCRConfig (pure Python, no runtime deps)
 # ---------------------------------------------------------------------------
 
+
 class FalconOCRConfig:
     """Mirror of the config class for standalone testing."""
+
     def __init__(
         self,
         dim: int = 768,
@@ -102,14 +103,33 @@ class FalconOCRConfig:
     def from_json(cls, s: str) -> "FalconOCRConfig":
         data = json.loads(s)
         known = {
-            "dim", "n_layers", "n_heads", "head_dim", "n_kv_heads", "ffn_dim",
-            "vocab_size", "max_seq_len", "rope_theta", "norm_eps",
-            "rms_inner_eps", "channel_size", "spatial_patch_size",
-            "temporal_patch_size", "eos_id", "img_id", "img_row_sep_id",
-            "img_start_id", "img_end_id", "coord_token_id", "size_token_id",
-            "image_cls_token_id", "image_reg_1_token_id",
-            "image_reg_2_token_id", "image_reg_3_token_id",
-            "image_reg_4_token_id", "seg_token_id",
+            "dim",
+            "n_layers",
+            "n_heads",
+            "head_dim",
+            "n_kv_heads",
+            "ffn_dim",
+            "vocab_size",
+            "max_seq_len",
+            "rope_theta",
+            "norm_eps",
+            "rms_inner_eps",
+            "channel_size",
+            "spatial_patch_size",
+            "temporal_patch_size",
+            "eos_id",
+            "img_id",
+            "img_row_sep_id",
+            "img_start_id",
+            "img_end_id",
+            "coord_token_id",
+            "size_token_id",
+            "image_cls_token_id",
+            "image_reg_1_token_id",
+            "image_reg_2_token_id",
+            "image_reg_3_token_id",
+            "image_reg_4_token_id",
+            "seg_token_id",
         }
         kwargs = {k: v for k, v in data.items() if k in known}
         return cls(**kwargs)
@@ -118,6 +138,7 @@ class FalconOCRConfig:
 # ---------------------------------------------------------------------------
 # Tests that run without the molt runtime (pure Python logic)
 # ---------------------------------------------------------------------------
+
 
 def test_config_defaults():
     cfg = FalconOCRConfig()
@@ -223,9 +244,6 @@ def test_build_hybrid_mask_state():
 def test_build_hybrid_mask_causal():
     """Pure text sequence should produce a causal mask."""
     seq_len = 3
-    in_block = [False, False, False]
-    block_idx = [-1, -1, -1]
-    block_bounds = []
     values = array.array("f", [-1.0e9]) * (seq_len * seq_len)
     row_zero = array.array("f", [0.0]) * seq_len
     for q in range(seq_len):
@@ -293,7 +311,7 @@ def test_rgb_to_patches_shape():
 def test_rgb_rejects_unaligned():
     """Non-multiple-of-16 dimensions should be rejected."""
     p = 16
-    width, height = 15, 16
+    width = 15
     assert width % p != 0
     print("PASS: test_rgb_rejects_unaligned")
 
@@ -391,6 +409,7 @@ def test_argmax_basic():
 def test_argmax_produces_valid_token():
     """Argmax on a logits vector should produce a valid index."""
     import random
+
     vocab_size = 100
     x = [random.random() for _ in range(vocab_size)]
     max_idx = x.index(max(x))
@@ -474,6 +493,7 @@ def test_ocr_tokens_contract():
 # ---------------------------------------------------------------------------
 # Migration completeness checks
 # ---------------------------------------------------------------------------
+
 
 def test_migration_function_parity():
     """Verify all functions from main_molt.py are present in falcon_ocr.py.

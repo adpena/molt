@@ -21,7 +21,7 @@ def test_throughput_env_exports_short_backend_daemon_socket_dir() -> None:
     line = next(
         line
         for line in result.stdout.splitlines()
-        if line.startswith('export MOLT_BACKEND_DAEMON_SOCKET_DIR=')
+        if line.startswith("export MOLT_BACKEND_DAEMON_SOCKET_DIR=")
     )
     socket_dir = line.split('"', 2)[1]
     assert socket_dir.endswith("/tmp/daemon_sock")

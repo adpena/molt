@@ -52,7 +52,9 @@ def _install_intrinsics() -> tuple[types.ModuleType | None, object]:
     return previous_intrinsics_mod, previous_builtins
 
 
-def _restore_intrinsics(previous_intrinsics_mod: types.ModuleType | None, previous_builtins: object) -> None:
+def _restore_intrinsics(
+    previous_intrinsics_mod: types.ModuleType | None, previous_builtins: object
+) -> None:
     if previous_intrinsics_mod is None:
         sys.modules.pop("_intrinsics", None)
     else:
@@ -84,6 +86,8 @@ def test_idlelib_stub_batch_hides_raw_capability_intrinsic() -> None:
             except RuntimeError as exc:
                 assert "only an intrinsic-first stub is available" in str(exc)
             else:
-                raise AssertionError(f"{path} did not raise RuntimeError from __getattr__")
+                raise AssertionError(
+                    f"{path} did not raise RuntimeError from __getattr__"
+                )
     finally:
         _restore_intrinsics(previous_intrinsics_mod, previous_builtins)

@@ -6,14 +6,15 @@ Reduces memory usage 2-4x and enables faster inference on constrained devices.
 """
 
 import struct
-import math
 from .tensor import Tensor
+
 
 class QuantizedTensor:
     """INT8 or INT4 quantized tensor with scale + zero_point."""
 
-    def __init__(self, data: bytes, scale: float, zero_point: int,
-                 shape: tuple, bits: int = 8):
+    def __init__(
+        self, data: bytes, scale: float, zero_point: int, shape: tuple, bits: int = 8
+    ):
         self._data = data  # packed int8 or int4 bytes
         self.scale = scale
         self.zero_point = zero_point
@@ -21,7 +22,7 @@ class QuantizedTensor:
         self.bits = bits
 
     @staticmethod
-    def quantize(tensor: Tensor, bits: int = 8) -> 'QuantizedTensor':
+    def quantize(tensor: Tensor, bits: int = 8) -> "QuantizedTensor":
         """Quantize a float tensor to INT8 or INT4."""
         values = tensor.to_list()
         flat = _flatten(values)
@@ -50,13 +51,15 @@ class QuantizedTensor:
 
         # Pack to bytes
         if bits == 8:
-            data = struct.pack(f'{len(quantized)}b', *quantized)
+            data = struct.pack(f"{len(quantized)}b", *quantized)
         elif bits == 4:
             # Pack two 4-bit values per byte
             packed = []
             for i in range(0, len(quantized), 2):
                 lo = (quantized[i] + 8) & 0x0F
-                hi = ((quantized[i+1] + 8) & 0x0F if i+1 < len(quantized) else 0) << 4
+                hi = (
+                    (quantized[i + 1] + 8) & 0x0F if i + 1 < len(quantized) else 0
+                ) << 4
                 packed.append(lo | hi)
             data = bytes(packed)
 
@@ -66,7 +69,7 @@ class QuantizedTensor:
         """Convert back to float tensor."""
         if self.bits == 8:
             n = len(self._data)
-            values = list(struct.unpack(f'{n}b', self._data))
+            values = list(struct.unpack(f"{n}b", self._data))
         elif self.bits == 4:
             values = []
             for byte in self._data:
@@ -108,14 +111,14 @@ class PerChannelQuantizedTensor:
     """
 
     def __init__(self, data, scales, zero_points, shape, bits=8):
-        self._data = data        # packed int8 or int4 bytes (row-major)
-        self.scales = scales           # list of floats, one per row
-        self.zero_points = zero_points # list of ints, one per row
+        self._data = data  # packed int8 or int4 bytes (row-major)
+        self.scales = scales  # list of floats, one per row
+        self.zero_points = zero_points  # list of ints, one per row
         self.shape = shape
         self.bits = bits
 
     @staticmethod
-    def quantize(tensor: Tensor, bits: int = 8) -> 'PerChannelQuantizedTensor':
+    def quantize(tensor: Tensor, bits: int = 8) -> "PerChannelQuantizedTensor":
         """Per-channel quantization — quantize each row independently.
 
         The tensor must be 2D (out_features, in_features). Each row gets
@@ -142,7 +145,7 @@ class PerChannelQuantizedTensor:
 
         for r in range(rows):
             row_start = r * cols
-            row_vals = data_list[row_start:row_start + cols]
+            row_vals = data_list[row_start : row_start + cols]
 
             min_val = min(row_vals)
             max_val = max(row_vals)
@@ -161,12 +164,16 @@ class PerChannelQuantizedTensor:
 
         # Pack to bytes
         if bits == 8:
-            data = struct.pack(f'{len(all_quantized)}b', *all_quantized)
+            data = struct.pack(f"{len(all_quantized)}b", *all_quantized)
         elif bits == 4:
             packed = []
             for i in range(0, len(all_quantized), 2):
                 lo = (all_quantized[i] + 8) & 0x0F
-                hi = ((all_quantized[i + 1] + 8) & 0x0F if i + 1 < len(all_quantized) else 0) << 4
+                hi = (
+                    (all_quantized[i + 1] + 8) & 0x0F
+                    if i + 1 < len(all_quantized)
+                    else 0
+                ) << 4
                 packed.append(lo | hi)
             data = bytes(packed)
 
@@ -178,7 +185,7 @@ class PerChannelQuantizedTensor:
 
         if self.bits == 8:
             n = len(self._data)
-            values = list(struct.unpack(f'{n}b', self._data))
+            values = list(struct.unpack(f"{n}b", self._data))
         elif self.bits == 4:
             values = []
             for byte in self._data:
@@ -237,14 +244,16 @@ class QuantizedLinear:
 
     def quantize_from(self, linear_layer):
         """Quantize an existing Linear layer's weights."""
-        if hasattr(linear_layer, 'weight') and linear_layer.weight is not None:
+        if hasattr(linear_layer, "weight") and linear_layer.weight is not None:
             self.weight_q = QuantizedTensor.quantize(linear_layer.weight, self.bits)
-        if hasattr(linear_layer, 'bias') and linear_layer.bias is not None:
+        if hasattr(linear_layer, "bias") and linear_layer.bias is not None:
             self.bias = linear_layer.bias
 
     def __call__(self, x: Tensor) -> Tensor:
         if self.weight_q is None:
-            raise RuntimeError("QuantizedLinear has no weights — call quantize_from() first")
+            raise RuntimeError(
+                "QuantizedLinear has no weights — call quantize_from() first"
+            )
         # Dequantize weight, compute matmul, add bias
         weight = self.weight_q.dequantize()
         result = x @ weight.T
@@ -261,12 +270,13 @@ def quantize_model(model, bits=8):
         q_model = quantize_model(model, bits=8)
         output = q_model(input)  # uses quantized weights
     """
-    if hasattr(model, 'layers'):
+    if hasattr(model, "layers"):
         # Sequential model
         from .nn import Sequential
+
         new_layers = []
         for layer in model.layers:
-            if hasattr(layer, 'weight') and hasattr(layer, 'in_features'):
+            if hasattr(layer, "weight") and hasattr(layer, "in_features"):
                 # It's a Linear layer — quantize it
                 ql = QuantizedLinear(layer.in_features, layer.out_features, bits)
                 ql.quantize_from(layer)
@@ -293,11 +303,11 @@ class PerChannelQuantizedLinear:
 
     def quantize_from(self, linear_layer):
         """Quantize an existing Linear layer's weights with per-channel scaling."""
-        if hasattr(linear_layer, 'weight') and linear_layer.weight is not None:
+        if hasattr(linear_layer, "weight") and linear_layer.weight is not None:
             self.weight_q = PerChannelQuantizedTensor.quantize(
                 linear_layer.weight, self.bits
             )
-        if hasattr(linear_layer, 'bias') and linear_layer.bias is not None:
+        if hasattr(linear_layer, "bias") and linear_layer.bias is not None:
             self.bias = linear_layer.bias
 
     def __call__(self, x: Tensor) -> Tensor:
@@ -325,11 +335,12 @@ def quantize_model_per_channel(model, bits=8):
         q_model = quantize_model_per_channel(model, bits=4)
         output = q_model(input)  # uses per-channel INT4 weights
     """
-    if hasattr(model, 'layers'):
+    if hasattr(model, "layers"):
         from .nn import Sequential
+
         new_layers = []
         for layer in model.layers:
-            if hasattr(layer, 'weight') and hasattr(layer, 'in_features'):
+            if hasattr(layer, "weight") and hasattr(layer, "in_features"):
                 ql = PerChannelQuantizedLinear(
                     layer.in_features, layer.out_features, bits
                 )

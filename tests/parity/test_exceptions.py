@@ -113,10 +113,13 @@ e = ValueError()
 print(e.args)
 
 print("=== Custom exception ===")
+
+
 class MyError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
 
 try:
     raise MyError(404, "not found")
@@ -124,14 +127,19 @@ except MyError as e:
     print(f"MyError: code={e.code}, msg={e}")
 
 print("=== Custom exception hierarchy ===")
+
+
 class AppError(Exception):
     pass
+
 
 class DatabaseError(AppError):
     pass
 
+
 class ConnectionError_(DatabaseError):
     pass
+
 
 try:
     raise ConnectionError_("db down")
@@ -143,6 +151,8 @@ print(issubclass(ConnectionError_, AppError))
 print(issubclass(ConnectionError_, Exception))
 
 print("=== Finally always runs ===")
+
+
 def test_finally(do_raise):
     result = []
     try:
@@ -156,15 +166,19 @@ def test_finally(do_raise):
         result.append("finally")
     return result
 
+
 print(test_finally(True))
 print(test_finally(False))
 
 print("=== Finally with return ===")
+
+
 def return_in_finally():
     try:
         return "try"
     finally:
         return "finally"
+
 
 print(return_in_finally())
 
@@ -188,9 +202,12 @@ except TypeError as e:
     print(f"context: {e.__context__}")
 
 print("=== StopIteration in generator ===")
+
+
 def gen():
     yield 1
     yield 2
+
 
 g = gen()
 print(next(g))
@@ -227,14 +244,18 @@ except ValueError as e:
     print(f"notes: {e.__notes__}")
 
 print("=== Exception in with block ===")
+
+
 class SuppressingCM:
     def __enter__(self):
         return self
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is ValueError:
             print(f"suppressed: {exc_val}")
             return True
         return False
+
 
 with SuppressingCM():
     raise ValueError("suppressed error")

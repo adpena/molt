@@ -1,5 +1,6 @@
 import time
 
+
 def bench_happy_path():
     """5M iterations of try/except that never raises."""
     n = 5_000_000
@@ -11,7 +12,8 @@ def bench_happy_path():
         except ValueError:
             pass
     elapsed = time.monotonic() - start
-    print(f"happy_path: {elapsed:.3f}s ({n/elapsed:.0f} iter/s)")
+    print(f"happy_path: {elapsed:.3f}s ({n / elapsed:.0f} iter/s)")
+
 
 def bench_raising_path():
     """500K iterations, raises every 100th."""
@@ -26,7 +28,8 @@ def bench_raising_path():
         except ValueError:
             total += 2
     elapsed = time.monotonic() - start
-    print(f"raising_path: {elapsed:.3f}s ({n/elapsed:.0f} iter/s)")
+    print(f"raising_path: {elapsed:.3f}s ({n / elapsed:.0f} iter/s)")
+
 
 bench_happy_path()
 bench_raising_path()

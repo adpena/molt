@@ -132,7 +132,9 @@ class SpeculativeVerifyRequest:
 class SpeculativeVerifyResult:
     """Target-model verification output with optional refreshed conditioning."""
 
-    def __init__(self, verified_tokens, *, conditioning: SpeculativeConditioning | None = None) -> None:
+    def __init__(
+        self, verified_tokens, *, conditioning: SpeculativeConditioning | None = None
+    ) -> None:
         self.verified_tokens = list(verified_tokens)
         self.conditioning = conditioning
 

@@ -173,7 +173,7 @@ def generate(
 
         for pos in range(BLOCK_SIZE):
             logits: list[float] = gpt(token, pos, keys, values, sd)
-            scaled: list[float] = [l / temperature for l in logits]
+            scaled: list[float] = [logit / temperature for logit in logits]
             probs: list[float] = softmax(scaled)
             population: list[int] = list(range(vocab_size))
             token = random.choices(population, weights=probs)[0]

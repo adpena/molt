@@ -165,7 +165,9 @@ def test_runtime_manifest_dedupes_unicode_names2_version() -> None:
 
     runtime_dep = runtime_manifest["dependencies"]["unicode_names2"]
     text_dep = text_manifest["dependencies"]["unicode_names2"]
-    runtime_version = runtime_dep["version"] if isinstance(runtime_dep, dict) else runtime_dep
+    runtime_version = (
+        runtime_dep["version"] if isinstance(runtime_dep, dict) else runtime_dep
+    )
     text_version = text_dep["version"] if isinstance(text_dep, dict) else text_dep
 
     assert runtime_version == text_version == "2.0"
@@ -203,7 +205,9 @@ def test_runtime_manifest_avoids_url_compile_graph_for_websocket_client() -> Non
     with runtime_manifest_path.open("rb") as handle:
         runtime_manifest = tomllib.load(handle)
 
-    native_deps = runtime_manifest["target"]['cfg(not(target_arch = "wasm32"))']["dependencies"]
+    native_deps = runtime_manifest["target"]['cfg(not(target_arch = "wasm32"))'][
+        "dependencies"
+    ]
 
     assert "url" not in native_deps
     assert "url" not in native_deps["tungstenite"]["features"]
@@ -222,7 +226,9 @@ def test_backend_ir_model_and_passes_are_split_out_of_lib_rs() -> None:
 
 def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
     lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
-    native_backend_mod = ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "mod.rs"
+    native_backend_mod = (
+        ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "mod.rs"
+    )
     trampolines_rs = (
         ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "trampolines.rs"
     )
@@ -235,7 +241,12 @@ def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
 def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:
     lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
     function_compiler_rs = (
-        ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "function_compiler.rs"
+        ROOT
+        / "runtime"
+        / "molt-backend"
+        / "src"
+        / "native_backend"
+        / "function_compiler.rs"
     )
 
     assert function_compiler_rs.exists()

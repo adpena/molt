@@ -63,9 +63,6 @@ def render_diff_text(summary: dict[str, Any]) -> str:
     ]
     config = summary.get("config")
     if isinstance(config, dict) and config:
-        config_bits = [
-            f"{key}={config[key]}"
-            for key in sorted(config)
-        ]
+        config_bits = [f"{key}={config[key]}" for key in sorted(config)]
         lines.append("Config: " + ", ".join(config_bits))
     return "\n".join(lines) + "\n"

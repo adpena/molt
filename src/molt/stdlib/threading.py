@@ -17,26 +17,19 @@ _MOLT_THREAD_IS_ALIVE = _require_intrinsic("molt_thread_is_alive")
 _MOLT_THREAD_IDENT = _require_intrinsic("molt_thread_ident")
 _MOLT_THREAD_NATIVE_ID = _require_intrinsic("molt_thread_native_id")
 _MOLT_THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident")
-_MOLT_THREAD_CURRENT_NATIVE_ID = _require_intrinsic(
-    "molt_thread_current_native_id")
+_MOLT_THREAD_CURRENT_NATIVE_ID = _require_intrinsic("molt_thread_current_native_id")
 _MOLT_THREAD_SPAWN_SHARED = _require_intrinsic("molt_thread_spawn_shared")
 _MOLT_THREAD_DROP = _require_intrinsic("molt_thread_drop")
-_MOLT_THREAD_STACK_SIZE_GET = _require_intrinsic(
-    "molt_thread_stack_size_get")
-_MOLT_THREAD_STACK_SIZE_SET = _require_intrinsic(
-    "molt_thread_stack_size_set")
-_MOLT_THREAD_REGISTRY_SET_MAIN = _require_intrinsic(
-    "molt_thread_registry_set_main")
-_MOLT_THREAD_REGISTRY_REGISTER = _require_intrinsic(
-    "molt_thread_registry_register")
-_MOLT_THREAD_REGISTRY_FORGET = _require_intrinsic(
-    "molt_thread_registry_forget")
-_MOLT_THREAD_REGISTRY_SNAPSHOT = _require_intrinsic(
-    "molt_thread_registry_snapshot")
-_MOLT_THREAD_REGISTRY_CURRENT = _require_intrinsic(
-    "molt_thread_registry_current")
+_MOLT_THREAD_STACK_SIZE_GET = _require_intrinsic("molt_thread_stack_size_get")
+_MOLT_THREAD_STACK_SIZE_SET = _require_intrinsic("molt_thread_stack_size_set")
+_MOLT_THREAD_REGISTRY_SET_MAIN = _require_intrinsic("molt_thread_registry_set_main")
+_MOLT_THREAD_REGISTRY_REGISTER = _require_intrinsic("molt_thread_registry_register")
+_MOLT_THREAD_REGISTRY_FORGET = _require_intrinsic("molt_thread_registry_forget")
+_MOLT_THREAD_REGISTRY_SNAPSHOT = _require_intrinsic("molt_thread_registry_snapshot")
+_MOLT_THREAD_REGISTRY_CURRENT = _require_intrinsic("molt_thread_registry_current")
 _MOLT_THREAD_REGISTRY_ACTIVE_COUNT = _require_intrinsic(
-    "molt_thread_registry_active_count")
+    "molt_thread_registry_active_count"
+)
 _MOLT_LOCK_NEW = _require_intrinsic("molt_lock_new")
 _MOLT_LOCK_ACQUIRE = _require_intrinsic("molt_lock_acquire")
 _MOLT_LOCK_RELEASE = _require_intrinsic("molt_lock_release")
@@ -48,8 +41,7 @@ _MOLT_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release")
 _MOLT_RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked")
 _MOLT_RLOCK_IS_OWNED = _require_intrinsic("molt_rlock_is_owned")
 _MOLT_RLOCK_RELEASE_SAVE = _require_intrinsic("molt_rlock_release_save")
-_MOLT_RLOCK_ACQUIRE_RESTORE = _require_intrinsic(
-    "molt_rlock_acquire_restore")
+_MOLT_RLOCK_ACQUIRE_RESTORE = _require_intrinsic("molt_rlock_acquire_restore")
 _MOLT_RLOCK_DROP = _require_intrinsic("molt_rlock_drop")
 _MOLT_CONDITION_NEW = _require_intrinsic("molt_condition_new")
 _MOLT_CONDITION_WAIT = _require_intrinsic("molt_condition_wait")
@@ -86,29 +78,61 @@ def _expect_int(value: object) -> int:
 
 # Use a list + loop instead of a 55-element tuple literal to reduce IR size.
 _ALL_INTRINSICS = [
-    _MOLT_THREAD_JOIN, _MOLT_THREAD_IS_ALIVE, _MOLT_THREAD_IDENT,
-    _MOLT_THREAD_NATIVE_ID, _MOLT_THREAD_CURRENT_IDENT,
-    _MOLT_THREAD_CURRENT_NATIVE_ID, _MOLT_THREAD_SPAWN_SHARED,
-    _MOLT_THREAD_DROP, _MOLT_THREAD_STACK_SIZE_GET,
-    _MOLT_THREAD_STACK_SIZE_SET, _MOLT_THREAD_REGISTRY_SET_MAIN,
-    _MOLT_THREAD_REGISTRY_REGISTER, _MOLT_THREAD_REGISTRY_FORGET,
-    _MOLT_THREAD_REGISTRY_SNAPSHOT, _MOLT_THREAD_REGISTRY_CURRENT,
+    _MOLT_THREAD_JOIN,
+    _MOLT_THREAD_IS_ALIVE,
+    _MOLT_THREAD_IDENT,
+    _MOLT_THREAD_NATIVE_ID,
+    _MOLT_THREAD_CURRENT_IDENT,
+    _MOLT_THREAD_CURRENT_NATIVE_ID,
+    _MOLT_THREAD_SPAWN_SHARED,
+    _MOLT_THREAD_DROP,
+    _MOLT_THREAD_STACK_SIZE_GET,
+    _MOLT_THREAD_STACK_SIZE_SET,
+    _MOLT_THREAD_REGISTRY_SET_MAIN,
+    _MOLT_THREAD_REGISTRY_REGISTER,
+    _MOLT_THREAD_REGISTRY_FORGET,
+    _MOLT_THREAD_REGISTRY_SNAPSHOT,
+    _MOLT_THREAD_REGISTRY_CURRENT,
     _MOLT_THREAD_REGISTRY_ACTIVE_COUNT,
-    _MOLT_LOCK_NEW, _MOLT_LOCK_ACQUIRE, _MOLT_LOCK_RELEASE,
-    _MOLT_LOCK_LOCKED, _MOLT_LOCK_DROP,
-    _MOLT_RLOCK_NEW, _MOLT_RLOCK_ACQUIRE, _MOLT_RLOCK_RELEASE,
-    _MOLT_RLOCK_LOCKED, _MOLT_RLOCK_IS_OWNED,
-    _MOLT_RLOCK_RELEASE_SAVE, _MOLT_RLOCK_ACQUIRE_RESTORE, _MOLT_RLOCK_DROP,
-    _MOLT_CONDITION_NEW, _MOLT_CONDITION_WAIT, _MOLT_CONDITION_WAIT_FOR,
-    _MOLT_CONDITION_NOTIFY, _MOLT_CONDITION_DROP,
-    _MOLT_EVENT_NEW, _MOLT_EVENT_SET, _MOLT_EVENT_CLEAR,
-    _MOLT_EVENT_IS_SET, _MOLT_EVENT_WAIT, _MOLT_EVENT_DROP,
-    _MOLT_SEMAPHORE_NEW, _MOLT_SEMAPHORE_ACQUIRE, _MOLT_SEMAPHORE_RELEASE,
+    _MOLT_LOCK_NEW,
+    _MOLT_LOCK_ACQUIRE,
+    _MOLT_LOCK_RELEASE,
+    _MOLT_LOCK_LOCKED,
+    _MOLT_LOCK_DROP,
+    _MOLT_RLOCK_NEW,
+    _MOLT_RLOCK_ACQUIRE,
+    _MOLT_RLOCK_RELEASE,
+    _MOLT_RLOCK_LOCKED,
+    _MOLT_RLOCK_IS_OWNED,
+    _MOLT_RLOCK_RELEASE_SAVE,
+    _MOLT_RLOCK_ACQUIRE_RESTORE,
+    _MOLT_RLOCK_DROP,
+    _MOLT_CONDITION_NEW,
+    _MOLT_CONDITION_WAIT,
+    _MOLT_CONDITION_WAIT_FOR,
+    _MOLT_CONDITION_NOTIFY,
+    _MOLT_CONDITION_DROP,
+    _MOLT_EVENT_NEW,
+    _MOLT_EVENT_SET,
+    _MOLT_EVENT_CLEAR,
+    _MOLT_EVENT_IS_SET,
+    _MOLT_EVENT_WAIT,
+    _MOLT_EVENT_DROP,
+    _MOLT_SEMAPHORE_NEW,
+    _MOLT_SEMAPHORE_ACQUIRE,
+    _MOLT_SEMAPHORE_RELEASE,
     _MOLT_SEMAPHORE_DROP,
-    _MOLT_BARRIER_NEW, _MOLT_BARRIER_WAIT, _MOLT_BARRIER_ABORT,
-    _MOLT_BARRIER_RESET, _MOLT_BARRIER_PARTIES, _MOLT_BARRIER_N_WAITING,
-    _MOLT_BARRIER_BROKEN, _MOLT_BARRIER_DROP,
-    _MOLT_LOCAL_NEW, _MOLT_LOCAL_GET_DICT, _MOLT_LOCAL_DROP,
+    _MOLT_BARRIER_NEW,
+    _MOLT_BARRIER_WAIT,
+    _MOLT_BARRIER_ABORT,
+    _MOLT_BARRIER_RESET,
+    _MOLT_BARRIER_PARTIES,
+    _MOLT_BARRIER_N_WAITING,
+    _MOLT_BARRIER_BROKEN,
+    _MOLT_BARRIER_DROP,
+    _MOLT_LOCAL_NEW,
+    _MOLT_LOCAL_GET_DICT,
+    _MOLT_LOCAL_DROP,
 ]
 
 _HAVE_INTRINSICS = True
@@ -272,7 +296,9 @@ else:
             return int(_thread_stack_size_get())
         if not isinstance(size, int):
             raise TypeError(
-                "'" + type(size).__name__ + "' object cannot be interpreted as an integer"
+                "'"
+                + type(size).__name__
+                + "' object cannot be interpreted as an integer"
             )
         new_size = int(size)
         return int(_thread_stack_size_set(new_size))
@@ -306,9 +332,7 @@ else:
         try:
             timeout_val = float(timeout)
         except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "'" + type(timeout).__name__ + _BAD_TIMEOUT_MSG
-            ) from exc
+            raise TypeError("'" + type(timeout).__name__ + _BAD_TIMEOUT_MSG) from exc
         if not blocking:
             if timeout_val != -1.0:
                 raise ValueError("can't specify a timeout for a non-blocking call")
@@ -325,9 +349,7 @@ else:
         try:
             timeout_val = float(timeout)
         except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "'" + type(timeout).__name__ + _BAD_TIMEOUT_MSG
-            ) from exc
+            raise TypeError("'" + type(timeout).__name__ + _BAD_TIMEOUT_MSG) from exc
         if timeout_val < 0.0:
             timeout_val = 0.0
         _check_timeout_max(timeout_val)
@@ -370,10 +392,12 @@ else:
         if not isinstance(record, tuple) or len(record) != 6:
             raise RuntimeError("invalid thread registry record")
         return [
-            str(record[0]), bool(record[1]),
+            str(record[0]),
+            bool(record[1]),
             None if record[2] is None else int(record[2]),
             None if record[3] is None else int(record[3]),
-            bool(record[4]), bool(record[5]),
+            bool(record[4]),
+            bool(record[5]),
         ]
 
     def _apply_record_to_thread(rec: list[Any], thread: "Thread") -> None:
@@ -992,7 +1016,14 @@ else:
             _apply_record_to_thread(rec, thread)
             return thread
         return _thread_from_registry_record(
-            (rec[_R_NAME], rec[_R_DAEMON], rec[_R_IDENT], rec[_R_NATIVE_ID], rec[_R_ALIVE], rec[_R_IS_MAIN])
+            (
+                rec[_R_NAME],
+                rec[_R_DAEMON],
+                rec[_R_IDENT],
+                rec[_R_NATIVE_ID],
+                rec[_R_ALIVE],
+                rec[_R_IS_MAIN],
+            )
         )
 
     def main_thread() -> Thread:
@@ -1010,9 +1041,18 @@ else:
                 _apply_record_to_thread(rec, thread)
                 out.append(thread)
                 continue
-            out.append(_thread_from_registry_record(
-                (rec[_R_NAME], rec[_R_DAEMON], rec[_R_IDENT], rec[_R_NATIVE_ID], rec[_R_ALIVE], rec[_R_IS_MAIN])
-            ))
+            out.append(
+                _thread_from_registry_record(
+                    (
+                        rec[_R_NAME],
+                        rec[_R_DAEMON],
+                        rec[_R_IDENT],
+                        rec[_R_NATIVE_ID],
+                        rec[_R_ALIVE],
+                        rec[_R_IS_MAIN],
+                    )
+                )
+            )
         if not out:
             out.append(main_thread())
         return out
@@ -1030,7 +1070,9 @@ else:
         thread._synthetic_alive = True
         thread._ident_cache = get_ident()
         thread._native_id_cache = get_native_id()
-        _thread_registry_set_main(str(thread._name or "MainThread"), bool(thread._daemon))
+        _thread_registry_set_main(
+            str(thread._name or "MainThread"), bool(thread._daemon)
+        )
         _MAIN_THREAD = thread
         return thread
 

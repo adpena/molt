@@ -66,6 +66,7 @@ class CallFrame:
 @dataclass
 class RefcountState:
     """Full state of the refcount protocol simulation."""
+
     heap: dict[int, HeapObj]
     roots: set[int]
     borrows: set[tuple[int, int]]  # (borrower, owner)
@@ -87,11 +88,17 @@ class RefcountState:
 
 
 def _make_initial_state() -> RefcountState:
-    heap = {oid: HeapObj(id=oid, refcount=0, alive=False)
-            for oid in range(MAX_OBJS)}
-    frames = {fid: CallFrame(frame_id=fid, args=set(), return_val=-1,
-                              active=False, protected_return=False)
-              for fid in range(MAX_FRAMES)}
+    heap = {oid: HeapObj(id=oid, refcount=0, alive=False) for oid in range(MAX_OBJS)}
+    frames = {
+        fid: CallFrame(
+            frame_id=fid,
+            args=set(),
+            return_val=-1,
+            active=False,
+            protected_return=False,
+        )
+        for fid in range(MAX_FRAMES)
+    }
     return RefcountState(
         heap=heap,
         roots=set(),
@@ -106,6 +113,7 @@ def _make_initial_state() -> RefcountState:
 # ---------------------------------------------------------------------------
 # Protocol operations (mirrors Quint actions)
 # ---------------------------------------------------------------------------
+
 
 def alloc_obj(state: RefcountState) -> RefcountState:
     """Allocate a new heap object with refcount 1, added to roots."""
@@ -145,7 +153,9 @@ def dec_ref(state: RefcountState, oid: int) -> RefcountState:
     return s
 
 
-def begin_call(state: RefcountState, frame_id: int, arg_oids: set[int]) -> RefcountState:
+def begin_call(
+    state: RefcountState, frame_id: int, arg_oids: set[int]
+) -> RefcountState:
     """Begin a call: create frame with inc_ref'd arguments."""
     s = state.clone()
     for oid in arg_oids:
@@ -215,6 +225,7 @@ def cleanup_frame(state: RefcountState, frame_id: int) -> RefcountState:
 # Invariant checkers
 # ---------------------------------------------------------------------------
 
+
 def check_no_double_free(state: RefcountState) -> None:
     """I2: refcounts never go negative."""
     for oid in range(state.next_id):
@@ -241,9 +252,7 @@ def check_frame_consistent(state: RefcountState) -> None:
         assert f.active
         for oid in f.args:
             assert 0 <= oid < state.next_id
-            assert state.heap[oid].alive, (
-                f"Frame {fid} arg {oid} is dead"
-            )
+            assert state.heap[oid].alive, f"Frame {fid} arg {oid} is dead"
         if f.return_val != -1:
             assert 0 <= f.return_val < state.next_id
             assert state.heap[f.return_val].alive, (
@@ -432,8 +441,11 @@ class TestCallArgsProtection:
         # Manually simulate begin_call without alias protection
         s.heap[0].refcount += 1  # callargs inc_ref -> rc=2
         s.frames[0] = CallFrame(
-            frame_id=0, args={0}, return_val=-1,
-            active=True, protected_return=False,
+            frame_id=0,
+            args={0},
+            return_val=-1,
+            active=True,
+            protected_return=False,
         )
         s.active_frame_ids.add(0)
 
@@ -450,9 +462,7 @@ class TestCallArgsProtection:
         s.heap[0].alive = False
 
         # The return value is now dangling -- use-after-free!
-        assert not s.heap[0].alive, (
-            "Without protection, the aliased return is freed"
-        )
+        assert not s.heap[0].alive, "Without protection, the aliased return is freed"
 
 
 class TestBorrowSafety:

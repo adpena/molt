@@ -29,12 +29,16 @@ keys = list(iter(d))
 print(sorted(keys))
 
 print("=== Custom __iter__/__next__ ===")
+
+
 class Countdown:
     def __init__(self, start):
         self.start = start
+
     def __iter__(self):
         self.current = self.start
         return self
+
     def __next__(self):
         if self.current <= 0:
             raise StopIteration
@@ -42,16 +46,21 @@ class Countdown:
         self.current -= 1
         return val
 
+
 print(list(Countdown(5)))
 print(list(Countdown(0)))
 
 print("=== Iterable vs iterator ===")
+
+
 class Squares:
     def __init__(self, n):
         self.n = n
+
     def __iter__(self):
         for i in range(self.n):
             yield i * i
+
 
 sq = Squares(5)
 print(list(sq))
@@ -66,7 +75,7 @@ print(list(zip([1, 2, 3], "abc", [True, False, None])))
 print("=== zip strict ===")
 try:
     list(zip([1, 2], [10, 20, 30], strict=True))
-except ValueError as e:
+except ValueError:
     print("zip strict error: ValueError")
 
 print(list(zip([1, 2], [10, 20], strict=True)))
@@ -83,13 +92,18 @@ print(list(reversed(range(5))))
 print(list(reversed((10, 20, 30))))
 
 print("=== reversed on custom type ===")
+
+
 class ReversibleContainer:
     def __init__(self, data):
         self.data = data
+
     def __reversed__(self):
         return iter(self.data[::-1])
+
     def __iter__(self):
         return iter(self.data)
+
 
 rc = ReversibleContainer([1, 2, 3, 4, 5])
 print(list(reversed(rc)))
@@ -105,6 +119,8 @@ print("=== map with multiple iterables ===")
 print(list(map(lambda a, b: a + b, [1, 2, 3], [10, 20, 30])))
 
 print("=== itertools-like patterns with generators ===")
+
+
 def take(n, iterable):
     it = iter(iterable)
     for _ in range(n):
@@ -113,13 +129,16 @@ def take(n, iterable):
         except StopIteration:
             return
 
+
 def repeat_val(val, times):
     for _ in range(times):
         yield val
 
+
 def chain(*iterables):
     for it in iterables:
         yield from it
+
 
 print(list(take(3, range(100))))
 print(list(take(5, [1, 2])))
@@ -127,6 +146,8 @@ print(list(repeat_val("x", 4)))
 print(list(chain([1, 2], [3, 4], [5])))
 
 print("=== Generator send ===")
+
+
 def accumulator():
     total = 0
     while True:
@@ -134,6 +155,7 @@ def accumulator():
         if val is None:
             break
         total += val
+
 
 gen = accumulator()
 print(next(gen))

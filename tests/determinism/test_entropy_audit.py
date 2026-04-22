@@ -134,9 +134,9 @@ class TestEntropySourceAudit:
         """
         # Files where entropy usage is acceptable (not in codegen paths)
         _ENTROPY_ALLOWLIST = {
-            "src/molt/cli.py",      # temp files, upload IDs
-            "src/molt/net.py",      # network request IDs
-            "src/molt/asgi.py",     # request handling
+            "src/molt/cli.py",  # temp files, upload IDs
+            "src/molt/net.py",  # network request IDs
+            "src/molt/asgi.py",  # request handling
             "src/molt/gpu/generate.py",  # sampling for text generation
         }
 

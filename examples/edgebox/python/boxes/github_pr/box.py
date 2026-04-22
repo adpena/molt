@@ -9,7 +9,6 @@
 
 import json
 import os
-import sys
 
 from edgebox.box import Box, tool, alarm
 from edgebox.db import BoxDB
@@ -86,7 +85,10 @@ class GithubPRBox(Box):
         )
         return rows
 
-    @tool(name="add_review_comment", description="Post a review comment on a file in the PR")
+    @tool(
+        name="add_review_comment",
+        description="Post a review comment on a file in the PR",
+    )
     def add_review_comment(self, pr_id=0, path="", line=0, body="", author="edgebox"):
         """Insert a review comment into local storage."""
         row_id = self.db.execute(
@@ -96,7 +98,9 @@ class GithubPRBox(Box):
         )
         return {"comment_id": row_id, "pr_id": pr_id}
 
-    @tool(name="get_diff_summary", description="Get a summary of files changed in the PR")
+    @tool(
+        name="get_diff_summary", description="Get a summary of files changed in the PR"
+    )
     def get_diff_summary(self, pr_id=0):
         """Summarize the PR by counting events and comments."""
         event_count = self.db.query(
@@ -126,7 +130,10 @@ class GithubPRBox(Box):
             "event_types": type_list,
         }
 
-    @tool(name="query_timeline", description="Run a filtered query against the event timeline")
+    @tool(
+        name="query_timeline",
+        description="Run a filtered query against the event timeline",
+    )
     def query_timeline(self, pr_id=0, event_type="", actor="", limit=20):
         """Query events with optional filters on type and actor."""
         sql = "SELECT id, event_type, actor, payload, created_at FROM events WHERE pr_id = ?"

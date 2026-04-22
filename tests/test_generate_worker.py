@@ -1,5 +1,6 @@
 def test_generate_worker_produces_valid_js(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, ["fs.bundle.read"], tmp_quota_mb=32)
     content = output.read_text()
@@ -9,6 +10,7 @@ def test_generate_worker_produces_valid_js(tmp_path):
 
 def test_generate_worker_contains_tmpfs(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, ["fs.tmp.read", "fs.tmp.write"], tmp_quota_mb=64)
     content = output.read_text()
@@ -19,6 +21,7 @@ def test_generate_worker_contains_tmpfs(tmp_path):
 
 def test_generate_worker_contains_host_imports(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, ["fs.bundle.read"], tmp_quota_mb=16)
     content = output.read_text()
@@ -30,6 +33,7 @@ def test_generate_worker_contains_host_imports(tmp_path):
 
 def test_generate_worker_contains_fetch_handler(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, ["http.fetch"])
     content = output.read_text()
@@ -40,6 +44,7 @@ def test_generate_worker_contains_fetch_handler(tmp_path):
 
 def test_generate_worker_contains_wasi_shim(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, [])
     content = output.read_text()
@@ -53,6 +58,7 @@ def test_generate_worker_contains_wasi_shim(tmp_path):
 
 def test_generate_worker_capabilities_substituted(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, ["fs.bundle.read", "http.fetch"], tmp_quota_mb=32)
     content = output.read_text()
@@ -65,6 +71,7 @@ def test_generate_worker_capabilities_substituted(tmp_path):
 
 def test_generate_worker_custom_wasm_filename(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, [], wasm_filename="custom.wasm")
     content = output.read_text()
@@ -74,6 +81,7 @@ def test_generate_worker_custom_wasm_filename(tmp_path):
 
 def test_generate_worker_no_scaffold_warning(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, [])
     content = output.read_text()
@@ -83,6 +91,7 @@ def test_generate_worker_no_scaffold_warning(tmp_path):
 
 def test_generate_worker_stdio_capture(tmp_path):
     from tools.generate_worker import generate_worker
+
     output = tmp_path / "worker.js"
     generate_worker(output, [])
     content = output.read_text()
@@ -196,7 +205,10 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
     assert "path_filestat_get() { return 44; }" not in content
     assert "fd_prestat_get(fd, prestatPtr)" in content
     assert "fd_prestat_dir_name(fd, pathPtr, pathLen)" in content
-    assert "path_open(fd, _dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, _fdflags, openedFdPtr)" in content
+    assert (
+        "path_open(fd, _dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, _fdflags, openedFdPtr)"
+        in content
+    )
     assert "path_filestat_get(fd, _flags, pathPtr, pathLen, bufPtr)" in content
 
 
@@ -222,12 +234,18 @@ def test_generate_split_worker_installs_exported_table_refs() -> None:
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
-        app_table_ref_signatures={"__molt_table_ref_7": {"params": ["i64"], "result": "i64"}},
-        runtime_table_ref_signatures={"__molt_table_ref_3": {"params": ["i32"], "result": "i32"}},
+        app_table_ref_signatures={
+            "__molt_table_ref_7": {"params": ["i64"], "result": "i64"}
+        },
+        runtime_table_ref_signatures={
+            "__molt_table_ref_3": {"params": ["i32"], "result": "i32"}
+        },
     )
 
     assert "const installTableRefs = (instance, table) => {" in content
-    assert "const ensureTableCapacityForExportedRefs = (instance, table) => {" in content
+    assert (
+        "const ensureTableCapacityForExportedRefs = (instance, table) => {" in content
+    )
     assert "installTableRefs(rtInstance, sharedTable);" in content
     assert "ensureTableCapacityForExportedRefs(appInstance, sharedTable);" in content
     assert "installTableRefs(appInstance, sharedTable);" in content
@@ -241,8 +259,12 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
-        app_table_ref_signatures={"__molt_table_ref_7": {"params": ["i64"], "result": "i64"}},
-        runtime_table_ref_signatures={"__molt_table_ref_3": {"params": ["i32"], "result": "i32"}},
+        app_table_ref_signatures={
+            "__molt_table_ref_7": {"params": ["i64"], "result": "i64"}
+        },
+        runtime_table_ref_signatures={
+            "__molt_table_ref_3": {"params": ["i32"], "result": "i32"}
+        },
     )
 
     assert "const indirectName = `molt_call_indirect${arity}`;" in content
@@ -253,21 +275,32 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert "return indirectFn(fnIndex, ...args);" in content
     assert "const tableFn = sharedTable.get(dispatchIdx);" in content
     assert 'if (typeof tableFn === "function") {' in content
-    assert "const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;" in content
+    assert (
+        "const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;"
+        in content
+    )
     assert "return callWithSignature(tableFn, signature, args);" in content
     assert "const rtDirectFn = rtInstance?.exports?.[directName];" in content
-    assert "return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);" in content
+    assert (
+        "return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);"
+        in content
+    )
     assert content.index(
-        'const indirectFn = appInstance?.exports?.[indirectName];'
+        "const indirectFn = appInstance?.exports?.[indirectName];"
     ) < content.index("const tableFn = sharedTable.get(dispatchIdx);")
     assert content.index(
         "const tableFn = sharedTable.get(dispatchIdx);"
     ) < content.index("const rtDirectFn = rtInstance?.exports?.[directName];")
     assert "hasExportedTableRefs(appInstance)" not in content
-    assert "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();" in content
+    assert (
+        "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
+        in content
+    )
 
 
-def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface() -> None:
+def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface() -> (
+    None
+):
     from molt.cli import _generate_split_worker_js
 
     content = _generate_split_worker_js(
@@ -282,28 +315,50 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
             "function_set_builtin": {"params": ["i64"], "result": "i64"},
             "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"},
         },
-        app_table_ref_signatures={"__molt_table_ref_1": {"params": ["i64"], "result": "i64"}},
-        runtime_table_ref_signatures={"__molt_table_ref_2": {"params": ["i32"], "result": "i32"}},
+        app_table_ref_signatures={
+            "__molt_table_ref_1": {"params": ["i64"], "result": "i64"}
+        },
+        runtime_table_ref_signatures={
+            "__molt_table_ref_2": {"params": ["i32"], "result": "i32"}
+        },
     )
 
     assert "const buildRuntimeImports = (module, runtimeInstance) => {" in content
     assert "for (const entry of WebAssembly.Module.imports(module)) {" in content
-    assert 'const runtimeImportResultKinds = {"function_set_builtin": "i64", "string_from_bytes": "i32"};' in content
-    assert 'const runtimeImportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"}};' in content
-    assert 'const appTableRefSignatures = {"__molt_table_ref_1": {"params": ["i64"], "result": "i64"}};' in content
-    assert 'const runtimeTableRefSignatures = {"__molt_table_ref_2": {"params": ["i32"], "result": "i32"}};' in content
+    assert (
+        'const runtimeImportResultKinds = {"function_set_builtin": "i64", "string_from_bytes": "i32"};'
+        in content
+    )
+    assert (
+        'const runtimeImportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"}};'
+        in content
+    )
+    assert (
+        'const appTableRefSignatures = {"__molt_table_ref_1": {"params": ["i64"], "result": "i64"}};'
+        in content
+    )
+    assert (
+        'const runtimeTableRefSignatures = {"__molt_table_ref_2": {"params": ["i32"], "result": "i32"}};'
+        in content
+    )
     assert "const TAG_NONE = 0x0003000000000000n;" in content
     assert "const NONE_BITS = QNAN | TAG_NONE;" in content
-    assert 'const resultKind = runtimeImportResultKinds[entry.name] || null;' in content
+    assert "const resultKind = runtimeImportResultKinds[entry.name] || null;" in content
     assert "const signature = runtimeImportSignatures[entry.name] || null;" in content
-    assert "? args.map((value, index) => normalizeValueForKind(value, signature.params[index] || null))" in content
+    assert (
+        "? args.map((value, index) => normalizeValueForKind(value, signature.params[index] || null))"
+        in content
+    )
     assert "const callArgs = args.map((value, index) =>" in content
     assert "normalizeValueForKind(value, signature.params[index] || null)" in content
     assert "return normalizeImportResult(out, resultKind);" in content
     assert "const callWithSignature = (fn, signature, args) => {" in content
     assert "value === undefined || value === null" in content
     assert "? NONE_BITS" in content
-    assert "return normalizeI64Result(appInstance.exports.molt_isolate_import(...args));" in content
+    assert (
+        "return normalizeI64Result(appInstance.exports.molt_isolate_import(...args));"
+        in content
+    )
     assert "molt_runtime: buildRuntimeImports(appModule, rtInstance)," in content
     assert "const runtimeAbiExports = (exports) => {" not in content
 
@@ -334,7 +389,9 @@ def test_wasm_import_function_result_kinds_parses_objdump_output(
     wasm_path = tmp_path / "app.wasm"
     wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
 
-    monkeypatch.setattr("molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump")
+    monkeypatch.setattr(
+        "molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump"
+    )
 
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
@@ -374,7 +431,9 @@ def test_wasm_import_function_signatures_parses_objdump_output(
     wasm_path = tmp_path / "app.wasm"
     wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
 
-    monkeypatch.setattr("molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump")
+    monkeypatch.setattr(
+        "molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump"
+    )
 
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
@@ -395,9 +454,7 @@ def test_wasm_import_function_signatures_parses_objdump_output(
 
     monkeypatch.setattr("molt.cli.subprocess.run", fake_run)
 
-    assert _wasm_import_function_signatures(
-        wasm_path, module_name="molt_runtime"
-    ) == {
+    assert _wasm_import_function_signatures(wasm_path, module_name="molt_runtime") == {
         "molt_function_set_builtin": {"params": ["i64"], "result": "i64"},
         "molt_string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"},
         "molt_resource_on_free": {"params": [], "result": "nil"},
@@ -414,7 +471,9 @@ def test_wasm_export_function_signatures_parses_objdump_output(
     wasm_path = tmp_path / "runtime.wasm"
     wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
 
-    monkeypatch.setattr("molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump")
+    monkeypatch.setattr(
+        "molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump"
+    )
 
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
@@ -464,7 +523,9 @@ def test_export_wasm_table_refs_adds_exports_for_active_slots(tmp_path) -> None:
         + _write_wasm_varuint(0)
     )
     code_body = bytes([0x00, 0x42, 0x00, 0x0B])
-    code_payload = _write_wasm_varuint(1) + _write_wasm_varuint(len(code_body)) + code_body
+    code_payload = (
+        _write_wasm_varuint(1) + _write_wasm_varuint(len(code_body)) + code_body
+    )
     wasm_bytes = _build_wasm_sections(
         [
             (1, type_payload),

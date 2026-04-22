@@ -37,7 +37,9 @@ import sys
 import time
 
 # Ensure the project root is on the path for imports
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
@@ -64,14 +66,15 @@ IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 32
 
 # Comparison tolerances
-LOGIT_ATOL = 1e-5   # Absolute tolerance for logit comparison
-LOGIT_RTOL = 1e-4   # Relative tolerance for logit comparison
+LOGIT_ATOL = 1e-5  # Absolute tolerance for logit comparison
+LOGIT_RTOL = 1e-4  # Relative tolerance for logit comparison
 KL_THRESHOLD = 1e-6  # KL divergence threshold for softmax distributions
 
 
 # ---------------------------------------------------------------------------
 # Result data structure
 # ---------------------------------------------------------------------------
+
 
 def _empty_result() -> dict:
     return {
@@ -82,8 +85,8 @@ def _empty_result() -> dict:
         "image_width": IMAGE_WIDTH,
         "image_height": IMAGE_HEIGHT,
         "generated_token_ids": [],
-        "logits_per_step": [],   # List of list[float] -- top-k logits at each step
-        "argmax_per_step": [],   # Argmax token ID at each step
+        "logits_per_step": [],  # List of list[float] -- top-k logits at each step
+        "argmax_per_step": [],  # Argmax token ID at each step
         "timing": {
             "init_seconds": 0.0,
             "time_to_first_token_seconds": 0.0,
@@ -100,6 +103,7 @@ def _empty_result() -> dict:
 # ---------------------------------------------------------------------------
 # Reference mode: CPython + molt runtime
 # ---------------------------------------------------------------------------
+
 
 def run_reference(output_path: str) -> dict:
     """Run Falcon-OCR inference using the molt runtime's falcon_ocr module.
@@ -154,7 +158,9 @@ def run_reference(output_path: str) -> dict:
     result["timing"]["total_inference_seconds"] = total_time
     if generated:
         result["timing"]["time_to_first_token_seconds"] = total_time / len(generated)
-        result["timing"]["tokens_per_second"] = len(generated) / total_time if total_time > 0 else 0.0
+        result["timing"]["tokens_per_second"] = (
+            len(generated) / total_time if total_time > 0 else 0.0
+        )
 
     if output_path:
         with open(output_path, "w") as f:
@@ -167,6 +173,7 @@ def run_reference(output_path: str) -> dict:
 # ---------------------------------------------------------------------------
 # Molt mode: run under molt runtime
 # ---------------------------------------------------------------------------
+
 
 def run_molt(output_path: str) -> dict:
     """Run Falcon-OCR inference using the molt-compiled path.
@@ -221,7 +228,9 @@ def run_molt(output_path: str) -> dict:
     result["timing"]["total_inference_seconds"] = total_time
     if generated:
         result["timing"]["time_to_first_token_seconds"] = total_time / len(generated)
-        result["timing"]["tokens_per_second"] = len(generated) / total_time if total_time > 0 else 0.0
+        result["timing"]["tokens_per_second"] = (
+            len(generated) / total_time if total_time > 0 else 0.0
+        )
 
     if output_path:
         with open(output_path, "w") as f:
@@ -234,6 +243,7 @@ def run_molt(output_path: str) -> dict:
 # ---------------------------------------------------------------------------
 # Compare mode
 # ---------------------------------------------------------------------------
+
 
 def _kl_divergence(p: list, q: list) -> float:
     """KL(P || Q) for discrete distributions. Returns float('inf') on zero-Q."""
@@ -275,7 +285,9 @@ def compare_results(ref_path: str, molt_path: str) -> bool:
         # Find first divergence
         for i in range(min(len(ref_tokens), len(molt_tokens))):
             if ref_tokens[i] != molt_tokens[i]:
-                print(f"  First divergence at step {i}: ref={ref_tokens[i]} molt={molt_tokens[i]}")
+                print(
+                    f"  First divergence at step {i}: ref={ref_tokens[i]} molt={molt_tokens[i]}"
+                )
                 break
         if len(ref_tokens) != len(molt_tokens):
             print(f"  Length mismatch: ref={len(ref_tokens)} molt={len(molt_tokens)}")
@@ -293,7 +305,9 @@ def compare_results(ref_path: str, molt_path: str) -> bool:
             kl = _kl_divergence(ref_sm, molt_sm)
             max_kl = max(max_kl, kl)
             if kl > KL_THRESHOLD:
-                print(f"  WARN: KL divergence at step {step}: {kl:.2e} > {KL_THRESHOLD:.2e}")
+                print(
+                    f"  WARN: KL divergence at step {step}: {kl:.2e} > {KL_THRESHOLD:.2e}"
+                )
         if max_kl <= KL_THRESHOLD:
             print(f"PASS: Logit distributions match (max KL={max_kl:.2e})")
         else:
@@ -306,10 +320,18 @@ def compare_results(ref_path: str, molt_path: str) -> bool:
     ref_t = ref["timing"]
     molt_t = molt["timing"]
     print("\nPerformance comparison:")
-    print(f"  Init:              ref={ref_t['init_seconds']:.4f}s  molt={molt_t['init_seconds']:.4f}s")
-    print(f"  Time-to-first:     ref={ref_t['time_to_first_token_seconds']:.4f}s  molt={molt_t['time_to_first_token_seconds']:.4f}s")
-    print(f"  Total inference:   ref={ref_t['total_inference_seconds']:.4f}s  molt={molt_t['total_inference_seconds']:.4f}s")
-    print(f"  Tokens/sec:        ref={ref_t['tokens_per_second']:.2f}  molt={molt_t['tokens_per_second']:.2f}")
+    print(
+        f"  Init:              ref={ref_t['init_seconds']:.4f}s  molt={molt_t['init_seconds']:.4f}s"
+    )
+    print(
+        f"  Time-to-first:     ref={ref_t['time_to_first_token_seconds']:.4f}s  molt={molt_t['time_to_first_token_seconds']:.4f}s"
+    )
+    print(
+        f"  Total inference:   ref={ref_t['total_inference_seconds']:.4f}s  molt={molt_t['total_inference_seconds']:.4f}s"
+    )
+    print(
+        f"  Tokens/sec:        ref={ref_t['tokens_per_second']:.2f}  molt={molt_t['tokens_per_second']:.2f}"
+    )
 
     if molt_t["total_inference_seconds"] > 0 and ref_t["total_inference_seconds"] > 0:
         speedup = ref_t["total_inference_seconds"] / molt_t["total_inference_seconds"]
@@ -322,36 +344,52 @@ def compare_results(ref_path: str, molt_path: str) -> bool:
 # CLI
 # ---------------------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Falcon-OCR baseline test harness"
-    )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--reference", action="store_true",
-                       help="Run reference (CPython+tinygrad) inference")
-    group.add_argument("--molt", action="store_true",
-                       help="Run molt inference")
-    group.add_argument("--compare", action="store_true",
-                       help="Compare reference and molt outputs")
 
-    parser.add_argument("--output", "-o", type=str, default="",
-                        help="Output JSON path (for --reference/--molt)")
-    parser.add_argument("--reference-file", type=str, default="",
-                        help="Reference JSON path (for --compare)")
-    parser.add_argument("--molt-file", type=str, default="",
-                        help="Molt JSON path (for --compare)")
+def main():
+    parser = argparse.ArgumentParser(description="Falcon-OCR baseline test harness")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--reference",
+        action="store_true",
+        help="Run reference (CPython+tinygrad) inference",
+    )
+    group.add_argument("--molt", action="store_true", help="Run molt inference")
+    group.add_argument(
+        "--compare", action="store_true", help="Compare reference and molt outputs"
+    )
+
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=str,
+        default="",
+        help="Output JSON path (for --reference/--molt)",
+    )
+    parser.add_argument(
+        "--reference-file",
+        type=str,
+        default="",
+        help="Reference JSON path (for --compare)",
+    )
+    parser.add_argument(
+        "--molt-file", type=str, default="", help="Molt JSON path (for --compare)"
+    )
 
     args = parser.parse_args()
 
     if args.reference:
         result = run_reference(args.output)
-        print(f"Generated {len(result['generated_token_ids'])} tokens: {result['generated_token_ids']}")
+        print(
+            f"Generated {len(result['generated_token_ids'])} tokens: {result['generated_token_ids']}"
+        )
         print(f"Init: {result['timing']['init_seconds']:.4f}s")
         print(f"Inference: {result['timing']['total_inference_seconds']:.4f}s")
 
     elif args.molt:
         result = run_molt(args.output)
-        print(f"Generated {len(result['generated_token_ids'])} tokens: {result['generated_token_ids']}")
+        print(
+            f"Generated {len(result['generated_token_ids'])} tokens: {result['generated_token_ids']}"
+        )
         print(f"Init: {result['timing']['init_seconds']:.4f}s")
         print(f"Inference: {result['timing']['total_inference_seconds']:.4f}s")
 

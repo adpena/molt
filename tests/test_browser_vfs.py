@@ -1,10 +1,12 @@
 """Verify the browser VFS JS module is syntactically valid."""
+
 import base64
 import io
 import json
 import subprocess
 import tarfile
 from pathlib import Path
+
 
 def test_browser_vfs_js_exists():
     path = Path(__file__).resolve().parents[1] / "wasm" / "molt_vfs_browser.js"

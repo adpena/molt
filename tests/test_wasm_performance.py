@@ -4,6 +4,7 @@ Validates that compiled WASM output stays within expected size budgets
 and that wasm-ld / wasm-opt tooling is available for the optimization
 pipeline.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -71,23 +72,17 @@ class TestWasmToolAvailability:
 
     def test_wasm_ld_rustup_fallback(self) -> None:
         """_find_wasm_ld should locate wasm-ld in rustup toolchains."""
-        rustup_home = os.environ.get(
-            "RUSTUP_HOME", str(Path.home() / ".rustup")
-        )
+        rustup_home = os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup"))
         toolchains = Path(rustup_home) / "toolchains"
         if not toolchains.is_dir():
             pytest.skip("No rustup toolchains directory")
         import glob
 
-        candidates = glob.glob(
-            str(toolchains / "*/lib/rustlib/*/bin/gcc-ld/wasm-ld")
-        )
+        candidates = glob.glob(str(toolchains / "*/lib/rustlib/*/bin/gcc-ld/wasm-ld"))
         if not candidates:
             pytest.skip("No wasm-ld found in rustup toolchains")
         # At least one should be executable
-        assert any(
-            os.path.isfile(c) and os.access(c, os.X_OK) for c in candidates
-        )
+        assert any(os.path.isfile(c) and os.access(c, os.X_OK) for c in candidates)
 
     def test_wasm_opt_available(self) -> None:
         """wasm-opt should be on PATH for full optimization pipeline."""
@@ -132,9 +127,7 @@ def _build_wasm(
     repo_src = str(ROOT / "src")
     current_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath
-        if current_pythonpath
-        else repo_src
+        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
     )
     env["MOLT_BACKEND_DAEMON"] = "0"
     if linked:

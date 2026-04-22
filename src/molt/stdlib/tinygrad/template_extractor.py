@@ -20,20 +20,21 @@ Usage:
 
 from __future__ import annotations
 
-import math
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 
 # ---------------------------------------------------------------------------
 # OCR result types (mirrors the Worker's OCR output structure)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BoundingBox:
     """Axis-aligned bounding box in pixel coordinates (top-left origin)."""
+
     x: float
     y: float
     width: float
@@ -59,6 +60,7 @@ class BoundingBox:
 @dataclass
 class OcrBlock:
     """A single text block from OCR output."""
+
     text: str
     bbox: BoundingBox
     confidence: float = 0.0
@@ -67,6 +69,7 @@ class OcrBlock:
 @dataclass
 class OcrResult:
     """Complete OCR result for one document."""
+
     blocks: list[OcrBlock]
     page_width: float = 0.0
     page_height: float = 0.0
@@ -78,8 +81,14 @@ class OcrResult:
 
 # Section types matching enjoice's TemplateSectionConfig.type
 SECTION_TYPES = (
-    "header", "parties", "metadata", "line_items",
-    "totals", "notes", "terms", "footer",
+    "header",
+    "parties",
+    "metadata",
+    "line_items",
+    "totals",
+    "notes",
+    "terms",
+    "footer",
 )
 
 # Regex patterns for section classification heuristics.
@@ -234,9 +243,11 @@ def classify_sections(
 # Style inference
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class InferredStyles:
     """Styles inferred from OCR block geometry."""
+
     primary_color: str = "#111111"
     secondary_color: str = "#666666"
     accent_color: str = "#2563EB"
@@ -333,10 +344,12 @@ def infer_styles(
     heading_height = sorted_heights[min(p80_idx, len(sorted_heights) - 1)]
 
     styles.body_font_size_pt = round(
-        _estimate_font_size_pt(body_height, page_height), 1,
+        _estimate_font_size_pt(body_height, page_height),
+        1,
     )
     styles.heading_font_size_pt = round(
-        _estimate_font_size_pt(heading_height, page_height), 1,
+        _estimate_font_size_pt(heading_height, page_height),
+        1,
     )
 
     # Ensure heading is meaningfully larger than body
@@ -359,9 +372,7 @@ def infer_styles(
 
     # Header alignment: analyze blocks in top 15% of page
     if page_height > 0:
-        header_blocks = [
-            b for b in blocks if b.bbox.y < page_height * 0.15
-        ]
+        header_blocks = [b for b in blocks if b.bbox.y < page_height * 0.15]
         styles.header_alignment = _infer_alignment(header_blocks, page_width)
         styles.title_alignment = styles.header_alignment
 
@@ -369,7 +380,8 @@ def infer_styles(
     # that's wider than it is tall is likely a logo
     if page_height > 0 and page_width > 0:
         top_blocks = [
-            b for b in blocks
+            b
+            for b in blocks
             if b.bbox.y < page_height * 0.10 and b.bbox.width > b.bbox.height
         ]
         if top_blocks:
@@ -389,9 +401,11 @@ def infer_styles(
 # Layout inference
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class InferredLayout:
     """Layout structure inferred from OCR block positions."""
+
     section_order: list[str] = field(default_factory=list)
     parties_layout: str = "two-column"  # "two-column" | "stacked"
     totals_position: str = "right"  # "left" | "right" | "full-width"
@@ -458,7 +472,9 @@ def infer_layout(
 
     # Page orientation
     if page_width > 0 and page_height > 0:
-        layout.page_orientation = "landscape" if page_width > page_height else "portrait"
+        layout.page_orientation = (
+            "landscape" if page_width > page_height else "portrait"
+        )
 
     return layout
 
@@ -466,6 +482,7 @@ def infer_layout(
 # ---------------------------------------------------------------------------
 # Template generation
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TemplateDefinition:
@@ -475,6 +492,7 @@ class TemplateDefinition:
     @plugin/templates/types.ts. The JSON serialization of this dataclass
     can be deserialized directly by the enjoice template editor.
     """
+
     id: str
     name: str
     description: str
@@ -517,11 +535,13 @@ def _build_layout(
     """Build the layout dict matching enjoice's TemplateLayout."""
     sections = []
     for i, section_type in enumerate(inferred_layout.section_order):
-        sections.append({
-            "type": section_type,
-            "visible": True,
-            "order": i,
-        })
+        sections.append(
+            {
+                "type": section_type,
+                "visible": True,
+                "order": i,
+            }
+        )
 
     # Determine page size from dimensions
     # Standard sizes in points: Letter = 612x792, A4 = 595x842
@@ -678,7 +698,9 @@ def extract_template_from_ocr(ocr_result: OcrResult) -> TemplateDefinition:
     detected = [s for s in SECTION_TYPES if sections.get(s)]
     confidence = _compute_confidence(sections, ocr_result.blocks)
 
-    template_id = str(uuid.uuid4()) if hasattr(uuid, "uuid4") else f"tpl_{id(ocr_result)}"
+    template_id = (
+        str(uuid.uuid4()) if hasattr(uuid, "uuid4") else f"tpl_{id(ocr_result)}"
+    )
 
     return TemplateDefinition(
         id=template_id,

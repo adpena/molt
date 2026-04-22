@@ -30,7 +30,7 @@ TRANCHE_FILES = [
 ]
 
 INTRINSIC_GLOBALS_RE = re.compile(
-    r'require_intrinsic\([^)]*,\s*globals\(\)\s*\)', re.DOTALL
+    r"require_intrinsic\([^)]*,\s*globals\(\)\s*\)", re.DOTALL
 )
 
 

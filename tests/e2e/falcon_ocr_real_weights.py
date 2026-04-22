@@ -15,9 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import struct
-import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -111,7 +109,9 @@ def _read_safetensors_header(path: Path) -> dict:
             raise ValueError("Invalid safetensors file: too short for header size")
         header_size = struct.unpack("<Q", header_size_bytes)[0]
         if header_size > 100_000_000:
-            raise ValueError(f"Safetensors header size suspiciously large: {header_size}")
+            raise ValueError(
+                f"Safetensors header size suspiciously large: {header_size}"
+            )
         header_json = f.read(header_size)
         return json.loads(header_json)
 
@@ -144,8 +144,6 @@ def _load_tensor_from_safetensors(
         count = len(raw) // 4
         values = list(struct.unpack(f"<{count}f", raw))
     elif dtype_str == "F16":
-        import array as arr
-
         count = len(raw) // 2
         # Use struct to unpack f16 as u16, then convert
         u16_values = struct.unpack(f"<{count}H", raw)

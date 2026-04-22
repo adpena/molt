@@ -10,7 +10,9 @@ MODULE_PATH = ROOT / "tools" / "compile_progress.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("compile_progress_under_test", MODULE_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "compile_progress_under_test", MODULE_PATH
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)

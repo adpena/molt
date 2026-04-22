@@ -5,9 +5,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CODEOP_COMPILE = _require_intrinsic("molt_codeop_compile")
-_MOLT_CODEOP_COMPILE_COMMAND = _require_intrinsic(
-    "molt_codeop_compile_command"
-)
+_MOLT_CODEOP_COMPILE_COMMAND = _require_intrinsic("molt_codeop_compile_command")
 
 __all__ = ["compile_command", "Compile", "CommandCompiler"]
 
@@ -52,5 +50,6 @@ class CommandCompiler:
         )
         self.compiler.flags = next_flags
         return codeob
+
 
 globals().pop("_require_intrinsic", None)

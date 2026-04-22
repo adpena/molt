@@ -119,9 +119,7 @@ class TestDifferentialArithmetic:
         lines.append("print(p)")
         # Nested expressions
         vals = [str(rng.randint(-20, 20)) for _ in range(4)]
-        lines.append(
-            f"nested = ({vals[0]} + {vals[1]}) * ({vals[2]} - {vals[3]})"
-        )
+        lines.append(f"nested = ({vals[0]} + {vals[1]}) * ({vals[2]} - {vals[3]})")
         lines.append("print(nested)")
         return "\n".join(lines) + "\n"
 
@@ -192,9 +190,7 @@ class TestDifferentialDCE:
         source = self._make_program(seed)
         stdout, rc = _run_cpython(source)
         assert rc == 0, f"seed={seed} failed with rc={rc}"
-        assert "DEAD CODE REACHED" not in stdout, (
-            f"seed={seed}: dead code was executed"
-        )
+        assert "DEAD CODE REACHED" not in stdout, f"seed={seed}: dead code was executed"
 
     def test_dce_determinism(self) -> None:
         for seed in self.SEEDS:
@@ -322,9 +318,7 @@ class TestDifferentialLICM:
         for line in stdout.strip().splitlines():
             stripped = line.strip()
             if stripped in ("True", "False"):
-                assert stripped == "True", (
-                    f"seed={seed}: LICM invariant check failed"
-                )
+                assert stripped == "True", f"seed={seed}: LICM invariant check failed"
 
     def test_licm_determinism(self) -> None:
         for seed in self.SEEDS:

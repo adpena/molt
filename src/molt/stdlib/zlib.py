@@ -15,38 +15,30 @@ _MOLT_ZLIB_ADLER32 = _require_intrinsic("molt_zlib_adler32")
 
 # --- compressobj handle operations ---
 _MOLT_ZLIB_COMPRESSOBJ_NEW = _require_intrinsic("molt_zlib_compressobj_new")
-_MOLT_ZLIB_COMPRESSOBJ_COMPRESS = _require_intrinsic(
-    "molt_zlib_compressobj_compress")
-_MOLT_ZLIB_COMPRESSOBJ_FLUSH = _require_intrinsic(
-    "molt_zlib_compressobj_flush")
-_MOLT_ZLIB_COMPRESSOBJ_DROP = _require_intrinsic(
-    "molt_zlib_compressobj_drop")
+_MOLT_ZLIB_COMPRESSOBJ_COMPRESS = _require_intrinsic("molt_zlib_compressobj_compress")
+_MOLT_ZLIB_COMPRESSOBJ_FLUSH = _require_intrinsic("molt_zlib_compressobj_flush")
+_MOLT_ZLIB_COMPRESSOBJ_DROP = _require_intrinsic("molt_zlib_compressobj_drop")
 
 # --- decompressobj handle operations ---
-_MOLT_ZLIB_DECOMPRESSOBJ_NEW = _require_intrinsic(
-    "molt_zlib_decompressobj_new")
+_MOLT_ZLIB_DECOMPRESSOBJ_NEW = _require_intrinsic("molt_zlib_decompressobj_new")
 _MOLT_ZLIB_DECOMPRESSOBJ_DECOMPRESS = _require_intrinsic(
-    "molt_zlib_decompressobj_decompress")
-_MOLT_ZLIB_DECOMPRESSOBJ_FLUSH = _require_intrinsic(
-    "molt_zlib_decompressobj_flush")
-_MOLT_ZLIB_DECOMPRESSOBJ_DROP = _require_intrinsic(
-    "molt_zlib_decompressobj_drop")
-_MOLT_ZLIB_DECOMPRESSOBJ_EOF = _require_intrinsic(
-    "molt_zlib_decompressobj_eof")
+    "molt_zlib_decompressobj_decompress"
+)
+_MOLT_ZLIB_DECOMPRESSOBJ_FLUSH = _require_intrinsic("molt_zlib_decompressobj_flush")
+_MOLT_ZLIB_DECOMPRESSOBJ_DROP = _require_intrinsic("molt_zlib_decompressobj_drop")
+_MOLT_ZLIB_DECOMPRESSOBJ_EOF = _require_intrinsic("molt_zlib_decompressobj_eof")
 _MOLT_ZLIB_DECOMPRESSOBJ_UNCONSUMED_TAIL = _require_intrinsic(
-    "molt_zlib_decompressobj_unconsumed_tail")
+    "molt_zlib_decompressobj_unconsumed_tail"
+)
 
 # --- constants from Rust ---
 DEF_BUF_SIZE: int = _require_intrinsic("molt_zlib_def_buf_size")()
 DEF_MEM_LEVEL: int = _require_intrinsic("molt_zlib_def_mem_level")()
 MAX_WBITS: int = _require_intrinsic("molt_zlib_max_wbits")()
-Z_BEST_COMPRESSION: int = _require_intrinsic(
-    "molt_zlib_z_best_compression")()
+Z_BEST_COMPRESSION: int = _require_intrinsic("molt_zlib_z_best_compression")()
 Z_BEST_SPEED: int = _require_intrinsic("molt_zlib_z_best_speed")()
-Z_DEFAULT_COMPRESSION: int = _require_intrinsic(
-    "molt_zlib_z_default_compression")()
-Z_DEFAULT_STRATEGY: int = _require_intrinsic(
-    "molt_zlib_z_default_strategy")()
+Z_DEFAULT_COMPRESSION: int = _require_intrinsic("molt_zlib_z_default_compression")()
+Z_DEFAULT_STRATEGY: int = _require_intrinsic("molt_zlib_z_default_strategy")()
 Z_FILTERED: int = _require_intrinsic("molt_zlib_z_filtered")()
 Z_FINISH: int = _require_intrinsic("molt_zlib_z_finish")()
 Z_FULL_FLUSH: int = _require_intrinsic("molt_zlib_z_full_flush")()

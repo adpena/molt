@@ -63,7 +63,9 @@ def _seed_valid_repo(root: Path) -> None:
     )
     _write_file(root / "docs/BENCHMARKING.md", "# Benchmarking\n")
     _write_file(root / "docs/ROADMAP_90_DAYS.md", "# 90 Day Roadmap\n")
-    _write_file(root / "docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md", "# Proof Workflow\n")
+    _write_file(
+        root / "docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md", "# Proof Workflow\n"
+    )
     _write_file(root / "AGENTS.md", "# Agents\n")
 
 
@@ -132,7 +134,9 @@ def test_checker_flags_stale_readme_and_supported_contract_patterns(
 
     assert any("ROADMAP.md" in error and "Last updated:" in error for error in errors)
     assert any("Current Validation Note" in error for error in errors)
-    assert any("SUPPORTED.md" in error and "support contract" in error for error in errors)
+    assert any(
+        "SUPPORTED.md" in error and "support contract" in error for error in errors
+    )
     assert any("--update-readme" in error for error in errors)
 
 
@@ -153,8 +157,13 @@ def test_checker_flags_old_sync_language_in_agents_and_90_day_plan(
 
     errors = module.check_repo()
 
-    assert any("AGENTS.md" in error and "README and [ROADMAP.md]" in error for error in errors)
-    assert any("docs/ROADMAP_90_DAYS.md" in error and "stay aligned with both" in error for error in errors)
+    assert any(
+        "AGENTS.md" in error and "README and [ROADMAP.md]" in error for error in errors
+    )
+    assert any(
+        "docs/ROADMAP_90_DAYS.md" in error and "stay aligned with both" in error
+        for error in errors
+    )
 
 
 def test_checker_passes_for_valid_repo(

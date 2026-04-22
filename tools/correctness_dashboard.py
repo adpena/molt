@@ -83,7 +83,9 @@ def _count_sorrys_in_text(text: str) -> int:
     cleaned = text
     while prev != cleaned:
         prev = cleaned
-        cleaned = re.sub(r"/\-(?:(?!/\-)(?:(?!\-/).|\n))*?\-/", " ", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(
+            r"/\-(?:(?!/\-)(?:(?!\-/).|\n))*?\-/", " ", cleaned, flags=re.DOTALL
+        )
 
     # 2. Process line by line: strip line comments, then string literals.
     total = 0
@@ -172,10 +174,12 @@ def collect_quint_coverage() -> dict[str, Any]:
             continue
         # Look for invariant definitions: val Inv, def Inv, or --invariant=Inv
         has_inv = bool(re.search(r"\bInv\b", text))
-        models.append({
-            "file": qf.name,
-            "has_invariant": has_inv,
-        })
+        models.append(
+            {
+                "file": qf.name,
+                "has_invariant": has_inv,
+            }
+        )
 
     with_inv = sum(1 for m in models if m["has_invariant"])
 
@@ -253,7 +257,8 @@ def _count_effective_tests(text: str) -> int:
                     if isinstance(arg, (_ast.List, _ast.Tuple)):
                         param_count *= len(arg.elts)
             methods = sum(
-                1 for item in _ast.walk(node)
+                1
+                for item in _ast.walk(node)
                 if isinstance(item, _ast.FunctionDef) and item.name.startswith("test_")
             )
             count += methods * param_count
@@ -337,12 +342,28 @@ def collect_test_coverage() -> dict[str, Any]:
 # Classification heuristics for CI step names
 _GATE_CLASSIFIERS: list[tuple[str, list[str]]] = [
     ("formal", ["formal", "lean", "quint", "proof", "lake"]),
-    ("correctness", [
-        "diff", "translation", "deterministic", "determinism",
-        "reproducible", "correspondence", "verified", "ir-structure",
-        "property", "mutation", "fuzz", "model-based", "gate",
-        "molt-diff", "core-lane", "ir-probe", "coverage",
-    ]),
+    (
+        "correctness",
+        [
+            "diff",
+            "translation",
+            "deterministic",
+            "determinism",
+            "reproducible",
+            "correspondence",
+            "verified",
+            "ir-structure",
+            "property",
+            "mutation",
+            "fuzz",
+            "model-based",
+            "gate",
+            "molt-diff",
+            "core-lane",
+            "ir-probe",
+            "coverage",
+        ],
+    ),
     ("performance", ["perf", "bench", "throughput", "k6"]),
     ("security", ["secret", "audit", "capabilities", "trust"]),
 ]
@@ -372,9 +393,18 @@ def collect_ci_gates() -> dict[str, Any]:
 
     # Filter to actual verification steps (not setup/install/upload steps)
     setup_keywords = [
-        "install", "set up", "cache", "checkout", "upload",
-        "ensure clang", "ensure zig", "rust cache", "create extension",
-        "prepare external", "export external", "build extension",
+        "install",
+        "set up",
+        "cache",
+        "checkout",
+        "upload",
+        "ensure clang",
+        "ensure zig",
+        "rust cache",
+        "create extension",
+        "prepare external",
+        "export external",
+        "build extension",
     ]
     gates: list[dict[str, str]] = []
     for name in step_names:
@@ -496,13 +526,15 @@ def collect_proof_chain() -> list[dict[str, Any]]:
         elif status == "complete" and block_reason:
             detail = block_reason
 
-        chain.append({
-            "label": label,
-            "status": status,
-            "icon": icon,
-            "sorrys": max(total_sorrys, 0),
-            "detail": detail,
-        })
+        chain.append(
+            {
+                "label": label,
+                "status": status,
+                "icon": icon,
+                "sorrys": max(total_sorrys, 0),
+                "detail": detail,
+            }
+        )
 
     return chain
 
@@ -628,9 +660,11 @@ def build_json_output(
 # MOL-214: Delta protocol integration
 # ---------------------------------------------------------------------------
 
+
 def _import_sibling(module_name: str, filename: str) -> Any:
     """Import a sibling script from the tools/ directory, returning the module or None."""
     import importlib.util
+
     path = TOOLS / filename
     if not path.exists():
         return None
@@ -652,6 +686,7 @@ def _try_import_delta() -> Any:
     """Import the delta tracker, returning the class or None."""
     try:
         from tools.dashboard_delta import DeltaTracker
+
         return DeltaTracker
     except ImportError:
         mod = _import_sibling("dashboard_delta", "dashboard_delta.py")
@@ -662,6 +697,7 @@ def _try_import_slo() -> Any:
     """Import the specialization SLO evaluator, returning the class or None."""
     try:
         from tools.specialization_slo import SpecializationSLO
+
         return SpecializationSLO
     except ImportError:
         mod = _import_sibling("specialization_slo", "specialization_slo.py")
@@ -688,7 +724,9 @@ def flatten_dashboard_state(
     flat["quint_with_invariants"] = quint.get("with_invariants", 0)
     # Tests
     diff = tests.get("differential", {})
-    flat["test_differential_total"] = diff.get("total", 0) if isinstance(diff, dict) else 0
+    flat["test_differential_total"] = (
+        diff.get("total", 0) if isinstance(diff, dict) else 0
+    )
     flat["test_property_funcs"] = tests.get("property_based", 0)
     flat["test_mutation_operators"] = tests.get("mutation_operators", 0)
     flat["test_fuzz_targets"] = tests.get("fuzz_targets", 0)

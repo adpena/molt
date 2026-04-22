@@ -121,4 +121,5 @@ class ContentTooShortError(URLError):
     def __init__(self, msg: object, content: object) -> None:
         _MOLT_CONTENT_TOO_SHORT_INIT(self, msg, content)
 
+
 globals().pop("_require_intrinsic", None)

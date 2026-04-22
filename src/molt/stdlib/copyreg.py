@@ -24,17 +24,11 @@ _MOLT_COPYREG_BOOTSTRAP = _require_intrinsic("molt_copyreg_bootstrap")
 _MOLT_COPYREG_PICKLE = _require_intrinsic("molt_copyreg_pickle")
 _MOLT_COPYREG_NEWOBJ = _require_intrinsic("molt_copyreg_newobj")
 _MOLT_COPYREG_NEWOBJ_EX = _require_intrinsic("molt_copyreg_newobj_ex")
-_MOLT_COPYREG_RECONSTRUCTOR = _require_intrinsic(
-    "molt_copyreg_reconstructor"
-)
+_MOLT_COPYREG_RECONSTRUCTOR = _require_intrinsic("molt_copyreg_reconstructor")
 _MOLT_COPYREG_REDUCE_EX = _require_intrinsic("molt_copyreg_reduce_ex")
 _MOLT_COPYREG_CONSTRUCTOR = _require_intrinsic("molt_copyreg_constructor")
-_MOLT_COPYREG_ADD_EXTENSION = _require_intrinsic(
-    "molt_copyreg_add_extension"
-)
-_MOLT_COPYREG_REMOVE_EXTENSION = _require_intrinsic(
-    "molt_copyreg_remove_extension"
-)
+_MOLT_COPYREG_ADD_EXTENSION = _require_intrinsic("molt_copyreg_add_extension")
+_MOLT_COPYREG_REMOVE_EXTENSION = _require_intrinsic("molt_copyreg_remove_extension")
 _MOLT_COPYREG_CLEAR_EXTENSION_CACHE = _require_intrinsic(
     "molt_copyreg_clear_extension_cache"
 )

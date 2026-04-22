@@ -134,7 +134,6 @@ def test_stdlib_intrinsics_registry_alone_does_not_activate_runtime(
     assert loader.runtime_active() is False
 
 
-
 def test_stdlib_intrinsics_uses_builtins_runtime_lookup_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

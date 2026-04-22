@@ -5,6 +5,7 @@ and https://github.com/paiml/depyler/blob/main/examples/algorithms/binary_search
 Measures: loop-based searching, integer comparison, array access.
 """
 
+
 def binary_search(arr: list[int], target: int) -> int:
     left: int = 0
     right: int = len(arr) - 1

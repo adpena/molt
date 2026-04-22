@@ -1,8 +1,10 @@
 """Tests for the @molt.proto decorator."""
+
 import sys
+
 sys.path.insert(0, "src")
 
-from molt.proto import message, field, FieldDef, MessageMeta
+from molt.proto import message, field, FieldDef
 
 
 @message("test.Simple")
@@ -60,10 +62,12 @@ def test_field_number_validation():
 
 def test_duplicate_field_numbers():
     try:
+
         @message("test.Bad")
         class Bad:
             a: int = field(1)
             b: int = field(1)  # duplicate!
+
         assert False, "should have raised"
     except ValueError as e:
         assert "duplicate" in str(e)

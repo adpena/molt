@@ -71,7 +71,9 @@ def _normalize_from_pins(pins: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compare_lists(left: list[dict[str, Any]], right: list[dict[str, Any]], key: str) -> list[str]:
+def _compare_lists(
+    left: list[dict[str, Any]], right: list[dict[str, Any]], key: str
+) -> list[str]:
     left_ids = [item[key] for item in left]
     right_ids = [item[key] for item in right]
     if left_ids != right_ids:
@@ -80,7 +82,9 @@ def _compare_lists(left: list[dict[str, Any]], right: list[dict[str, Any]], key:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Compare the reference manifest with pins.")
+    parser = argparse.ArgumentParser(
+        description="Compare the reference manifest with pins."
+    )
     parser.add_argument("--pins", type=Path, default=DEFAULT_PINS)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--json", action="store_true", help="emit JSON summary")

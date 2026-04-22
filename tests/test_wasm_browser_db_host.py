@@ -95,12 +95,7 @@ def test_browser_host_direct_mode_bridges_isolate_import(tmp_path: Path) -> None
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_host_direct.py"
     src.write_text(
-        "import asyncio\n"
-        "\n"
-        "async def main():\n"
-        "    print('ok')\n"
-        "\n"
-        "asyncio.run(main())\n"
+        "import asyncio\n\nasync def main():\n    print('ok')\n\nasyncio.run(main())\n"
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -195,8 +190,7 @@ def test_browser_host_direct_mode_run_bootstraps_split_runtime_once(
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_host_bootstrap_once.py"
     src.write_text(
-        "import abc\n"
-        "print('after')\n",
+        "import abc\nprint('after')\n",
         encoding="utf-8",
     )
 
@@ -281,6 +275,8 @@ host.run();
         assert lines == ["after"]
     finally:
         server.shutdown()
+
+
 def test_browser_host_direct_mode_import_stat_constants(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser host direct-mode isolate test")
@@ -721,10 +717,7 @@ def test_browser_host_direct_mode_import_asyncio_iov_max(tmp_path: Path) -> None
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_host_asyncio_iov.py"
-    src.write_text(
-        "import asyncio\n"
-        "print(asyncio.selector_events.SC_IOV_MAX)\n"
-    )
+    src.write_text("import asyncio\nprint(asyncio.selector_events.SC_IOV_MAX)\n")
 
     build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
@@ -801,7 +794,9 @@ host.run();
             text=True,
         )
         assert run.returncode == 0, run.stderr
-        assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["1024"]
+        assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+            "1024"
+        ]
     finally:
         server.shutdown()
 
@@ -814,10 +809,7 @@ def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_os_name.py"
-    src.write_text(
-        "import os\n"
-        "print(os.name)\n"
-    )
+    src.write_text("import os\nprint(os.name)\n")
 
     build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
@@ -859,7 +851,9 @@ def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
         text=True,
     )
     assert run.returncode == 0, run.stderr
-    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["posix"]
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+        "posix"
+    ]
 
 
 def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
@@ -1068,9 +1062,7 @@ def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_enumerate.py"
-    src.write_text(
-        "print(list(enumerate(('a', 'b'))))\n"
-    )
+    src.write_text("print(list(enumerate(('a', 'b'))))\n")
 
     build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
@@ -1126,11 +1118,7 @@ def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_dict_get.py"
-    src.write_text(
-        "d = {'a': 3}\n"
-        "print(d.get('a', 2))\n"
-        "print(d.get('b', 2))\n"
-    )
+    src.write_text("d = {'a': 3}\nprint(d.get('a', 2))\nprint(d.get('b', 2))\n")
 
     build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
@@ -1238,7 +1226,9 @@ def test_browser_direct_run_wasm_tuple_subclass_custom_repr(tmp_path: Path) -> N
         timeout=20,
     )
     assert run.returncode == 0, run.stderr
-    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["T(1, 2)"]
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+        "T(1, 2)"
+    ]
 
 
 def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> None:
@@ -1250,12 +1240,7 @@ def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_try_except.py"
     src.write_text(
-        "fn = None\n"
-        "try:\n"
-        "    fn()\n"
-        "except Exception:\n"
-        "    pass\n"
-        "print('ok')\n"
+        "fn = None\ntry:\n    fn()\nexcept Exception:\n    pass\nprint('ok')\n"
     )
 
     build_env = os.environ.copy()
@@ -1314,14 +1299,7 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_bare_except.py"
-    src.write_text(
-        "fn = None\n"
-        "try:\n"
-        "    fn()\n"
-        "except:\n"
-        "    pass\n"
-        "print('ok')\n"
-    )
+    src.write_text("fn = None\ntry:\n    fn()\nexcept:\n    pass\nprint('ok')\n")
 
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
@@ -1481,10 +1459,10 @@ def test_browser_host_default_urls_prefer_canonical_dist_and_explicit_sibling(
         f"""
 import {{ resolveMoltWasmUrls }} from '{browser_host_uri}';
 
-const canonical = resolveMoltWasmUrls({{}}, {repr((root / 'wasm' / 'browser_host.js').as_uri())});
+const canonical = resolveMoltWasmUrls({{}}, {repr((root / "wasm" / "browser_host.js").as_uri())});
 const explicit = resolveMoltWasmUrls({{
   wasmUrl: 'https://example.com/build/output.wasm',
-}}, {repr((root / 'wasm' / 'browser_host.js').as_uri())});
+}}, {repr((root / "wasm" / "browser_host.js").as_uri())});
 
 console.log(JSON.stringify({{ canonical, explicit }}));
 """.lstrip()

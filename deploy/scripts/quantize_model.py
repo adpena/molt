@@ -19,6 +19,7 @@ INT4 packing: two 4-bit signed values packed per byte, low nibble first.
 Usage:
   python3 deploy/scripts/quantize_model.py [--bits 8|4] [--output-dir DIR]
 """
+
 import struct
 import json
 import os
@@ -47,10 +48,10 @@ KEEP_F32_PATTERNS = ["norm.weight", "sinks", "freqs_cis"]
 #   - Feed-forward layers (w13, w2) are the bulk of parameters and tolerate
 #     INT8 quantization with < 0.5% accuracy loss.
 MIXED_PRECISION_F32_PATTERNS = [
-    "img_projector.weight",      # Image embedding — first layer, critical
-    "tok_embeddings.weight",     # Token embedding — critical for output quality
-    "output.weight",             # Output projection — critical for predictions
-    "attention.wqkv.weight",     # Q/K/V projections — attention is sensitive
+    "img_projector.weight",  # Image embedding — first layer, critical
+    "tok_embeddings.weight",  # Token embedding — critical for output quality
+    "output.weight",  # Output projection — critical for predictions
+    "attention.wqkv.weight",  # Q/K/V projections — attention is sensitive
 ]
 
 
@@ -171,15 +172,29 @@ def write_safetensors(path, tensors_ordered):
 
 def main():
     parser = argparse.ArgumentParser(description="Quantize Falcon-OCR model")
-    parser.add_argument("--bits", type=int, choices=[4, 8], default=8,
-                        help="Quantization bits (default: 8)")
-    parser.add_argument("--output-dir", type=str, default=None,
-                        help="Output directory (default: ~/.cache/molt/falcon-ocr/quantized-intN)")
-    parser.add_argument("--model-dir", type=str, default=SNAP,
-                        help="Source model directory")
-    parser.add_argument("--mixed-precision", action="store_true", default=False,
-                        help="Keep attention Q/K/V and embedding layers as F32 "
-                             "(best quality within memory constraints)")
+    parser.add_argument(
+        "--bits",
+        type=int,
+        choices=[4, 8],
+        default=8,
+        help="Quantization bits (default: 8)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: ~/.cache/molt/falcon-ocr/quantized-intN)",
+    )
+    parser.add_argument(
+        "--model-dir", type=str, default=SNAP, help="Source model directory"
+    )
+    parser.add_argument(
+        "--mixed-precision",
+        action="store_true",
+        default=False,
+        help="Keep attention Q/K/V and embedding layers as F32 "
+        "(best quality within memory constraints)",
+    )
     args = parser.parse_args()
 
     bits = args.bits
@@ -243,22 +258,31 @@ def main():
         q_data, scale = quantize_fn(name, floats)
         scales[name] = scale
 
-        q_tensors.append((name, {
-            "shape": t["shape"],
-            "dtype": dtype_tag,
-            "data": q_data,
-        }))
+        q_tensors.append(
+            (
+                name,
+                {
+                    "shape": t["shape"],
+                    "dtype": dtype_tag,
+                    "data": q_data,
+                },
+            )
+        )
         total_quantized += len(q_data)
         quantized_count += 1
         ratio = len(q_data) / original_bytes * 100
-        print(f"  [INT{bits}] {name}: {t['shape']} "
-              f"({original_bytes:,} -> {len(q_data):,} bytes, {ratio:.0f}%)")
+        print(
+            f"  [INT{bits}] {name}: {t['shape']} "
+            f"({original_bytes:,} -> {len(q_data):,} bytes, {ratio:.0f}%)"
+        )
 
     print()
     print(f"Quantized {quantized_count} tensors, kept {kept_count} as F32")
     print(f"Original: {total_original / 1024**2:.1f} MB")
-    print(f"Quantized: {total_quantized / 1024**2:.1f} MB "
-          f"({total_quantized / total_original * 100:.1f}%)")
+    print(
+        f"Quantized: {total_quantized / 1024**2:.1f} MB "
+        f"({total_quantized / total_original * 100:.1f}%)"
+    )
 
     # Write quantized safetensors
     out_path = os.path.join(output_dir, "model.safetensors")
@@ -277,6 +301,7 @@ def main():
     # Copy config
     if os.path.exists(config_path):
         import shutil
+
         out_config = os.path.join(output_dir, "config.json")
         shutil.copy2(config_path, out_config)
         print(f"Copied {out_config}")

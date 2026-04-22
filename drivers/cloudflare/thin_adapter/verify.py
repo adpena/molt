@@ -66,10 +66,15 @@ def validate_bundle_contract(
         manifest_asset,
         worker_entrypoint,
     ]
-    missing = [str(path.relative_to(bundle_root)) for path in required_assets if not path.exists()]
+    missing = [
+        str(path.relative_to(bundle_root))
+        for path in required_assets
+        if not path.exists()
+    ]
     if missing:
         raise RuntimeError(
-            "Cloudflare thin-adapter bundle contract is incomplete: " + ", ".join(sorted(missing))
+            "Cloudflare thin-adapter bundle contract is incomplete: "
+            + ", ".join(sorted(missing))
         )
 
     config = json.loads(wrangler_config.read_text(encoding="utf-8"))
@@ -77,18 +82,25 @@ def validate_bundle_contract(
     if not isinstance(assets, dict):
         raise RuntimeError("Cloudflare wrangler config must include an assets section")
     if assets.get("directory") != "./assets":
-        raise RuntimeError("Cloudflare wrangler config assets.directory must be './assets'")
+        raise RuntimeError(
+            "Cloudflare wrangler config assets.directory must be './assets'"
+        )
     if assets.get("binding") != "ASSETS":
         raise RuntimeError("Cloudflare wrangler config assets.binding must be 'ASSETS'")
     run_worker_first = assets.get("run_worker_first")
-    if not isinstance(run_worker_first, list) or "/driver-manifest.json" not in run_worker_first:
+    if (
+        not isinstance(run_worker_first, list)
+        or "/driver-manifest.json" not in run_worker_first
+    ):
         raise RuntimeError(
             "Cloudflare wrangler config assets.run_worker_first must include '/driver-manifest.json'"
         )
 
     manifest = json.loads(manifest_asset.read_text(encoding="utf-8"))
     if manifest.get("target") != "falcon.browser_webgpu":
-        raise RuntimeError("Cloudflare thin-adapter manifest target must be 'falcon.browser_webgpu'")
+        raise RuntimeError(
+            "Cloudflare thin-adapter manifest target must be 'falcon.browser_webgpu'"
+        )
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
         raise RuntimeError("Cloudflare thin-adapter manifest is missing artifacts")

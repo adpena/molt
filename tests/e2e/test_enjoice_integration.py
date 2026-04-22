@@ -8,12 +8,8 @@ matches what the TypeScript code expects.
 import os
 import re
 
-DEPLOY_ENJOICE = os.path.join(
-    os.path.dirname(__file__), "../../deploy/enjoice"
-)
-DEPLOY_CLOUDFLARE = os.path.join(
-    os.path.dirname(__file__), "../../deploy/cloudflare"
-)
+DEPLOY_ENJOICE = os.path.join(os.path.dirname(__file__), "../../deploy/enjoice")
+DEPLOY_CLOUDFLARE = os.path.join(os.path.dirname(__file__), "../../deploy/cloudflare")
 
 
 def _strip_ts_comments_and_strings(content: str) -> str:
@@ -29,6 +25,7 @@ def _strip_ts_comments_and_strings(content: str) -> str:
 # -------------------------------------------------------------------------
 # Test 1: TypeScript files are syntactically valid
 # -------------------------------------------------------------------------
+
 
 def test_typescript_files_syntactically_valid():
     """All TypeScript files in deploy/enjoice/ parse without syntax errors.
@@ -148,14 +145,13 @@ def test_typescript_files_have_jsdoc():
         # Check for module-level doc comment (/** ... */ or // at top).
         first_200 = content[:200]
         has_doc = "/**" in first_200 or first_200.lstrip().startswith("//")
-        assert has_doc, (
-            f"{ts_file}: missing module-level documentation"
-        )
+        assert has_doc, f"{ts_file}: missing module-level documentation"
 
 
 # -------------------------------------------------------------------------
 # Test 2: Integration PR document is complete
 # -------------------------------------------------------------------------
+
 
 def test_integration_pr_document_complete():
     """INTEGRATION_PR.md has all required sections."""
@@ -188,14 +184,13 @@ def test_integration_pr_document_complete():
         "capabilities-update.ts",
     ]
     for ts_file in ts_files:
-        assert ts_file in content, (
-            f"INTEGRATION_PR.md does not reference {ts_file}"
-        )
+        assert ts_file in content, f"INTEGRATION_PR.md does not reference {ts_file}"
 
 
 # -------------------------------------------------------------------------
 # Test 3: Worker API contract matches TypeScript expectations
 # -------------------------------------------------------------------------
+
 
 def test_worker_api_contract_matches_typescript():
     """The Worker's API endpoints match what the TypeScript code expects.
@@ -217,9 +212,9 @@ def test_worker_api_contract_matches_typescript():
     # The TypeScript expects these endpoints.
     expected_endpoints = ["/ocr", "/health"]
     for endpoint in expected_endpoints:
-        assert f'"{endpoint}"' in combined_worker or f"'{endpoint}'" in combined_worker, (
-            f"Worker missing endpoint {endpoint} expected by TypeScript"
-        )
+        assert (
+            f'"{endpoint}"' in combined_worker or f"'{endpoint}'" in combined_worker
+        ), f"Worker missing endpoint {endpoint} expected by TypeScript"
 
     # Verify CORS headers include the expected headers.
     assert "Content-Type" in worker_content, (
@@ -271,9 +266,7 @@ def test_ocr_result_schema_compatible():
     # Core fields that must be in the response.
     core_fields = {"text", "confidence", "time_ms"}
     for field in core_fields:
-        assert field in combined, (
-            f"Worker OCR response missing core field: {field}"
-        )
+        assert field in combined, f"Worker OCR response missing core field: {field}"
 
 
 def test_backend_status_schema():

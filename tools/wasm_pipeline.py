@@ -66,35 +66,48 @@ def _ensure_repo_pythonpath() -> None:
     else:
         os.environ["PYTHONPATH"] = src
 
+
 # Benchmark programs (relative to MOLT_ROOT)
 BENCHMARK_PROGRAMS = [
     ("hello", 'print("hello world")'),
-    ("fib", """\
+    (
+        "fib",
+        """\
 def fib(n):
     if n < 2:
         return n
     return fib(n - 1) + fib(n - 2)
 
 print(fib(20))
-"""),
-    ("sum_range", """\
+""",
+    ),
+    (
+        "sum_range",
+        """\
 total = 0
 for i in range(1000):
     total += i
 print(total)
-"""),
-    ("list_ops", """\
+""",
+    ),
+    (
+        "list_ops",
+        """\
 xs = list(range(100))
 xs.reverse()
 print(sum(xs))
-"""),
-    ("nested_loop", """\
+""",
+    ),
+    (
+        "nested_loop",
+        """\
 total = 0
 for i in range(50):
     for j in range(50):
         total += i * j
 print(total)
-"""),
+""",
+    ),
 ]
 
 
@@ -152,9 +165,7 @@ class PipelineResult:
             first_size = next(iter(sizes.values()))
             last_size = list(sizes.values())[-1]
             if first_size > 0:
-                d["total_reduction_pct"] = round(
-                    (1 - last_size / first_size) * 100, 1
-                )
+                d["total_reduction_pct"] = round((1 - last_size / first_size) * 100, 1)
         d["sizes"] = sizes
         return d
 
@@ -198,9 +209,12 @@ def stage_compile(
     t0 = time.monotonic()
     cmd = _molt_build_cmd() + [
         str(source),
-        "--emit", "wasm",
-        "--target", "wasm",
-        "--out-dir", str(out_dir),
+        "--emit",
+        "wasm",
+        "--target",
+        "wasm",
+        "--out-dir",
+        str(out_dir),
     ]
 
     env = os.environ.copy()
@@ -292,9 +306,12 @@ def stage_link(
         [
             sys.executable,
             str(link_tool),
-            "--runtime", str(runtime),
-            "--input", str(input_wasm),
-            "--output", str(output_wasm),
+            "--runtime",
+            str(runtime),
+            "--input",
+            str(input_wasm),
+            "--output",
+            str(output_wasm),
         ],
         capture_output=True,
         text=True,
@@ -357,16 +374,24 @@ def stage_optimize(
     t0 = time.monotonic()
     proc = subprocess.run(
         [
-            wasm_opt, f"-{level}",
+            wasm_opt,
+            f"-{level}",
             # Explicit features — avoid --all-features which enables
             # --enable-custom-descriptors, causing `exact` heap types
             # that Cloudflare Workers' V8 rejects.
-            "--enable-bulk-memory", "--enable-mutable-globals",
-            "--enable-sign-ext", "--enable-nontrapping-float-to-int",
-            "--enable-simd", "--enable-multivalue",
-            "--enable-reference-types", "--enable-gc", "--enable-tail-call",
+            "--enable-bulk-memory",
+            "--enable-mutable-globals",
+            "--enable-sign-ext",
+            "--enable-nontrapping-float-to-int",
+            "--enable-simd",
+            "--enable-multivalue",
+            "--enable-reference-types",
+            "--enable-gc",
+            "--enable-tail-call",
             "--disable-custom-descriptors",
-            str(input_wasm), "-o", str(output_wasm),
+            str(input_wasm),
+            "-o",
+            str(output_wasm),
         ],
         capture_output=True,
         text=True,
@@ -506,9 +531,9 @@ def run_benchmark_suite(
             src_path.write_text(code)
 
             if not json_output:
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"  Benchmark: {name}")
-                print(f"{'='*60}")
+                print(f"{'=' * 60}")
 
             result = run_pipeline(
                 src_path,
@@ -559,20 +584,26 @@ def _print_pipeline_report(result: PipelineResult) -> None:
     sizes = [s.size_bytes for s in result.stages if s.ok and s.size_bytes > 0]
     if len(sizes) >= 2:
         reduction = (1 - sizes[-1] / sizes[0]) * 100
-        print(f"  Total reduction: {reduction:.1f}% ({_fmt_size(sizes[0])} -> {_fmt_size(sizes[-1])})")
+        print(
+            f"  Total reduction: {reduction:.1f}% ({_fmt_size(sizes[0])} -> {_fmt_size(sizes[-1])})"
+        )
 
     if result.run_ok is not None:
         status = "OK" if result.run_ok else "FAIL"
-        print(f"  [{'OK' if result.run_ok else 'FAIL':>4s}] run           {result.run_output[:80]}")
+        print(
+            f"  [{'OK' if result.run_ok else 'FAIL':>4s}] run           {result.run_output[:80]}"
+        )
 
 
 def _print_comparison_table(results: list[PipelineResult]) -> None:
     """Print a comparison table across all benchmark programs."""
-    print(f"\n{'='*72}")
+    print(f"\n{'=' * 72}")
     print("  BENCHMARK COMPARISON")
-    print(f"{'='*72}")
-    print(f"  {'Program':<16s} {'Compiled':>12s} {'Linked':>12s} {'Optimized':>12s} {'Reduction':>10s}")
-    print(f"  {'-'*16} {'-'*12} {'-'*12} {'-'*12} {'-'*10}")
+    print(f"{'=' * 72}")
+    print(
+        f"  {'Program':<16s} {'Compiled':>12s} {'Linked':>12s} {'Optimized':>12s} {'Reduction':>10s}"
+    )
+    print(f"  {'-' * 16} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 10}")
 
     for result in results:
         name = Path(result.source).stem
@@ -592,7 +623,9 @@ def _print_comparison_table(results: list[PipelineResult]) -> None:
         else:
             reduction = "—"
 
-        print(f"  {name:<16s} {compiled:>12s} {linked:>12s} {optimized:>12s} {reduction:>10s}")
+        print(
+            f"  {name:<16s} {compiled:>12s} {linked:>12s} {optimized:>12s} {reduction:>10s}"
+        )
 
     print()
 

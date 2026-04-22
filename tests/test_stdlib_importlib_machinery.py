@@ -62,7 +62,9 @@ def _load_machinery_module():
         registry = {}
         builtins._molt_intrinsics = registry
 
-    _noop = lambda *a, **kw: None
+    def _noop(*_args, **_kwargs):
+        return None
+
     for name in _MACHINERY_INTRINSICS:
         registry.setdefault(name, _noop)
     registry["molt_importlib_coerce_module_name"] = _coerce_stub

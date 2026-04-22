@@ -97,9 +97,7 @@ def test_snapshot_rejects_abi_mismatch():
         "init_state_size": 0,
     }
     expected_abi = "0.2.0"
-    assert header["abi_version"] != expected_abi, (
-        "Stale snapshot: ABI version mismatch"
-    )
+    assert header["abi_version"] != expected_abi, "Stale snapshot: ABI version mismatch"
 
 
 def test_snapshot_round_trip(tmp_path):

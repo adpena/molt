@@ -43,7 +43,9 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
     build_env["MOLT_SESSION_ID"] = "test-browser-turboquant-webgpu"
-    build_env["CARGO_TARGET_DIR"] = str(root / "target" / "test-browser-turboquant-webgpu")
+    build_env["CARGO_TARGET_DIR"] = str(
+        root / "target" / "test-browser-turboquant-webgpu"
+    )
     build_env["MOLT_DIFF_CARGO_TARGET_DIR"] = build_env["CARGO_TARGET_DIR"]
     build_env["MOLT_CACHE"] = str(root / ".molt_cache")
     build_env["MOLT_DIFF_ROOT"] = str(root / "tmp" / "diff")
@@ -1316,7 +1318,9 @@ console.log(JSON.stringify(fakeState));
         assert run.returncode == 0, run.stderr
         lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
         values = json.loads(lines[0])
-        assert values[0][0][0] == pytest.approx([0.019662416654559325, 0.2214766675114854])
+        assert values[0][0][0] == pytest.approx(
+            [0.019662416654559325, 0.2214766675114854]
+        )
         assert json.loads(lines[1]) == {"dispatchCount": 1}
     finally:
         server.shutdown()

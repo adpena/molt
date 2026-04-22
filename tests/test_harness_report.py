@@ -53,9 +53,13 @@ def test_harness_report_with_failure():
 def test_harness_report_to_json():
     results = [
         LayerResult(name="syntax", status=LayerStatus.PASS, duration_s=0.3),
-        LayerResult(name="wasm_link", status=LayerStatus.FAIL, duration_s=0.7, details="bad"),
+        LayerResult(
+            name="wasm_link", status=LayerStatus.FAIL, duration_s=0.7, details="bad"
+        ),
     ]
-    report = HarnessReport(profile="dev", results=results, timestamp="2026-03-28T00:00:00")
+    report = HarnessReport(
+        profile="dev", results=results, timestamp="2026-03-28T00:00:00"
+    )
     raw = report.to_json()
     data = json.loads(raw)
     assert data["profile"] == "dev"
@@ -74,7 +78,9 @@ def test_harness_report_to_json():
 def test_harness_report_console_table():
     results = [
         LayerResult(name="syntax", status=LayerStatus.PASS, duration_s=0.3),
-        LayerResult(name="wasm_link", status=LayerStatus.FAIL, duration_s=1.234, details="oops"),
+        LayerResult(
+            name="wasm_link", status=LayerStatus.FAIL, duration_s=1.234, details="oops"
+        ),
     ]
     report = HarnessReport(profile="ci", results=results)
     table = report.to_console_table()
@@ -95,7 +101,9 @@ def test_harness_report_metrics():
         metrics=metrics,
     )
     results = [r]
-    report = HarnessReport(profile="ci", results=results, timestamp="2026-03-28T00:00:00")
+    report = HarnessReport(
+        profile="ci", results=results, timestamp="2026-03-28T00:00:00"
+    )
     data = json.loads(report.to_json())
     assert data["results"][0]["metrics"]["wasm_size_kb"] == 1024
     assert data["results"][0]["metrics"]["import_count"] == 42
@@ -108,12 +116,23 @@ def test_baseline_empty():
 
 
 def test_baseline_from_report():
-    report = HarnessReport(profile="deep", results=[
-        LayerResult(name="unit-rust", status=LayerStatus.PASS, duration_s=4.0,
-                    metrics={"test_count": 40}),
-        LayerResult(name="bench", status=LayerStatus.PASS, duration_s=60.0,
-                    metrics={"fib_30_ns": 12345, "binary_size_bytes": 4096}),
-    ])
+    report = HarnessReport(
+        profile="deep",
+        results=[
+            LayerResult(
+                name="unit-rust",
+                status=LayerStatus.PASS,
+                duration_s=4.0,
+                metrics={"test_count": 40},
+            ),
+            LayerResult(
+                name="bench",
+                status=LayerStatus.PASS,
+                duration_s=60.0,
+                metrics={"fib_30_ns": 12345, "binary_size_bytes": 4096},
+            ),
+        ],
+    )
     b = Baseline.from_report(report)
     assert b.test_counts["unit-rust"] == 40
     assert b.metrics["fib_30_ns"] == 12345
@@ -121,12 +140,23 @@ def test_baseline_from_report():
 
 def test_baseline_ratchet_raises_floor():
     old = Baseline(test_counts={"unit-rust": 30}, metrics={"fib_30_ns": 15000})
-    new_report = HarnessReport(profile="deep", results=[
-        LayerResult(name="unit-rust", status=LayerStatus.PASS, duration_s=4.0,
-                    metrics={"test_count": 40}),
-        LayerResult(name="bench", status=LayerStatus.PASS, duration_s=60.0,
-                    metrics={"fib_30_ns": 12000}),
-    ])
+    new_report = HarnessReport(
+        profile="deep",
+        results=[
+            LayerResult(
+                name="unit-rust",
+                status=LayerStatus.PASS,
+                duration_s=4.0,
+                metrics={"test_count": 40},
+            ),
+            LayerResult(
+                name="bench",
+                status=LayerStatus.PASS,
+                duration_s=60.0,
+                metrics={"fib_30_ns": 12000},
+            ),
+        ],
+    )
     updated = old.ratchet(new_report)
     assert updated.test_counts["unit-rust"] == 40
     assert updated.metrics["fib_30_ns"] == 12000
@@ -134,12 +164,23 @@ def test_baseline_ratchet_raises_floor():
 
 def test_baseline_ratchet_never_lowers():
     old = Baseline(test_counts={"unit-rust": 40}, metrics={"fib_30_ns": 10000})
-    worse_report = HarnessReport(profile="deep", results=[
-        LayerResult(name="unit-rust", status=LayerStatus.PASS, duration_s=4.0,
-                    metrics={"test_count": 35}),
-        LayerResult(name="bench", status=LayerStatus.PASS, duration_s=60.0,
-                    metrics={"fib_30_ns": 15000}),
-    ])
+    worse_report = HarnessReport(
+        profile="deep",
+        results=[
+            LayerResult(
+                name="unit-rust",
+                status=LayerStatus.PASS,
+                duration_s=4.0,
+                metrics={"test_count": 35},
+            ),
+            LayerResult(
+                name="bench",
+                status=LayerStatus.PASS,
+                duration_s=60.0,
+                metrics={"fib_30_ns": 15000},
+            ),
+        ],
+    )
     updated = old.ratchet(worse_report)
     assert updated.test_counts["unit-rust"] == 40
     assert updated.metrics["fib_30_ns"] == 10000
@@ -147,10 +188,17 @@ def test_baseline_ratchet_never_lowers():
 
 def test_baseline_check_violations():
     baseline = Baseline(test_counts={"unit-rust": 40}, metrics={"fib_30_ns": 10000})
-    report = HarnessReport(profile="deep", results=[
-        LayerResult(name="unit-rust", status=LayerStatus.PASS, duration_s=4.0,
-                    metrics={"test_count": 38}),
-    ])
+    report = HarnessReport(
+        profile="deep",
+        results=[
+            LayerResult(
+                name="unit-rust",
+                status=LayerStatus.PASS,
+                duration_s=4.0,
+                metrics={"test_count": 38},
+            ),
+        ],
+    )
     violations = baseline.check(report)
     assert len(violations) == 1
     assert "unit-rust" in violations[0]

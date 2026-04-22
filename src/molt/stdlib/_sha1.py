@@ -15,7 +15,13 @@ _GIL_MINSIZE = 2048
 
 class sha1(_hashlib._Hash):
     def __init__(self, data: Any = b"", *, usedforsecurity: bool = True) -> None:
-        super().__init__("sha1", data, _hashlib._validate_options("sha1", {"usedforsecurity": usedforsecurity}, "sha1"))
+        super().__init__(
+            "sha1",
+            data,
+            _hashlib._validate_options(
+                "sha1", {"usedforsecurity": usedforsecurity}, "sha1"
+            ),
+        )
 
 
 SHA1Type = sha1

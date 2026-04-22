@@ -82,7 +82,11 @@ def test_legacy_private_stub_surfaces_hide_capability_anchor() -> None:
         capture_output=True,
         check=True,
     )
-    rows = [line.split("|")[1:] for line in proc.stdout.splitlines() if line.startswith("ROW|")]
+    rows = [
+        line.split("|")[1:]
+        for line in proc.stdout.splitlines()
+        if line.startswith("ROW|")
+    ]
     assert rows == [
         ["molt_test__cgi", "True", "True", "True"],
         ["molt_test__cgitb", "True", "True", "True"],

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import math
 from tinygrad.tensor import Tensor
-from tinygrad.dtypes import dtypes
 
 # Remez-optimal atan(x) polynomial coefficients for |x| <= 1
 # 7th-order minimax approximation (max error < 1e-6 on [-1, 1])
@@ -180,7 +179,9 @@ def qjl_error_correction(
 
     # Random projection matrix (fixed seed for reproducibility)
     d = error.numel()
-    proj = Tensor.rand(d, n_projections) * (2.0 / math.sqrt(n_projections)) - (1.0 / math.sqrt(n_projections))
+    proj = Tensor.rand(d, n_projections) * (2.0 / math.sqrt(n_projections)) - (
+        1.0 / math.sqrt(n_projections)
+    )
 
     # Project error
     proj_error = error.reshape(1, d) @ proj  # [1, n_projections]
@@ -267,7 +268,7 @@ def _quantize_mantissa(value: float, shared_exp_biased: int, n_bits: int) -> int
     """
     # Reconstruct the scale: 2^(shared_exp - 127)
     exp = shared_exp_biased - 127
-    scale = 2.0 ** exp
+    scale = 2.0**exp
 
     if scale == 0.0:
         return 0
@@ -297,7 +298,7 @@ def _dequantize_mantissa(mantissa: int, shared_exp_biased: int, n_bits: int) -> 
     Returns: reconstructed float value
     """
     exp = shared_exp_biased - 127
-    scale = 2.0 ** exp
+    scale = 2.0**exp
     qmax = (1 << (n_bits - 1)) - 1
     return (mantissa / qmax) * scale
 
@@ -341,7 +342,9 @@ def quantize_mxfp8(data: list) -> tuple:
 
         for i in range(block_size):
             mantissas[start + i] = _quantize_mantissa(
-                block[i], shared_exp, MXFP8_MANTISSA_BITS,
+                block[i],
+                shared_exp,
+                MXFP8_MANTISSA_BITS,
             )
 
     return mantissas, exponents
@@ -386,7 +389,9 @@ def quantize_mxfp4(data: list) -> tuple:
 
         for i in range(block_size):
             mantissas[start + i] = _quantize_mantissa(
-                block[i], shared_exp, MXFP4_MANTISSA_BITS,
+                block[i],
+                shared_exp,
+                MXFP4_MANTISSA_BITS,
             )
 
     return mantissas, exponents
@@ -413,7 +418,9 @@ def dequantize_mxfp8(mantissas: list, exponents: list) -> list:
 
         for i in range(start, end):
             result[i] = _dequantize_mantissa(
-                mantissas[i], shared_exp, MXFP8_MANTISSA_BITS,
+                mantissas[i],
+                shared_exp,
+                MXFP8_MANTISSA_BITS,
             )
 
     return result
@@ -440,7 +447,9 @@ def dequantize_mxfp4(mantissas: list, exponents: list) -> list:
 
         for i in range(start, end):
             result[i] = _dequantize_mantissa(
-                mantissas[i], shared_exp, MXFP4_MANTISSA_BITS,
+                mantissas[i],
+                shared_exp,
+                MXFP4_MANTISSA_BITS,
             )
 
     return result

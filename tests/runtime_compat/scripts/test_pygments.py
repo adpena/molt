@@ -1,6 +1,5 @@
 import pygments
 from pygments.lexers import PythonLexer
-from pygments.formatters import TerminalFormatter
 
 print("pygments", pygments.__version__)
 lexer = PythonLexer()

@@ -12,8 +12,7 @@ import dbm
 import pickle
 from typing import Any, Iterator
 
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
-    "molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
 __all__ = ["Shelf", "BsdDbShelf", "DbfilenameShelf", "open"]
@@ -199,5 +198,6 @@ def open(
 ) -> Shelf:
     """Open a persistent dictionary backed by a dbm database."""
     return DbfilenameShelf(filename, flag=flag, protocol=protocol, writeback=writeback)
+
 
 globals().pop("_require_intrinsic", None)

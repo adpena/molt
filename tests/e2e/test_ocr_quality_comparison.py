@@ -18,7 +18,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import math
 import os
 import sys
 import time
@@ -36,6 +35,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Levenshtein distance (pure Python, no deps)
 # ---------------------------------------------------------------------------
+
 
 def levenshtein(s: str, t: str) -> int:
     """Compute the Levenshtein edit distance between two strings."""
@@ -66,6 +66,7 @@ def char_accuracy(ground_truth: str, predicted: str) -> float:
 # ---------------------------------------------------------------------------
 # Image generation
 # ---------------------------------------------------------------------------
+
 
 def _get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Get a font at the given size, falling back to default if no TTF available."""
@@ -103,7 +104,11 @@ def generate_clean_text() -> TestCase:
         name="clean_text",
         ground_truth=text,
         image=img,
-        fields={"vendor": "Acme Corp", "invoice_number": "2026-042", "total": "$4,200.00"},
+        fields={
+            "vendor": "Acme Corp",
+            "invoice_number": "2026-042",
+            "total": "$4,200.00",
+        },
     )
 
 
@@ -118,7 +123,11 @@ def generate_small_font() -> TestCase:
         name="small_font",
         ground_truth=text,
         image=img,
-        fields={"vendor": "Acme Corp", "invoice_number": "2026-042", "total": "$4,200.00"},
+        fields={
+            "vendor": "Acme Corp",
+            "invoice_number": "2026-042",
+            "total": "$4,200.00",
+        },
     )
 
 
@@ -134,7 +143,11 @@ def generate_rotated() -> TestCase:
         name="rotated_5deg",
         ground_truth=text,
         image=img,
-        fields={"vendor": "Acme Corp", "invoice_number": "2026-042", "total": "$4,200.00"},
+        fields={
+            "vendor": "Acme Corp",
+            "invoice_number": "2026-042",
+            "total": "$4,200.00",
+        },
     )
 
 
@@ -149,7 +162,11 @@ def generate_low_contrast() -> TestCase:
         name="low_contrast",
         ground_truth=text,
         image=img,
-        fields={"vendor": "Acme Corp", "invoice_number": "2026-042", "total": "$4,200.00"},
+        fields={
+            "vendor": "Acme Corp",
+            "invoice_number": "2026-042",
+            "total": "$4,200.00",
+        },
     )
 
 
@@ -157,7 +174,13 @@ def generate_dense_table() -> TestCase:
     """Test 5: Dense table with 5 columns x 10 rows."""
     headers = ["Item", "Description", "Qty", "Rate", "Amount"]
     rows = [
-        [f"ITEM-{i:03d}", f"Service line item {i}", str(i + 1), f"${(i + 1) * 100:.2f}", f"${(i + 1) * (i + 1) * 100:.2f}"]
+        [
+            f"ITEM-{i:03d}",
+            f"Service line item {i}",
+            str(i + 1),
+            f"${(i + 1) * 100:.2f}",
+            f"${(i + 1) * (i + 1) * 100:.2f}",
+        ]
         for i in range(10)
     ]
 
@@ -213,6 +236,7 @@ ALL_GENERATORS = [
 # OCR backends
 # ---------------------------------------------------------------------------
 
+
 def image_to_b64(img: Image.Image, fmt: str = "PNG") -> str:
     buf = io.BytesIO()
     img.save(buf, format=fmt)
@@ -224,7 +248,10 @@ def ocr_workers_ai(image_b64: str) -> dict[str, Any]:
     req = urllib.request.Request(
         "https://falcon-ocr.adpena.workers.dev/ocr",
         data=json.dumps({"image": image_b64}).encode(),
-        headers={"Content-Type": "application/json", "Origin": "https://freeinvoicemaker.app"},
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "https://freeinvoicemaker.app",
+        },
     )
     t0 = time.perf_counter()
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -264,7 +291,10 @@ def ocr_paddleocr(img: Image.Image) -> dict[str, Any] | None:
 # Field extraction check
 # ---------------------------------------------------------------------------
 
-def check_field_extraction(ocr_text: str, expected_fields: dict[str, str]) -> dict[str, bool]:
+
+def check_field_extraction(
+    ocr_text: str, expected_fields: dict[str, str]
+) -> dict[str, bool]:
     """Check if expected fields are present in OCR output (case-insensitive substring)."""
     results = {}
     text_lower = ocr_text.lower()
@@ -279,6 +309,7 @@ def check_field_extraction(ocr_text: str, expected_fields: dict[str, str]) -> di
 # ---------------------------------------------------------------------------
 # Result aggregation
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class OCRResult:
@@ -303,45 +334,53 @@ def run_comparison() -> list[OCRResult]:
             wai = ocr_workers_ai(b64)
             acc = char_accuracy(tc.ground_truth, wai["text"])
             fields = check_field_extraction(wai["text"], tc.fields)
-            results.append(OCRResult(
-                engine="Falcon-OCR (Workers AI)",
-                test_name=tc.name,
-                char_accuracy=acc,
-                field_results=fields,
-                latency_ms=wai["latency_ms"],
-            ))
+            results.append(
+                OCRResult(
+                    engine="Falcon-OCR (Workers AI)",
+                    test_name=tc.name,
+                    char_accuracy=acc,
+                    field_results=fields,
+                    latency_ms=wai["latency_ms"],
+                )
+            )
         except Exception as e:
-            results.append(OCRResult(
-                engine="Falcon-OCR (Workers AI)",
-                test_name=tc.name,
-                char_accuracy=0.0,
-                field_results={k: False for k in tc.fields},
-                latency_ms=0.0,
-                available=False,
-            ))
+            results.append(
+                OCRResult(
+                    engine="Falcon-OCR (Workers AI)",
+                    test_name=tc.name,
+                    char_accuracy=0.0,
+                    field_results={k: False for k in tc.fields},
+                    latency_ms=0.0,
+                    available=False,
+                )
+            )
             print(f"  [WARN] Workers AI failed for {tc.name}: {e}", file=sys.stderr)
 
         # PaddleOCR
         paddle_result = ocr_paddleocr(tc.image)
         if paddle_result is None:
-            results.append(OCRResult(
-                engine="PaddleOCR",
-                test_name=tc.name,
-                char_accuracy=0.0,
-                field_results={k: False for k in tc.fields},
-                latency_ms=0.0,
-                available=False,
-            ))
+            results.append(
+                OCRResult(
+                    engine="PaddleOCR",
+                    test_name=tc.name,
+                    char_accuracy=0.0,
+                    field_results={k: False for k in tc.fields},
+                    latency_ms=0.0,
+                    available=False,
+                )
+            )
         else:
             acc = char_accuracy(tc.ground_truth, paddle_result["text"])
             fields = check_field_extraction(paddle_result["text"], tc.fields)
-            results.append(OCRResult(
-                engine="PaddleOCR",
-                test_name=tc.name,
-                char_accuracy=acc,
-                field_results=fields,
-                latency_ms=paddle_result["latency_ms"],
-            ))
+            results.append(
+                OCRResult(
+                    engine="PaddleOCR",
+                    test_name=tc.name,
+                    char_accuracy=acc,
+                    field_results=fields,
+                    latency_ms=paddle_result["latency_ms"],
+                )
+            )
 
     return results
 
@@ -349,6 +388,7 @@ def run_comparison() -> list[OCRResult]:
 # ---------------------------------------------------------------------------
 # Report generation
 # ---------------------------------------------------------------------------
+
 
 def generate_report(results: list[OCRResult]) -> str:
     """Generate a Markdown comparison table."""
@@ -385,19 +425,25 @@ def generate_report(results: list[OCRResult]) -> str:
         if engine_results:
             avg_acc = sum(r.char_accuracy for r in engine_results) / len(engine_results)
             avg_lat = sum(r.latency_ms for r in engine_results) / len(engine_results)
-            lines.append(f"**{engine}**: avg accuracy {avg_acc:.1%}, avg latency {avg_lat:.0f}ms")
+            lines.append(
+                f"**{engine}**: avg accuracy {avg_acc:.1%}, avg latency {avg_lat:.0f}ms"
+            )
         else:
-            lines.append(f"**{engine}**: not available (install paddleocr or check endpoint)")
+            lines.append(
+                f"**{engine}**: not available (install paddleocr or check endpoint)"
+            )
 
-    lines.extend([
-        "",
-        "## Setup Notes",
-        "",
-        "- Falcon-OCR: Live endpoint at https://falcon-ocr.adpena.workers.dev/ocr (Gemma 3 12B via Workers AI)",
-        "- PaddleOCR: `pip3 install paddleocr` (requires paddlepaddle). If not installed, results show N/A.",
-        "- Images generated at runtime with Pillow; no external image assets needed.",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Setup Notes",
+            "",
+            "- Falcon-OCR: Live endpoint at https://falcon-ocr.adpena.workers.dev/ocr (Gemma 3 12B via Workers AI)",
+            "- PaddleOCR: `pip3 install paddleocr` (requires paddlepaddle). If not installed, results show N/A.",
+            "- Images generated at runtime with Pillow; no external image assets needed.",
+            "",
+        ]
+    )
 
     return "\n".join(lines)
 
@@ -405,6 +451,7 @@ def generate_report(results: list[OCRResult]) -> str:
 # ---------------------------------------------------------------------------
 # pytest integration
 # ---------------------------------------------------------------------------
+
 
 def test_ocr_workers_ai_clean_text():
     """Smoke test: Workers AI returns non-empty text for clean input."""
@@ -423,7 +470,9 @@ def test_ocr_workers_ai_field_extraction():
     result = ocr_workers_ai(b64)
     fields = check_field_extraction(result["text"], tc.fields)
     # At minimum, vendor or total should be found
-    assert fields["vendor"] or fields["total"], f"No key fields found in: {result['text']!r}"
+    assert fields["vendor"] or fields["total"], (
+        f"No key fields found in: {result['text']!r}"
+    )
 
 
 def test_levenshtein_basic():
@@ -456,7 +505,12 @@ if __name__ == "__main__":
     print(report)
 
     # Save report
-    out_path = Path(__file__).resolve().parent.parent.parent / "docs" / "benchmarks" / "ocr_quality_comparison.md"
+    out_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "docs"
+        / "benchmarks"
+        / "ocr_quality_comparison.md"
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(report)
     print(f"\nReport saved to: {out_path}")

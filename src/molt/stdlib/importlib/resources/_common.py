@@ -3,9 +3,7 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe")
-_MOLT_IMPORTLIB_IMPORT_REQUIRED = _require_intrinsic(
-    "molt_importlib_import_required"
-)
+_MOLT_IMPORTLIB_IMPORT_REQUIRED = _require_intrinsic("molt_importlib_import_required")
 
 import functools
 import importlib  # noqa: F401
@@ -89,5 +87,6 @@ def from_package(package: types.ModuleType):
 
 def as_file(path):
     return _resources_as_file(path)
+
 
 globals().pop("_require_intrinsic", None)

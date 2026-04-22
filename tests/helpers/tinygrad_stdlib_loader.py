@@ -22,7 +22,9 @@ def _load_module(module_name: str, path: Path):
 
 @contextmanager
 def tinygrad_stdlib_context(*extra_leaves: str):
-    leaves = tuple(dict.fromkeys(("dtypes", "lazy", "realize", "tensor", *extra_leaves)))
+    leaves = tuple(
+        dict.fromkeys(("dtypes", "lazy", "realize", "tensor", *extra_leaves))
+    )
     module_names = (
         "_intrinsics",
         "tinygrad",
@@ -33,7 +35,7 @@ def tinygrad_stdlib_context(*extra_leaves: str):
 
     try:
         intrinsics = types.ModuleType("_intrinsics")
-        intrinsics.require_intrinsic = lambda _name: (lambda *args, **kwargs: None)
+        intrinsics.require_intrinsic = lambda _name: lambda *args, **kwargs: None
         sys.modules["_intrinsics"] = intrinsics
 
         package = types.ModuleType("tinygrad")

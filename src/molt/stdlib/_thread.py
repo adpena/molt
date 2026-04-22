@@ -112,9 +112,7 @@ class LockType:
                 raise OverflowError("timestamp out of range for platform time_t")
         if self._handle is None:
             raise RuntimeError("lock is not initialized")
-        return bool(
-            _lock_acquire_intrinsic(self._handle, bool(blocking), timeout_val)
-        )
+        return bool(_lock_acquire_intrinsic(self._handle, bool(blocking), timeout_val))
 
     def release(self, _lock_release_intrinsic=_lock_release) -> None:
         """Release the lock."""
@@ -235,7 +233,9 @@ def get_native_id(_thread_current_native_id_intrinsic=_thread_current_native_id)
     return int(_thread_current_native_id_intrinsic())
 
 
-def _count(_thread_registry_active_count_intrinsic=_thread_registry_active_count) -> int:
+def _count(
+    _thread_registry_active_count_intrinsic=_thread_registry_active_count,
+) -> int:
     """Return the number of currently active threads (including the main thread)."""
     return int(_thread_registry_active_count_intrinsic())
 
@@ -260,7 +260,9 @@ def stack_size(
     return int(_thread_stack_size_set_intrinsic(size))
 
 
-def interrupt_main(signum: int = 2, _signal_raise_signal_intrinsic=_signal_raise_signal) -> None:
+def interrupt_main(
+    signum: int = 2, _signal_raise_signal_intrinsic=_signal_raise_signal
+) -> None:
     """Simulate the effect of a signal arriving in the main thread.
 
     The default *signum* is ``SIGINT`` (2).

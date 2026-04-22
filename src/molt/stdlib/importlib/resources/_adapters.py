@@ -144,4 +144,5 @@ class CompatibilityFiles:
 def wrap_spec(package):
     return SpecLoaderAdapter(package.__spec__, TraversableResourcesLoader)
 
+
 globals().pop("_require_intrinsic", None)

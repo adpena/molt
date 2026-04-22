@@ -138,4 +138,5 @@ def iter_unpack(format: object, buffer: object):
         raise
     return iter(unpacked)
 
+
 globals().pop("_require_intrinsic", None)

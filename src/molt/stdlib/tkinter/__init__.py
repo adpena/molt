@@ -16,6 +16,7 @@ import enum as _enum
 
 _EventTypeBase = _enum.Enum
 
+
 def _lazy_intrinsic(name):
     def _call(*args, **kwargs):
         return _require_intrinsic(name)(*args, **kwargs)
@@ -28,6 +29,13 @@ def _tk_runtime_export(name):
         return getattr(_tk_runtime, name)(*args, **kwargs)
 
     return _call
+
+
+def _require_tk_callable(attr):
+    candidate = getattr(_tk_runtime, attr, None)
+    if not callable(candidate):
+        raise RuntimeError(f"tkinter runtime callable unavailable: {attr}")
+    return candidate
 
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
@@ -47,17 +55,13 @@ _MOLT_TK_GETDOUBLE = _require_intrinsic("molt_tk_getdouble")
 _MOLT_TK_SPLITLIST = _require_intrinsic("molt_tk_splitlist")
 _MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse")
 _molt_tk_event_int = _require_intrinsic("molt_tk_event_int")
-_molt_tk_event_build_from_args = _require_intrinsic(
-    "molt_tk_event_build_from_args")
-_molt_tk_event_state_decode = _require_intrinsic(
-    "molt_tk_event_state_decode")
+_molt_tk_event_build_from_args = _require_intrinsic("molt_tk_event_build_from_args")
+_molt_tk_event_state_decode = _require_intrinsic("molt_tk_event_state_decode")
 _molt_tk_splitdict = _require_intrinsic("molt_tk_splitdict")
 _molt_tk_flatten_args = _require_intrinsic("molt_tk_flatten_args")
 _molt_tk_cnfmerge = _require_intrinsic("molt_tk_cnfmerge")
-_molt_tk_normalize_option = _require_intrinsic(
-    "molt_tk_normalize_option")
-_molt_tk_normalize_delay_ms = _require_intrinsic(
-    "molt_tk_normalize_delay_ms")
+_molt_tk_normalize_option = _require_intrinsic("molt_tk_normalize_option")
+_molt_tk_normalize_delay_ms = _require_intrinsic("molt_tk_normalize_delay_ms")
 
 
 NO_VALUE = object()
@@ -118,9 +122,7 @@ _TK_AFTER = _tk_runtime_export("_MOLT_TK_AFTER")
 _TK_CALL = _tk_runtime_export("_MOLT_TK_CALL")
 _TK_BIND_REGISTER = _tk_runtime_export("_MOLT_TK_BIND_CALLBACK_REGISTER")
 _TK_BIND_UNREGISTER = _tk_runtime_export("_MOLT_TK_BIND_CALLBACK_UNREGISTER")
-_TK_WIDGET_BIND_REGISTER = _tk_runtime_export(
-    "_MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER"
-)
+_TK_WIDGET_BIND_REGISTER = _tk_runtime_export("_MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER")
 _TK_WIDGET_BIND_UNREGISTER = _tk_runtime_export(
     "_MOLT_TK_WIDGET_BIND_CALLBACK_UNREGISTER"
 )
@@ -808,7 +810,7 @@ class Misc:
         _require_gui_window_capability()
         if not callable(callback):
             raise TypeError("bind_command callback must be callable")
-        _TK_BIND_COMMAND(self._tk_app, name, callback)
+        _MOLT_TK_BIND_COMMAND(self._tk_app, name, callback)
 
     def createcommand(self, name, callback):
         _require_gui_window_capability()
@@ -2040,7 +2042,7 @@ class Tk(Wm):
         return self.call("wm", command, self._w, *args)
 
     def _purge_registered_commands(self):
-        deletecommand = getattr(_tkimpl, "deletecommand", None)
+        deletecommand = getattr(_tk_runtime, "deletecommand", None)
         if callable(deletecommand):
             for command_name in list(self._registered_commands):
                 deletecommand(self._tk_app, command_name)
@@ -2756,7 +2758,10 @@ class Text(_CoreWidget):
 
     def peer_create(self, new_path_name, cnf=None, **kw):
         return self._call_widget(
-            "peer", "create", new_path_name, *_normalize_tk_options(cnf, owner=self, **kw)
+            "peer",
+            "create",
+            new_path_name,
+            *_normalize_tk_options(cnf, owner=self, **kw),
         )
 
     def peer_names(self):

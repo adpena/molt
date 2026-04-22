@@ -3,6 +3,7 @@
 Dispatches layers in profile order, collects results, manages baselines,
 and produces reports. This is the entry point called by `molt harness`.
 """
+
 from __future__ import annotations
 
 import sys
@@ -31,12 +32,14 @@ def _run_profile(
 
     for layer in layers:
         if failed and config.fail_fast:
-            results.append(LayerResult(
-                name=layer.name,
-                status=LayerStatus.SKIP,
-                duration_s=0.0,
-                details="skipped due to prior failure",
-            ))
+            results.append(
+                LayerResult(
+                    name=layer.name,
+                    status=LayerStatus.SKIP,
+                    duration_s=0.0,
+                    details="skipped due to prior failure",
+                )
+            )
             continue
 
         result = layer.run_fn(config)
@@ -79,14 +82,22 @@ def main(args: Optional[list[str]] = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Molt quality harness")
-    parser.add_argument("profile", nargs="?", default="standard",
-                        choices=["quick", "standard", "deep"],
-                        help="Test profile (default: standard)")
-    parser.add_argument("--no-fail-fast", action="store_true",
-                        help="Continue running layers after failure")
+    parser.add_argument(
+        "profile",
+        nargs="?",
+        default="standard",
+        choices=["quick", "standard", "deep"],
+        help="Test profile (default: standard)",
+    )
+    parser.add_argument(
+        "--no-fail-fast",
+        action="store_true",
+        help="Continue running layers after failure",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
-    parser.add_argument("--json", action="store_true",
-                        help="Print JSON report to stdout")
+    parser.add_argument(
+        "--json", action="store_true", help="Print JSON report to stdout"
+    )
 
     parsed = parser.parse_args(args)
 

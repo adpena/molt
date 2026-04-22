@@ -11,6 +11,7 @@ Usage:
     python tools/bench_individual.py --bench bench_fib.py --bench bench_sum.py
     python tools/bench_individual.py --skip bench_startup.py
 """
+
 from __future__ import annotations
 
 import argparse
@@ -175,11 +176,13 @@ def molt_build(
 
     args = [
         *_molt_build_cmd(),
-        "-m", "molt.cli",
+        "-m",
+        "molt.cli",
         "build",
         "--trusted",
         "--json",
-        "--out-dir", str(out_dir),
+        "--out-dir",
+        str(out_dir),
     ]
     if extra_args:
         args.extend(extra_args)
@@ -293,7 +296,10 @@ def bench_one(
     tmp = tempfile.TemporaryDirectory(prefix="molt-iso-bench-")
     out_dir = Path(tmp.name)
     binary, build_s, build_err = molt_build(
-        script, out_dir, timeout_build, extra_args=extra_args,
+        script,
+        out_dir,
+        timeout_build,
+        extra_args=extra_args,
     )
     result["build_time_s"] = round(build_s, 4)
 
@@ -320,7 +326,10 @@ def bench_one(
             if i == 0:
                 molt_output = output
         else:
-            print(f"  Molt run sample {i+1}/{samples} failed for {name}", file=sys.stderr)
+            print(
+                f"  Molt run sample {i + 1}/{samples} failed for {name}",
+                file=sys.stderr,
+            )
 
     if molt_times:
         result["run_ok"] = True
@@ -376,7 +385,9 @@ def print_summary(results: dict[str, dict]) -> None:
     for name, r in results.items():
         build_str = "OK" if r["build_ok"] else "FAIL"
         molt_str = f"{r['molt_time_s']:.4f}" if r["molt_time_s"] is not None else "-"
-        cpy_str = f"{r['cpython_time_s']:.4f}" if r["cpython_time_s"] is not None else "-"
+        cpy_str = (
+            f"{r['cpython_time_s']:.4f}" if r["cpython_time_s"] is not None else "-"
+        )
         speedup_str = f"{r['speedup']:.1f}x" if r["speedup"] is not None else "-"
 
         if r["output_match"] is True:
@@ -391,7 +402,9 @@ def print_summary(results: dict[str, dict]) -> None:
         else:
             fail_count += 1
 
-        print(f"{name:<42} {build_str:>7} {molt_str:>10} {cpy_str:>10} {speedup_str:>8} {match_str:>6}")
+        print(
+            f"{name:<42} {build_str:>7} {molt_str:>10} {cpy_str:>10} {speedup_str:>8} {match_str:>6}"
+        )
 
     print(sep)
     print(f"Total: {total}  |  Pass: {pass_count}  |  Fail: {fail_count}")
@@ -409,27 +422,39 @@ def parse_args() -> argparse.Namespace:
         description="Run Molt benchmarks with per-benchmark daemon isolation.",
     )
     parser.add_argument(
-        "--samples", type=int, default=3,
+        "--samples",
+        type=int,
+        default=3,
         help="Number of run samples per benchmark; takes median (default: 3)",
     )
     parser.add_argument(
-        "--json-out", type=str, default=None,
+        "--json-out",
+        type=str,
+        default=None,
         help="Path to write JSON results",
     )
     parser.add_argument(
-        "--bench", action="append", default=None,
+        "--bench",
+        action="append",
+        default=None,
         help="Run only specific benchmark(s) by filename (repeatable)",
     )
     parser.add_argument(
-        "--skip", action="append", default=None,
+        "--skip",
+        action="append",
+        default=None,
         help="Skip specific benchmark(s) by filename (repeatable)",
     )
     parser.add_argument(
-        "--timeout-build", type=float, default=120,
+        "--timeout-build",
+        type=float,
+        default=120,
         help="Build timeout in seconds (default: 120)",
     )
     parser.add_argument(
-        "--timeout-run", type=float, default=60,
+        "--timeout-run",
+        type=float,
+        default=60,
         help="Run timeout in seconds (default: 60)",
     )
     return parser.parse_args()
@@ -444,7 +469,8 @@ def main() -> None:
     if args.bench:
         selected = set(args.bench)
         benchmarks = [
-            b for b in benchmarks
+            b
+            for b in benchmarks
             if Path(b).name in selected or Path(b).stem in selected or b in selected
         ]
         if not benchmarks:
@@ -454,7 +480,8 @@ def main() -> None:
     if args.skip:
         skip_set = set(args.skip)
         benchmarks = [
-            b for b in benchmarks
+            b
+            for b in benchmarks
             if Path(b).name not in skip_set
             and Path(b).stem not in skip_set
             and b not in skip_set
@@ -481,7 +508,9 @@ def main() -> None:
         # Quick inline status
         if result["build_ok"] and result["run_ok"]:
             speedup = f" ({result['speedup']:.1f}x)" if result["speedup"] else ""
-            print(f"  -> OK  molt={result['molt_time_s']:.4f}s  cpython={result['cpython_time_s']:.4f}s{speedup}")
+            print(
+                f"  -> OK  molt={result['molt_time_s']:.4f}s  cpython={result['cpython_time_s']:.4f}s{speedup}"
+            )
         elif result["build_ok"]:
             print("  -> BUILD OK, RUN FAIL")
         else:

@@ -40,7 +40,9 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
             "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-            "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
+            "MOLT_DEV_CARGO_PROFILE": os.environ.get(
+                "MOLT_DEV_CARGO_PROFILE", "release-fast"
+            ),
             "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
             "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
         }

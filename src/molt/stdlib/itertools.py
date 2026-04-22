@@ -43,9 +43,7 @@ T = TypeVar("T")
 
 _MOLT_KWD_MARK = _require_intrinsic("molt_itertools_kwd_mark")
 _MOLT_CHAIN = _require_intrinsic("molt_itertools_chain")
-_MOLT_CHAIN_FROM_ITERABLE = _require_intrinsic(
-    "molt_itertools_chain_from_iterable"
-)
+_MOLT_CHAIN_FROM_ITERABLE = _require_intrinsic("molt_itertools_chain_from_iterable")
 _MOLT_ISLICE = _require_intrinsic("molt_itertools_islice")
 _MOLT_REPEAT = _require_intrinsic("molt_itertools_repeat")
 _MOLT_COUNT = _require_intrinsic("molt_itertools_count")
@@ -113,7 +111,9 @@ def islice(
     return _islice_intrinsic(iterable, start_or_stop, stop, step)
 
 
-def repeat(obj: T, times: int | None = None, _repeat_intrinsic=_MOLT_REPEAT) -> Iterator[T]:
+def repeat(
+    obj: T, times: int | None = None, _repeat_intrinsic=_MOLT_REPEAT
+) -> Iterator[T]:
     return _repeat_intrinsic(obj, times)
 
 

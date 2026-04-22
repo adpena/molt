@@ -241,9 +241,7 @@ def test_gpu_kernel_call_lowers_to_first_class_gpu_launch_ir(tmp_path: Path) -> 
         "c = gpu.alloc(4, float)\n"
         "vector_add[1, 4](a, b, c, 4)\n"
     )
-    module_main = next(
-        func for func in ir["functions"] if func["name"] == "molt_main"
-    )
+    module_main = next(func for func in ir["functions"] if func["name"] == "molt_main")
     assert any(
         op.get("kind") == "call" and op.get("s_value") == "molt_gpu_kernel_launch"
         for op in module_main["ops"]
@@ -277,7 +275,10 @@ def test_gpu_kernel_descriptor_is_attached_to_function_metadata() -> None:
                 descriptor_set = True
                 value_name = op["args"][1]
                 for prior in reversed(func["ops"][:index]):
-                    if prior.get("out") == value_name and prior.get("kind") == "const_str":
+                    if (
+                        prior.get("out") == value_name
+                        and prior.get("kind") == "const_str"
+                    ):
                         descriptor_payload = prior.get("s_value")
                         break
     assert descriptor_set is True

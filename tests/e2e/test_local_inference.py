@@ -28,7 +28,9 @@ import sys
 
 _SNAP_DIR = os.path.join(
     os.path.expanduser("~"),
-    ".cache", "molt", "falcon-ocr",
+    ".cache",
+    "molt",
+    "falcon-ocr",
     "models--tiiuae--Falcon-OCR",
     "snapshots",
     "3a4d95a8b0008f7430df30a82cf35e6c3b6bcb66",
@@ -38,7 +40,9 @@ _MODEL_PATH = os.path.join(_SNAP_DIR, "model.safetensors")
 _CONFIG_PATH = os.path.join(_SNAP_DIR, "config.json")
 _TOKENIZER_PATH = os.path.join(_SNAP_DIR, "tokenizer.json")
 
-_WEIGHTS_AVAILABLE = os.path.isfile(_MODEL_PATH) and os.path.getsize(_MODEL_PATH) > 1_000_000
+_WEIGHTS_AVAILABLE = (
+    os.path.isfile(_MODEL_PATH) and os.path.getsize(_MODEL_PATH) > 1_000_000
+)
 
 
 def _skip_if_no_weights():
@@ -46,6 +50,7 @@ def _skip_if_no_weights():
     if not _WEIGHTS_AVAILABLE:
         try:
             import pytest
+
             pytest.skip("Falcon-OCR weights not downloaded")
         except ImportError:
             print("SKIP: weights not available")
@@ -56,6 +61,7 @@ def _skip_if_no_weights():
 # ---------------------------------------------------------------------------
 # Safetensors header validation (no runtime deps needed)
 # ---------------------------------------------------------------------------
+
 
 def test_safetensors_header_valid():
     """Validate that the safetensors file has a parseable header."""
@@ -68,6 +74,7 @@ def test_safetensors_header_valid():
         header = json.loads(f.read(header_size))
 
     meta = header.pop("__metadata__", {})
+    assert isinstance(meta, dict)
     assert len(header) == 115, f"Expected 115 tensors, got {len(header)}"
 
     # Verify critical tensors exist
@@ -183,7 +190,7 @@ def test_weight_byte_ranges_nonoverlapping():
         prev_end = ranges[i - 1][1]
         curr_start = ranges[i][0]
         assert curr_start >= prev_end, (
-            f"Overlap: {ranges[i-1][2]} ends at {prev_end}, "
+            f"Overlap: {ranges[i - 1][2]} ends at {prev_end}, "
             f"{ranges[i][2]} starts at {curr_start}"
         )
 
@@ -193,7 +200,9 @@ def test_weight_byte_ranges_nonoverlapping():
     assert total_end > 900_000_000, f"Total data too small: {total_end}"
     assert total_end < 1_200_000_000, f"Total data too large: {total_end}"
 
-    print(f"PASS: {len(ranges)} tensor ranges non-overlapping, total {total_end:,} bytes")
+    print(
+        f"PASS: {len(ranges)} tensor ranges non-overlapping, total {total_end:,} bytes"
+    )
 
 
 def test_load_single_tensor():
@@ -225,6 +234,7 @@ def test_load_single_tensor():
 
     # No NaN or Inf
     import math
+
     for i, v in enumerate(values):
         assert math.isfinite(v), f"norm.weight[{i}] = {v} is not finite"
 
@@ -252,6 +262,7 @@ def test_load_attention_sinks():
     assert len(values) == 16
 
     import math
+
     for i, v in enumerate(values):
         assert math.isfinite(v), f"sinks[{i}] = {v}"
 
@@ -273,7 +284,7 @@ def test_synthetic_image_pipeline():
     for y in range(8, 24):
         for x in range(8, 24):
             offset = (y * width + x) * channels
-            rgb[offset] = 255      # R
+            rgb[offset] = 255  # R
             rgb[offset + 1] = 255  # G
             rgb[offset + 2] = 255  # B
 
@@ -302,6 +313,7 @@ def test_synthetic_image_pipeline():
 # Full inference test (requires molt runtime)
 # ---------------------------------------------------------------------------
 
+
 def test_full_inference():
     """Load real weights and run inference on a synthetic image.
 
@@ -314,12 +326,16 @@ def test_full_inference():
     # Try to import molt runtime
     try:
         # Add the source tree to path for standalone execution
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
         stdlib_path = os.path.join(project_root, "src", "molt", "stdlib")
         if stdlib_path not in sys.path:
             sys.path.insert(0, stdlib_path)
 
         from tinygrad.examples.falcon_ocr import init, ocr_tokens, FalconOCRConfig
+
+        assert FalconOCRConfig is not None
     except (ImportError, SyntaxError) as e:
         # SyntaxError: _intrinsics.py uses molt-specific syntax not valid in CPython
         print(f"SKIP: molt runtime not available ({e})")
@@ -349,9 +365,13 @@ def test_full_inference():
     # Verify output structure
     assert isinstance(generated, list), f"Expected list, got {type(generated)}"
     assert len(generated) > 0, "Generated no tokens"
-    assert len(generated) <= max_new_tokens, f"Generated {len(generated)} > max {max_new_tokens}"
+    assert len(generated) <= max_new_tokens, (
+        f"Generated {len(generated)} > max {max_new_tokens}"
+    )
     assert all(isinstance(t, int) for t in generated), "Not all tokens are ints"
-    assert all(0 <= t < 65536 for t in generated), f"Token out of vocab range: {generated}"
+    assert all(0 <= t < 65536 for t in generated), (
+        f"Token out of vocab range: {generated}"
+    )
 
     print(f"PASS: full inference produced {len(generated)} tokens: {generated}")
 

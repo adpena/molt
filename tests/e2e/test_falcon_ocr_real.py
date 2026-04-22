@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import struct
 import sys
 import time
 
@@ -29,8 +28,6 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from tests.e2e.falcon_ocr_real_weights import (
-    CACHE_DIR,
-    REFERENCE_DIR,
     WEIGHTS_DIR,
     SAFETENSORS_FILENAME,
     generate_test_image_bytes,
@@ -179,7 +176,9 @@ class TestPerformance:
         for s in shape:
             count *= s
         size_mb = count * 4 / (1024 * 1024)  # approximate as f32
-        print(f"\n  Tensor '{target}': {count:,} elements, ~{size_mb:.1f}MB, {elapsed_ms:.1f}ms")
+        print(
+            f"\n  Tensor '{target}': {count:,} elements, ~{size_mb:.1f}MB, {elapsed_ms:.1f}ms"
+        )
         assert len(values) == count
 
     def test_test_image_generation_time(self):

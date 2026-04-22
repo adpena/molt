@@ -130,7 +130,9 @@ def make_build_env() -> dict[str, str]:
 
 
 def _pick_temp_parent(env: dict[str, str]) -> str | None:
-    explicit_keys = {key for key in ("MOLT_DIFF_TMPDIR", "TMPDIR") if os.environ.get(key)}
+    explicit_keys = {
+        key for key in ("MOLT_DIFF_TMPDIR", "TMPDIR") if os.environ.get(key)
+    }
     for key in ("MOLT_DIFF_TMPDIR", "TMPDIR"):
         value = env.get(key)
         if not value:
@@ -163,7 +165,9 @@ def collect_sources(source: str | None, batch: str | None, pattern: str) -> list
             if p.is_file() and p.suffix == ".py"
         )
         if not matches:
-            raise ValueError(f"No Python files matched pattern '{pattern}' under: {batch}")
+            raise ValueError(
+                f"No Python files matched pattern '{pattern}' under: {batch}"
+            )
         return matches
 
     if source:
@@ -331,7 +335,9 @@ def _aggregate(
     transpile_pass = sum(1 for item in results if item.build_ok)
     transpile_fail = sum(1 for item in results if not item.build_ok)
     analyzer_executed = sum(
-        1 for item in results if item.analyzer_status in {"ok", "nonzero_exit", "timeout", "error"}
+        1
+        for item in results
+        if item.analyzer_status in {"ok", "nonzero_exit", "timeout", "error"}
     )
     analyzer_skipped = len(results) - analyzer_executed
     analyzer_failures = sum(
@@ -440,7 +446,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Temp root: system default")
 
     results: list[FileResult] = []
-    with tempfile.TemporaryDirectory(prefix="molt-luau-static-", dir=temp_parent) as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix="molt-luau-static-", dir=temp_parent
+    ) as tmpdir:
         tmp_root = Path(tmpdir)
         for index, source in enumerate(sources, start=1):
             luau_path = _luau_output_path(source, index, tmp_root)

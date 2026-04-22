@@ -63,6 +63,7 @@ INVOICES = [
 # Image generation
 # ---------------------------------------------------------------------------
 
+
 def generate_invoice_image(invoice: dict) -> str:
     """Generate a synthetic invoice PNG and return as base64 string.
 
@@ -105,7 +106,7 @@ def generate_invoice_image(invoice: dict) -> str:
     d.line([(20, y + 10), (580, y + 10)], fill="gray", width=1)
 
     # Total
-    d.text((350, y + 20), f'Total: {invoice["total"]}', fill="black", font=font_bold)
+    d.text((350, y + 20), f"Total: {invoice['total']}", fill="black", font=font_bold)
 
     # Encode to PNG base64
     buf = io.BytesIO()
@@ -116,6 +117,7 @@ def generate_invoice_image(invoice: dict) -> str:
 # ---------------------------------------------------------------------------
 # Levenshtein distance for accuracy measurement
 # ---------------------------------------------------------------------------
+
 
 def levenshtein_distance(s1: str, s2: str) -> int:
     """Compute edit distance between two strings."""
@@ -159,10 +161,12 @@ def test_falcon_worker(invoice: dict, img_b64: str) -> dict:
 
     Posts a base64-encoded image and returns OCR results with timing.
     """
-    payload = json.dumps({
-        "image": img_b64,
-        "max_tokens": 100,
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "image": img_b64,
+            "max_tokens": 100,
+        }
+    ).encode("utf-8")
 
     headers = {
         "Content-Type": "application/json",
@@ -228,6 +232,7 @@ def test_falcon_worker(invoice: dict, img_b64: str) -> dict:
 # Main test runner
 # ---------------------------------------------------------------------------
 
+
 def run_quality_tests() -> None:
     """Run OCR quality tests across all engines and invoices."""
     print("=" * 70)
@@ -285,8 +290,12 @@ def run_quality_tests() -> None:
 
     if falcon_ok:
         avg_time = sum(r["time_s"] for r in falcon_ok) / len(falcon_ok)
-        vendor_rate = sum(1 for r in falcon_ok if r.get("vendor_found")) / len(falcon_ok)
-        number_rate = sum(1 for r in falcon_ok if r.get("number_found")) / len(falcon_ok)
+        vendor_rate = sum(1 for r in falcon_ok if r.get("vendor_found")) / len(
+            falcon_ok
+        )
+        number_rate = sum(1 for r in falcon_ok if r.get("number_found")) / len(
+            falcon_ok
+        )
         total_rate = sum(1 for r in falcon_ok if r.get("total_found")) / len(falcon_ok)
         print(f"  Avg time: {avg_time:.1f}s")
         print(f"  Vendor extraction:  {vendor_rate:.0%}")

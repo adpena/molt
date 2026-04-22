@@ -18,7 +18,6 @@ else:
 
 
 import collections.abc as abc
-import keyword as _keyword
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -44,8 +43,7 @@ _MISSING = object()
 _MOLT_CLASS_NEW = _require_intrinsic("molt_class_new")
 _MOLT_CLASS_SET_BASE = _require_intrinsic("molt_class_set_base")
 _MOLT_CLASS_APPLY_SET_NAME = _require_intrinsic("molt_class_apply_set_name")
-_MOLT_NAMEDTUPLE_VALIDATE = _require_intrinsic(
-    "molt_namedtuple_validate_fields")
+_MOLT_NAMEDTUPLE_VALIDATE = _require_intrinsic("molt_namedtuple_validate_fields")
 
 # --- deque intrinsics ---
 _MOLT_DEQUE_NEW = _require_intrinsic("molt_deque_new")
@@ -81,8 +79,7 @@ _MOLT_COUNTER_COPY = _require_intrinsic("molt_counter_copy")
 _MOLT_COUNTER_DELITEM = _require_intrinsic("molt_counter_delitem")
 _MOLT_COUNTER_DROP = _require_intrinsic("molt_counter_drop")
 _MOLT_COUNTER_ELEMENTS = _require_intrinsic("molt_counter_elements")
-_MOLT_COUNTER_FROM_ITERABLE = _require_intrinsic(
-    "molt_counter_from_iterable")
+_MOLT_COUNTER_FROM_ITERABLE = _require_intrinsic("molt_counter_from_iterable")
 _MOLT_COUNTER_FROM_MAPPING = _require_intrinsic("molt_counter_from_mapping")
 _MOLT_COUNTER_GETITEM = _require_intrinsic("molt_counter_getitem")
 _MOLT_COUNTER_ITEMS = _require_intrinsic("molt_counter_items")
@@ -1732,5 +1729,6 @@ class UserString:
 
     def zfill(self, width: int) -> "UserString":
         return self.__class__(self.data.zfill(width))
+
 
 globals().pop("_require_intrinsic", None)

@@ -21,9 +21,7 @@ from _abc import (
 )
 
 _MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap")
-_MOLT_ABC_UPDATE_ABSTRACTMETHODS = _require_intrinsic(
-    "molt_abc_update_abstractmethods"
-)
+_MOLT_ABC_UPDATE_ABSTRACTMETHODS = _require_intrinsic("molt_abc_update_abstractmethods")
 
 classmethod = _builtins.classmethod
 staticmethod = _builtins.staticmethod

@@ -55,6 +55,7 @@ def handle_mcp(box, req):
 # Handler: initialize
 # ---------------------------------------------------------------------------
 
+
 def _handle_initialize(request_id, params):
     """Respond with server capabilities."""
     result = {
@@ -74,6 +75,7 @@ def _handle_initialize(request_id, params):
 # Handler: tools/list
 # ---------------------------------------------------------------------------
 
+
 def _handle_tools_list(request_id, box):
     """Return the list of tools registered on the box.
 
@@ -86,11 +88,13 @@ def _handle_tools_list(request_id, box):
         t = raw_tools[idx]
         idx = idx + 1
         schema = t.get("inputSchema", {"type": "object", "properties": {}})
-        mcp_tools.append({
-            "name": t["name"],
-            "description": t.get("description", ""),
-            "inputSchema": schema,
-        })
+        mcp_tools.append(
+            {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "inputSchema": schema,
+            }
+        )
 
     result = {"tools": mcp_tools}
     return _success_response(request_id, result)
@@ -99,6 +103,7 @@ def _handle_tools_list(request_id, box):
 # ---------------------------------------------------------------------------
 # Handler: tools/call
 # ---------------------------------------------------------------------------
+
 
 def _handle_tools_call(request_id, params, box):
     """Invoke a named tool and return its result.
@@ -116,8 +121,7 @@ def _handle_tools_call(request_id, params, box):
         # Check plugin tools
         plugin_tool = box._registry.get_tool(tool_name)
         if plugin_tool is None:
-            return _error_response(request_id, -32602,
-                                   "Unknown tool: " + tool_name)
+            return _error_response(request_id, -32602, "Unknown tool: " + tool_name)
 
     try:
         if plugin_tool is not None:
@@ -142,22 +146,27 @@ def _handle_tools_call(request_id, params, box):
 # JSON-RPC response helpers
 # ---------------------------------------------------------------------------
 
+
 def _success_response(request_id, result):
     """Build a JSON-RPC 2.0 success response."""
-    return json.dumps({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": result,
-    })
+    return json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": result,
+        }
+    )
 
 
 def _error_response(request_id, code, message):
     """Build a JSON-RPC 2.0 error response."""
-    return json.dumps({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "error": {
-            "code": code,
-            "message": message,
-        },
-    })
+    return json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        }
+    )

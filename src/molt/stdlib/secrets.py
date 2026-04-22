@@ -6,15 +6,11 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _molt_secrets_token_bytes = _require_intrinsic("molt_secrets_token_bytes")
 _molt_secrets_token_hex = _require_intrinsic("molt_secrets_token_hex")
-_molt_secrets_token_urlsafe = _require_intrinsic(
-    "molt_secrets_token_urlsafe"
-)
+_molt_secrets_token_urlsafe = _require_intrinsic("molt_secrets_token_urlsafe")
 _molt_secrets_randbits = _require_intrinsic("molt_secrets_randbits")
 _molt_secrets_below = _require_intrinsic("molt_secrets_below")
 _molt_secrets_choice = _require_intrinsic("molt_secrets_choice")
-_molt_secrets_compare_digest = _require_intrinsic(
-    "molt_secrets_compare_digest"
-)
+_molt_secrets_compare_digest = _require_intrinsic("molt_secrets_compare_digest")
 
 DEFAULT_ENTROPY = 32
 
@@ -96,5 +92,6 @@ class SystemRandom:
 
     def choice(self, seq):
         return choice(seq)
+
 
 globals().pop("_require_intrinsic", None)

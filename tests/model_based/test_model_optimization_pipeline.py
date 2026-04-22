@@ -36,6 +36,7 @@ import pytest
 # Abstract IR model (mirrors the Quint specification)
 # ---------------------------------------------------------------------------
 
+
 class NodeKind(Enum):
     Const = auto()
     Arith = auto()
@@ -56,8 +57,14 @@ class IRNode:
     canonical: int
 
     def _key(self) -> tuple:
-        return (self.id, self.kind, self.uses, self.is_constant,
-                self.is_invariant, self.canonical)
+        return (
+            self.id,
+            self.kind,
+            self.uses,
+            self.is_constant,
+            self.is_invariant,
+            self.canonical,
+        )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, IRNode):
@@ -71,24 +78,61 @@ class IRNode:
 def _make_initial_nodes() -> list[IRNode]:
     """Initial program from the Quint model's init action."""
     return [
-        IRNode(id=0, kind=NodeKind.Const, uses=2, is_constant=True,
-               is_invariant=False, canonical=0),
-        IRNode(id=1, kind=NodeKind.Arith, uses=1, is_constant=False,
-               is_invariant=False, canonical=1),
-        IRNode(id=2, kind=NodeKind.Branch, uses=0, is_constant=False,
-               is_invariant=False, canonical=2),
-        IRNode(id=3, kind=NodeKind.Phi, uses=1, is_constant=False,
-               is_invariant=False, canonical=3),
-        IRNode(id=4, kind=NodeKind.Guard, uses=1, is_constant=False,
-               is_invariant=True, canonical=4),
-        IRNode(id=5, kind=NodeKind.Arith, uses=0, is_constant=False,
-               is_invariant=False, canonical=1),  # CSE duplicate of node 1
+        IRNode(
+            id=0,
+            kind=NodeKind.Const,
+            uses=2,
+            is_constant=True,
+            is_invariant=False,
+            canonical=0,
+        ),
+        IRNode(
+            id=1,
+            kind=NodeKind.Arith,
+            uses=1,
+            is_constant=False,
+            is_invariant=False,
+            canonical=1,
+        ),
+        IRNode(
+            id=2,
+            kind=NodeKind.Branch,
+            uses=0,
+            is_constant=False,
+            is_invariant=False,
+            canonical=2,
+        ),
+        IRNode(
+            id=3,
+            kind=NodeKind.Phi,
+            uses=1,
+            is_constant=False,
+            is_invariant=False,
+            canonical=3,
+        ),
+        IRNode(
+            id=4,
+            kind=NodeKind.Guard,
+            uses=1,
+            is_constant=False,
+            is_invariant=True,
+            canonical=4,
+        ),
+        IRNode(
+            id=5,
+            kind=NodeKind.Arith,
+            uses=0,
+            is_constant=False,
+            is_invariant=False,
+            canonical=1,
+        ),  # CSE duplicate of node 1
     ]
 
 
 # ---------------------------------------------------------------------------
 # Pass implementations (mirrors Quint pure functions)
 # ---------------------------------------------------------------------------
+
 
 def apply_const_fold(nodes: list[IRNode]) -> list[IRNode]:
     result = []
@@ -112,8 +156,11 @@ def apply_sccp(nodes: list[IRNode]) -> list[IRNode]:
 
 
 def apply_dce(nodes: list[IRNode]) -> list[IRNode]:
-    return [copy.copy(n) for n in nodes
-            if n.uses > 0 or n.kind in (NodeKind.Branch, NodeKind.Guard)]
+    return [
+        copy.copy(n)
+        for n in nodes
+        if n.uses > 0 or n.kind in (NodeKind.Branch, NodeKind.Guard)
+    ]
 
 
 def apply_edge_thread(nodes: list[IRNode]) -> list[IRNode]:
@@ -201,7 +248,9 @@ def _run_pipeline(ordering: list[str], max_rounds: int = MAX_ROUNDS) -> list[IRN
 class TestIdempotency:
     """I4 from the Quint model: applying any pass twice yields same result as once."""
 
-    @pytest.mark.parametrize("pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES])
+    @pytest.mark.parametrize(
+        "pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES]
+    )
     def test_pass_is_idempotent(
         self,
         pass_name: str,
@@ -215,7 +264,9 @@ class TestIdempotency:
             f"once produced {len(once)} nodes, twice produced {len(twice)} nodes"
         )
 
-    @pytest.mark.parametrize("pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES])
+    @pytest.mark.parametrize(
+        "pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES]
+    )
     def test_idempotent_after_full_pipeline(
         self,
         pass_name: str,
@@ -239,8 +290,9 @@ class TestFixedPointConvergence:
         ["CSE", "DCE", "ConstFold", "JoinCanon", "GuardHoist", "SCCP", "EdgeThread"],
     ]
 
-    @pytest.mark.parametrize("ordering", _ORDERINGS,
-                             ids=[f"order_{i}" for i in range(len(_ORDERINGS))])
+    @pytest.mark.parametrize(
+        "ordering", _ORDERINGS, ids=[f"order_{i}" for i in range(len(_ORDERINGS))]
+    )
     def test_converges_within_budget(self, ordering: list[str]) -> None:
         pass_map = dict(ALL_PASSES)
         nodes = _make_initial_nodes()
@@ -259,8 +311,9 @@ class TestFixedPointConvergence:
             f"with ordering {ordering}"
         )
 
-    @pytest.mark.parametrize("ordering", _ORDERINGS,
-                             ids=[f"order_{i}" for i in range(len(_ORDERINGS))])
+    @pytest.mark.parametrize(
+        "ordering", _ORDERINGS, ids=[f"order_{i}" for i in range(len(_ORDERINGS))]
+    )
     def test_fixed_point_is_stable(self, ordering: list[str]) -> None:
         """Once at fixed point, no pass changes the program (I5)."""
         nodes = _run_pipeline(ordering)
@@ -280,8 +333,9 @@ class TestMonotonicity:
         ["DCE", "CSE", "ConstFold", "SCCP", "EdgeThread", "GuardHoist", "JoinCanon"],
     ]
 
-    @pytest.mark.parametrize("ordering", _ORDERINGS,
-                             ids=[f"order_{i}" for i in range(len(_ORDERINGS))])
+    @pytest.mark.parametrize(
+        "ordering", _ORDERINGS, ids=[f"order_{i}" for i in range(len(_ORDERINGS))]
+    )
     def test_node_count_never_increases(self, ordering: list[str]) -> None:
         pass_map = dict(ALL_PASSES)
         nodes = _make_initial_nodes()
@@ -298,8 +352,9 @@ class TestMonotonicity:
                 )
                 nodes = new_nodes
 
-    @pytest.mark.parametrize("ordering", _ORDERINGS,
-                             ids=[f"order_{i}" for i in range(len(_ORDERINGS))])
+    @pytest.mark.parametrize(
+        "ordering", _ORDERINGS, ids=[f"order_{i}" for i in range(len(_ORDERINGS))]
+    )
     def test_size_bounded_by_max_nodes(self, ordering: list[str]) -> None:
         nodes = _run_pipeline(ordering)
         assert len(nodes) <= MAX_NODES
@@ -317,7 +372,9 @@ class TestSoundness:
             f"New IDs introduced: {final_ids - original_ids}"
         )
 
-    @pytest.mark.parametrize("pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES])
+    @pytest.mark.parametrize(
+        "pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES]
+    )
     def test_no_new_ids_per_pass(
         self,
         pass_name: str,
@@ -359,9 +416,12 @@ class TestCSECorrectness:
         after_cse = apply_cse(nodes)
         live = [n for n in after_cse if n.uses > 0]
         for i, n1 in enumerate(live):
-            for n2 in live[i + 1:]:
-                if (n1.kind == NodeKind.Arith and n2.kind == NodeKind.Arith
-                        and n1.canonical == n2.canonical):
+            for n2 in live[i + 1 :]:
+                if (
+                    n1.kind == NodeKind.Arith
+                    and n2.kind == NodeKind.Arith
+                    and n1.canonical == n2.canonical
+                ):
                     pytest.fail(
                         f"Duplicate canonical {n1.canonical} for "
                         f"live nodes {n1.id} and {n2.id}"
@@ -401,7 +461,9 @@ class TestConstFoldSoundness:
 class TestNonNegativeUses:
     """I9: no node has negative use count at any point."""
 
-    @pytest.mark.parametrize("pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES])
+    @pytest.mark.parametrize(
+        "pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES]
+    )
     def test_uses_non_negative_per_pass(
         self,
         pass_name: str,
@@ -418,7 +480,9 @@ class TestNonNegativeUses:
 class TestUniqueNodeIds:
     """I10: node IDs are unique within the program after any pass."""
 
-    @pytest.mark.parametrize("pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES])
+    @pytest.mark.parametrize(
+        "pass_name,pass_fn", ALL_PASSES, ids=[p[0] for p in ALL_PASSES]
+    )
     def test_unique_ids_per_pass(
         self,
         pass_name: str,
@@ -440,9 +504,33 @@ class TestPassOrderingDeterminism:
         orderings = [
             [name for name, _ in ALL_PASSES],
             list(reversed([name for name, _ in ALL_PASSES])),
-            ["DCE", "ConstFold", "SCCP", "CSE", "EdgeThread", "GuardHoist", "JoinCanon"],
-            ["JoinCanon", "GuardHoist", "EdgeThread", "CSE", "SCCP", "ConstFold", "DCE"],
-            ["CSE", "DCE", "ConstFold", "JoinCanon", "GuardHoist", "SCCP", "EdgeThread"],
+            [
+                "DCE",
+                "ConstFold",
+                "SCCP",
+                "CSE",
+                "EdgeThread",
+                "GuardHoist",
+                "JoinCanon",
+            ],
+            [
+                "JoinCanon",
+                "GuardHoist",
+                "EdgeThread",
+                "CSE",
+                "SCCP",
+                "ConstFold",
+                "DCE",
+            ],
+            [
+                "CSE",
+                "DCE",
+                "ConstFold",
+                "JoinCanon",
+                "GuardHoist",
+                "SCCP",
+                "EdgeThread",
+            ],
         ]
         for ordering in orderings:
             nodes = _run_pipeline(ordering)
@@ -466,13 +554,24 @@ class TestPassOrderingDeterminism:
         orderings = [
             [name for name, _ in ALL_PASSES],
             list(reversed([name for name, _ in ALL_PASSES])),
-            ["DCE", "ConstFold", "SCCP", "CSE", "EdgeThread", "GuardHoist", "JoinCanon"],
+            [
+                "DCE",
+                "ConstFold",
+                "SCCP",
+                "CSE",
+                "EdgeThread",
+                "GuardHoist",
+                "JoinCanon",
+            ],
         ]
         live_id_sets = []
         for ordering in orderings:
             nodes = _run_pipeline(ordering)
-            live_ids = {n.id for n in nodes if n.uses > 0
-                        or n.kind in (NodeKind.Branch, NodeKind.Guard)}
+            live_ids = {
+                n.id
+                for n in nodes
+                if n.uses > 0 or n.kind in (NodeKind.Branch, NodeKind.Guard)
+            }
             live_id_sets.append(live_ids)
 
         for i, ids in enumerate(live_id_sets[1:], 1):

@@ -272,7 +272,9 @@ class Tensor:
         return self._binary("CMPNE", other)
 
     def __gt__(self, other) -> "Tensor":
-        return Tensor._ensure_tensor(other, self.shape, self.dtype)._binary("CMPLT", self)
+        return Tensor._ensure_tensor(other, self.shape, self.dtype)._binary(
+            "CMPLT", self
+        )
 
     def __ge__(self, other) -> "Tensor":
         return 1.0 - (self < other)
@@ -389,9 +391,7 @@ class Tensor:
     def pad(self, padding, value: float = 0.0) -> "Tensor":
         """Pad tensor. padding is list of (before, after) pairs per dim."""
         flat = tinygrad.realize.realize(self.lazydata)
-        new_shape = tuple(
-            s + p[0] + p[1] for s, p in zip(self.shape, padding)
-        )
+        new_shape = tuple(s + p[0] + p[1] for s, p in zip(self.shape, padding))
         numel = 1
         for s in new_shape:
             numel *= s
@@ -432,7 +432,7 @@ class Tensor:
         for i in range(start_dim, end_dim + 1):
             flat_size *= self.shape[i]
         new_shape.append(flat_size)
-        new_shape.extend(self.shape[end_dim + 1:])
+        new_shape.extend(self.shape[end_dim + 1 :])
         return self.reshape(*new_shape)
 
     def unsqueeze(self, dim: int) -> "Tensor":
@@ -478,8 +478,6 @@ class Tensor:
         new_shape = list(shape)
         new_shape[ax] = shape[ax] * n_rep
 
-        # Compute strides for source
-        src_numel = len(flat)
         dst_numel = 1
         for s in new_shape:
             dst_numel *= s
@@ -519,10 +517,8 @@ class Tensor:
         total = sum(sizes)
         if total != self.shape[-1]:
             raise ValueError(
-                f"split sizes {sizes} sum to {total}, "
-                f"but last dim is {self.shape[-1]}"
+                f"split sizes {sizes} sum to {total}, but last dim is {self.shape[-1]}"
             )
-        ndim = self.ndim
         shape = self.shape
         leading_shape = shape[:-1]
         leading_numel = 1
@@ -542,7 +538,9 @@ class Tensor:
                 for i in range(sz):
                     out_data[dst_base + i] = flat[src_base + i]
             op = LazyOp("LOAD", (), dtype=self.dtype, shape=out_shape)
-            results.append(tensor_from_lazy(LazyBuffer(op, self.dtype, out_shape, data=out_data)))
+            results.append(
+                tensor_from_lazy(LazyBuffer(op, self.dtype, out_shape, data=out_data))
+            )
             offset += sz
 
         return tuple(results)
@@ -558,7 +556,9 @@ class Tensor:
         shape = self.shape
         last_dim = shape[-1]
         if last_dim % 2 != 0:
-            raise ValueError(f"squared_relu_gate_interleaved requires even last dim, got {last_dim}")
+            raise ValueError(
+                f"squared_relu_gate_interleaved requires even last dim, got {last_dim}"
+            )
         half_dim = last_dim // 2
 
         leading_shape = shape[:-1]
@@ -614,7 +614,9 @@ class Tensor:
             result = [s]
             shape = (1,)
         else:
-            raise ValueError(f"matmul not supported for ndim {self.ndim} @ {other.ndim}")
+            raise ValueError(
+                f"matmul not supported for ndim {self.ndim} @ {other.ndim}"
+            )
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=shape)
         return tensor_from_lazy(LazyBuffer(op, self.dtype, shape, data=result))
 
@@ -631,7 +633,6 @@ class Tensor:
 
         all_data = [tinygrad.realize.realize(t.lazydata) for t in tensors]
         shapes = [t.shape for t in tensors]
-        ndim = len(shapes[0])
 
         # Compute output shape
         out_shape = list(shapes[0])
@@ -712,10 +713,12 @@ class Tensor:
             for s in self.shape[1:]:
                 inner *= s
             start = idx * inner
-            new_data = flat[start:start + inner]
+            new_data = flat[start : start + inner]
             new_shape = self.shape[1:]
             op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
-            return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, data=new_data))
+            return tensor_from_lazy(
+                LazyBuffer(op, self.dtype, new_shape, data=new_data)
+            )
         raise TypeError(f"Unsupported index type: {type(idx)}")
 
     # --- Specialized Compositions ---
@@ -744,17 +747,27 @@ class Tensor:
             for i in range(n):
                 for j in range(n):
                     mask_data.append(0.0 if j <= i else float("-inf"))
-            cmask = tensor_from_lazy(LazyBuffer(
-                LazyOp("LOAD", (), dtype=scores.dtype, shape=(n, n)),
-                scores.dtype, (n, n), data=mask_data
-            ))
+            cmask = tensor_from_lazy(
+                LazyBuffer(
+                    LazyOp("LOAD", (), dtype=scores.dtype, shape=(n, n)),
+                    scores.dtype,
+                    (n, n),
+                    data=mask_data,
+                )
+            )
             scores = scores + cmask
         if attn_mask is not None:
             scores = scores + attn_mask
         weights = scores.softmax(axis=-1)
         return weights @ v
 
-    def layernorm(self, normalized_shape, weight: "Tensor" = None, bias: "Tensor" = None, eps: float = 1e-5) -> "Tensor":
+    def layernorm(
+        self,
+        normalized_shape,
+        weight: "Tensor" = None,
+        bias: "Tensor" = None,
+        eps: float = 1e-5,
+    ) -> "Tensor":
         """Layer normalization."""
         mean = self.mean(axis=-1)
         # variance = mean((x - mean)^2)
@@ -770,8 +783,13 @@ class Tensor:
         return normed
 
     @staticmethod
-    def conv2d(x: "Tensor", weight: "Tensor", bias: "Tensor" = None,
-               stride: int = 1, padding: int = 0) -> "Tensor":
+    def conv2d(
+        x: "Tensor",
+        weight: "Tensor",
+        bias: "Tensor" = None,
+        stride: int = 1,
+        padding: int = 0,
+    ) -> "Tensor":
         """2D convolution via im2col + matmul.
 
         x: (N, C_in, H, W) input tensor
@@ -807,7 +825,12 @@ class Tensor:
                                 iw = ow * stride - padding + fw
                                 row_idx = ic * kh * kw + fh * kw + fw
                                 if 0 <= ih < h and 0 <= iw < w:
-                                    val = x_data[batch * (c_in * h * w) + ic * (h * w) + ih * w + iw]
+                                    val = x_data[
+                                        batch * (c_in * h * w)
+                                        + ic * (h * w)
+                                        + ih * w
+                                        + iw
+                                    ]
                                 else:
                                     val = 0.0
                                 col[row_idx * col_w + col_idx] = val
@@ -836,10 +859,16 @@ class Tensor:
                 for oh in range(h_out):
                     for ow in range(w_out):
                         col_idx = batch * h_out * w_out + oh * w_out + ow
-                        out_data[batch * (c_out * h_out * w_out) + oc * (h_out * w_out) + oh * w_out + ow] = result[oc * col_w + col_idx]
+                        out_data[
+                            batch * (c_out * h_out * w_out)
+                            + oc * (h_out * w_out)
+                            + oh * w_out
+                            + ow
+                        ] = result[oc * col_w + col_idx]
 
         out_shape = (n, c_out, h_out, w_out)
         from tinygrad.lazy import LazyOp, LazyBuffer as LB
+
         op = LazyOp("LOAD", (), dtype=x.dtype, shape=out_shape)
         return tensor_from_lazy(LB(op, x.dtype, out_shape, data=out_data))
 
@@ -849,7 +878,9 @@ class Tensor:
         op = LazyOp(op_name, (self.lazydata,), dtype=self.dtype, shape=self.shape)
         return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape))
 
-    def _unary_compose(self, op_name: str, pre_mul: float = None, post_mul: float = None) -> "Tensor":
+    def _unary_compose(
+        self, op_name: str, pre_mul: float = None, post_mul: float = None
+    ) -> "Tensor":
         src = self
         if pre_mul is not None:
             src = src * pre_mul
@@ -925,6 +956,7 @@ def tensor_from_data(data, dtype=None):
 
 # --- Utility Functions ---
 
+
 def _resolve_shape(args) -> tuple:
     """Resolve shape from *args: (3, 4) or ((3, 4),)."""
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
@@ -977,7 +1009,7 @@ def _unflatten_data(flat: list, shape: tuple) -> list:
     result = []
     for i in range(size):
         start = i * inner_size
-        chunk = flat[start:start + inner_size]
+        chunk = flat[start : start + inner_size]
         result.append(_unflatten_data(chunk, shape[1:]))
     return result
 
@@ -1164,7 +1196,9 @@ def _flip_data(flat: list, shape: tuple, axis: int) -> list:
     return result
 
 
-def _copy_with_padding(src: list, src_shape: tuple, dst: list, dst_shape: tuple, padding: list) -> None:
+def _copy_with_padding(
+    src: list, src_shape: tuple, dst: list, dst_shape: tuple, padding: list
+) -> None:
     """Copy src data into dst with padding offsets."""
     ndim = len(src_shape)
     src_numel = len(src)
@@ -1184,7 +1218,9 @@ def _copy_with_padding(src: list, src_shape: tuple, dst: list, dst_shape: tuple,
         dst[dst_idx] = src[idx]
 
 
-def _gather_data(src: list, src_shape: tuple, idx_data: list, idx_shape: tuple, dim: int) -> list:
+def _gather_data(
+    src: list, src_shape: tuple, idx_data: list, idx_shape: tuple, dim: int
+) -> list:
     """Gather elements from src along dim using index."""
     ndim = len(src_shape)
     numel = len(idx_data)
@@ -1213,7 +1249,9 @@ def _gather_data(src: list, src_shape: tuple, idx_data: list, idx_shape: tuple, 
     return result
 
 
-def _scatter_data(dst: list, dst_shape: tuple, src: list, idx_data: list, idx_shape: tuple, dim: int) -> None:
+def _scatter_data(
+    dst: list, dst_shape: tuple, src: list, idx_data: list, idx_shape: tuple, dim: int
+) -> None:
     """Scatter src elements into dst along dim using index."""
     ndim = len(dst_shape)
     numel = len(idx_data)

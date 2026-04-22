@@ -27,7 +27,7 @@ def test_normalize_issue_sanitizes_title_noise() -> None:
             "milestone": "LF2",
             "priority": "P0",
             "status": "partial",
-            "body": 'expand async generator lowering coverage) |',
+            "body": "expand async generator lowering coverage) |",
             "source_file": "ROADMAP.md",
             "source_line": 123,
         }
@@ -40,11 +40,14 @@ def test_normalize_issue_strips_nested_todo_suffix_and_quote_noise() -> None:
     assert linear_seed_backlog._sanitize_body('fixture partial marker. "') == (
         "fixture partial marker"
     )
-    assert linear_seed_backlog._sanitize_body(
-        "wire local timezone + locale on wasm hosts). "
-        "(TODO(stdlib-compat, owner:stdlib, milestone:SL2, "
-        "priority:P2, status:partial): deterministic clock policy) |"
-    ) == "wire local timezone + locale on wasm hosts)"
+    assert (
+        linear_seed_backlog._sanitize_body(
+            "wire local timezone + locale on wasm hosts). "
+            "(TODO(stdlib-compat, owner:stdlib, milestone:SL2, "
+            "priority:P2, status:partial): deterministic clock policy) |"
+        )
+        == "wire local timezone + locale on wasm hosts)"
+    )
 
 
 def test_group_manifest_items_rolls_up_priority_impact_and_leaf_inventory() -> None:
@@ -174,9 +177,7 @@ def test_build_seed_backlog_discovers_code_todos_outside_doc_seed_files(
     backlog = linear_seed_backlog.build_seed_backlog(tmp_path, max_items=None)
     titles = [item["title"] for item in backlog["selected"]]
 
-    assert titles == [
-        "[P1][TL2] add deterministic cache diagnostics in code path"
-    ]
+    assert titles == ["[P1][TL2] add deterministic cache diagnostics in code path"]
     assert backlog["source_mode"] == "codebase"
 
 
@@ -280,5 +281,8 @@ def test_build_seed_backlog_includes_formal_and_demo_roots_in_codebase_mode(
     backlog = linear_seed_backlog.build_seed_backlog(tmp_path, max_items=None)
     titles = [item["title"] for item in backlog["selected"]]
 
-    assert "[P1][M5] Prove SCCP transfer preserves abstract interpretation soundness" in titles
+    assert (
+        "[P1][M5] Prove SCCP transfer preserves abstract interpretation soundness"
+        in titles
+    )
     assert "[P1][SL1] compile entrypoints into molt_worker" in titles

@@ -17,4 +17,5 @@ def py_make_scanner(_context):
 
     return _scan_once
 
+
 globals().pop("_require_intrinsic", None)

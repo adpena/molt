@@ -68,8 +68,10 @@ registry.setdefault(
 )
 registry.setdefault(
     "molt_base64_a85encode",
-    lambda data, foldspaces=False, wrapcol=0, pad=False, adobe=False: py_base64.a85encode(
-        data, foldspaces=foldspaces, wrapcol=wrapcol, pad=pad, adobe=adobe
+    lambda data, foldspaces=False, wrapcol=0, pad=False, adobe=False: (
+        py_base64.a85encode(
+            data, foldspaces=foldspaces, wrapcol=wrapcol, pad=pad, adobe=adobe
+        )
     ),
 )
 registry.setdefault(

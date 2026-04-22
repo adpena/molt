@@ -23,6 +23,7 @@ from .tensor import Tensor, zeros, randn, _product
 
 # ── Activation layers ─────────────────────────────────────────────────
 
+
 class ReLU:
     """Rectified linear unit activation."""
 
@@ -85,6 +86,7 @@ class GELU:
 
 # ── Core layers ───────────────────────────────────────────────────────
 
+
 class Linear:
     """Fully connected layer: y = x @ W^T + b.
 
@@ -101,7 +103,14 @@ class Linear:
 
         # Gaussian initialization scaled by 1/sqrt(in_features)
         bound = 1.0 / math.sqrt(in_features)
-        self.weight = randn(out_features, in_features, seed=hash((in_features, out_features)) & 0xFFFFFFFF) * bound
+        self.weight = (
+            randn(
+                out_features,
+                in_features,
+                seed=hash((in_features, out_features)) & 0xFFFFFFFF,
+            )
+            * bound
+        )
         if bias:
             self.bias = zeros(out_features) * 0.0
         else:
@@ -157,9 +166,11 @@ class Linear:
         return params
 
     def __repr__(self):
-        return (f"Linear(in_features={self.in_features}, "
-                f"out_features={self.out_features}, "
-                f"bias={self.has_bias})")
+        return (
+            f"Linear(in_features={self.in_features}, "
+            f"out_features={self.out_features}, "
+            f"bias={self.has_bias})"
+        )
 
 
 class Conv2d:
@@ -176,20 +187,36 @@ class Conv2d:
         padding: zero-padding added to both sides (default: 0)
     """
 
-    def __init__(self, in_channels: int, out_channels: int,
-                 kernel_size: int, stride: int = 1, padding: int = 0):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        stride: int = 1,
+        padding: int = 0,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
+        self.kernel_size = (
+            kernel_size
+            if isinstance(kernel_size, tuple)
+            else (kernel_size, kernel_size)
+        )
         self.stride = stride if isinstance(stride, tuple) else (stride, stride)
         self.padding = padding if isinstance(padding, tuple) else (padding, padding)
 
         kh, kw = self.kernel_size
         bound = 1.0 / math.sqrt(in_channels * kh * kw)
-        self.weight = randn(
-            out_channels, in_channels, kh, kw,
-            seed=hash((in_channels, out_channels, kh, kw)) & 0xFFFFFFFF
-        ) * bound
+        self.weight = (
+            randn(
+                out_channels,
+                in_channels,
+                kh,
+                kw,
+                seed=hash((in_channels, out_channels, kh, kw)) & 0xFFFFFFFF,
+            )
+            * bound
+        )
         self.bias = zeros(out_channels) * 0.0
 
     def __call__(self, x: Tensor) -> Tensor:
@@ -219,9 +246,11 @@ class Conv2d:
         return params
 
     def __repr__(self):
-        return (f"Conv2d({self.in_channels}, {self.out_channels}, "
-                f"kernel_size={self.kernel_size}, stride={self.stride}, "
-                f"padding={self.padding})")
+        return (
+            f"Conv2d({self.in_channels}, {self.out_channels}, "
+            f"kernel_size={self.kernel_size}, stride={self.stride}, "
+            f"padding={self.padding})"
+        )
 
 
 class MaxPool2d:
@@ -233,7 +262,11 @@ class MaxPool2d:
     """
 
     def __init__(self, kernel_size: int, stride: int = None):
-        self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
+        self.kernel_size = (
+            kernel_size
+            if isinstance(kernel_size, tuple)
+            else (kernel_size, kernel_size)
+        )
         if stride is None:
             self.stride = self.kernel_size
         else:
@@ -257,7 +290,7 @@ class MaxPool2d:
             for c in range(channels):
                 for oh in range(out_h):
                     for ow in range(out_w):
-                        max_val = float('-inf')
+                        max_val = float("-inf")
                         for fh in range(kh):
                             for fw in range(kw):
                                 ih = oh * sh + fh
@@ -278,7 +311,11 @@ class AvgPool2d:
     """2D average pooling layer."""
 
     def __init__(self, kernel_size: int, stride: int = None):
-        self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
+        self.kernel_size = (
+            kernel_size
+            if isinstance(kernel_size, tuple)
+            else (kernel_size, kernel_size)
+        )
         if stride is None:
             self.stride = self.kernel_size
         else:
@@ -346,8 +383,16 @@ class BatchNorm1d:
         data = x._data_list()
         mean = self.running_mean._data_list()
         var = self.running_var._data_list()
-        gamma = self.weight._data_list() if self.weight is not None else [1.0] * self.num_features
-        beta = self.bias_param._data_list() if self.bias_param is not None else [0.0] * self.num_features
+        gamma = (
+            self.weight._data_list()
+            if self.weight is not None
+            else [1.0] * self.num_features
+        )
+        beta = (
+            self.bias_param._data_list()
+            if self.bias_param is not None
+            else [0.0] * self.num_features
+        )
 
         # x shape: (batch, features) or (features,)
         if x.ndim == 1:
@@ -373,9 +418,15 @@ class BatchNorm1d:
         if bias is not None:
             self.bias_param = bias if isinstance(bias, Tensor) else Tensor(bias)
         if running_mean is not None:
-            self.running_mean = running_mean if isinstance(running_mean, Tensor) else Tensor(running_mean)
+            self.running_mean = (
+                running_mean
+                if isinstance(running_mean, Tensor)
+                else Tensor(running_mean)
+            )
         if running_var is not None:
-            self.running_var = running_var if isinstance(running_var, Tensor) else Tensor(running_var)
+            self.running_var = (
+                running_var if isinstance(running_var, Tensor) else Tensor(running_var)
+            )
 
     def __repr__(self):
         return f"BatchNorm1d({self.num_features})"
@@ -435,7 +486,7 @@ class Flatten:
     def __call__(self, x: Tensor) -> Tensor:
         if self.start_dim >= x.ndim:
             return x
-        new_shape = x.shape[:self.start_dim] + (_product(x.shape[self.start_dim:]),)
+        new_shape = x.shape[: self.start_dim] + (_product(x.shape[self.start_dim :]),)
         return x.reshape(*new_shape)
 
     def __repr__(self):
@@ -453,10 +504,14 @@ class Embedding:
     def __init__(self, num_embeddings: int, embedding_dim: int):
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.weight = randn(
-            num_embeddings, embedding_dim,
-            seed=hash((num_embeddings, embedding_dim)) & 0xFFFFFFFF
-        ) * 0.02  # Small initialization
+        self.weight = (
+            randn(
+                num_embeddings,
+                embedding_dim,
+                seed=hash((num_embeddings, embedding_dim)) & 0xFFFFFFFF,
+            )
+            * 0.02
+        )  # Small initialization
 
     def __call__(self, indices: Tensor) -> Tensor:
         """Look up embeddings for the given indices.
@@ -488,6 +543,7 @@ class Embedding:
 
 
 # ── Container layers ──────────────────────────────────────────────────
+
 
 class Sequential:
     """Chain layers sequentially.
@@ -522,7 +578,7 @@ class Sequential:
             w_key = f"{prefix}.weight"
             b_key = f"{prefix}.bias"
 
-            if hasattr(layer, 'load_weights'):
+            if hasattr(layer, "load_weights"):
                 weight = weights_dict.get(w_key)
                 bias = weights_dict.get(b_key)
                 if weight is not None:
@@ -548,7 +604,7 @@ class Sequential:
         """Return all parameter tensors."""
         params = []
         for layer in self.layers:
-            if hasattr(layer, 'parameters'):
+            if hasattr(layer, "parameters"):
                 params.extend(layer.parameters())
         return params
 

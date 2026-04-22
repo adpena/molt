@@ -99,9 +99,7 @@ def wasm_runtime_import_names() -> tuple[str, ...]:
         if match:
             names.append(match.group(1))
     if not names:
-        raise RuntimeError(
-            f"failed to read wasm import registry from {registry_path}"
-        )
+        raise RuntimeError(f"failed to read wasm import registry from {registry_path}")
     return tuple(sorted(set(names)))
 
 
@@ -161,7 +159,8 @@ def _resolved_dynamic_runtime_owned_intrinsic_exports(
     dynamic_modules = tuple(
         module_name
         for module_name in resolved_modules
-        if module_name.startswith("molt.") and not module_name.startswith("molt.stdlib.")
+        if module_name.startswith("molt.")
+        and not module_name.startswith("molt.stdlib.")
     )
     return _resolved_runtime_owned_intrinsic_exports(dynamic_modules)
 
@@ -172,7 +171,9 @@ def wasm_runtime_dynamic_export_names(
     return tuple(
         sorted(
             canonical_intrinsic_runtime_name(name)
-            for name in _resolved_dynamic_runtime_owned_intrinsic_exports(resolved_modules)
+            for name in _resolved_dynamic_runtime_owned_intrinsic_exports(
+                resolved_modules
+            )
         )
     )
 
@@ -181,12 +182,7 @@ def wasm_runtime_dynamic_export_names(
 def intrinsic_runtime_symbol_names() -> dict[str, str]:
     repo_root = Path(__file__).resolve().parents[2]
     generated_path = (
-        repo_root
-        / "runtime"
-        / "molt-runtime"
-        / "src"
-        / "intrinsics"
-        / "generated.rs"
+        repo_root / "runtime" / "molt-runtime" / "src" / "intrinsics" / "generated.rs"
     )
     text = generated_path.read_text(encoding="utf-8")
     mapping = {
@@ -262,6 +258,5 @@ def wasm_runtime_export_link_args(
         export_names = set(wasm_runtime_required_export_names(required_runtime_imports))
         export_names.update(wasm_runtime_dynamic_export_names(resolved_modules))
     return "".join(
-        f" -C link-arg=--export-if-defined={name}"
-        for name in sorted(export_names)
+        f" -C link-arg=--export-if-defined={name}" for name in sorted(export_names)
     )

@@ -268,9 +268,7 @@ class TestBinOpAlignment:
                 continue
             if v not in python_ops and upper not in python_effect_ops:
                 missing.append(v)
-        assert not missing, (
-            f"Lean BinOp variants not found in Python: {missing}"
-        )
+        assert not missing, f"Lean BinOp variants not found in Python: {missing}"
 
 
 class TestUnOpAlignment:
@@ -299,9 +297,7 @@ class TestUnOpAlignment:
                 continue
             if v not in python_ops and v.upper() not in python_effect_ops:
                 missing.append(v)
-        assert not missing, (
-            f"Lean UnOp variants not found in Python: {missing}"
-        )
+        assert not missing, f"Lean UnOp variants not found in Python: {missing}"
 
 
 class TestValueConstructors:

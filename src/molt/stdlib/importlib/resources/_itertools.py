@@ -3,12 +3,11 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe")
-_MOLT_IMPORTLIB_RESOURCES_ONLY = _require_intrinsic(
-    "molt_importlib_resources_only"
-)
+_MOLT_IMPORTLIB_RESOURCES_ONLY = _require_intrinsic("molt_importlib_resources_only")
 
 
 def only(iterable, default=None, too_long=None):
     return _MOLT_IMPORTLIB_RESOURCES_ONLY(iterable, default, too_long)
+
 
 globals().pop("_require_intrinsic", None)

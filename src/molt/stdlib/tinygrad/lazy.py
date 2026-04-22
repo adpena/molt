@@ -7,6 +7,7 @@ The DAG is materialized on realize() via schedule -> fuse -> render -> execute.
 
 from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.dtypes import DType, dtypes
@@ -134,7 +135,7 @@ def _dispatch_op(
     if op_name == "NEG":
         return [-x for x in srcs[0]]
     if op_name == "EXP2":
-        return [2.0 ** x for x in srcs[0]]
+        return [2.0**x for x in srcs[0]]
     if op_name == "LOG2":
         return [math.log2(x) if x > 0 else float("-inf") for x in srcs[0]]
     if op_name == "SIN":

@@ -15,9 +15,7 @@ def test_wasm_linked_class_instantiation_preserves_type_name(tmp_path: Path) -> 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "class_probe.py"
     src.write_text(
-        "class A:\n"
-        "    pass\n\n"
-        "print(type(A()).__name__)\n",
+        "class A:\n    pass\n\nprint(type(A()).__name__)\n",
         encoding="utf-8",
     )
 
@@ -33,10 +31,7 @@ def test_wasm_linked_class_instantiation_runs_module_body(tmp_path: Path) -> Non
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "class_inst_probe.py"
     src.write_text(
-        "class A:\n"
-        "    pass\n\n"
-        "A()\n"
-        'print("hi")\n',
+        'class A:\n    pass\n\nA()\nprint("hi")\n',
         encoding="utf-8",
     )
 
@@ -52,9 +47,7 @@ def test_wasm_linked_plain_class_definition_runs_module_body(tmp_path: Path) -> 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "class_plain_probe.py"
     src.write_text(
-        "class A:\n"
-        "    pass\n\n"
-        'print("hi")\n',
+        'class A:\n    pass\n\nprint("hi")\n',
         encoding="utf-8",
     )
 
@@ -72,9 +65,7 @@ def test_wasm_linked_class_name_lookup_preserves_class_identity(
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "class_name_probe.py"
     src.write_text(
-        "class A:\n"
-        "    pass\n\n"
-        "print(A.__name__)\n",
+        "class A:\n    pass\n\nprint(A.__name__)\n",
         encoding="utf-8",
     )
 
@@ -114,11 +105,7 @@ def test_wasm_linked_class_function_attribute_definition_does_not_corrupt_stdout
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "class_func_attr_probe.py"
     src.write_text(
-        "def f(self):\n"
-        "    return None\n\n"
-        "class A:\n"
-        "    f = f\n\n"
-        'print("hi")\n',
+        'def f(self):\n    return None\n\nclass A:\n    f = f\n\nprint("hi")\n',
         encoding="utf-8",
     )
 

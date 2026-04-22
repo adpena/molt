@@ -36,9 +36,7 @@ _MOLT_IMPORTLIB_FIND_IN_PATH_PACKAGE_CONTEXT = _require_intrinsic(
 _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
     "molt_importlib_zip_source_exec_payload"
 )
-_MOLT_IMPORTLIB_ZIP_READ_ENTRY = _require_intrinsic(
-    "molt_importlib_zip_read_entry"
-)
+_MOLT_IMPORTLIB_ZIP_READ_ENTRY = _require_intrinsic("molt_importlib_zip_read_entry")
 _MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
 _MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
@@ -241,5 +239,6 @@ class zipimporter:
         if not callable(get_reader):
             return None
         return get_reader(fullname)
+
 
 globals().pop("_require_intrinsic", None)

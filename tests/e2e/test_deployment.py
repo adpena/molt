@@ -83,12 +83,9 @@ def test_wasm_driver_delegates_to_falcon_ocr():
             for alias in node.names:
                 if alias.name == "tinygrad.examples.falcon_ocr":
                     falcon_module_bindings.add(alias.asname or "molt")
-        elif (
-            isinstance(node, ast.ImportFrom)
-            and (
-                node.module == "tinygrad.examples.falcon_ocr"
-                or (node.level == 1 and node.module == "examples.falcon_ocr")
-            )
+        elif isinstance(node, ast.ImportFrom) and (
+            node.module == "tinygrad.examples.falcon_ocr"
+            or (node.level == 1 and node.module == "examples.falcon_ocr")
         ):
             for alias in node.names:
                 direct_falcon_bindings[alias.asname or alias.name] = alias.name
@@ -98,9 +95,7 @@ def test_wasm_driver_delegates_to_falcon_ocr():
     )
 
     functions = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
     }
     assert _delegates_to_falcon_ocr(
         functions["init"],
@@ -140,10 +135,7 @@ def _delegates_to_falcon_ocr(
             and callee.value.id in module_bindings
         ):
             return True
-        if (
-            isinstance(callee, ast.Name)
-            and direct_bindings.get(callee.id) == attr_name
-        ):
+        if isinstance(callee, ast.Name) and direct_bindings.get(callee.id) == attr_name:
             return True
     return False
 
@@ -167,7 +159,9 @@ def test_wasm_manifest_structure():
             "wasm_manifest.json",
         )
     )
-    assert os.path.isfile(manifest_path), f"wasm_manifest.json not found at {manifest_path}"
+    assert os.path.isfile(manifest_path), (
+        f"wasm_manifest.json not found at {manifest_path}"
+    )
 
     with open(manifest_path) as f:
         manifest = json.load(f)
@@ -281,7 +275,7 @@ def test_worker_js_exists():
     with open(worker_path) as f:
         source = f.read()
 
-    assert 'import' in source and 'ocr_api.js' in source
+    assert "import" in source and "ocr_api.js" in source
     assert "X-Payment-402" in source, "Worker must check x402 payment header"
     assert "ensureModelLoaded" in source, "Worker must lazy-load the model"
     assert "/health" in source, "Worker must handle health endpoint"
@@ -310,7 +304,9 @@ def test_ocr_api_js_exists():
     assert "handleHealthRequest" in source
     assert "multipart/form-data" in source, "Must support multipart image upload"
     assert "application/json" in source, "Must support JSON base64 image upload"
-    assert "10485760" in source or "10 * 1024 * 1024" in source, "Must enforce 10MB limit"
+    assert "10485760" in source or "10 * 1024 * 1024" in source, (
+        "Must enforce 10MB limit"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +342,14 @@ def test_ocr_tokens_response_format():
 
 def test_ocr_full_response_format():
     """Full OCR response has the documented fields."""
-    expected_fields = {"text", "tokens", "confidence", "time_ms", "device", "request_id"}
+    expected_fields = {
+        "text",
+        "tokens",
+        "confidence",
+        "time_ms",
+        "device",
+        "request_id",
+    }
     ocr_response = {
         "text": "Invoice #1234",
         "tokens": [1, 2, 3],
@@ -551,8 +554,7 @@ def test_migration_guide_exists():
 
 if __name__ == "__main__":
     test_functions = [
-        v for k, v in sorted(globals().items())
-        if k.startswith("test_") and callable(v)
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
     ]
     passed = 0
     failed = 0

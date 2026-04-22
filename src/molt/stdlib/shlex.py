@@ -135,4 +135,5 @@ class shlex:
             raise StopIteration
         return token
 
+
 globals().pop("_require_intrinsic", None)

@@ -153,9 +153,7 @@ class PgoCollector:
         The format is compatible with ``_load_pgo_profile`` in ``molt.cli``.
         """
         # Build hotspots from call counts (sorted by frequency descending).
-        sorted_calls = sorted(
-            self.call_counts.items(), key=lambda kv: (-kv[1], kv[0])
-        )
+        sorted_calls = sorted(self.call_counts.items(), key=lambda kv: (-kv[1], kv[0]))
         hotspots: list[dict[str, Any]] = [
             {"symbol": name, "count": count} for name, count in sorted_calls
         ]

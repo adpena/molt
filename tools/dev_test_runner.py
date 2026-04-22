@@ -5,7 +5,6 @@ import argparse
 import os
 import secrets
 import subprocess
-import sys
 import time
 from datetime import datetime
 from pathlib import Path

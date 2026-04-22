@@ -10,6 +10,7 @@ These tests exercise the guarantees proven in:
   - formal/lean/MoltTIR/Runtime/WasmNativeCorrect.lean
   - formal/lean/MoltTIR/Runtime/WasmNative.lean (canonical_nan_is_float)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -25,9 +26,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
 
-_SUBPROCESS_TIMEOUT = float(
-    os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120")
-)
+_SUBPROCESS_TIMEOUT = float(os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120"))
 
 # WASM magic number and version (WebAssembly spec section 5.5.1).
 WASM_MAGIC = b"\x00asm"
@@ -173,7 +172,9 @@ def _wat_f64_token_to_bits(token: str) -> int | None:
             payload = 1
         return (1 << 63) | F64_EXPONENT_MASK | payload
     try:
-        value = float.fromhex(token) if token.startswith(("0x", "-0x")) else float(token)
+        value = (
+            float.fromhex(token) if token.startswith(("0x", "-0x")) else float(token)
+        )
     except ValueError:
         return None
     return struct.unpack("<Q", struct.pack("<d", value))[0]
@@ -407,6 +408,4 @@ class TestWasmNaNCanonicalization:
                 assert val1 != val2, f"Tags {name1} and {name2} collide"
 
             # Each tag should be extractable via TAG_MASK.
-            assert (val1 & TAG_MASK) == val1, (
-                f"Tag {name1} has bits outside TAG_MASK"
-            )
+            assert (val1 & TAG_MASK) == val1, f"Tag {name1} has bits outside TAG_MASK"

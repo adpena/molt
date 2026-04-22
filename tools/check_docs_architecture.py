@@ -33,7 +33,9 @@ def _check_readme(errors: list[str]) -> None:
         "README and ROADMAP are kept in sync",
     ):
         if banned in text:
-            errors.append(f"README.md: contains banned stale section or phrase {banned!r}")
+            errors.append(
+                f"README.md: contains banned stale section or phrase {banned!r}"
+            )
 
 
 def _check_status(errors: list[str]) -> None:
@@ -50,7 +52,9 @@ def _check_roadmap(errors: list[str]) -> None:
     text = _read_text(path)
     for banned in ("Last updated:", "Current Validation Note"):
         if banned in text:
-            errors.append(f"ROADMAP.md: contains banned current-state phrase {banned!r}")
+            errors.append(
+                f"ROADMAP.md: contains banned current-state phrase {banned!r}"
+            )
 
 
 def _check_supported(errors: list[str]) -> None:
@@ -64,7 +68,9 @@ def _check_supported(errors: list[str]) -> None:
         "Last updated:",
     ):
         if banned in text:
-            errors.append(f"SUPPORTED.md: contains banned secondary-contract phrase {banned!r}")
+            errors.append(
+                f"SUPPORTED.md: contains banned secondary-contract phrase {banned!r}"
+            )
 
 
 def _check_benchmarking_docs(errors: list[str]) -> None:
@@ -79,11 +85,15 @@ def _check_benchmarking_docs(errors: list[str]) -> None:
     ):
         text = _read_text(ROOT / rel_path)
         if "--update-readme" in text:
-            errors.append(f"{rel_path}: stale benchmark README updater reference '--update-readme'")
+            errors.append(
+                f"{rel_path}: stale benchmark README updater reference '--update-readme'"
+            )
         if "README Performance" in text or "README performance" in text:
             errors.append(f"{rel_path}: stale README benchmark ownership reference")
         if "summarized in `README.md`" in text:
-            errors.append(f"{rel_path}: stale README benchmark summary ownership reference")
+            errors.append(
+                f"{rel_path}: stale README benchmark summary ownership reference"
+            )
 
 
 def _check_support_story_refs(errors: list[str]) -> None:

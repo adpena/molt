@@ -21,7 +21,6 @@ Output format: SafeTensors bytes (usable with load_safetensors_bytes).
 from __future__ import annotations
 
 import json
-import math
 import random
 import struct
 from typing import Dict, List, Tuple
@@ -67,7 +66,10 @@ SEED = 42
 # Deterministic random tensor generation
 # ---------------------------------------------------------------------------
 
-def _make_tensor(rng: random.Random, shape: Tuple[int, ...], scale: float = 0.02) -> List[float]:
+
+def _make_tensor(
+    rng: random.Random, shape: Tuple[int, ...], scale: float = 0.02
+) -> List[float]:
     """Generate a flat list of floats with Xavier-like initialization."""
     n = 1
     for s in shape:
@@ -89,12 +91,15 @@ def _make_ones(shape: Tuple[int, ...]) -> List[float]:
 # SafeTensors serialization
 # ---------------------------------------------------------------------------
 
+
 def _encode_f32(values: List[float]) -> bytes:
     """Encode floats as little-endian F32."""
     return struct.pack(f"<{len(values)}f", *values)
 
 
-def _build_safetensors(tensors: Dict[str, Tuple[Tuple[int, ...], List[float]]]) -> bytes:
+def _build_safetensors(
+    tensors: Dict[str, Tuple[Tuple[int, ...], List[float]]],
+) -> bytes:
     """Build a SafeTensors binary blob from {name: (shape, flat_values)}.
 
     Each tensor is stored as F32. The format is:
@@ -126,6 +131,7 @@ def _build_safetensors(tensors: Dict[str, Tuple[Tuple[int, ...], List[float]]]) 
 # Generate stub weights
 # ---------------------------------------------------------------------------
 
+
 def generate_stub_weights(seed: int = SEED) -> bytes:
     """Generate deterministic stub weights as SafeTensors bytes.
 
@@ -144,9 +150,9 @@ def generate_stub_weights(seed: int = SEED) -> bytes:
     channel_size = cfg["channel_size"]
 
     # Derived dimensions
-    q_dim = n_heads * head_dim        # 4 * 16 = 64
-    kv_dim = n_kv_heads * head_dim    # 2 * 16 = 32
-    qkv_dim = q_dim + 2 * kv_dim     # 64 + 64 = 128
+    q_dim = n_heads * head_dim  # 4 * 16 = 64
+    kv_dim = n_kv_heads * head_dim  # 2 * 16 = 32
+    qkv_dim = q_dim + 2 * kv_dim  # 64 + 64 = 128
     patch_dim = patch_size * patch_size * channel_size  # 16 * 16 * 3 = 768
 
     tensors: Dict[str, Tuple[Tuple[int, ...], List[float]]] = {}
@@ -221,6 +227,7 @@ def generate_stub_config_json() -> str:
 # Synthetic test image generation
 # ---------------------------------------------------------------------------
 
+
 def generate_test_image(
     width: int = 32,
     height: int = 32,
@@ -237,9 +244,7 @@ def generate_test_image(
     Returns raw RGB bytes (height * width * 3).
     """
     if width % 16 != 0 or height % 16 != 0:
-        raise ValueError(
-            f"Image dimensions {width}x{height} must be multiples of 16"
-        )
+        raise ValueError(f"Image dimensions {width}x{height} must be multiples of 16")
     rng = random.Random(seed + 1)  # Different seed from weights
     pixels = bytearray(height * width * 3)
     idx = 0
@@ -259,6 +264,7 @@ def generate_test_image(
 # ---------------------------------------------------------------------------
 # Verification
 # ---------------------------------------------------------------------------
+
 
 def verify_determinism() -> bool:
     """Verify that two calls produce identical weights."""
@@ -292,15 +298,17 @@ def describe_stub_model() -> str:
     kv_dim = n_kv_heads * head_dim
     qkv_dim = q_dim + 2 * kv_dim
     layer_params = (
-        dim * qkv_dim          # wqkv
-        + q_dim * dim           # wo
-        + n_heads               # sinks
-        + dim * 2 * ffn_dim     # w13
-        + ffn_dim * dim         # w2
+        dim * qkv_dim  # wqkv
+        + q_dim * dim  # wo
+        + n_heads  # sinks
+        + dim * 2 * ffn_dim  # w13
+        + ffn_dim * dim  # w2
     )
     norm_params = dim
     output_params = dim * vocab_size
-    total = tok_params + proj_params + n_layers * layer_params + norm_params + output_params
+    total = (
+        tok_params + proj_params + n_layers * layer_params + norm_params + output_params
+    )
 
     lines = [
         "Falcon-OCR Stub Model",

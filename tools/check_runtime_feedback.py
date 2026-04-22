@@ -64,8 +64,10 @@ def _validate_hot_functions(payload: dict) -> str | None:
             if isinstance(entry, (list, tuple)):
                 if not entry or not isinstance(entry[0], str) or not entry[0]:
                     return "hot_functions tuple entries must start with a function name"
-                if len(entry) > 1 and entry[1] is not None and not isinstance(
-                    entry[1], (int, float)
+                if (
+                    len(entry) > 1
+                    and entry[1] is not None
+                    and not isinstance(entry[1], (int, float))
                 ):
                     return "hot_functions tuple scores must be numeric or null"
                 continue

@@ -28,4 +28,5 @@ else:
             "module 'asyncio.tools' has no attribute %r (requires Python 3.14+)" % attr
         )
 
+
 globals().pop("_require_intrinsic", None)

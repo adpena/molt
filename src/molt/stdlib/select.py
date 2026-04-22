@@ -29,15 +29,13 @@ _MOLT_SELECTOR_FILENO = _require_intrinsic("molt_select_selector_fileno")
 _MOLT_SELECTOR_LEN = _require_intrinsic("molt_select_selector_len")
 _MOLT_SELECTOR_EVENTS = _require_intrinsic("molt_select_selector_events")
 _MOLT_SELECTOR_REGISTER = _require_intrinsic("molt_select_selector_register")
-_MOLT_SELECTOR_REGISTER_FD = _require_intrinsic(
-    "molt_select_selector_register_fd")
-_MOLT_SELECTOR_UNREGISTER = _require_intrinsic(
-    "molt_select_selector_unregister")
+_MOLT_SELECTOR_REGISTER_FD = _require_intrinsic("molt_select_selector_register_fd")
+_MOLT_SELECTOR_UNREGISTER = _require_intrinsic("molt_select_selector_unregister")
 _MOLT_SELECTOR_UNREGISTER_OBJ = _require_intrinsic(
-    "molt_select_selector_unregister_obj")
+    "molt_select_selector_unregister_obj"
+)
 _MOLT_SELECTOR_MODIFY = _require_intrinsic("molt_select_selector_modify")
-_MOLT_SELECTOR_MODIFY_OBJ = _require_intrinsic(
-    "molt_select_selector_modify_obj")
+_MOLT_SELECTOR_MODIFY_OBJ = _require_intrinsic("molt_select_selector_modify_obj")
 _MOLT_SELECTOR_POLL = _require_intrinsic("molt_select_selector_poll")
 _MOLT_SELECTOR_CLOSE = _require_intrinsic("molt_select_selector_close")
 _MOLT_SELECTOR_DROP = _require_intrinsic("molt_select_selector_drop")

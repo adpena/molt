@@ -26,6 +26,7 @@ def _artifact_root() -> Path:
         return Path(configured).expanduser()
     return _REPO_ROOT
 
+
 # ---------------------------------------------------------------------------
 # Molt availability detection
 # ---------------------------------------------------------------------------

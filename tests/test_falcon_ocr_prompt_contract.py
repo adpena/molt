@@ -35,9 +35,7 @@ def _official_prompt_ids() -> dict[str, list[int]]:
 
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
     return {
-        category: tokenizer.encode(
-            f"<|image|>{instruction}\n<|OCR_PLAIN|>"
-        ).ids
+        category: tokenizer.encode(f"<|image|>{instruction}\n<|OCR_PLAIN|>").ids
         for category, instruction in OFFICIAL_INSTRUCTIONS.items()
     }
 
@@ -110,7 +108,10 @@ def test_browser_loader_matches_wasm_driver_init_and_decode_contract() -> None:
     assert "decode_tokens" not in source
     assert ".join(' ')" not in source
     assert "this._tokenizer.decode(Array.from(tokenIds))" in source
-    assert "this.weightsVariant = config.weightsVariant || 'falcon-ocr-int8-sharded'" in source
+    assert (
+        "this.weightsVariant = config.weightsVariant || 'falcon-ocr-int8-sharded'"
+        in source
+    )
 
 
 def test_browser_loader_fails_closed_on_compute_engine_exceptions() -> None:
@@ -318,9 +319,7 @@ def test_cloudflare_worker_routes_browser_artifacts_through_r2_keys() -> None:
 
 
 def test_cloudflare_worker_int8_uses_single_sharded_prefix() -> None:
-    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(encoding="utf-8")
 
     assert 'const int8Prefix = "models/falcon-ocr-int8-sharded"' in source
     assert "`${int8Prefix}/model.safetensors.index.json`" in source
@@ -332,9 +331,7 @@ def test_cloudflare_worker_int8_uses_single_sharded_prefix() -> None:
 
 
 def test_cloudflare_worker_serves_browser_tokenizer_artifact() -> None:
-    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(encoding="utf-8")
 
     assert 'path === "/tokenizer.json"' in source
     assert '"models/falcon-ocr/tokenizer.json"' in source
@@ -342,9 +339,7 @@ def test_cloudflare_worker_serves_browser_tokenizer_artifact() -> None:
 
 
 def test_cloudflare_worker_rate_limit_uses_durable_object_not_kv_counter() -> None:
-    worker = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
-        encoding="utf-8"
-    )
+    worker = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(encoding="utf-8")
     wrangler = (ROOT / "deploy" / "cloudflare" / "wrangler.toml").read_text(
         encoding="utf-8"
     )
@@ -455,7 +450,7 @@ def test_cloudflare_worker_gpu_backend_route_uses_proxy_contract() -> None:
         capture_output=True,
         text=True,
     )
-    result = json.loads(run.stdout.split('RESULT:')[-1].split('ENDRESULT')[0].strip())
+    result = json.loads(run.stdout.split("RESULT:")[-1].split("ENDRESULT")[0].strip())
     assert result["status"] == 200
     assert result["payload"]["text"] == "GPU OCR"
     assert result["payload"]["backend"] == "gpu-runpod"
@@ -506,16 +501,14 @@ def test_cloudflare_worker_gpu_backend_rejects_unconfigured_proxy() -> None:
         capture_output=True,
         text=True,
     )
-    result = json.loads(run.stdout.split('RESULT:')[-1].split('ENDRESULT')[0].strip())
+    result = json.loads(run.stdout.split("RESULT:")[-1].split("ENDRESULT")[0].strip())
     assert result["status"] == 501
     assert result["payload"]["error"] == "GPU inference not configured"
     assert "required" in result["payload"]["detail"]
 
 
 def test_cloudflare_worker_nemotron_route_has_no_hardcoded_modal_endpoint() -> None:
-    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(encoding="utf-8")
 
     assert 'useBackend === "nemotron"' in source
     assert "adpena--nemotron-ocr-ocr-endpoint.modal.run" not in source
@@ -528,17 +521,13 @@ def test_cloudflare_worker_nemotron_route_has_no_hardcoded_modal_endpoint() -> N
 
 
 def test_cloudflare_worker_defines_browser_origin_helper_once() -> None:
-    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(encoding="utf-8")
 
     assert source.count("function isFromBrowser(") == 1
 
 
 def test_deploy_production_status_avoids_unverified_working_claims() -> None:
-    source = (ROOT / "deploy" / "PRODUCTION_STATUS.md").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "deploy" / "PRODUCTION_STATUS.md").read_text(encoding="utf-8")
 
     assert "| Browser test page (/test) | Working |" not in source
     assert "| Workers AI (/ocr) | Working |" not in source
@@ -590,9 +579,7 @@ def test_cloudflare_gpu_docs_avoid_unsourced_provider_perf_claims() -> None:
 
 
 def test_cloudflare_worker_avoids_unsourced_ocr_quality_claims() -> None:
-    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(encoding="utf-8")
 
     assert "PaddleOCR (99.6% accuracy" not in source
     assert "client-side WASM in browser, instant" not in source
@@ -617,7 +604,9 @@ def test_enjoice_migration_doc_points_at_worker_wasm_and_tokenizer_artifacts() -
 
     assert "https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm" in source
     assert "/tokenizer.json" in source
-    assert "https://falcon-ocr.freeinvoicemaker.workers.dev/falcon-ocr.wasm" not in source
+    assert (
+        "https://falcon-ocr.freeinvoicemaker.workers.dev/falcon-ocr.wasm" not in source
+    )
 
 
 def test_falcon_ocr_manifest_fixture_matches_browser_driver_boundary() -> None:

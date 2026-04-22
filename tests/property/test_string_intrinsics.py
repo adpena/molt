@@ -24,7 +24,8 @@ ascii_text = st.text(
 # ASCII letters only — upper/lower roundtrip is clean.
 ascii_letters = st.text(
     alphabet=st.characters(
-        min_codepoint=65, max_codepoint=122,
+        min_codepoint=65,
+        max_codepoint=122,
         blacklist_categories=("Cs",),
         blacklist_characters="[\\]^_`",
     ),

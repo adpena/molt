@@ -112,9 +112,7 @@ def _read_runtime_integrity_sidecar(path: Path) -> str | None:
     raw = sidecar.read_text(encoding="utf-8").strip()
     match = re.search(r"\b([0-9a-fA-F]{64})\b", raw)
     if match is None:
-        raise SystemExit(
-            f"Runtime integrity sidecar is malformed: {sidecar}"
-        )
+        raise SystemExit(f"Runtime integrity sidecar is malformed: {sidecar}")
     return match.group(1).lower()
 
 
@@ -131,9 +129,7 @@ def _verify_runtime_integrity(path: Path) -> None:
     # Reject path-traversal components before reading the file.
     for part in path.parts:
         if part == "..":
-            raise SystemExit(
-                f"Runtime path contains '..' traversal component: {path}"
-            )
+            raise SystemExit(f"Runtime path contains '..' traversal component: {path}")
 
     data = path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
@@ -143,7 +139,7 @@ def _verify_runtime_integrity(path: Path) -> None:
         if digest != sidecar_expected:
             raise SystemExit(
                 f"Runtime integrity check failed for {path}\n"
-                f"  source: sidecar { _runtime_integrity_sidecar_path(path) }\n"
+                f"  source: sidecar {_runtime_integrity_sidecar_path(path)}\n"
                 f"  expected SHA-256: {sidecar_expected}\n"
                 f"  actual   SHA-256: {digest}\n"
             )
@@ -447,7 +443,12 @@ def _append_linking_function_symbols(
             new_subsections.append((SYMTAB_SUBSECTION_ID, bytes(payload_bytes)))
             modified = True
         new_sections.append(
-            (section_id, _build_custom_section(name, _build_linking_payload(version, new_subsections)))
+            (
+                section_id,
+                _build_custom_section(
+                    name, _build_linking_payload(version, new_subsections)
+                ),
+            )
         )
     if not linking_found:
         payload_bytes = bytearray()
@@ -460,7 +461,9 @@ def _append_linking_function_symbols(
                 0,
                 _build_custom_section(
                     "linking",
-                    _build_linking_payload(2, [(SYMTAB_SUBSECTION_ID, bytes(payload_bytes))]),
+                    _build_linking_payload(
+                        2, [(SYMTAB_SUBSECTION_ID, bytes(payload_bytes))]
+                    ),
                 ),
             )
         )
@@ -687,7 +690,13 @@ def _scan_code_ref_funcs(data: bytes) -> set[int]:
                     ref_funcs.add(func_idx)
                 # No-immediate opcodes
                 elif op in (
-                    0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B,
+                    0x00,
+                    0x01,
+                    0x05,
+                    0x0B,
+                    0x0F,
+                    0x1A,
+                    0x1B,
                     0xD1,  # ref.is_null
                     0xD3,  # ref.as_non_null
                 ):
@@ -702,11 +711,18 @@ def _scan_code_ref_funcs(data: bytes) -> set[int]:
                         _, pos = _read_varsint(payload, pos)
                 # Single-varuint opcodes
                 elif op in (
-                    0x0C, 0x0D,  # br, br_if
-                    0x20, 0x21, 0x22, 0x23, 0x24,  # local/global ops
-                    0x25, 0x26,  # table.get, table.set
+                    0x0C,
+                    0x0D,  # br, br_if
+                    0x20,
+                    0x21,
+                    0x22,
+                    0x23,
+                    0x24,  # local/global ops
+                    0x25,
+                    0x26,  # table.get, table.set
                     0xD0,  # ref.null (heaptype)
-                    0xD4, 0xD5,  # br_on_null, br_on_non_null
+                    0xD4,
+                    0xD5,  # br_on_null, br_on_non_null
                 ):
                     _, pos = _read_varuint(payload, pos)
                 # br_table
@@ -1073,9 +1089,7 @@ def _add_symtab_alias(
             entry_flags = alias_flags
             if not preserve_export:
                 entry_flags &= ~FLAG_EXPORTED
-            alias_entry.extend(
-                _write_varuint(entry_flags | FLAG_EXPLICIT_NAME)
-            )
+            alias_entry.extend(_write_varuint(entry_flags | FLAG_EXPLICIT_NAME))
             alias_entry.extend(_write_varuint(alias_index))
             alias_entry.extend(_write_string(alias_name))
             new_payload = _write_varuint(count + 1) + entries + alias_entry
@@ -1127,7 +1141,9 @@ def _inject_output_export_aliases(
     try:
         sections = _parse_sections(data)
     except ValueError as exc:
-        print(f"Failed to parse output module for export aliasing: {exc}", file=sys.stderr)
+        print(
+            f"Failed to parse output module for export aliasing: {exc}", file=sys.stderr
+        )
         return output
     types = _parse_type_section(sections)
     if not types:
@@ -1163,7 +1179,9 @@ def _inject_output_export_aliases(
             updated_payload = bytearray()
             updated_payload.extend(_write_varuint(count + len(wrapper_specs)))
             updated_payload.extend(payload[offset:])
-            for i, (_name, alias_name, _type_idx, _target_idx) in enumerate(wrapper_specs):
+            for i, (_name, alias_name, _type_idx, _target_idx) in enumerate(
+                wrapper_specs
+            ):
                 wrapper_func_index = import_count + original_func_count + i
                 wrapper_index_by_name[alias_name] = wrapper_func_index
                 updated_payload.extend(_write_string(alias_name))
@@ -1173,7 +1191,10 @@ def _inject_output_export_aliases(
                     (
                         alias_name,
                         wrapper_func_index,
-                        FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_EXPORTED | FLAG_NO_STRIP,
+                        FLAG_BINDING_GLOBAL
+                        | FLAG_EXPLICIT_NAME
+                        | FLAG_EXPORTED
+                        | FLAG_NO_STRIP,
                     )
                 )
                 if _name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
@@ -1196,7 +1217,13 @@ def _inject_output_export_aliases(
             for name, alias_name, type_idx, target_idx in wrapper_specs:
                 params, results = types[type_idx]
                 body = bytearray()
-                local_count = 1 if results and len(results) == 1 and inc_ref_import_index is not None else 0
+                local_count = (
+                    1
+                    if results
+                    and len(results) == 1
+                    and inc_ref_import_index is not None
+                    else 0
+                )
                 body.extend(_write_varuint(local_count))
                 if local_count:
                     body.extend(_write_varuint(1))
@@ -1277,7 +1304,10 @@ def _collect_output_wrapper_specs(data: bytes) -> list[tuple[str, str, int, int]
 
 
 def _collect_preserved_output_export_names(data: bytes) -> list[str]:
-    return [name for name, _alias, _type_idx, _func_idx in _collect_output_wrapper_specs(data)]
+    return [
+        name
+        for name, _alias, _type_idx, _func_idx in _collect_output_wrapper_specs(data)
+    ]
 
 
 def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
@@ -1292,7 +1322,11 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
         preferred = next((name for name in candidates if name == public_name), None)
         if preferred is None:
             preferred = next(
-                (name for name in candidates if name.startswith("__molt_output_export_")),
+                (
+                    name
+                    for name in candidates
+                    if name.startswith("__molt_output_export_")
+                ),
                 None,
             )
         if preferred is None and candidates:
@@ -1494,7 +1528,11 @@ def _entry_module_prefix_from_main_init(
         candidates = inverse_exports.get(callee, ())
         preferred = sorted(
             candidates,
-            key=lambda name: (name.startswith("__molt_table_ref_"), not name.startswith("molt_init_"), name),
+            key=lambda name: (
+                name.startswith("__molt_table_ref_"),
+                not name.startswith("molt_init_"),
+                name,
+            ),
         )
         for target_name in preferred:
             if (
@@ -1653,14 +1691,14 @@ def _validate_linked_table_import_contract(
     imports: list[tuple[str, str, int, bytes]],
 ) -> tuple[bool, str | None]:
     table_imports = [
-        (module, name, desc)
-        for module, name, kind, desc in imports
-        if kind == 1
+        (module, name, desc) for module, name, kind, desc in imports if kind == 1
     ]
     if not table_imports:
         return True, None
     if len(table_imports) > 1:
-        table_names = ", ".join(f"{module}::{name}" for module, name, _ in table_imports)
+        table_names = ", ".join(
+            f"{module}::{name}" for module, name, _ in table_imports
+        )
         return (
             False,
             "Linked wasm imports multiple tables "
@@ -1749,7 +1787,9 @@ def _collect_imports(data: bytes) -> list[tuple[str, str, int, bytes]]:
     return []
 
 
-def _find_func_import_index(data: bytes, module_name: str, import_name: str) -> int | None:
+def _find_func_import_index(
+    data: bytes, module_name: str, import_name: str
+) -> int | None:
     func_index = 0
     for module, name, kind, _desc in _collect_imports(data):
         if kind != 0:
@@ -2126,9 +2166,7 @@ def _rewrite_output_imports(
     return wasm_path, temp_dir, force_exports
 
 
-def _collect_module_imports(
-    wasm_data: bytes, module_name: str
-) -> set[str]:
+def _collect_module_imports(wasm_data: bytes, module_name: str) -> set[str]:
     """Parse a WASM module and return the set of import names from *module_name*.
 
     For example, if the app module imports ``(import "molt_runtime" "print_obj" ...)``,
@@ -2314,12 +2352,12 @@ def _tree_shake_runtime(
             "molt_dec_ref_obj",
         }
     )
-    raw_dynamic_exports = os.environ.get("MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS", "").strip()
+    raw_dynamic_exports = os.environ.get(
+        "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS", ""
+    ).strip()
     if raw_dynamic_exports:
         normalized_required_exports.update(
-            name.strip()
-            for name in raw_dynamic_exports.split(",")
-            if name.strip()
+            name.strip() for name in raw_dynamic_exports.split(",") if name.strip()
         )
 
     # Rewrite export section: keep memory/table/global exports and only
@@ -2412,17 +2450,14 @@ def _tree_shake_runtime(
             "--disable-custom-descriptors",
         ]
 
-        cache_path = (
-            _tree_shake_runtime_cache_root()
-            / (
-                _tree_shake_runtime_cache_key(
-                    optimized_baseline=optimized_baseline,
-                    normalized_required_exports=normalized_required_exports,
-                    wasm_opt=wasm_opt,
-                    feature_flags=feature_flags,
-                )
-                + ".wasm"
+        cache_path = _tree_shake_runtime_cache_root() / (
+            _tree_shake_runtime_cache_key(
+                optimized_baseline=optimized_baseline,
+                normalized_required_exports=normalized_required_exports,
+                wasm_opt=wasm_opt,
+                feature_flags=feature_flags,
             )
+            + ".wasm"
         )
         cached = _read_cached_tree_shaken_runtime(cache_path)
         if cached is not None:
@@ -2435,7 +2470,8 @@ def _tree_shake_runtime(
         cmd = [
             wasm_opt,
             str(input_path),
-            "-o", str(output_path),
+            "-o",
+            str(output_path),
             "-Oz",
             "--converge",
             "--remove-unused-module-elements",
@@ -2620,9 +2656,7 @@ def _build_runtime_stub(runtime_data: bytes) -> bytes:
                     offset += 1  # valtype
                     offset += 1  # mutability
                 else:
-                    raise ValueError(
-                        f"Unknown import kind {kind} in runtime"
-                    )
+                    raise ValueError(f"Unknown import kind {kind} in runtime")
 
     # -- 3. Map each exported function to its type index ---------------------
     stub_type_indices: list[int] = []
@@ -2672,11 +2706,11 @@ def _build_runtime_stub(runtime_data: bytes) -> bytes:
     linking_payload = _build_custom_section("linking", b"\x02")
 
     stub_sections: list[tuple[int, bytes]] = [
-        (1, type_payload),                  # type section
-        (3, bytes(func_payload)),           # function section
-        (7, bytes(export_payload)),         # export section
-        (10, bytes(code_payload)),          # code section
-        (0, linking_payload),               # custom "linking" section
+        (1, type_payload),  # type section
+        (3, bytes(func_payload)),  # function section
+        (7, bytes(export_payload)),  # export section
+        (10, bytes(code_payload)),  # code section
+        (0, linking_payload),  # custom "linking" section
     ]
 
     return _build_sections(stub_sections)
@@ -2726,37 +2760,39 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
     return _build_sections(keep)
 
 
-_ESSENTIAL_EXPORTS = frozenset({
-    "molt_alloc",
-    "molt_bytes_as_ptr",
-    "molt_bytes_from_bytes",
-    "molt_dec_ref_obj",
-    "molt_exception_kind",
-    "molt_exception_last",
-    "molt_exception_message",
-    "molt_exception_pending",
-    "molt_exception_pending_fast",
-    "molt_handle_resolve",
-    "molt_header_size",
-    "memory",
-    "molt_memory",
-    "molt_host_init",
-    "molt_list_builder_append",
-    "molt_list_builder_finish",
-    "molt_list_builder_new",
-    "molt_main",
-    "molt_object_repr",
-    "molt_scratch_alloc",
-    "molt_scratch_free",
-    "molt_string_as_ptr",
-    "molt_string_from_bytes",
-    "molt_table_init",
-    "molt_table",
-    "molt_traceback_format_exc",
-    "molt_type_tag_of_bits",
-    "molt_set_wasm_table_base",
-    "__indirect_function_table",
-})
+_ESSENTIAL_EXPORTS = frozenset(
+    {
+        "molt_alloc",
+        "molt_bytes_as_ptr",
+        "molt_bytes_from_bytes",
+        "molt_dec_ref_obj",
+        "molt_exception_kind",
+        "molt_exception_last",
+        "molt_exception_message",
+        "molt_exception_pending",
+        "molt_exception_pending_fast",
+        "molt_handle_resolve",
+        "molt_header_size",
+        "memory",
+        "molt_memory",
+        "molt_host_init",
+        "molt_list_builder_append",
+        "molt_list_builder_finish",
+        "molt_list_builder_new",
+        "molt_main",
+        "molt_object_repr",
+        "molt_scratch_alloc",
+        "molt_scratch_free",
+        "molt_string_as_ptr",
+        "molt_string_from_bytes",
+        "molt_table_init",
+        "molt_table",
+        "molt_traceback_format_exc",
+        "molt_type_tag_of_bits",
+        "molt_set_wasm_table_base",
+        "__indirect_function_table",
+    }
+)
 
 
 def _split_app_reference_function_exports(reference_data: bytes | None) -> set[str]:
@@ -2770,9 +2806,7 @@ def _split_app_reference_function_exports(reference_data: bytes | None) -> set[s
         "molt_set_wasm_table_base",
     }
     keep.update(_collect_preserved_output_export_names(reference_data))
-    return {
-        name for name in _collect_function_exports(reference_data) if name in keep
-    }
+    return {name for name in _collect_function_exports(reference_data) if name in keep}
 
 
 def _strip_internal_exports(
@@ -2814,9 +2848,8 @@ def _strip_internal_exports(
             offset += 1
             _, offset = _read_varuint(payload, offset)
             entry_bytes = payload[entry_start:offset]
-            if (
-                name not in keep_exports
-                and (not preserve_table_refs or not name.startswith("__molt_table_ref_"))
+            if name not in keep_exports and (
+                not preserve_table_refs or not name.startswith("__molt_table_ref_")
             ):
                 modified = True
                 continue
@@ -3032,7 +3065,9 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     # indices. Those targets are not statically attributable to direct call
     # edges, so element neutralization is unsound when any call_indirect
     # remains in the module.
-    if _code_section_has_call_indirect(sections) or _module_imports_host_call_indirect(sections):
+    if _code_section_has_call_indirect(sections) or _module_imports_host_call_indirect(
+        sections
+    ):
         return None
 
     code_called = _collect_code_referenced_funcs(sections)
@@ -3158,9 +3193,7 @@ def _count_func_imports(sections: list[tuple[int, bytes]]) -> int:
     return 0
 
 
-def _build_call_graph(
-    code_payload: bytes, import_count: int
-) -> dict[int, set[int]]:
+def _build_call_graph(code_payload: bytes, import_count: int) -> dict[int, set[int]]:
     """Build a call graph by decoding WASM instructions in the code section.
 
     Returns a mapping from function index to the set of function indices it
@@ -3202,7 +3235,13 @@ def _build_call_graph(
                 break
             # No-immediate opcodes
             if op in (
-                0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B,
+                0x00,
+                0x01,
+                0x05,
+                0x0B,
+                0x0F,
+                0x1A,
+                0x1B,
                 0xD1,  # ref.is_null
                 0xD3,  # ref.as_non_null
             ):
@@ -3218,12 +3257,20 @@ def _build_call_graph(
                     pos += 1
             # Single-varuint opcodes
             elif op in (
-                0x0C, 0x0D,  # br, br_if
-                0x20, 0x21, 0x22, 0x23, 0x24,  # local/global ops
-                0x25, 0x26,  # table.get, table.set
-                0x3F, 0x40,  # memory.size, memory.grow
+                0x0C,
+                0x0D,  # br, br_if
+                0x20,
+                0x21,
+                0x22,
+                0x23,
+                0x24,  # local/global ops
+                0x25,
+                0x26,  # table.get, table.set
+                0x3F,
+                0x40,  # memory.size, memory.grow
                 0xD0,  # ref.null (heaptype)
-                0xD4, 0xD5,  # br_on_null, br_on_non_null
+                0xD4,
+                0xD5,  # br_on_null, br_on_non_null
             ):
                 _, pos = _read_varuint(code_payload, pos)
             # br_table
@@ -3304,16 +3351,24 @@ def _build_call_graph(
                 if bt == 0x40 or (bt >= 0x7C and bt <= 0x7F):  # void or valtype
                     pos += 1
                 else:
-                    _, pos = _read_varsint(code_payload, pos)  # type index (signed LEB128)
+                    _, pos = _read_varsint(
+                        code_payload, pos
+                    )  # type index (signed LEB128)
                 # Catch vector
                 n_catches, pos = _read_varuint(code_payload, pos)
                 for _ in range(n_catches):
                     catch_kind = code_payload[pos]
                     pos += 1
-                    if catch_kind in (0x00, 0x01):  # catch / catch_ref: tag_index + label
+                    if catch_kind in (
+                        0x00,
+                        0x01,
+                    ):  # catch / catch_ref: tag_index + label
                         _, pos = _read_varuint(code_payload, pos)
                         _, pos = _read_varuint(code_payload, pos)
-                    elif catch_kind in (0x02, 0x03):  # catch_all / catch_all_ref: label only
+                    elif catch_kind in (
+                        0x02,
+                        0x03,
+                    ):  # catch_all / catch_all_ref: label only
                         _, pos = _read_varuint(code_payload, pos)
             # Atomics prefix
             elif op == 0xFE:
@@ -3418,7 +3473,9 @@ def _stub_dead_functions(data: bytes) -> bytes | None:
                 elif flags == 2:
                     # Active with explicit table index
                     _, offset = _read_varuint(payload, offset)  # table index
-                    offset = _skip_init_expr(payload, offset)  # proper LEB128-aware skip
+                    offset = _skip_init_expr(
+                        payload, offset
+                    )  # proper LEB128-aware skip
                     offset += 1  # element kind byte
                     n, offset = _read_varuint(payload, offset)
                     for _ in range(n):
@@ -3536,7 +3593,9 @@ def _strip_unused_module_function_imports(
                 raise ValueError("Unexpected EOF while reading global header")
             offset += 2
             expr_start = offset
-            _, offset = _rewrite_init_expr_func_indices(payload, offset, lambda idx: idx)
+            _, offset = _rewrite_init_expr_func_indices(
+                payload, offset, lambda idx: idx
+            )
             expr = payload[expr_start:offset]
             expr_offset = 0
             while expr_offset < len(expr):
@@ -3781,7 +3840,9 @@ def _strip_unused_module_function_imports(
         for _ in range(func_count):
             body_size, body_start = _read_varuint(payload, offset)
             body_end = body_start + body_size
-            new_body = _rewrite_code_body(payload[body_start:body_end], remap_func_index)
+            new_body = _rewrite_code_body(
+                payload[body_start:body_end], remap_func_index
+            )
             out.extend(_write_varuint(len(new_body)))
             out.extend(new_body)
             offset = body_end
@@ -3812,7 +3873,9 @@ def _strip_unused_module_function_imports(
             if kind == 0:
                 func_index = import_count
                 import_count += 1
-            import_entries.append((module, name, kind, payload[desc_start:offset], func_index))
+            import_entries.append(
+                (module, name, kind, payload[desc_start:offset], func_index)
+            )
         break
 
     if not import_entries:
@@ -3884,15 +3947,25 @@ def _strip_unused_module_function_imports(
                     new_payload.extend(desc)
                 new_sections.append((sid, bytes(new_payload)))
             elif sid == 7:
-                new_sections.append((sid, _rewrite_export_section(payload, remap_func_index)))
+                new_sections.append(
+                    (sid, _rewrite_export_section(payload, remap_func_index))
+                )
             elif sid == 8:
-                new_sections.append((sid, _rewrite_start_section(payload, remap_func_index)))
+                new_sections.append(
+                    (sid, _rewrite_start_section(payload, remap_func_index))
+                )
             elif sid == 9:
-                new_sections.append((sid, _rewrite_element_section(payload, remap_func_index)))
+                new_sections.append(
+                    (sid, _rewrite_element_section(payload, remap_func_index))
+                )
             elif sid == 6:
-                new_sections.append((sid, _rewrite_global_section(payload, remap_func_index)))
+                new_sections.append(
+                    (sid, _rewrite_global_section(payload, remap_func_index))
+                )
             elif sid == 10:
-                new_sections.append((sid, _rewrite_code_section(payload, remap_func_index)))
+                new_sections.append(
+                    (sid, _rewrite_code_section(payload, remap_func_index))
+                )
             else:
                 new_sections.append((sid, payload))
     except ValueError:
@@ -4042,7 +4115,9 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
     return _build_sections(new_sections)
 
 
-def _parse_type_section(sections: list[tuple[int, bytes]]) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+def _parse_type_section(
+    sections: list[tuple[int, bytes]],
+) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
     """Parse the type section and return a list of (param_types, result_types)."""
     for sid, payload in sections:
         if sid == 1:
@@ -4063,7 +4138,9 @@ def _parse_type_section(sections: list[tuple[int, bytes]]) -> list[tuple[tuple[i
     return []
 
 
-def _parse_func_type_indices(sections: list[tuple[int, bytes]]) -> tuple[int, list[int]]:
+def _parse_func_type_indices(
+    sections: list[tuple[int, bytes]],
+) -> tuple[int, list[int]]:
     """Parse the function section. Returns (section_list_index, type_indices)."""
     for idx, (sid, payload) in enumerate(sections):
         if sid == 3:
@@ -4077,7 +4154,9 @@ def _parse_func_type_indices(sections: list[tuple[int, bytes]]) -> tuple[int, li
     return -1, []
 
 
-def _fixup_func_type_indices(data: bytes, reference_data: bytes | None = None, runtime_data: bytes | None = None) -> bytes | None:
+def _fixup_func_type_indices(
+    data: bytes, reference_data: bytes | None = None, runtime_data: bytes | None = None
+) -> bytes | None:
     # wasm-ld 22.1.1 produces valid type-index assignments; disable all
     # repair heuristics to avoid introducing corruption.
     return None
@@ -4252,9 +4331,7 @@ def _validate_freestanding(data: bytes) -> bool:
         return False
 
     runtime_imports = [
-        (module, name)
-        for module, name, _, _ in imports
-        if module == "molt_runtime"
+        (module, name) for module, name, _, _ in imports if module == "molt_runtime"
     ]
     if runtime_imports:
         for module, name in runtime_imports:
@@ -4265,9 +4342,7 @@ def _validate_freestanding(data: bytes) -> bool:
         return False
 
     other_imports = [
-        (module, name)
-        for module, name, _, _ in imports
-        if module != "env"
+        (module, name) for module, name, _, _ in imports if module != "env"
     ]
     for module, name in other_imports:
         print(
@@ -4648,7 +4723,9 @@ def _run_wasm_ld(
                 return 1
 
     if not split_runtime and not runtime.name.endswith("_reloc.wasm"):
-        reloc_candidate = runtime.with_name(runtime.name.replace(".wasm", "_reloc.wasm"))
+        reloc_candidate = runtime.with_name(
+            runtime.name.replace(".wasm", "_reloc.wasm")
+        )
         if reloc_candidate.exists():
             runtime = reloc_candidate
 
@@ -4672,9 +4749,7 @@ def _run_wasm_ld(
         try:
             stub_data = _build_runtime_stub(stub_source.read_bytes())
         except ValueError as exc:
-            print(
-                f"Failed to build runtime stub: {exc}", file=sys.stderr
-            )
+            print(f"Failed to build runtime stub: {exc}", file=sys.stderr)
             return 1
         stub_path = Path(temp_dir.name) / "molt_runtime_stub.wasm"
         stub_path.write_bytes(stub_data)
@@ -4700,7 +4775,8 @@ def _run_wasm_ld(
         # other read-only data (manifests as NameError / AttributeError with
         # null-byte names).
         "--stack-first",
-        "-z", "stack-size=1048576",
+        "-z",
+        "stack-size=1048576",
         "--export=molt_main",
         "--export-if-defined=molt_memory",
         "--export-if-defined=memory",
@@ -4713,7 +4789,9 @@ def _run_wasm_ld(
     # and wasm-ld needs to know to keep them in the linked output.
     for sym in force_exports:
         cmd.append(f"--export-if-defined={sym}")
-    for sym in sorted(_ESSENTIAL_EXPORTS - {"__indirect_function_table", "memory", "molt_main"}):
+    for sym in sorted(
+        _ESSENTIAL_EXPORTS - {"__indirect_function_table", "memory", "molt_main"}
+    ):
         cmd.append(f"--export-if-defined={sym}")
     for sym in user_export_symbol_names:
         cmd.append(f"--export={sym}")
@@ -4849,7 +4927,8 @@ def _run_wasm_ld(
         append_table_refs = (
             True
             if append_table_refs_raw is None
-            else append_table_refs_raw.strip().lower() not in {"0", "false", "no", "off"}
+            else append_table_refs_raw.strip().lower()
+            not in {"0", "false", "no", "off"}
         )
         if append_table_refs:
             try:
@@ -5050,27 +5129,38 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=_default_input_path())
     parser.add_argument("--output", type=Path, default=_default_output_path())
     parser.add_argument(
-        "--freestanding", action="store_true", default=False,
+        "--freestanding",
+        action="store_true",
+        default=False,
         help="Stub out WASI imports post-link for freestanding deployment",
     )
     parser.add_argument(
-        "--optimize", action="store_true", default=False,
+        "--optimize",
+        action="store_true",
+        default=False,
         help="Run wasm-opt after linking (requires Binaryen)",
     )
     parser.add_argument(
-        "--optimize-level", default="Oz",
+        "--optimize-level",
+        default="Oz",
         help="wasm-opt optimization level (O1/O2/O3/O4/Os/Oz, default: Oz)",
     )
     parser.add_argument(
-        "--split-runtime", action="store_true", default=False,
+        "--split-runtime",
+        action="store_true",
+        default=False,
         help="Generate app.wasm + molt_runtime.wasm instead of a single linked binary",
     )
     parser.add_argument(
-        "--split-output-dir", type=Path, default=None,
+        "--split-output-dir",
+        type=Path,
+        default=None,
         help="Directory for split-runtime output files (default: same as --output parent)",
     )
     parser.add_argument(
-        "--deploy-runtime", type=Path, default=None,
+        "--deploy-runtime",
+        type=Path,
+        default=None,
         dest="deploy_runtime_override",
         help="Override the deploy runtime wasm path (non-relocatable variant)",
     )

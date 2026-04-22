@@ -83,9 +83,7 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
             intrinsic = loader(intrinsic_name)
         except RuntimeError as exc:
             if _requested_gpu_backend() is not None:
-                raise RuntimeError(
-                    f"intrinsic unavailable: {intrinsic_name}"
-                ) from exc
+                raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}") from exc
         else:
             if intrinsic is not None:
                 globals()[cache_name] = intrinsic
@@ -97,9 +95,7 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
             intrinsic = require(intrinsic_name)
         except RuntimeError as exc:
             if _requested_gpu_backend() is not None:
-                raise RuntimeError(
-                    f"intrinsic unavailable: {intrinsic_name}"
-                ) from exc
+                raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}") from exc
         else:
             if intrinsic is not None:
                 globals()[cache_name] = intrinsic
@@ -108,6 +104,7 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
     if _requested_gpu_backend() is not None:
         raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}")
     return None
+
 
 _OP_ADD = 0
 _OP_SUB = 1
@@ -358,9 +355,7 @@ def tensor_linear(x: "Tensor", weight: "Tensor") -> "Tensor":
     in_features = x_shape[-1]
     out_features, weight_in = weight_shape
     if in_features != weight_in:
-        raise ValueError(
-            f"Linear shape mismatch: {x_shape} with weight {weight_shape}"
-        )
+        raise ValueError(f"Linear shape mismatch: {x_shape} with weight {weight_shape}")
 
     outer = _product(x_shape[:-1]) if len(x_shape) > 1 else 1
     if x._dtype is float and weight._dtype is float:
@@ -455,9 +450,7 @@ def tensor_linear_split_last_dim(
     in_features = x_shape[-1]
     out_features, weight_in = weight_shape
     if in_features != weight_in:
-        raise ValueError(
-            f"Linear shape mismatch: {x_shape} with weight {weight_shape}"
-        )
+        raise ValueError(f"Linear shape mismatch: {x_shape} with weight {weight_shape}")
     if sum(sizes) != out_features:
         raise ValueError(
             f"split sizes {sizes} do not match projected dimension {out_features}"
@@ -534,9 +527,7 @@ def tensor_linear_squared_relu_gate_interleaved(
     in_features = x_shape[-1]
     out_features, weight_in = weight_shape
     if in_features != weight_in:
-        raise ValueError(
-            f"Linear shape mismatch: {x_shape} with weight {weight_shape}"
-        )
+        raise ValueError(f"Linear shape mismatch: {x_shape} with weight {weight_shape}")
     if out_features % 2 != 0:
         raise ValueError(
             f"interleaved gate weight output dimension must be even, got {out_features}"
@@ -668,7 +659,9 @@ def tensor_conv2d(
                                 if iw < 0 or iw >= in_w:
                                     continue
                                 x_idx = ((b * in_c + ic) * in_h + ih) * in_w + iw
-                                w_idx = ((oc * weight_in_c + local_ic) * kh + fh) * kw + fw
+                                w_idx = (
+                                    (oc * weight_in_c + local_ic) * kh + fh
+                                ) * kw + fw
                                 acc += x_data[x_idx] * w_data[w_idx]
                     if b_data is not None:
                         acc += b_data[oc]
@@ -796,7 +789,7 @@ def tensor_softmax_last_axis(x: "Tensor") -> "Tensor":
 
     for row in range(outer):
         base = row * axis_len
-        vals = data[base:base + axis_len]
+        vals = data[base : base + axis_len]
         max_val = max(vals)
         exps = [math.exp(v - max_val) for v in vals]
         total = sum(exps)
@@ -827,12 +820,10 @@ def tensor_reshape_view(x: "Tensor", shape) -> "Tensor":
 
     if neg_idx is not None:
         inferred = x.size // known
-        shape = shape[:neg_idx] + (inferred,) + shape[neg_idx + 1:]
+        shape = shape[:neg_idx] + (inferred,) + shape[neg_idx + 1 :]
 
     if _product(shape) != x.size:
-        raise ValueError(
-            f"Cannot reshape tensor of size {x.size} into shape {shape}"
-        )
+        raise ValueError(f"Cannot reshape tensor of size {x.size} into shape {shape}")
     return _tensor_from_buffer(x._buf, shape, x._dtype)
 
 
@@ -862,9 +853,7 @@ def _normalize_axis0_row_index(
     return idx
 
 
-def tensor_take_rows(
-    x: "Tensor", indices, *, allow_negative: bool = True
-) -> "Tensor":
+def tensor_take_rows(x: "Tensor", indices, *, allow_negative: bool = True) -> "Tensor":
     if not isinstance(x, Tensor):
         return NotImplemented
     if x.ndim == 0:
@@ -888,7 +877,7 @@ def tensor_take_rows(
         )
         src_start = idx * width
         dst_start = out_row * width
-        out[dst_start:dst_start + width] = x._buf._data[src_start:src_start + width]
+        out[dst_start : dst_start + width] = x._buf._data[src_start : src_start + width]
 
     out_buf = Buffer(
         out,
@@ -938,7 +927,7 @@ def tensor_concat_first_dim(tensors) -> "Tensor":
     cursor = 0
     for tensor in tensors:
         width = tensor.size * tensor._buf.itemsize
-        out[cursor:cursor + width] = tensor._buf._data[:width]
+        out[cursor : cursor + width] = tensor._buf._data[:width]
         cursor += width
     row_size = _product(tail_shape) if tail_shape else 1
     out_buf = Buffer(
@@ -988,7 +977,9 @@ def tensor_scatter_rows(
         )
         dst_start = idx * width
         src_start = src_row * width
-        out[dst_start:dst_start + width] = updates._buf._data[src_start:src_start + width]
+        out[dst_start : dst_start + width] = updates._buf._data[
+            src_start : src_start + width
+        ]
     out_buf = Buffer(
         out,
         base._buf.element_type,
@@ -1093,7 +1084,7 @@ class Tensor:
 
     def _data_list(self) -> list:
         """Return flat data as a Python list of floats."""
-        return from_device(self._buf)[:self.size]
+        return from_device(self._buf)[: self.size]
 
     def _from_flat(self, flat, shape):
         """Create a new Tensor from a flat list and shape."""
@@ -1113,14 +1104,14 @@ class Tensor:
 
     # ── Shape operations ──────────────────────────────────────────────
 
-    def reshape(self, *shape) -> 'Tensor':
+    def reshape(self, *shape) -> "Tensor":
         """Return a tensor with the same data but a new shape.
 
         One dimension can be -1, which is inferred from the others.
         """
         return tensor_reshape_view(self, shape)
 
-    def transpose(self, dim0=None, dim1=None) -> 'Tensor':
+    def transpose(self, dim0=None, dim1=None) -> "Tensor":
         """Transpose a 2D tensor or swap two explicit axes."""
         if dim0 is not None or dim1 is not None:
             if dim0 is None or dim1 is None:
@@ -1129,7 +1120,9 @@ class Tensor:
             a = dim0 + ndim if dim0 < 0 else dim0
             b = dim1 + ndim if dim1 < 0 else dim1
             if a < 0 or a >= ndim or b < 0 or b >= ndim:
-                raise ValueError(f"transpose dims {(dim0, dim1)} out of range for ndim={ndim}")
+                raise ValueError(
+                    f"transpose dims {(dim0, dim1)} out of range for ndim={ndim}"
+                )
             dims = list(range(ndim))
             dims[a], dims[b] = dims[b], dims[a]
             return tensor_permute_dims(self, tuple(dims))
@@ -1154,11 +1147,11 @@ class Tensor:
         new_shape = batch_shape + (cols, rows)
         return self._from_flat(result, new_shape)
 
-    def permute(self, *dims) -> 'Tensor':
+    def permute(self, *dims) -> "Tensor":
         """Reorder tensor dimensions."""
         return tensor_permute_dims(self, dims)
 
-    def unsqueeze(self, dim: int) -> 'Tensor':
+    def unsqueeze(self, dim: int) -> "Tensor":
         ndim = self.ndim + 1
         if dim < 0:
             dim += ndim
@@ -1168,7 +1161,7 @@ class Tensor:
         shape.insert(dim, 1)
         return Tensor(self._buf, shape=tuple(shape), dtype=self._dtype)
 
-    def squeeze(self, dim=None) -> 'Tensor':
+    def squeeze(self, dim=None) -> "Tensor":
         if dim is None:
             shape = tuple(size for size in self._shape if size != 1)
             return Tensor(self._buf, shape=shape, dtype=self._dtype)
@@ -1184,7 +1177,7 @@ class Tensor:
         del shape[dim]
         return Tensor(self._buf, shape=tuple(shape), dtype=self._dtype)
 
-    def expand(self, *shape) -> 'Tensor':
+    def expand(self, *shape) -> "Tensor":
         if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
             shape = tuple(shape[0])
         else:
@@ -1214,7 +1207,7 @@ class Tensor:
             out.append(src_data[src_index])
         return self._from_flat(out, shape)
 
-    def cast(self, dtype) -> 'Tensor':
+    def cast(self, dtype) -> "Tensor":
         kind = _dtype_cast_kind(dtype)
         if kind == "float":
             format_char = "f" if self._buf.format_char == "f" else "d"
@@ -1229,10 +1222,10 @@ class Tensor:
             return Tensor(out_buf, shape=self._shape, dtype=int)
         raise TypeError(f"unsupported cast dtype {dtype!r}")
 
-    def float(self) -> 'Tensor':
+    def float(self) -> "Tensor":
         return self.cast(float)
 
-    def cat(self, other, dim=0) -> 'Tensor':
+    def cat(self, other, dim=0) -> "Tensor":
         if not isinstance(other, Tensor):
             raise TypeError(f"Expected Tensor, got {type(other)!r}")
         ndim = self.ndim
@@ -1246,7 +1239,9 @@ class Tensor:
             return tensor_concat_first_dim((self, other))
 
         if any(
-            a != b for axis, (a, b) in enumerate(zip(self._shape, other._shape)) if axis != dim
+            a != b
+            for axis, (a, b) in enumerate(zip(self._shape, other._shape))
+            if axis != dim
         ):
             raise ValueError(f"cat shape mismatch: {self._shape} vs {other._shape}")
         if self._dtype is not other._dtype:
@@ -1268,7 +1263,7 @@ class Tensor:
         return tensor_permute_dims(concatenated, inverse)
 
     @staticmethod
-    def stack(*tensors, dim=0) -> 'Tensor':
+    def stack(*tensors, dim=0) -> "Tensor":
         if not tensors:
             raise ValueError("stack requires at least one tensor")
         if len(tensors) == 1 and isinstance(tensors[0], (list, tuple)):
@@ -1285,7 +1280,9 @@ class Tensor:
             if not isinstance(tensor, Tensor):
                 raise TypeError(f"Expected Tensor, got {type(tensor)!r}")
             if tensor.shape != first.shape:
-                raise ValueError(f"stack shape mismatch: {tensor.shape} vs {first.shape}")
+                raise ValueError(
+                    f"stack shape mismatch: {tensor.shape} vs {first.shape}"
+                )
             if tensor._dtype is not first._dtype:
                 raise ValueError("stack requires matching dtypes")
             if tensor._buf.format_char != first._buf.format_char:
@@ -1308,7 +1305,7 @@ class Tensor:
         return tensor_permute_dims(concatenated, inverse)
 
     @staticmethod
-    def zeros(*shape) -> 'Tensor':
+    def zeros(*shape) -> "Tensor":
         return zeros(*shape)
 
     @staticmethod
@@ -1317,15 +1314,15 @@ class Tensor:
         _TINYGRAD_RNG_STATE[1] = 0
 
     @staticmethod
-    def rand(*shape) -> 'Tensor':
+    def rand(*shape) -> "Tensor":
         return rand(*shape)
 
     @staticmethod
-    def randn(*shape) -> 'Tensor':
+    def randn(*shape) -> "Tensor":
         return randn(*shape)
 
     @staticmethod
-    def uniform(*shape, low=0.0, high=1.0, dtype=None, requires_grad=None) -> 'Tensor':
+    def uniform(*shape, low=0.0, high=1.0, dtype=None, requires_grad=None) -> "Tensor":
         return uniform(
             *shape,
             low=low,
@@ -1335,7 +1332,7 @@ class Tensor:
         )
 
     @staticmethod
-    def scaled_uniform(*shape, dtype=None, requires_grad=None) -> 'Tensor':
+    def scaled_uniform(*shape, dtype=None, requires_grad=None) -> "Tensor":
         return scaled_uniform(
             *shape,
             dtype=dtype,
@@ -1343,7 +1340,7 @@ class Tensor:
         )
 
     @staticmethod
-    def glorot_uniform(*shape, dtype=None, requires_grad=None) -> 'Tensor':
+    def glorot_uniform(*shape, dtype=None, requires_grad=None) -> "Tensor":
         return glorot_uniform(
             *shape,
             dtype=dtype,
@@ -1351,7 +1348,7 @@ class Tensor:
         )
 
     @staticmethod
-    def arange(start, stop=None, step=1) -> 'Tensor':
+    def arange(start, stop=None, step=1) -> "Tensor":
         if stop is None:
             start, stop = 0, start
         values = []
@@ -1369,11 +1366,11 @@ class Tensor:
         return Tensor(values, shape=(len(values),), dtype=float)
 
     @property
-    def T(self) -> 'Tensor':
+    def T(self) -> "Tensor":
         """Transpose (property alias)."""
         return self.transpose()
 
-    def flatten(self) -> 'Tensor':
+    def flatten(self) -> "Tensor":
         """Return a 1D view of the tensor."""
         return self.reshape(self.size)
 
@@ -1445,7 +1442,7 @@ class Tensor:
                     out_shape.append(a_dim)
                 else:
                     raise ValueError(
-                f"Cannot broadcast shapes {self._shape} and {other._shape}"
+                        f"Cannot broadcast shapes {self._shape} and {other._shape}"
                     )
             out_buf = Buffer(
                 out_bits,
@@ -1517,75 +1514,75 @@ class Tensor:
 
         return Tensor(result_buf, shape=result_shape, dtype=result_dtype)
 
-    def __add__(self, other) -> 'Tensor':
+    def __add__(self, other) -> "Tensor":
         return self._broadcast_op(other, _OP_ADD)
 
-    def __radd__(self, other) -> 'Tensor':
+    def __radd__(self, other) -> "Tensor":
         return self._broadcast_op(other, _OP_ADD)
 
-    def __sub__(self, other) -> 'Tensor':
+    def __sub__(self, other) -> "Tensor":
         return self._broadcast_op(other, _OP_SUB)
 
-    def __rsub__(self, other) -> 'Tensor':
+    def __rsub__(self, other) -> "Tensor":
         if isinstance(other, (int, float)):
             data = self._data_list()
-            return self._from_flat(
-                [float(other) - x for x in data], self._shape
-            )
+            return self._from_flat([float(other) - x for x in data], self._shape)
         return NotImplemented
 
-    def __mul__(self, other) -> 'Tensor':
+    def __mul__(self, other) -> "Tensor":
         return self._broadcast_op(other, _OP_MUL)
 
-    def __rmul__(self, other) -> 'Tensor':
+    def __rmul__(self, other) -> "Tensor":
         return self._broadcast_op(other, _OP_MUL)
 
-    def __truediv__(self, other) -> 'Tensor':
+    def __truediv__(self, other) -> "Tensor":
         return self._broadcast_op(other, _OP_DIV)
 
-    def __rtruediv__(self, other) -> 'Tensor':
+    def __rtruediv__(self, other) -> "Tensor":
         if isinstance(other, (int, float)):
             data = self._data_list()
+
             def _safe_rdiv(x):
                 try:
                     return float(other) / x
                 except ZeroDivisionError:
                     if other > 0:
-                        return float('inf')
+                        return float("inf")
                     elif other < 0:
-                        return float('-inf')
+                        return float("-inf")
                     else:
-                        return float('nan')
+                        return float("nan")
+
             return self._from_flat([_safe_rdiv(x) for x in data], self._shape)
         return NotImplemented
 
-    def __pow__(self, other) -> 'Tensor':
+    def __pow__(self, other) -> "Tensor":
         if isinstance(other, (int, float)):
             data = self._data_list()
             exp = float(other)
-            return self._from_flat([x ** exp for x in data], self._shape)
+            return self._from_flat([x**exp for x in data], self._shape)
         if isinstance(other, Tensor):
             if self.shape != other.shape:
                 raise ValueError(f"pow shape mismatch: {self.shape} vs {other.shape}")
             a = self._data_list()
             b = other._data_list()
-            return self._from_flat([x ** y for x, y in zip(a, b)], self._shape)
+            return self._from_flat([x**y for x, y in zip(a, b)], self._shape)
         return NotImplemented
 
-    def __rpow__(self, other) -> 'Tensor':
+    def __rpow__(self, other) -> "Tensor":
         if isinstance(other, (int, float)):
             data = self._data_list()
             base = float(other)
-            return self._from_flat([base ** x for x in data], self._shape)
+            return self._from_flat([base**x for x in data], self._shape)
         return NotImplemented
 
-    def __neg__(self) -> 'Tensor':
+    def __neg__(self) -> "Tensor":
         data = self._data_list()
         return self._from_flat([-x for x in data], self._shape)
 
     # ── Matrix multiplication ─────────────────────────────────────────
 
-    def __matmul__(self, other) -> 'Tensor':
+    def __matmul__(self, other) -> "Tensor":
         """Matrix multiply (2D @ 2D, or batched).
 
         Supports:
@@ -1601,9 +1598,7 @@ class Tensor:
             a = self._data_list()
             b = other._data_list()
             if len(a) != len(b):
-                raise ValueError(
-                    f"Dot product size mismatch: {len(a)} vs {len(b)}"
-                )
+                raise ValueError(f"Dot product size mismatch: {len(a)} vs {len(b)}")
             return Tensor(sum(a[i] * b[i] for i in range(len(a))))
 
         # Ensure 2D
@@ -1614,15 +1609,17 @@ class Tensor:
         b_rows, b_cols = b._shape[-2], b._shape[-1]
 
         if a_cols != b_rows:
-            raise ValueError(
-                f"Matmul shape mismatch: {a._shape} @ {b._shape}"
-            )
+            raise ValueError(f"Matmul shape mismatch: {a._shape} @ {b._shape}")
 
         a_batch_shape = a._shape[:-2]
         b_batch_shape = b._shape[:-2]
         out_batch_ndim = max(len(a_batch_shape), len(b_batch_shape))
-        padded_a_batch_shape = (1,) * (out_batch_ndim - len(a_batch_shape)) + a_batch_shape
-        padded_b_batch_shape = (1,) * (out_batch_ndim - len(b_batch_shape)) + b_batch_shape
+        padded_a_batch_shape = (1,) * (
+            out_batch_ndim - len(a_batch_shape)
+        ) + a_batch_shape
+        padded_b_batch_shape = (1,) * (
+            out_batch_ndim - len(b_batch_shape)
+        ) + b_batch_shape
         out_batch_shape = []
         for a_dim, b_dim in zip(padded_a_batch_shape, padded_b_batch_shape):
             if a_dim == b_dim:
@@ -1694,7 +1691,10 @@ class Tensor:
                 for j in range(b_cols):
                     s = 0.0
                     for k in range(a_cols):
-                        s += a_data[a_off + i * a_cols + k] * b_data[b_off + k * b_cols + j]
+                        s += (
+                            a_data[a_off + i * a_cols + k]
+                            * b_data[b_off + k * b_cols + j]
+                        )
                     result.append(s)
 
         out_buf = alloc(len(result), a._dtype, format_char=result_format)
@@ -1702,7 +1702,7 @@ class Tensor:
             out_buf[idx] = value
         return Tensor(out_buf, shape=out_shape, dtype=a._dtype)
 
-    def linear(self, weight) -> 'Tensor':
+    def linear(self, weight) -> "Tensor":
         """Apply a linear projection with weight shaped (out_features, in_features).
 
         This computes ``self @ weight.T`` without materializing a transposed copy
@@ -1710,11 +1710,11 @@ class Tensor:
         """
         return tensor_linear(self, weight)
 
-    def linear_split_last_dim(self, weight, sizes) -> tuple['Tensor', ...]:
+    def linear_split_last_dim(self, weight, sizes) -> tuple["Tensor", ...]:
         """Apply a linear projection, then split the output last dimension."""
         return tensor_linear_split_last_dim(self, weight, sizes)
 
-    def linear_squared_relu_gate_interleaved(self, weight) -> 'Tensor':
+    def linear_squared_relu_gate_interleaved(self, weight) -> "Tensor":
         """Apply linear(weight) then interleaved squared-ReLU gating."""
         return tensor_linear_squared_relu_gate_interleaved(self, weight)
 
@@ -1726,7 +1726,7 @@ class Tensor:
         stride=1,
         dilation=1,
         padding=0,
-    ) -> 'Tensor':
+    ) -> "Tensor":
         return tensor_conv2d(
             self,
             weight,
@@ -1737,10 +1737,12 @@ class Tensor:
             padding=padding,
         )
 
-    def split_last_dim(self, sizes) -> tuple['Tensor', ...]:
+    def split_last_dim(self, sizes) -> tuple["Tensor", ...]:
         """Split the last dimension into contiguous views copied into new buffers."""
         if self.ndim == 0:
-            raise ValueError("split_last_dim requires a tensor with at least 1 dimension")
+            raise ValueError(
+                "split_last_dim requires a tensor with at least 1 dimension"
+            )
         normalized_sizes = []
         for size in sizes:
             if isinstance(size, bool):
@@ -1778,8 +1780,8 @@ class Tensor:
             for size, out_buf in outputs:
                 span = size * itemsize
                 dst_base = row * span
-                out_buf._data[dst_base:dst_base + span] = src[
-                    row_base + offset:row_base + offset + span
+                out_buf._data[dst_base : dst_base + span] = src[
+                    row_base + offset : row_base + offset + span
                 ]
                 offset += span
 
@@ -1788,7 +1790,7 @@ class Tensor:
             for size, out_buf in outputs
         )
 
-    def repeat_axis(self, axis: int, repeats: int) -> 'Tensor':
+    def repeat_axis(self, axis: int, repeats: int) -> "Tensor":
         """Repeat contiguous slices along an axis."""
         if repeats < 0:
             raise ValueError("repeats must be non-negative")
@@ -1801,7 +1803,7 @@ class Tensor:
         if repeats == 1:
             return Tensor(self._buf, shape=self._shape, dtype=self._dtype)
         if repeats == 0:
-            out_shape = self._shape[:axis] + (0,) + self._shape[axis + 1:]
+            out_shape = self._shape[:axis] + (0,) + self._shape[axis + 1 :]
             return Tensor(
                 Buffer(
                     bytearray(0),
@@ -1813,9 +1815,11 @@ class Tensor:
                 dtype=self._dtype,
             )
 
-        out_shape = self._shape[:axis] + (
-            self._shape[axis] * repeats,
-        ) + self._shape[axis + 1:]
+        out_shape = (
+            self._shape[:axis]
+            + (self._shape[axis] * repeats,)
+            + self._shape[axis + 1 :]
+        )
         intrinsic = _resolve_optional_intrinsic(
             "_MOLT_GPU_REPEAT_AXIS_CONTIGUOUS",
             "molt_gpu_repeat_axis_contiguous",
@@ -1840,7 +1844,7 @@ class Tensor:
 
         outer = _product(self._shape[:axis]) if axis > 0 else 1
         axis_len = self._shape[axis]
-        inner = _product(self._shape[axis + 1:]) if axis + 1 < self.ndim else 1
+        inner = _product(self._shape[axis + 1 :]) if axis + 1 < self.ndim else 1
         chunk_bytes = inner * self._buf.itemsize
         src_axis_bytes = axis_len * chunk_bytes
         out_axis_len = axis_len * repeats
@@ -1852,11 +1856,11 @@ class Tensor:
             dst_outer = outer_idx * out_axis_len * chunk_bytes
             for axis_idx in range(axis_len):
                 src_base = src_outer + axis_idx * chunk_bytes
-                chunk = src[src_base:src_base + chunk_bytes]
+                chunk = src[src_base : src_base + chunk_bytes]
                 dst_base = dst_outer + axis_idx * repeats * chunk_bytes
-                out[dst_base:dst_base + repeats * chunk_bytes] = chunk * repeats
+                out[dst_base : dst_base + repeats * chunk_bytes] = chunk * repeats
 
-        out_shape = self._shape[:axis] + (out_axis_len,) + self._shape[axis + 1:]
+        out_shape = self._shape[:axis] + (out_axis_len,) + self._shape[axis + 1 :]
         out_buf = Buffer(
             out,
             self._buf.element_type,
@@ -1865,11 +1869,11 @@ class Tensor:
         )
         return Tensor(out_buf, shape=out_shape, dtype=self._dtype)
 
-    def take_rows(self, indices, *, allow_negative: bool = True) -> 'Tensor':
+    def take_rows(self, indices, *, allow_negative: bool = True) -> "Tensor":
         """Gather slices along axis 0 without materializing the full tensor."""
         return tensor_take_rows(self, indices, allow_negative=allow_negative)
 
-    def gather(self, dim: int, index: 'Tensor') -> 'Tensor':
+    def gather(self, dim: int, index: "Tensor") -> "Tensor":
         """tinygrad-compatible gather for Falcon-style row selection."""
         if dim < 0:
             dim += self.ndim
@@ -1877,7 +1881,7 @@ class Tensor:
             raise NotImplementedError("Tensor.gather currently supports dim=0")
         return tensor_take_rows(self, index, allow_negative=False)
 
-    def scatter(self, dim: int, index: 'Tensor', src: 'Tensor') -> 'Tensor':
+    def scatter(self, dim: int, index: "Tensor", src: "Tensor") -> "Tensor":
         """tinygrad-compatible scatter for Falcon-style row updates."""
         if dim < 0:
             dim += self.ndim
@@ -1907,9 +1911,9 @@ class Tensor:
 
         # Compute output shape (remove or preserve the reduction axis)
         if keepdim:
-            out_shape = self._shape[:axis] + (1,) + self._shape[axis + 1:]
+            out_shape = self._shape[:axis] + (1,) + self._shape[axis + 1 :]
         else:
-            out_shape = self._shape[:axis] + self._shape[axis + 1:]
+            out_shape = self._shape[:axis] + self._shape[axis + 1 :]
         if not out_shape:
             out_shape = ()
 
@@ -1919,7 +1923,7 @@ class Tensor:
         # Stride-based reduction
         outer = _product(self._shape[:axis]) if axis > 0 else 1
         axis_len = self._shape[axis]
-        inner = _product(self._shape[axis + 1:]) if axis + 1 < self.ndim else 1
+        inner = _product(self._shape[axis + 1 :]) if axis + 1 < self.ndim else 1
 
         for o in range(outer):
             for inn in range(inner):
@@ -1938,11 +1942,11 @@ class Tensor:
             return Tensor(result[0])
         return self._from_flat(result, out_shape)
 
-    def sum(self, axis=None, keepdim: bool = False) -> 'Tensor':
+    def sum(self, axis=None, keepdim: bool = False) -> "Tensor":
         """Sum elements, optionally along an axis."""
         return self._reduce(lambda a, b: a + b, axis=axis, initial=0.0, keepdim=keepdim)
 
-    def mean(self, axis=None, keepdim: bool = False) -> 'Tensor':
+    def mean(self, axis=None, keepdim: bool = False) -> "Tensor":
         """Mean of elements, optionally along an axis."""
         s = self.sum(axis=axis, keepdim=keepdim)
         if axis is None:
@@ -1953,22 +1957,22 @@ class Tensor:
             n = self._shape[axis]
         return s / float(n)
 
-    def max(self, axis=None, keepdim: bool = False) -> 'Tensor':
+    def max(self, axis=None, keepdim: bool = False) -> "Tensor":
         """Max element, optionally along an axis."""
         return self._reduce(lambda a, b: a if a >= b else b, axis=axis, keepdim=keepdim)
 
-    def min(self, axis=None, keepdim: bool = False) -> 'Tensor':
+    def min(self, axis=None, keepdim: bool = False) -> "Tensor":
         """Min element, optionally along an axis."""
         return self._reduce(lambda a, b: a if a <= b else b, axis=axis, keepdim=keepdim)
 
     # ── Activation functions ──────────────────────────────────────────
 
-    def relu(self) -> 'Tensor':
+    def relu(self) -> "Tensor":
         """Rectified linear unit: max(0, x)."""
         data = self._data_list()
         return self._from_flat([x if x > 0 else 0.0 for x in data], self._shape)
 
-    def sigmoid(self) -> 'Tensor':
+    def sigmoid(self) -> "Tensor":
         """Logistic sigmoid: 1 / (1 + exp(-x))."""
         data = self._data_list()
         result = []
@@ -1982,20 +1986,20 @@ class Tensor:
                 result.append(1.0 / (1.0 + math.exp(-x)))
         return self._from_flat(result, self._shape)
 
-    def tanh(self) -> 'Tensor':
+    def tanh(self) -> "Tensor":
         """Hyperbolic tangent."""
         data = self._data_list()
         return self._from_flat([math.tanh(x) for x in data], self._shape)
 
-    def sin(self) -> 'Tensor':
+    def sin(self) -> "Tensor":
         data = self._data_list()
         return self._from_flat([math.sin(x) for x in data], self._shape)
 
-    def cos(self) -> 'Tensor':
+    def cos(self) -> "Tensor":
         data = self._data_list()
         return self._from_flat([math.cos(x) for x in data], self._shape)
 
-    def softmax(self, axis=-1) -> 'Tensor':
+    def softmax(self, axis=-1) -> "Tensor":
         """Softmax along an axis (default: last axis).
 
         softmax(x)_i = exp(x_i - max(x)) / sum(exp(x_j - max(x)))
@@ -2017,7 +2021,7 @@ class Tensor:
         # Compute outer/inner strides
         outer = _product(self._shape[:axis]) if axis > 0 else 1
         axis_len = self._shape[axis]
-        inner = _product(self._shape[axis + 1:]) if axis + 1 < self.ndim else 1
+        inner = _product(self._shape[axis + 1 :]) if axis + 1 < self.ndim else 1
 
         result = [0.0] * len(data)
 
@@ -2043,7 +2047,7 @@ class Tensor:
             out_buf[idx] = value
         return Tensor(out_buf, shape=self._shape, dtype=self._dtype)
 
-    def layernorm(self, axis=-1, eps: float = 1e-5) -> 'Tensor':
+    def layernorm(self, axis=-1, eps: float = 1e-5) -> "Tensor":
         """Layer normalization over one or more axes."""
         if self.ndim == 0:
             raise ValueError("layernorm requires a tensor with at least 1 dimension")
@@ -2060,7 +2064,9 @@ class Tensor:
             if dim < 0:
                 dim += self.ndim
             if dim < 0 or dim >= self.ndim:
-                raise ValueError(f"Invalid axis {axis} for tensor with {self.ndim} dims")
+                raise ValueError(
+                    f"Invalid axis {axis} for tensor with {self.ndim} dims"
+                )
             normalized.append(dim)
         if len(set(normalized)) != len(normalized):
             raise ValueError("layernorm axes must be unique")
@@ -2075,14 +2081,16 @@ class Tensor:
 
     def scaled_dot_product_attention(
         self,
-        k: 'Tensor',
-        v: 'Tensor',
-        attn_mask: 'Tensor | None' = None,
+        k: "Tensor",
+        v: "Tensor",
+        attn_mask: "Tensor | None" = None,
         scale: float | None = None,
         is_causal: bool = False,
-    ) -> 'Tensor':
+    ) -> "Tensor":
         """tinygrad-compatible SDPA instance method."""
-        actual_scale = scale if scale is not None else (1.0 / math.sqrt(self._shape[-1]))
+        actual_scale = (
+            scale if scale is not None else (1.0 / math.sqrt(self._shape[-1]))
+        )
         mask = attn_mask
         if is_causal:
             seq_q = self._shape[-2]
@@ -2097,7 +2105,7 @@ class Tensor:
             mask = causal_mask if mask is None else mask + causal_mask
         return tensor_scaled_dot_product_attention(self, k, v, mask, actual_scale)
 
-    def rms_norm(self, eps: float) -> 'Tensor':
+    def rms_norm(self, eps: float) -> "Tensor":
         """RMSNorm over the last axis."""
         if self.ndim == 0:
             raise ValueError("rms_norm requires a tensor with at least 1 dimension")
@@ -2149,7 +2157,7 @@ class Tensor:
 
         return Tensor(out_buf, shape=self._shape, dtype=result_dtype)
 
-    def squared_relu_gate_interleaved(self) -> 'Tensor':
+    def squared_relu_gate_interleaved(self) -> "Tensor":
         """Apply relu(gate)^2 * up over an interleaved last axis."""
         if self.ndim == 0:
             raise ValueError(
@@ -2202,7 +2210,7 @@ class Tensor:
 
         return Tensor(out_buf, shape=out_shape, dtype=result_dtype)
 
-    def exp(self) -> 'Tensor':
+    def exp(self) -> "Tensor":
         """Element-wise exponential.
 
         Inputs are clamped to [-709, 709] to prevent float64 overflow.
@@ -2213,7 +2221,7 @@ class Tensor:
             self._shape,
         )
 
-    def log(self) -> 'Tensor':
+    def log(self) -> "Tensor":
         """Element-wise natural logarithm.
 
         Values <= 0 are clamped to a tiny positive epsilon to avoid
@@ -2227,31 +2235,38 @@ class Tensor:
             self._shape,
         )
 
-    def sqrt(self) -> 'Tensor':
+    def sqrt(self) -> "Tensor":
         """Element-wise square root.
 
         Negative values produce NaN (matches IEEE 754 / NumPy behavior).
         """
         data = self._data_list()
         return self._from_flat(
-            [math.sqrt(x) if x >= 0 else float('nan') for x in data],
+            [math.sqrt(x) if x >= 0 else float("nan") for x in data],
             self._shape,
         )
 
-    def rsqrt(self) -> 'Tensor':
+    def rsqrt(self) -> "Tensor":
         """Element-wise reciprocal square root."""
         data = self._data_list()
         return self._from_flat(
-            [1.0 / math.sqrt(x) if x > 0 else float('inf') if x == 0 else float('nan') for x in data],
+            [
+                1.0 / math.sqrt(x)
+                if x > 0
+                else float("inf")
+                if x == 0
+                else float("nan")
+                for x in data
+            ],
             self._shape,
         )
 
-    def abs(self) -> 'Tensor':
+    def abs(self) -> "Tensor":
         """Element-wise absolute value."""
         data = self._data_list()
         return self._from_flat([abs(x) for x in data], self._shape)
 
-    def clamp(self, min_val=None, max_val=None) -> 'Tensor':
+    def clamp(self, min_val=None, max_val=None) -> "Tensor":
         """Clamp values to [min_val, max_val]."""
         data = self._data_list()
         result = []
@@ -2273,10 +2288,12 @@ class Tensor:
 
         def _nest(flat, shape):
             if len(shape) == 1:
-                return flat[:shape[0]]
+                return flat[: shape[0]]
             chunk = _product(shape[1:])
-            return [_nest(flat[i * chunk:(i + 1) * chunk], shape[1:])
-                    for i in range(shape[0])]
+            return [
+                _nest(flat[i * chunk : (i + 1) * chunk], shape[1:])
+                for i in range(shape[0])
+            ]
 
         return _nest(data, self._shape)
 
@@ -2292,7 +2309,7 @@ class Tensor:
             )
         return self._data_list()[0]
 
-    def argmax(self, axis=None, keepdim: bool = False) -> 'Tensor':
+    def argmax(self, axis=None, keepdim: bool = False) -> "Tensor":
         data = self._data_list()
         if not data:
             raise ValueError("argmax() requires a non-empty tensor")
@@ -2310,7 +2327,7 @@ class Tensor:
 
         axis_len = self._shape[axis]
         outer = _product(self._shape[:axis]) if axis > 0 else 1
-        inner = _product(self._shape[axis + 1:]) if axis + 1 < self.ndim else 1
+        inner = _product(self._shape[axis + 1 :]) if axis + 1 < self.ndim else 1
         result = [0.0] * (outer * inner)
 
         for o in range(outer):
@@ -2325,24 +2342,28 @@ class Tensor:
                 result[o * inner + inn] = float(best_idx)
 
         if keepdim:
-            out_shape = self._shape[:axis] + (1,) + self._shape[axis + 1:]
+            out_shape = self._shape[:axis] + (1,) + self._shape[axis + 1 :]
         else:
-            out_shape = self._shape[:axis] + self._shape[axis + 1:]
+            out_shape = self._shape[:axis] + self._shape[axis + 1 :]
         if not out_shape:
             return Tensor(result[0])
         return Tensor(result, shape=out_shape)
 
-    def maximum(self, other) -> 'Tensor':
+    def maximum(self, other) -> "Tensor":
         if isinstance(other, (int, float)):
             data = self._data_list()
             val = float(other)
             return self._from_flat([x if x >= val else val for x in data], self._shape)
         if isinstance(other, Tensor):
             if self.shape != other.shape:
-                raise ValueError(f"maximum shape mismatch: {self.shape} vs {other.shape}")
+                raise ValueError(
+                    f"maximum shape mismatch: {self.shape} vs {other.shape}"
+                )
             a = self._data_list()
             b = other._data_list()
-            return self._from_flat([x if x >= y else y for x, y in zip(a, b)], self._shape)
+            return self._from_flat(
+                [x if x >= y else y for x, y in zip(a, b)], self._shape
+            )
         return NotImplemented
 
     def __repr__(self) -> str:
@@ -2367,7 +2388,9 @@ class Tensor:
             if idx < 0:
                 idx += self._shape[0]
             if idx < 0 or idx >= self._shape[0]:
-                raise IndexError(f"Index {idx} out of range for axis 0 with size {self._shape[0]}")
+                raise IndexError(
+                    f"Index {idx} out of range for axis 0 with size {self._shape[0]}"
+                )
             sub_shape = self._shape[1:]
             sub_size = _product(sub_shape) if sub_shape else 1
             start = idx * sub_size
@@ -2416,7 +2439,9 @@ class Tensor:
                     axis_indices.append(vals)
                     out_shape.append(len(vals))
                 else:
-                    raise TypeError(f"Tensor indexing with {type(selector)} not supported")
+                    raise TypeError(
+                        f"Tensor indexing with {type(selector)} not supported"
+                    )
 
             if any(len(vals) == 0 for vals in axis_indices):
                 return Tensor([], shape=tuple(out_shape), dtype=self._dtype)
@@ -2437,7 +2462,7 @@ class Tensor:
             return self._from_flat(out, tuple(out_shape))
         raise TypeError(f"Tensor indexing with {type(idx)} not supported")
 
-    def dot(self, other) -> 'Tensor':
+    def dot(self, other) -> "Tensor":
         """tinygrad-compatible matrix product alias."""
         return self @ other
 
@@ -2472,6 +2497,7 @@ def tensor_scaled_dot_product_attention(
     attn = tensor_softmax_last_axis(scores)
     return attn @ v
 
+
 def zeros(*shape, dtype=float) -> Tensor:
     """Create a zero-filled tensor."""
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
@@ -2503,7 +2529,7 @@ def randn(*shape, seed=None) -> Tensor:
     else:
         src = _tinygrad_seeded_rand_values(size * 2, seed, 0)
     u0 = src[:size]
-    u1 = src[size:size * 2]
+    u1 = src[size : size * 2]
     result = []
     for a, b in zip(u0, u1):
         result.append(math.cos(2.0 * math.pi * a) * math.sqrt(-2.0 * math.log(1.0 - b)))
@@ -2515,15 +2541,25 @@ def rand(*shape, seed=None) -> Tensor:
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
     size = _product(shape)
-    values = _tinygrad_consume_rand_values(size) if seed is None else _tinygrad_seeded_rand_values(size, seed)
+    values = (
+        _tinygrad_consume_rand_values(size)
+        if seed is None
+        else _tinygrad_seeded_rand_values(size, seed)
+    )
     return Tensor(values, shape=shape)
 
 
-def uniform(*shape, low=0.0, high=1.0, dtype=None, requires_grad=None, seed=None) -> Tensor:
+def uniform(
+    *shape, low=0.0, high=1.0, dtype=None, requires_grad=None, seed=None
+) -> Tensor:
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
     size = _product(shape)
-    base = _tinygrad_consume_rand_values(size) if seed is None else _tinygrad_seeded_rand_values(size, seed)
+    base = (
+        _tinygrad_consume_rand_values(size)
+        if seed is None
+        else _tinygrad_seeded_rand_values(size, seed)
+    )
     values = [((high - low) * value) + low for value in base]
     out = Tensor(values, shape=shape, dtype=dtype or float)
     if dtype is not None:
@@ -2535,7 +2571,17 @@ def scaled_uniform(*shape, dtype=None, requires_grad=None, seed=None) -> Tensor:
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
     scale = _product(shape) ** -0.5
-    return uniform(*shape, low=-1.0, high=1.0, dtype=dtype, requires_grad=requires_grad, seed=seed) * scale
+    return (
+        uniform(
+            *shape,
+            low=-1.0,
+            high=1.0,
+            dtype=dtype,
+            requires_grad=requires_grad,
+            seed=seed,
+        )
+        * scale
+    )
 
 
 def glorot_uniform(*shape, dtype=None, requires_grad=None, seed=None) -> Tensor:
@@ -2544,4 +2590,14 @@ def glorot_uniform(*shape, dtype=None, requires_grad=None, seed=None) -> Tensor:
     if not shape:
         raise ValueError("glorot_uniform requires at least one dimension")
     scale = (6.0 / (shape[0] + _product(shape[1:]))) ** 0.5
-    return uniform(*shape, low=-1.0, high=1.0, dtype=dtype, requires_grad=requires_grad, seed=seed) * scale
+    return (
+        uniform(
+            *shape,
+            low=-1.0,
+            high=1.0,
+            dtype=dtype,
+            requires_grad=requires_grad,
+            seed=seed,
+        )
+        * scale
+    )

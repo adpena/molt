@@ -26,7 +26,9 @@ def _compile_and_run(python_source: str) -> str:
         env = {
             **os.environ,
             "MOLT_EXT_ROOT": str(ARTIFACT_ROOT),
-            "CARGO_TARGET_DIR": os.environ.get("CARGO_TARGET_DIR", str(ARTIFACT_ROOT / "target")),
+            "CARGO_TARGET_DIR": os.environ.get(
+                "CARGO_TARGET_DIR", str(ARTIFACT_ROOT / "target")
+            ),
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": str(MOLT_DIR / "src"),
         }

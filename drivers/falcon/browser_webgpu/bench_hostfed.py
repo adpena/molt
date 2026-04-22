@@ -48,11 +48,16 @@ def main() -> int:
 
     target_root = args.target_root.resolve()
     artifact_dir = target_root / "dist" / "browser_split"
-    init_calls = target_root / "tmp" / "falcon_realdata_hostfed" / "calls_init_only.json"
+    init_calls = (
+        target_root / "tmp" / "falcon_realdata_hostfed" / "calls_init_only.json"
+    )
     token_calls = target_root / "tmp" / "falcon_realdata_hostfed" / "calls.json"
     phases = tuple(args.phases or ("init_only", "init_plus_1_token"))
     bench_wasm = _load_molt_bench_wasm()
-    runner_cmd = ["node", str(Path(__file__).resolve().parents[3] / "wasm" / "run_wasm.js")]
+    runner_cmd = [
+        "node",
+        str(Path(__file__).resolve().parents[3] / "wasm" / "run_wasm.js"),
+    ]
 
     phase_results = []
     for phase, calls_path in (

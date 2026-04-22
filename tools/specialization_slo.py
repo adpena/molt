@@ -37,7 +37,7 @@ import os
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +56,7 @@ DEFAULT_MIN_SAMPLES = 5  # need at least N samples before enforcing
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class SpecializationSample:
@@ -80,18 +81,16 @@ class SpecializationSample:
         if self.compile_time_baseline_s <= 0:
             return 0.0
         return (
-            (self.compile_time_specialized_s - self.compile_time_baseline_s)
-            / self.compile_time_baseline_s
-        )
+            self.compile_time_specialized_s - self.compile_time_baseline_s
+        ) / self.compile_time_baseline_s
 
     @property
     def code_size_change_pct(self) -> float:
         if self.code_size_baseline_bytes <= 0:
             return 0.0
         return (
-            (self.code_size_specialized_bytes - self.code_size_baseline_bytes)
-            / self.code_size_baseline_bytes
-        )
+            self.code_size_specialized_bytes - self.code_size_baseline_bytes
+        ) / self.code_size_baseline_bytes
 
 
 @dataclass
@@ -139,9 +138,13 @@ class SLOReport:
         return {
             "spec_total_samples": self.total_samples,
             "spec_success_rate": round(self.success_rate, 4),
-            "spec_avg_compile_time_change_pct": round(self.avg_compile_time_change_pct, 4),
+            "spec_avg_compile_time_change_pct": round(
+                self.avg_compile_time_change_pct, 4
+            ),
             "spec_avg_code_size_change_pct": round(self.avg_code_size_change_pct, 4),
-            "spec_p95_compile_time_change_pct": round(self.p95_compile_time_change_pct, 4),
+            "spec_p95_compile_time_change_pct": round(
+                self.p95_compile_time_change_pct, 4
+            ),
             "spec_p95_code_size_change_pct": round(self.p95_code_size_change_pct, 4),
             "spec_enabled": self.specialization_enabled,
             "spec_violation_count": len(self.violations),
@@ -152,6 +155,7 @@ class SLOReport:
 # ---------------------------------------------------------------------------
 # Core SLO evaluator
 # ---------------------------------------------------------------------------
+
 
 class SpecializationSLO:
     """Thread-safe SLO evaluator for type-hint specialization.
@@ -289,16 +293,18 @@ class SpecializationSLO:
 
         # 1. Success rate floor (warning only).
         if n >= self._min_samples and success_rate < self._success_rate_floor:
-            violations.append(SLOViolation(
-                metric="success_rate",
-                threshold=self._success_rate_floor,
-                actual=success_rate,
-                severity="warn",
-                message=(
-                    f"Specialization success rate {success_rate:.1%} "
-                    f"below floor {self._success_rate_floor:.0%}"
-                ),
-            ))
+            violations.append(
+                SLOViolation(
+                    metric="success_rate",
+                    threshold=self._success_rate_floor,
+                    actual=success_rate,
+                    severity="warn",
+                    message=(
+                        f"Specialization success rate {success_rate:.1%} "
+                        f"below floor {self._success_rate_floor:.0%}"
+                    ),
+                )
+            )
 
         # 2. Compile-time regression guardrail (error: auto-disable).
         if n >= self._min_samples and avg_ct > self._compile_time_limit:
@@ -377,6 +383,7 @@ class SpecializationSLO:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _percentile(data: list[float], pct: float) -> float:
     if not data:
         return 0.0
@@ -400,6 +407,7 @@ def _log_guardrail(v: SLOViolation) -> None:
 # ---------------------------------------------------------------------------
 # CLI: evaluate from benchmark JSON files
 # ---------------------------------------------------------------------------
+
 
 def _load_bench_metrics(path: Path) -> list[dict[str, Any]]:
     """Load benchmark entries from a Molt bench JSON file."""
@@ -437,15 +445,17 @@ def _samples_from_bench_pair(
         cs_base = int(base.get("molt_size_kb", base.get("code_size_kb", 0)) * 1024)
         succeeded = entry.get("specialization_applied", True)
 
-        samples.append(SpecializationSample(
-            function_name=name,
-            succeeded=bool(succeeded),
-            compile_time_specialized_s=float(ct_spec),
-            compile_time_baseline_s=float(ct_base),
-            code_size_specialized_bytes=cs_spec,
-            code_size_baseline_bytes=cs_base,
-            timestamp=time.time(),
-        ))
+        samples.append(
+            SpecializationSample(
+                function_name=name,
+                succeeded=bool(succeeded),
+                compile_time_specialized_s=float(ct_spec),
+                compile_time_baseline_s=float(ct_base),
+                code_size_specialized_bytes=cs_spec,
+                code_size_baseline_bytes=cs_base,
+                timestamp=time.time(),
+            )
+        )
     return samples
 
 
@@ -463,13 +473,21 @@ def _print_report(report: SLOReport, *, as_json: bool = False) -> None:
     print("  Type-Hint Specialization SLO Report (MOL-216)")
     print(f"{'=' * 60}")
     print(f"  Samples:       {report.total_samples}")
-    print(f"  Success rate:  {report.success_rate:.1%} "
-          f"({report.success_count}/{report.total_samples})")
-    print(f"  Compile-time:  avg {report.avg_compile_time_change_pct:+.2%} "
-          f" p95 {report.p95_compile_time_change_pct:+.2%}")
-    print(f"  Code-size:     avg {report.avg_code_size_change_pct:+.2%} "
-          f" p95 {report.p95_code_size_change_pct:+.2%}")
-    status = _c("32", "ENABLED") if report.specialization_enabled else _c("31", "DISABLED")
+    print(
+        f"  Success rate:  {report.success_rate:.1%} "
+        f"({report.success_count}/{report.total_samples})"
+    )
+    print(
+        f"  Compile-time:  avg {report.avg_compile_time_change_pct:+.2%} "
+        f" p95 {report.p95_compile_time_change_pct:+.2%}"
+    )
+    print(
+        f"  Code-size:     avg {report.avg_code_size_change_pct:+.2%} "
+        f" p95 {report.p95_code_size_change_pct:+.2%}"
+    )
+    status = (
+        _c("32", "ENABLED") if report.specialization_enabled else _c("31", "DISABLED")
+    )
     print(f"  Specialization: {status}")
     if report.auto_disabled_reason:
         print(f"  Reason:        {report.auto_disabled_reason}")
@@ -523,8 +541,10 @@ def main() -> None:
         baseline_data = _load_bench_metrics(args.baseline)
         samples = _samples_from_bench_pair(current_data, baseline_data)
         if not samples:
-            print("No matching benchmarks found between current and baseline.",
-                  file=sys.stderr)
+            print(
+                "No matching benchmarks found between current and baseline.",
+                file=sys.stderr,
+            )
             sys.exit(2)
         slo.record_batch(samples)
 
@@ -536,9 +556,7 @@ def main() -> None:
 
     _print_report(report, as_json=args.json)
 
-    if report.has_violations and any(
-        v.severity == "error" for v in report.violations
-    ):
+    if report.has_violations and any(v.severity == "error" for v in report.violations):
         sys.exit(1)
 
 

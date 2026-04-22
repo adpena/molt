@@ -9,13 +9,10 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_SUBPROCESS_RUNTIME_READY = _require_intrinsic(
-    "molt_subprocess_runtime_ready")
+_MOLT_SUBPROCESS_RUNTIME_READY = _require_intrinsic("molt_subprocess_runtime_ready")
 _MOLT_SUBPROCESS_RUN = _require_intrinsic("molt_subprocess_run")
-_MOLT_SUBPROCESS_CHECK_CALL = _require_intrinsic(
-    "molt_subprocess_check_call")
-_MOLT_SUBPROCESS_CHECK_OUTPUT = _require_intrinsic(
-    "molt_subprocess_check_output")
+_MOLT_SUBPROCESS_CHECK_CALL = _require_intrinsic("molt_subprocess_check_call")
+_MOLT_SUBPROCESS_CHECK_OUTPUT = _require_intrinsic("molt_subprocess_check_output")
 _MOLT_PROCESS_SPAWN = _require_intrinsic("molt_process_spawn")
 _MOLT_PROCESS_SPAWN_EX = _require_intrinsic("molt_process_spawn_ex")
 _MOLT_PROCESS_PID = _require_intrinsic("molt_process_pid")
@@ -31,16 +28,12 @@ _MOLT_STREAM_CLOSE = _require_intrinsic("molt_stream_close")
 _MOLT_STREAM_DROP = _require_intrinsic("molt_stream_drop")
 _MOLT_STREAM_READER_NEW = _require_intrinsic("molt_stream_reader_new")
 _MOLT_STREAM_READER_READ = _require_intrinsic("molt_stream_reader_read")
-_MOLT_STREAM_READER_READLINE = _require_intrinsic(
-    "molt_stream_reader_readline")
+_MOLT_STREAM_READER_READLINE = _require_intrinsic("molt_stream_reader_readline")
 _MOLT_STREAM_READER_DROP = _require_intrinsic("molt_stream_reader_drop")
 _MOLT_PENDING = _require_intrinsic("molt_pending")
-_MOLT_SUBPROCESS_PIPE_CONST = _require_intrinsic(
-    "molt_subprocess_pipe_const")
-_MOLT_SUBPROCESS_STDOUT_CONST = _require_intrinsic(
-    "molt_subprocess_stdout_const")
-_MOLT_SUBPROCESS_DEVNULL_CONST = _require_intrinsic(
-    "molt_subprocess_devnull_const")
+_MOLT_SUBPROCESS_PIPE_CONST = _require_intrinsic("molt_subprocess_pipe_const")
+_MOLT_SUBPROCESS_STDOUT_CONST = _require_intrinsic("molt_subprocess_stdout_const")
+_MOLT_SUBPROCESS_DEVNULL_CONST = _require_intrinsic("molt_subprocess_devnull_const")
 
 PIPE = int(_MOLT_SUBPROCESS_PIPE_CONST())
 DEVNULL = int(_MOLT_SUBPROCESS_DEVNULL_CONST())

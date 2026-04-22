@@ -25,4 +25,5 @@ def rectangle(win, uly, ulx, lry, lrx):
     del win, uly, ulx, lry, lrx
     return None
 
+
 globals().pop("_require_intrinsic", None)

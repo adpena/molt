@@ -79,10 +79,7 @@ def _uv_project_env_matches_python(requested: str | None) -> bool:
             [
                 str(project_python),
                 "-c",
-                (
-                    "import sys; "
-                    "print(f'{sys.version_info[0]}.{sys.version_info[1]}')"
-                ),
+                ("import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"),
             ],
             cwd=ROOT,
             capture_output=True,
@@ -234,8 +231,7 @@ def main() -> None:
         test_cmd_args, random_order, random_seed = _parse_test_runner_flags(cmd[1:])
         if test_cmd_args:
             raise RuntimeError(
-                "Unrecognized tools/dev.py test arguments: "
-                + " ".join(test_cmd_args)
+                "Unrecognized tools/dev.py test arguments: " + " ".join(test_cmd_args)
             )
         src_path = str(ROOT / "src")
         existing = env.get("PYTHONPATH", "")

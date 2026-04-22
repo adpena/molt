@@ -22,9 +22,7 @@ def _load_module() -> ModuleType:
     return module
 
 
-def test_case_env_uses_canonical_internal_roots(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_case_env_uses_canonical_internal_roots(tmp_path: Path, monkeypatch) -> None:
     mod = _load_module()
     case_root = tmp_path / "case"
     ext_root = tmp_path / "ext"
@@ -63,9 +61,7 @@ def test_case_env_uses_canonical_internal_roots(
     }
 
 
-def test_resolve_output_root_defaults_under_tmp(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_resolve_output_root_defaults_under_tmp(tmp_path: Path, monkeypatch) -> None:
     mod = _load_module()
     ext_root = tmp_path / "ext"
     ext_root.mkdir()
@@ -80,5 +76,7 @@ def test_resolve_output_root_defaults_under_tmp(
 
     output_root, molt_ext_root = mod._resolve_output_root(None)
 
-    assert output_root == ext_root / "tmp" / "bench_backend_incremental_20260409T101112Z"
+    assert (
+        output_root == ext_root / "tmp" / "bench_backend_incremental_20260409T101112Z"
+    )
     assert molt_ext_root == ext_root

@@ -10,13 +10,13 @@ These tests exercise the guarantees proven in:
   - formal/lean/MoltTIR/Backend/CrossBackend.lean (all_backends_equiv)
   - formal/lean/MoltTIR/Backend/BackendDeterminism.lean
 """
+
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -50,9 +50,7 @@ BACKENDS = ["native", "wasm", "luau"]
 IR_PARITY_BACKENDS = ["native", "luau"]
 
 # Timeout for subprocess calls.
-_SUBPROCESS_TIMEOUT = float(
-    os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120")
-)
+_SUBPROCESS_TIMEOUT = float(os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120"))
 
 
 def _molt_cli_available() -> bool:
@@ -202,7 +200,7 @@ class TestBackendIRParity:
             out_dir = tmp_path / f"out_{backend}"
             out_dir.mkdir(exist_ok=True)
             try:
-                result = _run_molt_build(
+                _run_molt_build(
                     src_file,
                     out_dir,
                     backend,

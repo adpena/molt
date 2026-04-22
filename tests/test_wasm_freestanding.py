@@ -1,4 +1,5 @@
 """Tests for wasm-freestanding target and WASI import stubbing."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -206,7 +207,9 @@ def test_stub_wasi_with_non_function_imports():
     assert wasi_after == [], f"WASI imports remain after stubbing: {wasi_after}"
 
     # Table import should still be present
-    table_imports = [(m, n) for m, n in imports_after if n == "__indirect_function_table"]
+    table_imports = [
+        (m, n) for m, n in imports_after if n == "__indirect_function_table"
+    ]
     assert len(table_imports) == 1, "Table import should survive stubbing"
 
 
@@ -681,9 +684,9 @@ def test_freestanding_produces_no_wasi_imports(tmp_path):
         cwd=PROJECT_ROOT,
         timeout=180,
     )
-    assert (
-        result.returncode == 0
-    ), f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
     wasm_bytes = linked.read_bytes()
     imports = _parse_wasm_imports(wasm_bytes)
     wasi_imports = [
@@ -716,9 +719,9 @@ def test_freestanding_binary_is_valid_wasm(tmp_path):
         cwd=PROJECT_ROOT,
         timeout=180,
     )
-    assert (
-        result.returncode == 0
-    ), f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
     wasm_bytes = linked.read_bytes()
     assert wasm_bytes[:4] == b"\x00asm", "Not a valid WASM binary"
     assert wasm_bytes[4:8] == b"\x01\x00\x00\x00", "Not WASM version 1"
@@ -749,9 +752,9 @@ def test_precompile_produces_cwasm(tmp_path):
         cwd=PROJECT_ROOT,
         timeout=180,
     )
-    assert (
-        result.returncode == 0
-    ), f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
     cwasm = linked.with_suffix(".cwasm")
     if shutil.which("wasmtime"):
         assert cwasm.exists(), f"Expected .cwasm at {cwasm}"

@@ -170,7 +170,9 @@ def compile_rust(
     Returns (success, elapsed_seconds, error_message).
     """
     allow_lints = ["unused_mut", "unused_variables", "dead_code", "non_snake_case"]
-    compile_timeout = 600  # Molt emits large self-contained files; allow generous compile time
+    compile_timeout = (
+        600  # Molt emits large self-contained files; allow generous compile time
+    )
     cmd = [
         rustc,
         rs_path,
@@ -209,7 +211,9 @@ def run_binary(bin_path: str, iterations: int) -> dict:
             return {"error": "binary timed out (60s)"}
         elapsed = time.perf_counter() - t0
         if proc.returncode != 0:
-            return {"error": f"binary exit code {proc.returncode}: {proc.stderr.strip()}"}
+            return {
+                "error": f"binary exit code {proc.returncode}: {proc.stderr.strip()}"
+            }
         times.append(elapsed)
         if output is None:
             output = proc.stdout.strip()
@@ -273,8 +277,10 @@ def bench_one(
     cpython_res = run_cpython(py_path, iterations)
     result["cpython"] = cpython_res
     if "error" not in cpython_res:
-        print(f"    mean: {cpython_res['mean_ms']:.2f} ms  "
-              f"min: {cpython_res['min_ms']:.2f} ms")
+        print(
+            f"    mean: {cpython_res['mean_ms']:.2f} ms  "
+            f"min: {cpython_res['min_ms']:.2f} ms"
+        )
     else:
         print(f"    ERROR: {cpython_res['error']}")
 
@@ -313,13 +319,19 @@ def bench_one(
         rust_res = run_binary(bin_path, iterations)
         result["rust"] = rust_res
         if "error" not in rust_res:
-            print(f"    mean: {rust_res['mean_ms']:.2f} ms  "
-                  f"min: {rust_res['min_ms']:.2f} ms")
+            print(
+                f"    mean: {rust_res['mean_ms']:.2f} ms  "
+                f"min: {rust_res['min_ms']:.2f} ms"
+            )
         else:
             print(f"    ERROR: {rust_res['error']}")
 
     # --- Comparison ---
-    if "error" not in cpython_res and "rust" in result and "error" not in result.get("rust", {}):
+    if (
+        "error" not in cpython_res
+        and "rust" in result
+        and "error" not in result.get("rust", {})
+    ):
         rust_res = result["rust"]
         if rust_res["mean_ms"] > 0:
             speedup = cpython_res["mean_ms"] / rust_res["mean_ms"]
@@ -328,8 +340,10 @@ def bench_one(
         result["speedup_vs_cpython"] = round(speedup, 2)
         output_match = cpython_res["output"] == rust_res["output"]
         result["output_match"] = output_match
-        print(f"  Speedup: {speedup:.1f}x  "
-              f"Output match: {'YES' if output_match else 'NO'}")
+        print(
+            f"  Speedup: {speedup:.1f}x  "
+            f"Output match: {'YES' if output_match else 'NO'}"
+        )
 
     return result
 
@@ -343,12 +357,20 @@ def main():
         nargs="*",
         help="Python benchmark files to run (default: built-in list)",
     )
-    parser.add_argument("--cpython-only", action="store_true",
-                        help="Only run CPython baseline (no Molt/rustc)")
-    parser.add_argument("--iterations", type=int, default=ITERATIONS,
-                        help=f"Number of runtime iterations (default: {ITERATIONS})")
-    parser.add_argument("--json", type=str, default=None,
-                        help="Write JSON results to this file")
+    parser.add_argument(
+        "--cpython-only",
+        action="store_true",
+        help="Only run CPython baseline (no Molt/rustc)",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=ITERATIONS,
+        help=f"Number of runtime iterations (default: {ITERATIONS})",
+    )
+    parser.add_argument(
+        "--json", type=str, default=None, help="Write JSON results to this file"
+    )
     args = parser.parse_args()
 
     benchmarks = args.benchmarks
@@ -369,8 +391,9 @@ def main():
     if not args.cpython_only:
         rustc = _find_rustc()
         if rustc is None:
-            print("WARNING: rustc not found — running CPython-only mode",
-                  file=sys.stderr)
+            print(
+                "WARNING: rustc not found — running CPython-only mode", file=sys.stderr
+            )
 
     print("=" * 60)
     print("Molt Rust Transpiler Benchmark Suite")
@@ -412,10 +435,16 @@ def main():
         if "cpython" in r and "error" not in r["cpython"]:
             cpython_mean = f"{r['cpython']['mean_ms']:.1f}ms"
 
-        speedup = f"{r['speedup_vs_cpython']:.1f}x" if "speedup_vs_cpython" in r else "N/A"
-        match = "YES" if r.get("output_match") else ("NO" if "output_match" in r else "N/A")
+        speedup = (
+            f"{r['speedup_vs_cpython']:.1f}x" if "speedup_vs_cpython" in r else "N/A"
+        )
+        match = (
+            "YES" if r.get("output_match") else ("NO" if "output_match" in r else "N/A")
+        )
 
-        print(f"{name:<30} {transpile:>10} {compile_t:>10} {rust_mean:>10} {cpython_mean:>10} {speedup:>8} {match:>6}")
+        print(
+            f"{name:<30} {transpile:>10} {compile_t:>10} {rust_mean:>10} {cpython_mean:>10} {speedup:>8} {match:>6}"
+        )
 
     # --- JSON output ---
     report = {

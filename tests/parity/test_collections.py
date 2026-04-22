@@ -88,7 +88,7 @@ print(sorted(d.values()))
 print(sorted(d.items()))
 
 print("=== Dict comprehension ===")
-print({x: x ** 2 for x in range(5)})
+print({x: x**2 for x in range(5)})
 print({k: v for k, v in [("a", 1), ("b", 2)]})
 
 print("=== Dict from keys ===")

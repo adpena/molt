@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -27,24 +26,25 @@ from typing import Optional
 # Probe matrix
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ProbeSpec:
     path: str
     expected_status: int
     expected_content_type_prefix: str  # checked as prefix, e.g. "text/html"
-    sentinel: Optional[str] = None     # substring that must appear in body
+    sentinel: Optional[str] = None  # substring that must appear in body
 
 
 PROBE_PATHS: list[ProbeSpec] = [
-    ProbeSpec("/",            200, "text/html",  None),
-    ProbeSpec("/fib/10",      200, "text/plain", "55"),
-    ProbeSpec("/primes/100",  200, "text/plain", None),
-    ProbeSpec("/diamond/5",   200, "text/plain", None),
+    ProbeSpec("/", 200, "text/html", None),
+    ProbeSpec("/fib/10", 200, "text/plain", "55"),
+    ProbeSpec("/primes/100", 200, "text/plain", None),
+    ProbeSpec("/diamond/5", 200, "text/plain", None),
     ProbeSpec("/fizzbuzz/15", 200, "text/plain", "FizzBuzz"),
-    ProbeSpec("/pi/1000",     200, "text/plain", "3.14"),
-    ProbeSpec("/generate/1",  200, "text/plain", None),
-    ProbeSpec("/bench",       200, "text/plain", None),
-    ProbeSpec("/demo",        200, "text/html",  None),
+    ProbeSpec("/pi/1000", 200, "text/plain", "3.14"),
+    ProbeSpec("/generate/1", 200, "text/plain", None),
+    ProbeSpec("/bench", 200, "text/plain", None),
+    ProbeSpec("/demo", 200, "text/html", None),
 ]
 
 
@@ -52,13 +52,14 @@ PROBE_PATHS: list[ProbeSpec] = [
 # Result dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ProbeResult:
     path: str
     passed: bool
     status_code: Optional[int] = None
     content_type: Optional[str] = None
-    body_snippet: Optional[str] = None   # first 256 chars of body for diagnostics
+    body_snippet: Optional[str] = None  # first 256 chars of body for diagnostics
     failure_reason: Optional[str] = None
     attempts: int = 0
 
@@ -92,7 +93,9 @@ def _probe_once(url: str, spec: ProbeSpec) -> ProbeResult:
     result = ProbeResult(path=spec.path, passed=False)
 
     try:
-        req = urllib.request.Request(full_url, headers={"User-Agent": "molt-deploy-verify/1.0"})
+        req = urllib.request.Request(
+            full_url, headers={"User-Agent": "molt-deploy-verify/1.0"}
+        )
         with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
             result.status_code = resp.status
             result.content_type = resp.headers.get("Content-Type", "")
@@ -129,9 +132,7 @@ def _probe_once(url: str, spec: ProbeSpec) -> ProbeResult:
 
             # Check sentinel substring
             if spec.sentinel is not None and spec.sentinel not in body:
-                result.failure_reason = (
-                    f"Sentinel '{spec.sentinel}' not found in body"
-                )
+                result.failure_reason = f"Sentinel '{spec.sentinel}' not found in body"
                 return result
 
             result.passed = True
@@ -169,6 +170,7 @@ def probe_with_retries(base_url: str, spec: ProbeSpec, retries: int) -> ProbeRes
 # ---------------------------------------------------------------------------
 # Report + console output
 # ---------------------------------------------------------------------------
+
 
 def _write_report(report: DeployVerifyReport, artifact_root: Path) -> Path:
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -208,6 +210,7 @@ def _print_summary(report: DeployVerifyReport) -> None:
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(

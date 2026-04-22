@@ -42,8 +42,7 @@ def test_extract_live_url_prefers_workers_dev_url() -> None:
     """
 
     assert (
-        verify.extract_live_url(stdout)
-        == "https://molt-python-demo.adpena.workers.dev"
+        verify.extract_live_url(stdout) == "https://molt-python-demo.adpena.workers.dev"
     )
 
 
@@ -82,7 +81,11 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
                 "find_additional_modules": True,
                 "rules": [
                     {"type": "ESModule", "globs": ["**/*.js"], "fallthrough": False},
-                    {"type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": False},
+                    {
+                        "type": "CompiledWasm",
+                        "globs": ["**/*.wasm"],
+                        "fallthrough": False,
+                    },
                 ],
             }
         )
@@ -94,7 +97,10 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
     assert contract.bundle_root == bundle_root
     assert contract.wrangler_config == wrangler_config
     assert contract.compatibility_date == "2026-03-28"
-    assert _datetime.date.fromisoformat(contract.compatibility_date).isoformat() == "2026-03-28"
+    assert (
+        _datetime.date.fromisoformat(contract.compatibility_date).isoformat()
+        == "2026-03-28"
+    )
     assert contract.no_bundle is True
     assert contract.worker_js == bundle_root / "worker.js"
     assert contract.manifest == bundle_root / "manifest.json"
@@ -191,7 +197,11 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
                 "find_additional_modules": True,
                 "rules": [
                     {"type": "ESModule", "globs": ["**/*.js"], "fallthrough": False},
-                    {"type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": False},
+                    {
+                        "type": "CompiledWasm",
+                        "globs": ["**/*.wasm"],
+                        "fallthrough": False,
+                    },
                 ],
             }
         )
@@ -239,7 +249,11 @@ def test_validate_bundle_contract_rejects_worker_runtime_abi_drift(
                 "find_additional_modules": True,
                 "rules": [
                     {"type": "ESModule", "globs": ["**/*.js"], "fallthrough": False},
-                    {"type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": False},
+                    {
+                        "type": "CompiledWasm",
+                        "globs": ["**/*.wasm"],
+                        "fallthrough": False,
+                    },
                 ],
             }
         )

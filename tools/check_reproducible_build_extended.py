@@ -295,7 +295,9 @@ def main() -> int:
                 print("  SKIP  No programs found in tests/differential/basic/")
                 report["ir"] = {"status": "skip"}
                 continue
-            ok, details = check_ir_determinism(programs, runs=runs, verbose=args.verbose)
+            ok, details = check_ir_determinism(
+                programs, runs=runs, verbose=args.verbose
+            )
             report["ir"] = {"status": "pass" if ok else "fail", "details": details}
 
         elif check == "cross-process":
@@ -337,7 +339,10 @@ def main() -> int:
     if args.json_out:
         Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json_out).write_text(
-            json.dumps({"overall": "pass" if overall_pass else "fail", "checks": report}, indent=2)
+            json.dumps(
+                {"overall": "pass" if overall_pass else "fail", "checks": report},
+                indent=2,
+            )
             + "\n"
         )
         print(f"JSON report: {args.json_out}")

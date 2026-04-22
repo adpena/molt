@@ -10,7 +10,6 @@ Validates:
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -54,7 +53,10 @@ class TestWebGPUShaderCorrectness:
 
     def test_matmul_storage_buffers(self, webgpu_engine_source: str):
         """Matmul shader must have 3 storage buffers + 1 uniform (dims)."""
-        assert "@group(0) @binding(0) var<storage, read_write> buf0:" in webgpu_engine_source
+        assert (
+            "@group(0) @binding(0) var<storage, read_write> buf0:"
+            in webgpu_engine_source
+        )
         assert "@group(0) @binding(1) var<storage, read> buf1:" in webgpu_engine_source
         assert "@group(0) @binding(2) var<storage, read> buf2:" in webgpu_engine_source
         assert "@group(0) @binding(3) var<uniform> dims:" in webgpu_engine_source
@@ -131,7 +133,10 @@ class TestWebGPUMatmulPoC:
 
     def test_has_gpu_device_request(self, webgpu_matmul_source: str):
         """PoC must request a GPU device."""
-        assert "requestDevice" in webgpu_matmul_source or "requestAdapter" in webgpu_matmul_source
+        assert (
+            "requestDevice" in webgpu_matmul_source
+            or "requestAdapter" in webgpu_matmul_source
+        )
 
 
 def _curl_available() -> bool:
@@ -153,7 +158,15 @@ class TestBrowserTestPageDeployment:
     def test_test_page_accessible(self):
         """GET /test should return 200 with HTML content."""
         result = subprocess.run(
-            ["curl", "-s", "-w", "%{http_code}", "-o", "/dev/null", f"{WORKER_URL}/test"],
+            [
+                "curl",
+                "-s",
+                "-w",
+                "%{http_code}",
+                "-o",
+                "/dev/null",
+                f"{WORKER_URL}/test",
+            ],
             capture_output=True,
             text=True,
             timeout=10,
@@ -167,8 +180,15 @@ class TestBrowserTestPageDeployment:
     def test_browser_js_accessible(self):
         """GET /browser/compute-engine.js should return 200."""
         result = subprocess.run(
-            ["curl", "-s", "-w", "%{http_code}", "-o", "/dev/null",
-             f"{WORKER_URL}/browser/compute-engine.js"],
+            [
+                "curl",
+                "-s",
+                "-w",
+                "%{http_code}",
+                "-o",
+                "/dev/null",
+                f"{WORKER_URL}/browser/compute-engine.js",
+            ],
             capture_output=True,
             text=True,
             timeout=10,
@@ -182,8 +202,15 @@ class TestBrowserTestPageDeployment:
     def test_webgpu_engine_js_accessible(self):
         """GET /browser/webgpu-engine.js should return 200."""
         result = subprocess.run(
-            ["curl", "-s", "-w", "%{http_code}", "-o", "/dev/null",
-             f"{WORKER_URL}/browser/webgpu-engine.js"],
+            [
+                "curl",
+                "-s",
+                "-w",
+                "%{http_code}",
+                "-o",
+                "/dev/null",
+                f"{WORKER_URL}/browser/webgpu-engine.js",
+            ],
             capture_output=True,
             text=True,
             timeout=10,

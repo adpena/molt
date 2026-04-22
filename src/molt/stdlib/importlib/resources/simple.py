@@ -96,4 +96,5 @@ class TraversableReader(TraversableResources, SimpleReader):
     def files(self):
         return ResourceContainer(self)
 
+
 globals().pop("_require_intrinsic", None)

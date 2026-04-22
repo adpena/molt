@@ -9,14 +9,13 @@ import socket
 import ssl
 import statistics
 import time
-import urllib.request
-import urllib.error
 from dataclasses import dataclass, field
 
 
 @dataclass
 class LatencyMeasurement:
     """Individual request latency breakdown."""
+
     dns_ms: float = 0.0
     tls_ms: float = 0.0
     ttfb_ms: float = 0.0
@@ -28,6 +27,7 @@ class LatencyMeasurement:
 @dataclass
 class LatencyReport:
     """Aggregate latency report with percentiles."""
+
     endpoint: str
     measurements: list[LatencyMeasurement] = field(default_factory=list)
 
@@ -85,7 +85,9 @@ class LatencyReport:
                 "min": round(min(total_vals), 2),
                 "max": round(max(total_vals), 2),
                 "mean": round(statistics.mean(total_vals), 2),
-                "stdev": round(statistics.stdev(total_vals), 2) if len(total_vals) > 1 else 0.0,
+                "stdev": round(statistics.stdev(total_vals), 2)
+                if len(total_vals) > 1
+                else 0.0,
             },
         }
 
@@ -96,6 +98,7 @@ def measure_request(url: str) -> LatencyMeasurement:
 
     # Parse URL
     from urllib.parse import urlparse
+
     parsed = urlparse(url)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -179,9 +182,11 @@ def run_latency_test(url: str, num_requests: int = 10) -> LatencyReport:
         m = measure_request(url)
         report.measurements.append(m)
         status = f"HTTP {m.status_code}" if m.error is None else m.error
-        print(f"  [{i+1:2d}/{num_requests}] {status} — "
-              f"dns={m.dns_ms:.1f}ms tls={m.tls_ms:.1f}ms "
-              f"ttfb={m.ttfb_ms:.1f}ms total={m.total_ms:.1f}ms")
+        print(
+            f"  [{i + 1:2d}/{num_requests}] {status} — "
+            f"dns={m.dns_ms:.1f}ms tls={m.tls_ms:.1f}ms "
+            f"ttfb={m.ttfb_ms:.1f}ms total={m.total_ms:.1f}ms"
+        )
 
     return report
 
@@ -189,25 +194,31 @@ def run_latency_test(url: str, num_requests: int = 10) -> LatencyReport:
 def print_report(report: LatencyReport) -> None:
     """Print a formatted latency report."""
     s = report.summary()
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"Endpoint: {s['endpoint']}")
-    print(f"Requests: {s['total_requests']} total, "
-          f"{s.get('successful', 0)} successful, {s['failures']} failed")
+    print(
+        f"Requests: {s['total_requests']} total, "
+        f"{s.get('successful', 0)} successful, {s['failures']} failed"
+    )
 
     if "error" in s:
         print(f"Error: {s['error']}")
         return
 
     print(f"\n{'Metric':<12} {'p50':>10} {'p95':>10} {'p99':>10}")
-    print(f"{'-'*42}")
+    print(f"{'-' * 42}")
     for metric in ("dns_ms", "tls_ms", "ttfb_ms", "total_ms"):
         vals = s[metric]
         if isinstance(vals, dict):
-            print(f"{metric:<12} {vals['p50']:>10.2f} {vals['p95']:>10.2f} {vals['p99']:>10.2f}")
+            print(
+                f"{metric:<12} {vals['p50']:>10.2f} {vals['p95']:>10.2f} {vals['p99']:>10.2f}"
+            )
 
     total = s["total_ms"]
-    print(f"\nTotal: min={total['min']:.2f}ms max={total['max']:.2f}ms "
-          f"mean={total['mean']:.2f}ms stdev={total['stdev']:.2f}ms")
+    print(
+        f"\nTotal: min={total['min']:.2f}ms max={total['max']:.2f}ms "
+        f"mean={total['mean']:.2f}ms stdev={total['stdev']:.2f}ms"
+    )
 
 
 def main() -> None:
@@ -238,4 +249,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     from pathlib import Path
+
     main()

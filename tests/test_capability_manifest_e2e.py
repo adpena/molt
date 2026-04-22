@@ -3,13 +3,13 @@
 Verifies that a TOML manifest is correctly parsed, converted to env vars,
 and (when molt is available) propagated to the compiled binary.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import sys
 import tempfile
-from pathlib import Path
 
 sys.path.insert(0, "src")
 
@@ -18,7 +18,7 @@ def test_toml_manifest_loads_and_converts():
     """Create a TOML manifest, load it, verify env vars."""
     from molt.capability_manifest import load_manifest
 
-    toml = '''
+    toml = """
 [manifest]
 version = "2.0"
 
@@ -44,7 +44,7 @@ mode = "virtual"
 compatible = true
 execution_tier = "auto"
 tier_up_threshold = 50
-'''
+"""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
         f.write(toml)
         path = f.name
@@ -83,7 +83,7 @@ tier_up_threshold = 50
 
 def test_yaml_manifest_loads():
     """YAML format also works."""
-    yaml_content = '''
+    yaml_content = """
 manifest:
   version: "2.0"
 capabilities:
@@ -91,7 +91,7 @@ capabilities:
     - net
 resources:
   max_memory: "16MB"
-'''
+"""
     try:
         import yaml  # noqa: F401
     except ImportError:
@@ -104,6 +104,7 @@ resources:
 
     try:
         from molt.capability_manifest import load_manifest
+
         m = load_manifest(path)
         assert m.resources.max_memory == 16 * 1024 * 1024
     finally:
@@ -135,7 +136,7 @@ def test_json_manifest_backward_compat():
 
 def test_invalid_manifest_raises():
     """Malformed manifests produce clear errors."""
-    from molt.capability_manifest import load_manifest, ManifestError
+    from molt.capability_manifest import load_manifest
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
         f.write("[invalid\nbroken toml")
@@ -155,7 +156,7 @@ def test_manifest_with_virtual_mounts():
     """Virtual mount configuration parses correctly."""
     from molt.capability_manifest import load_manifest
 
-    toml = '''
+    toml = """
 [manifest]
 version = "2.0"
 
@@ -165,7 +166,7 @@ mode = "virtual"
 [io.virtual_mounts]
 "/tmp" = { type = "memory", max_size = "16MB" }
 "/data" = { type = "readonly", source = "/bundle/data" }
-'''
+"""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
         f.write(toml)
         path = f.name
@@ -182,7 +183,9 @@ mode = "virtual"
 
 
 if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    tests = [
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
+    ]
     passed = failed = 0
     for t in tests:
         try:
@@ -192,4 +195,4 @@ if __name__ == "__main__":
         except Exception as e:
             failed += 1
             print(f"  FAIL  {t.__name__}: {e}")
-    print(f"\n{passed}/{passed+failed} passed")
+    print(f"\n{passed}/{passed + failed} passed")

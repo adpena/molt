@@ -7,59 +7,35 @@ from typing import Any
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _molt_configparser_new = _require_intrinsic("molt_configparser_new")
-_molt_configparser_read_string = _require_intrinsic(
-    "molt_configparser_read_string"
-)
+_molt_configparser_read_string = _require_intrinsic("molt_configparser_read_string")
 _molt_configparser_read = _require_intrinsic("molt_configparser_read")
-_molt_configparser_sections = _require_intrinsic(
-    "molt_configparser_sections"
-)
-_molt_configparser_has_section = _require_intrinsic(
-    "molt_configparser_has_section"
-)
-_molt_configparser_has_option = _require_intrinsic(
-    "molt_configparser_has_option"
-)
+_molt_configparser_sections = _require_intrinsic("molt_configparser_sections")
+_molt_configparser_has_section = _require_intrinsic("molt_configparser_has_section")
+_molt_configparser_has_option = _require_intrinsic("molt_configparser_has_option")
 _molt_configparser_get = _require_intrinsic("molt_configparser_get")
 _molt_configparser_getint = _require_intrinsic("molt_configparser_getint")
-_molt_configparser_getfloat = _require_intrinsic(
-    "molt_configparser_getfloat"
-)
-_molt_configparser_getboolean = _require_intrinsic(
-    "molt_configparser_getboolean"
-)
+_molt_configparser_getfloat = _require_intrinsic("molt_configparser_getfloat")
+_molt_configparser_getboolean = _require_intrinsic("molt_configparser_getboolean")
 _molt_configparser_options = _require_intrinsic("molt_configparser_options")
 _molt_configparser_items = _require_intrinsic("molt_configparser_items")
 _molt_configparser_set = _require_intrinsic("molt_configparser_set")
-_molt_configparser_add_section = _require_intrinsic(
-    "molt_configparser_add_section"
-)
+_molt_configparser_add_section = _require_intrinsic("molt_configparser_add_section")
 _molt_configparser_remove_section = _require_intrinsic(
     "molt_configparser_remove_section"
 )
-_molt_configparser_remove_option = _require_intrinsic(
-    "molt_configparser_remove_option"
-)
+_molt_configparser_remove_option = _require_intrinsic("molt_configparser_remove_option")
 _molt_configparser_write = _require_intrinsic("molt_configparser_write")
 _molt_configparser_drop = _require_intrinsic("molt_configparser_drop")
-_molt_configparser_write_string = _require_intrinsic(
-    "molt_configparser_write_string"
-)
-_molt_configparser_get_raw = _require_intrinsic(
-    "molt_configparser_get_raw"
-)
+_molt_configparser_write_string = _require_intrinsic("molt_configparser_write_string")
+_molt_configparser_get_raw = _require_intrinsic("molt_configparser_get_raw")
 _molt_configparser_interpolate_basic = _require_intrinsic(
     "molt_configparser_interpolate_basic"
 )
 _molt_configparser_interpolate_extended = _require_intrinsic(
     "molt_configparser_interpolate_extended"
 )
-_molt_configparser_read_file = _require_intrinsic(
-    "molt_configparser_read_file"
-)
-_molt_configparser_defaults = _require_intrinsic(
-    "molt_configparser_defaults"
-)
+_molt_configparser_read_file = _require_intrinsic("molt_configparser_read_file")
+_molt_configparser_defaults = _require_intrinsic("molt_configparser_defaults")
 
 _MISSING = object()
 
@@ -219,9 +195,7 @@ class BasicInterpolation(Interpolation):
     ) -> str:
         # Delegate interpolation to the Rust intrinsic via the parser's handle
         return str(
-            _molt_configparser_interpolate_basic(
-                parser._handle, str(section), value
-            )
+            _molt_configparser_interpolate_basic(parser._handle, str(section), value)
         )
 
     def before_set(self, parser: Any, section: str, option: str, value: str) -> str:
@@ -248,9 +222,7 @@ class ExtendedInterpolation(Interpolation):
     ) -> str:
         # Delegate interpolation to the Rust intrinsic via the parser's handle
         return str(
-            _molt_configparser_interpolate_extended(
-                parser._handle, str(section), value
-            )
+            _molt_configparser_interpolate_extended(parser._handle, str(section), value)
         )
 
     def before_set(self, parser: Any, section: str, option: str, value: str) -> str:
@@ -346,7 +318,9 @@ class RawConfigParser:
         src = source if source is not None else getattr(f, "name", "<???>")
         _molt_configparser_read_file(self._handle, str(content), str(src))
 
-    def read_dict(self, dictionary: dict[str, dict[str, str]], source: str = "<dict>") -> None:
+    def read_dict(
+        self, dictionary: dict[str, dict[str, str]], source: str = "<dict>"
+    ) -> None:
         for section, keys in dictionary.items():
             try:
                 self.add_section(section)
@@ -483,9 +457,7 @@ class ConfigParser(RawConfigParser):
             raise KeyError(option)
 
         # Get the raw value from the Rust backend
-        raw_value = _molt_configparser_get_raw(
-            self._handle, str(section), str(option)
-        )
+        raw_value = _molt_configparser_get_raw(self._handle, str(section), str(option))
         if raw_value is None:
             if fallback is not _UNSET:
                 return fallback
@@ -504,5 +476,6 @@ class ConfigParser(RawConfigParser):
         return self._interpolation.before_get(
             self, str(section), str(option), value, defaults_dict
         )
+
 
 globals().pop("_require_intrinsic", None)

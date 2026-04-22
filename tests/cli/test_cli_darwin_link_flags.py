@@ -19,6 +19,7 @@ def test_append_darwin_runtime_frameworks_for_host_darwin(
 
 def test_append_darwin_runtime_frameworks_for_cross_target() -> None:
     import os
+
     os.environ.pop("MOLT_RUNTIME_GPU_METAL", None)
     args = ["zig", "cc", "-target", "aarch64-macos"]
     cli._append_darwin_runtime_frameworks(args, target_triple="aarch64-apple-darwin")
@@ -178,6 +179,7 @@ def test_detect_macos_deployment_target_arm64_uses_sdk_version(
         ).strip()
     except (subprocess.SubprocessError, FileNotFoundError):
         import platform
+
         ver = platform.mac_ver()[0]
         parts = ver.split(".")
         expected = ".".join(parts[:2]) if len(parts) >= 2 else ver

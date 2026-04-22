@@ -14,7 +14,9 @@ from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
         ("ceil", [10.0, 20.0, 20.0, 20.0]),
     ],
 )
-def test_onnx_resize_nearest_mode_variants(nearest_mode: str, expected: list[float]) -> None:
+def test_onnx_resize_nearest_mode_variants(
+    nearest_mode: str, expected: list[float]
+) -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]
         x = onnx._make_tensor([10.0, 20.0], (1, 1, 2, 1))
@@ -329,7 +331,9 @@ def test_onnx_resize_rejects_both_scales_and_sizes() -> None:
         onnx = modules["onnx_interpreter"]
         x = onnx._make_tensor([10.0, 20.0], (1, 1, 2, 1))
 
-        with pytest.raises(ValueError, match="Resize cannot specify both scales and sizes"):
+        with pytest.raises(
+            ValueError, match="Resize cannot specify both scales and sizes"
+        ):
             onnx._op_resize(
                 [
                     x,

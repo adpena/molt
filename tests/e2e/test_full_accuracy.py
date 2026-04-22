@@ -12,7 +12,6 @@ Requires:
 import math
 import os
 import struct
-import sys
 import json
 
 SNAP = os.path.expanduser(
@@ -29,6 +28,7 @@ def _skip_if_no_snapshot():
     """Skip test if the model snapshot is not available."""
     if not os.path.isdir(SNAP):
         import pytest
+
         pytest.skip("Falcon-OCR model snapshot not available")
 
 
@@ -39,6 +39,7 @@ def _load_tokenizer():
     tinygrad __init__ which requires the molt runtime.
     """
     import importlib.util
+
     tok_path = os.path.join(_STDLIB, "tinygrad", "tokenizer.py")
     spec = importlib.util.spec_from_file_location("_tokenizer", tok_path)
     mod = importlib.util.module_from_spec(spec)
@@ -67,6 +68,7 @@ def _load_f32_tensor(path: str, offset: int, count: int) -> list[float]:
 # -------------------------------------------------------------------------
 # Test 1: Tokenizer roundtrip on invoice-relevant text
 # -------------------------------------------------------------------------
+
 
 def test_tokenizer_decodes_real_vocabulary():
     """Verify tokenizer can encode and decode invoice-relevant tokens."""
@@ -126,9 +128,9 @@ def test_tokenizer_handles_unicode():
     tok = _load_tokenizer()
 
     unicode_texts = [
-        "Factura #001",       # Spanish
-        "Rechnung Nr. 42",    # German
-        "100.00",             # EUR amount
+        "Factura #001",  # Spanish
+        "Rechnung Nr. 42",  # German
+        "100.00",  # EUR amount
     ]
     for text in unicode_texts:
         token_ids = tok.encode(text)
@@ -142,6 +144,7 @@ def test_tokenizer_handles_unicode():
 # Test 2: Embedding weight properties
 # -------------------------------------------------------------------------
 
+
 def test_embedding_produces_distinct_representations():
     """Different text patches produce different embeddings from real weights."""
     _skip_if_no_snapshot()
@@ -150,6 +153,7 @@ def test_embedding_produces_distinct_representations():
     weights_path = os.path.realpath(os.path.join(SNAP, "model.safetensors"))
     if not os.path.isfile(weights_path):
         import pytest
+
         pytest.skip("Model weights file not available (symlink target missing)")
 
     header = _parse_safetensors_header(weights_path)
@@ -165,6 +169,7 @@ def test_embedding_produces_distinct_representations():
 
     if embed_key is None:
         import pytest
+
         pytest.skip("No embedding tensor found in model weights")
 
     info = header[embed_key]
@@ -175,6 +180,7 @@ def test_embedding_produces_distinct_representations():
     # Only proceed if the embedding is F32 and small enough to sample.
     if dtype != "F32" or len(shape) != 2:
         import pytest
+
         pytest.skip(f"Embedding tensor dtype={dtype} shape={shape}, expected F32 2D")
 
     vocab_size, embed_dim = shape
@@ -214,6 +220,7 @@ def test_embedding_produces_distinct_representations():
 # Test 3: Output logit distribution is peaked
 # -------------------------------------------------------------------------
 
+
 def test_output_logits_are_peaked():
     """Model's output projection produces peaked (non-uniform) distributions."""
     _skip_if_no_snapshot()
@@ -221,6 +228,7 @@ def test_output_logits_are_peaked():
     weights_path = os.path.realpath(os.path.join(SNAP, "model.safetensors"))
     if not os.path.isfile(weights_path):
         import pytest
+
         pytest.skip("Model weights file not available (symlink target missing)")
 
     header = _parse_safetensors_header(weights_path)
@@ -237,6 +245,7 @@ def test_output_logits_are_peaked():
 
     if lm_head_key is None:
         import pytest
+
         pytest.skip("No LM head / output projection tensor found")
 
     info = header[lm_head_key]
@@ -246,6 +255,7 @@ def test_output_logits_are_peaked():
 
     if dtype != "F32" or len(shape) != 2:
         import pytest
+
         pytest.skip(f"LM head dtype={dtype} shape={shape}, expected F32 2D")
 
     vocab_size, hidden_dim = shape

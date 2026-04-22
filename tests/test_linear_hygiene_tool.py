@@ -162,7 +162,9 @@ def test_project_name_for_issue_routes_metadata_areas() -> None:
     )
 
 
-def test_build_expected_local_artifacts_partitions_seed_items_and_updates_counts() -> None:
+def test_build_expected_local_artifacts_partitions_seed_items_and_updates_counts() -> (
+    None
+):
     seed_items = [
         {
             "title": "[P0][LF2] add per-pass wall-time telemetry",

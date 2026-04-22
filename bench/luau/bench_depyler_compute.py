@@ -5,6 +5,7 @@ Measures: integer arithmetic, iterative fibonacci, list accumulation, statistics
 Depyler claims 12.36x speedup over CPython for this workload.
 """
 
+
 def fibonacci_iterative(n: int) -> int:
     if n <= 1:
         return n

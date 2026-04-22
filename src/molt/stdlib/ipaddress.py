@@ -20,27 +20,13 @@ _molt_ipaddress_v4_str = _require_intrinsic("molt_ipaddress_v4_str")
 _molt_ipaddress_v4_int = _require_intrinsic("molt_ipaddress_v4_int")
 _molt_ipaddress_v4_packed = _require_intrinsic("molt_ipaddress_v4_packed")
 _molt_ipaddress_v4_version = _require_intrinsic("molt_ipaddress_v4_version")
-_molt_ipaddress_v4_is_private = _require_intrinsic(
-    "molt_ipaddress_v4_is_private"
-)
-_molt_ipaddress_v4_is_loopback = _require_intrinsic(
-    "molt_ipaddress_v4_is_loopback"
-)
-_molt_ipaddress_v4_is_multicast = _require_intrinsic(
-    "molt_ipaddress_v4_is_multicast"
-)
-_molt_ipaddress_v4_is_link_local = _require_intrinsic(
-    "molt_ipaddress_v4_is_link_local"
-)
-_molt_ipaddress_v4_is_reserved = _require_intrinsic(
-    "molt_ipaddress_v4_is_reserved"
-)
-_molt_ipaddress_v4_is_global = _require_intrinsic(
-    "molt_ipaddress_v4_is_global"
-)
-_molt_ipaddress_v4_max_prefixlen = _require_intrinsic(
-    "molt_ipaddress_v4_max_prefixlen"
-)
+_molt_ipaddress_v4_is_private = _require_intrinsic("molt_ipaddress_v4_is_private")
+_molt_ipaddress_v4_is_loopback = _require_intrinsic("molt_ipaddress_v4_is_loopback")
+_molt_ipaddress_v4_is_multicast = _require_intrinsic("molt_ipaddress_v4_is_multicast")
+_molt_ipaddress_v4_is_link_local = _require_intrinsic("molt_ipaddress_v4_is_link_local")
+_molt_ipaddress_v4_is_reserved = _require_intrinsic("molt_ipaddress_v4_is_reserved")
+_molt_ipaddress_v4_is_global = _require_intrinsic("molt_ipaddress_v4_is_global")
+_molt_ipaddress_v4_max_prefixlen = _require_intrinsic("molt_ipaddress_v4_max_prefixlen")
 _molt_ipaddress_drop = _require_intrinsic("molt_ipaddress_drop")
 
 # ---------------------------------------------------------------------------
@@ -51,47 +37,29 @@ _molt_ipaddress_v6_str = _require_intrinsic("molt_ipaddress_v6_str")
 _molt_ipaddress_v6_int = _require_intrinsic("molt_ipaddress_v6_int")
 _molt_ipaddress_v6_packed = _require_intrinsic("molt_ipaddress_v6_packed")
 _molt_ipaddress_v6_version = _require_intrinsic("molt_ipaddress_v6_version")
-_molt_ipaddress_v6_is_private = _require_intrinsic(
-    "molt_ipaddress_v6_is_private"
-)
-_molt_ipaddress_v6_is_loopback = _require_intrinsic(
-    "molt_ipaddress_v6_is_loopback"
-)
-_molt_ipaddress_v6_is_multicast = _require_intrinsic(
-    "molt_ipaddress_v6_is_multicast"
-)
-_molt_ipaddress_v6_is_link_local = _require_intrinsic(
-    "molt_ipaddress_v6_is_link_local"
-)
-_molt_ipaddress_v6_is_global = _require_intrinsic(
-    "molt_ipaddress_v6_is_global"
-)
+_molt_ipaddress_v6_is_private = _require_intrinsic("molt_ipaddress_v6_is_private")
+_molt_ipaddress_v6_is_loopback = _require_intrinsic("molt_ipaddress_v6_is_loopback")
+_molt_ipaddress_v6_is_multicast = _require_intrinsic("molt_ipaddress_v6_is_multicast")
+_molt_ipaddress_v6_is_link_local = _require_intrinsic("molt_ipaddress_v6_is_link_local")
+_molt_ipaddress_v6_is_global = _require_intrinsic("molt_ipaddress_v6_is_global")
 _molt_ipaddress_v6_drop = _require_intrinsic("molt_ipaddress_v6_drop")
 
 # ---------------------------------------------------------------------------
 # Intrinsic bindings — IPv4Network
 # ---------------------------------------------------------------------------
-_molt_ipaddress_v4_network_new = _require_intrinsic(
-    "molt_ipaddress_v4_network_new"
-)
-_molt_ipaddress_v4_network_str = _require_intrinsic(
-    "molt_ipaddress_v4_network_str"
-)
+_molt_ipaddress_v4_network_new = _require_intrinsic("molt_ipaddress_v4_network_new")
+_molt_ipaddress_v4_network_str = _require_intrinsic("molt_ipaddress_v4_network_str")
 _molt_ipaddress_v4_network_prefixlen = _require_intrinsic(
     "molt_ipaddress_v4_network_prefixlen"
 )
 _molt_ipaddress_v4_network_broadcast = _require_intrinsic(
     "molt_ipaddress_v4_network_broadcast"
 )
-_molt_ipaddress_v4_network_hosts = _require_intrinsic(
-    "molt_ipaddress_v4_network_hosts"
-)
+_molt_ipaddress_v4_network_hosts = _require_intrinsic("molt_ipaddress_v4_network_hosts")
 _molt_ipaddress_v4_network_contains = _require_intrinsic(
     "molt_ipaddress_v4_network_contains"
 )
-_molt_ipaddress_v4_network_drop = _require_intrinsic(
-    "molt_ipaddress_v4_network_drop"
-)
+_molt_ipaddress_v4_network_drop = _require_intrinsic("molt_ipaddress_v4_network_drop")
 
 
 # ---------------------------------------------------------------------------
@@ -346,5 +314,6 @@ def ip_network(
 ) -> IPv4Network:
     """Return an IPv4Network for *address*."""
     return IPv4Network(address, strict)
+
 
 globals().pop("_require_intrinsic", None)

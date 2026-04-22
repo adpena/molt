@@ -5,8 +5,7 @@ from tkinter import commondialog as _commondialog
 from tkinter import dialog as _dialog
 from tkinter import messagebox as messagebox
 
-_MOLT_TK_SIMPLEDIALOG_QUERY = _require_intrinsic(
-    "molt_tk_simpledialog_query")
+_MOLT_TK_SIMPLEDIALOG_QUERY = _require_intrinsic("molt_tk_simpledialog_query")
 
 
 def _place_window(w, parent=None):

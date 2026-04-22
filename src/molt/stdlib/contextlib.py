@@ -34,18 +34,10 @@ __all__ = [
 
 _MOLT_CONTEXT_NULL = _require_intrinsic("molt_context_null")
 _MOLT_CONTEXTLIB_CLOSING = _require_intrinsic("molt_contextlib_closing")
-_MOLT_CONTEXTLIB_ACLOSING_ENTER = _require_intrinsic(
-    "molt_contextlib_aclosing_enter"
-)
-_MOLT_CONTEXTLIB_ACLOSING_EXIT = _require_intrinsic(
-    "molt_contextlib_aclosing_exit"
-)
-_MOLT_CONTEXTLIB_ABSTRACT_ENTER = _require_intrinsic(
-    "molt_contextlib_abstract_enter"
-)
-_MOLT_CONTEXTLIB_ABSTRACT_AENTER = _require_intrinsic(
-    "molt_contextlib_abstract_aenter"
-)
+_MOLT_CONTEXTLIB_ACLOSING_ENTER = _require_intrinsic("molt_contextlib_aclosing_enter")
+_MOLT_CONTEXTLIB_ACLOSING_EXIT = _require_intrinsic("molt_contextlib_aclosing_exit")
+_MOLT_CONTEXTLIB_ABSTRACT_ENTER = _require_intrinsic("molt_contextlib_abstract_enter")
+_MOLT_CONTEXTLIB_ABSTRACT_AENTER = _require_intrinsic("molt_contextlib_abstract_aenter")
 _MOLT_CONTEXTLIB_ABSTRACT_SUBCLASSHOOK = _require_intrinsic(
     "molt_contextlib_abstract_subclasshook"
 )
@@ -55,15 +47,9 @@ _MOLT_CONTEXTLIB_ABSTRACT_ASYNC_SUBCLASSHOOK = _require_intrinsic(
 _MOLT_CONTEXTLIB_CONTEXTDECORATOR_CALL = _require_intrinsic(
     "molt_contextlib_contextdecorator_call"
 )
-_MOLT_CONTEXTLIB_CHDIR_ENTER = _require_intrinsic(
-    "molt_contextlib_chdir_enter"
-)
-_MOLT_CONTEXTLIB_CHDIR_EXIT = _require_intrinsic(
-    "molt_contextlib_chdir_exit"
-)
-_MOLT_CONTEXTLIB_ASYNCGEN_CM_NEW = _require_intrinsic(
-    "molt_contextlib_asyncgen_cm_new"
-)
+_MOLT_CONTEXTLIB_CHDIR_ENTER = _require_intrinsic("molt_contextlib_chdir_enter")
+_MOLT_CONTEXTLIB_CHDIR_EXIT = _require_intrinsic("molt_contextlib_chdir_exit")
+_MOLT_CONTEXTLIB_ASYNCGEN_CM_NEW = _require_intrinsic("molt_contextlib_asyncgen_cm_new")
 _MOLT_CONTEXTLIB_ASYNCGEN_CM_DROP = _require_intrinsic(
     "molt_contextlib_asyncgen_cm_drop"
 )
@@ -73,48 +59,24 @@ _MOLT_CONTEXTLIB_ASYNCGEN_CM_AENTER = _require_intrinsic(
 _MOLT_CONTEXTLIB_ASYNCGEN_CM_AEXIT = _require_intrinsic(
     "molt_contextlib_asyncgen_cm_aexit"
 )
-_MOLT_CONTEXTLIB_ASYNCGEN_ENTER = _require_intrinsic(
-    "molt_contextlib_asyncgen_enter"
-)
-_MOLT_CONTEXTLIB_ASYNCGEN_EXIT = _require_intrinsic(
-    "molt_contextlib_asyncgen_exit"
-)
-_MOLT_CONTEXTLIB_GENERATOR_ENTER = _require_intrinsic(
-    "molt_contextlib_generator_enter"
-)
-_MOLT_CONTEXTLIB_GENERATOR_EXIT = _require_intrinsic(
-    "molt_contextlib_generator_exit"
-)
-_MOLT_CONTEXTLIB_SUPPRESS_MATCH = _require_intrinsic(
-    "molt_contextlib_suppress_match"
-)
-_MOLT_CONTEXTLIB_REDIRECT_ENTER = _require_intrinsic(
-    "molt_contextlib_redirect_enter"
-)
-_MOLT_CONTEXTLIB_REDIRECT_EXIT = _require_intrinsic(
-    "molt_contextlib_redirect_exit"
-)
-_MOLT_CONTEXTLIB_EXITSTACK_NEW = _require_intrinsic(
-    "molt_contextlib_exitstack_new"
-)
-_MOLT_CONTEXTLIB_EXITSTACK_DROP = _require_intrinsic(
-    "molt_contextlib_exitstack_drop"
-)
-_MOLT_CONTEXTLIB_EXITSTACK_PUSH = _require_intrinsic(
-    "molt_contextlib_exitstack_push"
-)
+_MOLT_CONTEXTLIB_ASYNCGEN_ENTER = _require_intrinsic("molt_contextlib_asyncgen_enter")
+_MOLT_CONTEXTLIB_ASYNCGEN_EXIT = _require_intrinsic("molt_contextlib_asyncgen_exit")
+_MOLT_CONTEXTLIB_GENERATOR_ENTER = _require_intrinsic("molt_contextlib_generator_enter")
+_MOLT_CONTEXTLIB_GENERATOR_EXIT = _require_intrinsic("molt_contextlib_generator_exit")
+_MOLT_CONTEXTLIB_SUPPRESS_MATCH = _require_intrinsic("molt_contextlib_suppress_match")
+_MOLT_CONTEXTLIB_REDIRECT_ENTER = _require_intrinsic("molt_contextlib_redirect_enter")
+_MOLT_CONTEXTLIB_REDIRECT_EXIT = _require_intrinsic("molt_contextlib_redirect_exit")
+_MOLT_CONTEXTLIB_EXITSTACK_NEW = _require_intrinsic("molt_contextlib_exitstack_new")
+_MOLT_CONTEXTLIB_EXITSTACK_DROP = _require_intrinsic("molt_contextlib_exitstack_drop")
+_MOLT_CONTEXTLIB_EXITSTACK_PUSH = _require_intrinsic("molt_contextlib_exitstack_push")
 _MOLT_CONTEXTLIB_EXITSTACK_PUSH_CALLBACK = _require_intrinsic(
     "molt_contextlib_exitstack_push_callback"
 )
-_MOLT_CONTEXTLIB_EXITSTACK_POP = _require_intrinsic(
-    "molt_contextlib_exitstack_pop"
-)
+_MOLT_CONTEXTLIB_EXITSTACK_POP = _require_intrinsic("molt_contextlib_exitstack_pop")
 _MOLT_CONTEXTLIB_EXITSTACK_POP_ALL = _require_intrinsic(
     "molt_contextlib_exitstack_pop_all"
 )
-_MOLT_CONTEXTLIB_EXITSTACK_EXIT = _require_intrinsic(
-    "molt_contextlib_exitstack_exit"
-)
+_MOLT_CONTEXTLIB_EXITSTACK_EXIT = _require_intrinsic("molt_contextlib_exitstack_exit")
 _MOLT_CONTEXTLIB_EXITSTACK_ENTER_CONTEXT = _require_intrinsic(
     "molt_contextlib_exitstack_enter_context"
 )
@@ -443,5 +405,6 @@ class chdir(AbstractContextManager):
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         _MOLT_CONTEXTLIB_CHDIR_EXIT(self._old_cwd.pop())
         return False
+
 
 globals().pop("_require_intrinsic", None)

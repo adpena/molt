@@ -375,7 +375,9 @@ def _molt_env_snapshot() -> dict[str, str]:
             out: dict[str, str] = {}
             for key, value in raw.items():
                 if not isinstance(key, str) or not isinstance(value, str):
-                    raise RuntimeError("os env snapshot intrinsic returned invalid value")
+                    raise RuntimeError(
+                        "os env snapshot intrinsic returned invalid value"
+                    )
                 out[key] = value
             return out
         # The Rust side may return a flat list of [k, v, k, v, ...].
@@ -385,7 +387,9 @@ def _molt_env_snapshot() -> dict[str, str]:
             for k in it:
                 v = next(it)
                 if not isinstance(k, str) or not isinstance(v, str):
-                    raise RuntimeError("os env snapshot intrinsic returned invalid value")
+                    raise RuntimeError(
+                        "os env snapshot intrinsic returned invalid value"
+                    )
                 out2[k] = v
             return out2
     # Fallback to the legacy snapshot intrinsic.

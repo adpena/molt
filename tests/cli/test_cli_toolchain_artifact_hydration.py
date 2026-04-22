@@ -21,11 +21,11 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
     canonical_backend.parent.mkdir(parents=True, exist_ok=True)
     canonical_backend.write_text(
         "#!/bin/sh\n"
-        "out=\"\"\n"
+        'out=""\n'
         "while [ $# -gt 0 ]; do\n"
-        "  if [ \"$1\" = \"--output\" ]; then\n"
+        '  if [ "$1" = "--output" ]; then\n'
         "    shift\n"
-        "    out=\"$1\"\n"
+        '    out="$1"\n'
         "  fi\n"
         "  shift\n"
         "done\n"
@@ -53,7 +53,9 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
     monkeypatch.setattr(
         cli,
         "_run_cargo_with_sccache_retry",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cargo should not run")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cargo should not run")
+        ),
     )
 
     assert cli._ensure_backend_binary(
@@ -100,7 +102,9 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     monkeypatch.setattr(
         cli,
         "_run_cargo_with_sccache_retry",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cargo should not run")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cargo should not run")
+        ),
     )
 
     assert cli._ensure_runtime_lib(
@@ -160,7 +164,9 @@ def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
     monkeypatch.setattr(
         cli,
         "_run_runtime_wasm_cargo_build",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cargo should not run")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cargo should not run")
+        ),
     )
 
     assert cli._ensure_runtime_wasm(
@@ -181,7 +187,9 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
     project_root = tmp_path
     target_root = project_root / "shared-target"
     profile_dir = cli._cargo_profile_dir("release-fast")
-    current_staticlib = target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
+    current_staticlib = (
+        target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
+    )
     runtime_reloc = project_root / "wasm" / "molt_runtime_reloc.wasm"
     current_staticlib.parent.mkdir(parents=True, exist_ok=True)
     current_staticlib.write_bytes(_FAKE_STATICLIB)
@@ -294,7 +302,9 @@ def test_ensure_runtime_wasm_reloc_builds_when_only_hashed_current_target_static
         cargo_calls.append((args, kwargs))
         return subprocess.CompletedProcess(["cargo"], 0, "", ""), current_staticlib
 
-    monkeypatch.setattr(cli, "_run_runtime_wasm_cargo_build", fake_run_runtime_wasm_cargo_build)
+    monkeypatch.setattr(
+        cli, "_run_runtime_wasm_cargo_build", fake_run_runtime_wasm_cargo_build
+    )
 
     def fake_link_runtime_staticlib_to_reloc_wasm(
         *,

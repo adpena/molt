@@ -1,6 +1,5 @@
 """Tests for FlashAttention-3 tiled attention with online softmax."""
 
-import math
 import random
 
 from tinygrad.tensor import Tensor
@@ -155,9 +154,7 @@ def test_flash_v3_single_row():
     flash_flat = _flatten(flash_out.tolist())
     naive_flat = _flatten(naive_out.tolist())
 
-    assert _allclose(flash_flat, naive_flat, atol=1e-3), (
-        "Single-row attention mismatch"
-    )
+    assert _allclose(flash_flat, naive_flat, atol=1e-3), "Single-row attention mismatch"
 
 
 def test_flash_v3_different_head_dims():
@@ -173,9 +170,7 @@ def test_flash_v3_different_head_dims():
         flash_flat = _flatten(flash_out.tolist())
         naive_flat = _flatten(naive_out.tolist())
 
-        assert _allclose(flash_flat, naive_flat, atol=1e-3), (
-            f"Mismatch for d_k={d_k}"
-        )
+        assert _allclose(flash_flat, naive_flat, atol=1e-3), f"Mismatch for d_k={d_k}"
 
 
 def test_flash_v3_rejects_wrong_dims():

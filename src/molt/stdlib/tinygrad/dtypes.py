@@ -1,4 +1,5 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 """
@@ -43,7 +44,9 @@ class _DTypes:
     uint32 = DType("uint32", 4, "I")
     uint64 = DType("uint64", 8, "Q")
     float16 = DType("float16", 2, "e")
-    bfloat16 = DType("bfloat16", 2, "e")  # uses f16 struct format, bf16 handled at buffer level
+    bfloat16 = DType(
+        "bfloat16", 2, "e"
+    )  # uses f16 struct format, bf16 handled at buffer level
     float32 = DType("float32", 4, "f")
     float64 = DType("float64", 8, "d")
 

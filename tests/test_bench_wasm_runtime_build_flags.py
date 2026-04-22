@@ -5,7 +5,6 @@ from pathlib import Path
 import tools.bench_wasm as bench_wasm
 
 
-
 def _fake_runtime_build(cmd: list[str], env: dict[str, str]) -> None:
     target_root = Path(env["CARGO_TARGET_DIR"])
     src = target_root / "wasm32-wasip1" / "release" / "molt_runtime.wasm"

@@ -8,6 +8,7 @@ Exercises the full --split-runtime pipeline:
   5. Verify manifest.json structure
   6. Verify two different programs produce identical molt_runtime.wasm (CDN cacheability)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -57,9 +58,7 @@ for i in range(10):
 def _split_runtime_target_dirs(env: dict[str, str]) -> tuple[Path, Path]:
     default_target_dir = ROOT / "target" / "pytest" / "test_wasm_split_runtime"
     raw_target = env.get("CARGO_TARGET_DIR", "").strip()
-    target_dir = (
-        Path(raw_target).expanduser() if raw_target else default_target_dir
-    )
+    target_dir = Path(raw_target).expanduser() if raw_target else default_target_dir
     raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
     diff_target_dir = (
         Path(raw_diff_target).expanduser() if raw_diff_target else target_dir
@@ -131,9 +130,7 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
     repo_src = str(ROOT / "src")
     current_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath
-        if current_pythonpath
-        else repo_src
+        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
     )
     env["MOLT_BACKEND_DAEMON"] = "0"
     target_dir, diff_target_dir = _split_runtime_target_dirs(env)
@@ -153,11 +150,14 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         "molt.cli",
         "build",
         str(source_file),
-        "--target", "wasm",
-        "--profile", "cloudflare",
+        "--target",
+        "wasm",
+        "--profile",
+        "cloudflare",
         "--split-runtime",
         "--no-cache",
-        "--out-dir", str(output_dir),
+        "--out-dir",
+        str(output_dir),
     ]
     build_timeout = _read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0)
     return subprocess.run(
@@ -354,7 +354,8 @@ def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(
 
     calls_path = tmp_path / "calls.json"
     calls_path.write_text(
-        json.dumps({"calls": [{"export": "main_molt__init", "args": []}]}, indent=2) + "\n",
+        json.dumps({"calls": [{"export": "main_molt__init", "args": []}]}, indent=2)
+        + "\n",
         encoding="utf-8",
     )
 
@@ -489,9 +490,7 @@ def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
     shared_abi_prefix_len = 33 + reserved_count * 2
 
     for ref_index in ref_indices:
-        expected = {
-            ref_index + offset for offset in range(shared_abi_prefix_len)
-        }
+        expected = {ref_index + offset for offset in range(shared_abi_prefix_len)}
         if expected.issubset(ref_set):
             return ref_index
 
@@ -501,6 +500,7 @@ def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def split_build_a(tmp_path_factory):
@@ -529,6 +529,7 @@ def split_build_b(tmp_path_factory):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.slow
 class TestSplitRuntimeArtifacts:
@@ -599,10 +600,11 @@ class TestSplitRuntimeArtifacts:
         if not app_wasm.exists():
             pytest.skip("app.wasm not produced")
         runtime_imports = _collect_module_imports(app_wasm, "molt_runtime")
-        assert runtime_imports, "app.wasm must retain molt_runtime imports in split mode"
+        assert runtime_imports, (
+            "app.wasm must retain molt_runtime imports in split mode"
+        )
         assert "molt_string_from_bytes" in runtime_imports
         assert "molt_module_import" in runtime_imports
-
 
     def test_worker_uses_backend_wasm_table_base(self, split_build_a):
         out_dir, result = split_build_a
@@ -700,7 +702,7 @@ def test_split_runtime_host_export_calls_decode_result_repr(
                         "export": "host_call_smoke__init",
                         "args": [
                             {"kind": "bytes_utf8", "value": "weights-bytes"},
-                            {"kind": "string", "value": "{\"k\":1}"},
+                            {"kind": "string", "value": '{"k":1}'},
                         ],
                     },
                     {
@@ -744,10 +746,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
 ) -> None:
     source = tmp_path / "missing_attr_probe.py"
     source.write_text(
-        "_x = None\n"
-        "\n"
-        "def get_attr():\n"
-        "    return _x.foo\n",
+        "_x = None\n\ndef get_attr():\n    return _x.foo\n",
         encoding="utf-8",
     )
     calls_path = tmp_path / "calls.json"
@@ -822,7 +821,9 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
     )
     calls_path = tmp_path / "calls.json"
     calls_path.write_text(
-        json.dumps({"calls": [{"export": "tinygrad_dtype_probe__dtype_name", "args": []}]}),
+        json.dumps(
+            {"calls": [{"export": "tinygrad_dtype_probe__dtype_name", "args": []}]}
+        ),
         encoding="utf-8",
     )
     out_dir = tmp_path / "out"
@@ -891,7 +892,13 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
     )
     calls_path = tmp_path / "calls.json"
     calls_path.write_text(
-        json.dumps({"calls": [{"export": "tinygrad_tensor_probe__tensor_type_name", "args": []}]}),
+        json.dumps(
+            {
+                "calls": [
+                    {"export": "tinygrad_tensor_probe__tensor_type_name", "args": []}
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     out_dir = tmp_path / "out"
@@ -996,7 +1003,7 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
                     {
                         "export": "tinygrad_tensor_row_ops_dtype_probe__scatter_rows",
                         "args": [],
-                    }
+                    },
                 ]
             }
         ),
@@ -1320,7 +1327,7 @@ def test_split_runtime_host_export_struct_unpack_from_reads_u64(
     source.write_text(
         "import struct\n\n"
         "def read_qword(data: bytes) -> list[int]:\n"
-        "    return [struct.unpack_from(\"<Q\", data, 0)[0]]\n",
+        '    return [struct.unpack_from("<Q", data, 0)[0]]\n',
         encoding="utf-8",
     )
     data_path = tmp_path / "data.bin"
@@ -1532,9 +1539,9 @@ def test_split_runtime_host_export_bytes_survive_raw_temp_cleanup(
     )
     data_path = tmp_path / "data.bin"
     payload = (
-        b'O\\x00\\x00\\x00\\x00\\x00\\x00\\x00'
-        b'{\"x\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]},\"__metadata__\":{\"a\":\"b\"}}'
-        b'\\x00\\x00\\x60\\x40'
+        b"O\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+        b'{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"__metadata__":{"a":"b"}}'
+        b"\\x00\\x00\\x60\\x40"
     )
     data_path.write_bytes(payload)
     calls_path = tmp_path / "calls.json"
@@ -1618,17 +1625,21 @@ class TestWorkerJsContent:
 
     def test_worker_bridges_call_indirect(self, split_build_a):
         content = self._read_worker(split_build_a)
-        assert "molt_call_indirect" in content, "worker.js must bridge runtime call_indirect imports"
+        assert "molt_call_indirect" in content, (
+            "worker.js must bridge runtime call_indirect imports"
+        )
 
     def test_worker_bridges_isolate_import(self, split_build_a):
         content = self._read_worker(split_build_a)
-        assert "molt_isolate_import" in content, "worker.js must bridge runtime isolate imports"
+        assert "molt_isolate_import" in content, (
+            "worker.js must bridge runtime isolate imports"
+        )
 
     def test_worker_builds_signature_aware_runtime_imports(self, split_build_a):
         content = self._read_worker(split_build_a)
-        assert "const buildRuntimeImports = (module, runtimeInstance) => {" in content, (
-            "worker.js must synthesize runtime imports from the app import surface"
-        )
+        assert (
+            "const buildRuntimeImports = (module, runtimeInstance) => {" in content
+        ), "worker.js must synthesize runtime imports from the app import surface"
         assert "const runtimeImportSignatures =" in content
         assert "const runtimeImportResultKinds =" in content
         assert "molt_string_from_bytes" in content
@@ -1647,7 +1658,9 @@ class TestWorkerJsContent:
 
     def test_worker_provisions_shared_memory(self, split_build_a):
         content = self._read_worker(split_build_a)
-        assert "new WebAssembly.Memory" in content, "worker.js must provision shared memory"
+        assert "new WebAssembly.Memory" in content, (
+            "worker.js must provision shared memory"
+        )
 
     def test_worker_imports_split_vfs_adapter(self, split_build_a):
         content = self._read_worker(split_build_a)

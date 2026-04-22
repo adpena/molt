@@ -12,6 +12,7 @@ These tests exercise the guarantees proven in:
     (emitExpr_correct, index_adjust_correct, builtin_*)
   - formal/lean/MoltTIR/Backend/CrossBackend.lean (luau_native_equiv)
 """
+
 from __future__ import annotations
 
 import os
@@ -25,9 +26,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
 
-_SUBPROCESS_TIMEOUT = float(
-    os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120")
-)
+_SUBPROCESS_TIMEOUT = float(os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120"))
 
 
 def _molt_cli_available() -> bool:
@@ -306,9 +305,7 @@ class TestLuauSyntaxValidity:
     ]
 
     @pytest.mark.parametrize("name,source", SYNTAX_PROGRAMS)
-    def test_balanced_constructs(
-        self, tmp_path: Path, name: str, source: str
-    ) -> None:
+    def test_balanced_constructs(self, tmp_path: Path, name: str, source: str) -> None:
         """Verify that the Luau output has balanced keywords.
 
         In Luau:
@@ -363,7 +360,9 @@ class TestLuauSyntaxValidity:
             # Allow if the match is inside a string literal.
             for match in matches:
                 # Rough check: not inside quotes.
-                if not re.search(r'''['"].*''' + re.escape(match) + r'''.*['"]''', luau_source):
+                if not re.search(
+                    r"""['"].*""" + re.escape(match) + r""".*['"]""", luau_source
+                ):
                     # Soft check -- some patterns may legitimately appear
                     # in comments or generated code. Just warn.
                     pass

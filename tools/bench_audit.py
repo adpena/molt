@@ -17,7 +17,6 @@ import shutil
 import statistics
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +52,7 @@ DEFAULT_SAMPLES = 5
 DEFAULT_TIMEOUT_S = 60.0
 
 # Speedup thresholds
-GREEN_THRESHOLD = 1.0   # Molt is at least as fast as CPython
+GREEN_THRESHOLD = 1.0  # Molt is at least as fast as CPython
 YELLOW_THRESHOLD = 0.5  # Molt is within 2x of CPython
 
 RESULTS_DIR = REPO_ROOT / "bench" / "results"
@@ -63,6 +62,7 @@ DEFAULT_OUTPUT = RESULTS_DIR / "audit_baseline.json"
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class BenchResult:
@@ -79,6 +79,7 @@ class BenchResult:
 # ---------------------------------------------------------------------------
 # Timing helpers
 # ---------------------------------------------------------------------------
+
 
 def _median_time(
     cmd: list[str],
@@ -174,6 +175,7 @@ def _molt_median(
 # perf counter collection (Linux only)
 # ---------------------------------------------------------------------------
 
+
 def _collect_perf_data(binary_path: Path) -> Optional[dict]:
     """Collect instruction count and cache-miss data via `perf stat`."""
     if platform.system() != "Linux":
@@ -216,6 +218,7 @@ def _collect_perf_data(binary_path: Path) -> Optional[dict]:
 # Classification
 # ---------------------------------------------------------------------------
 
+
 def _classify(speedup: Optional[float]) -> str:
     if speedup is None:
         return "Error"
@@ -230,6 +233,7 @@ def _classify(speedup: Optional[float]) -> str:
 # Core audit loop
 # ---------------------------------------------------------------------------
 
+
 def audit_benchmarks(
     benchmarks: list[str],
     samples: int = DEFAULT_SAMPLES,
@@ -241,7 +245,9 @@ def audit_benchmarks(
 
     for i, bench_path in enumerate(benchmarks, 1):
         # Resolve relative to repo root
-        script = str(REPO_ROOT / bench_path) if not os.path.isabs(bench_path) else bench_path
+        script = (
+            str(REPO_ROOT / bench_path) if not os.path.isabs(bench_path) else bench_path
+        )
         name = Path(script).stem
         extra_args = MOLT_ARGS_BY_BENCH.get(bench_path)
 
@@ -282,7 +288,9 @@ def audit_benchmarks(
                 reason_parts.append("CPython failed")
             if molt_s is None and not skip_molt:
                 reason_parts.append("Molt failed")
-            print(f"  {color_tag}{classification}{reset}: {', '.join(reason_parts) or 'unknown'}")
+            print(
+                f"  {color_tag}{classification}{reset}: {', '.join(reason_parts) or 'unknown'}"
+            )
 
         perf_data: Optional[dict] = None
         if (
@@ -325,6 +333,7 @@ def audit_benchmarks(
 # ---------------------------------------------------------------------------
 # Output / summary
 # ---------------------------------------------------------------------------
+
 
 def _to_json_record(r: BenchResult) -> dict:
     record: dict = {
@@ -377,7 +386,7 @@ def print_summary(results: list[BenchResult]) -> None:
     if red:
         print()
         print("Red benchmarks (Molt > 2x slower):")
-        for r in sorted(red, key=lambda x: (x.speedup or 0)):
+        for r in sorted(red, key=lambda x: x.speedup or 0):
             print(f"  {r.name:<40s} {r.speedup:.2f}x")
 
     if error:
@@ -400,6 +409,7 @@ def print_summary(results: list[BenchResult]) -> None:
     completed = [r for r in results if r.speedup is not None]
     if completed:
         import math
+
         log_sum = sum(math.log(r.speedup) for r in completed)
         geo_mean = math.exp(log_sum / len(completed))
         print(f"Geometric mean speedup (n={len(completed)}): {geo_mean:.3f}x")
@@ -417,6 +427,7 @@ def save_results(results: list[BenchResult], output_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -450,7 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only run benchmarks whose name contains PATTERN",
     )
     p.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Print extra diagnostic information",
     )
@@ -477,8 +489,7 @@ def main(argv: list[str] | None = None) -> int:
         # Fallback: discover from tests/benchmarks/
         bench_dir = REPO_ROOT / "tests" / "benchmarks"
         benchmarks = sorted(
-            str(p.relative_to(REPO_ROOT))
-            for p in bench_dir.glob("bench_*.py")
+            str(p.relative_to(REPO_ROOT)) for p in bench_dir.glob("bench_*.py")
         )
 
     if args.filter:

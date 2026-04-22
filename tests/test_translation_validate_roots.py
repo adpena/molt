@@ -13,7 +13,9 @@ def test_temp_root_defaults_to_repo_tmp(monkeypatch) -> None:
     for key in ("MOLT_DIFF_TMPDIR", "TMPDIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
 
-    assert translation_validate._temp_root({}) == translation_validate._REPO_ROOT / "tmp"
+    assert (
+        translation_validate._temp_root({}) == translation_validate._REPO_ROOT / "tmp"
+    )
 
 
 def test_temp_root_prefers_explicit_overrides(tmp_path: Path) -> None:

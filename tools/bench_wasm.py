@@ -636,7 +636,9 @@ def _run_cmd(
                 if os.name == "posix":
                     proc.terminate()
                     try:
-                        term_out, term_err = proc.communicate(timeout=timeout_term_grace_s)
+                        term_out, term_err = proc.communicate(
+                            timeout=timeout_term_grace_s
+                        )
                     except subprocess.TimeoutExpired as term_exc:
                         term_out = (
                             term_exc.stdout if isinstance(term_exc.stdout, str) else ""
@@ -1360,10 +1362,15 @@ def prepare_wasm_binary(
 
     build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
     if build_s is None:
-        print("Backend build failed; pruning stale daemons and retrying...", file=sys.stderr)
+        print(
+            "Backend build failed; pruning stale daemons and retrying...",
+            file=sys.stderr,
+        )
         _prune_backend_daemons()
         time.sleep(1)
-        build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
+        build_s = _build_wasm_output(
+            python_cmd, env, output_path, script, tty=tty, log=log
+        )
     if build_s is None:
         if _LAST_BUILD_FAILURE_DETAIL is None:
             _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
@@ -1653,7 +1660,9 @@ def _run_hostfed_call_bundle(
                 result_entries[0].get("duration_ms") if result_entries else None
             ),
             "second_call_duration_ms": (
-                result_entries[1].get("duration_ms") if len(result_entries) > 1 else None
+                result_entries[1].get("duration_ms")
+                if len(result_entries) > 1
+                else None
             ),
             "exports": [str(call.get("export")) for call in calls],
         }

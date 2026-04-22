@@ -261,7 +261,9 @@ def test_cloudflare_table_ocr_accepts_explicit_empty_tables_json() -> None:
     assert result["body"]["table_count"] == 0
 
 
-def test_cloudflare_detailed_ocr_rejects_invalid_model_output_without_cache_write() -> None:
+def test_cloudflare_detailed_ocr_rejects_invalid_model_output_without_cache_write() -> (
+    None
+):
     result = _run_ocr_api_script(
         """
         const mod = await import('./deploy/cloudflare/ocr_api.js');

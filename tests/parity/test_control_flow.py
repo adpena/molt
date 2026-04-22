@@ -93,12 +93,18 @@ for i in range(3):
     pass
 print("pass in loop ok")
 
+
 class Empty:
     pass
+
+
 print("pass in class ok")
+
 
 def noop():
     pass
+
+
 noop()
 print("pass in function ok")
 
@@ -164,15 +170,20 @@ except TypeError:
 print(result)
 
 print("=== with statement ===")
+
+
 class CM:
     def __init__(self, name):
         self.name = name
+
     def __enter__(self):
         print(f"enter {self.name}")
         return self
+
     def __exit__(self, *args):
         print(f"exit {self.name}")
         return False
+
 
 with CM("a") as x:
     print(f"inside {x.name}")
@@ -183,6 +194,8 @@ with CM("outer"):
         print("nested with body")
 
 print("=== match/case ===")
+
+
 def describe(val):
     match val:
         case 0:
@@ -202,10 +215,13 @@ def describe(val):
         case _:
             return "other"
 
+
 for val in [0, 1, 2, 42, 200, "hello", [1, 2], {"key": "val"}, 3.14]:
     print(f"match({val!r}) = {describe(val)}")
 
 print("=== match sequence patterns ===")
+
+
 def classify_seq(seq):
     match seq:
         case []:
@@ -216,6 +232,7 @@ def classify_seq(seq):
             return f"pair: {x}, {y}"
         case [x, *rest]:
             return f"head={x}, rest={rest}"
+
 
 for s in [[], [1], [1, 2], [1, 2, 3, 4]]:
     print(f"seq({s}) = {classify_seq(s)}")
@@ -229,9 +246,12 @@ if (n := 10) > 5:
     print(f"walrus: n={n}")
 
 print("=== Short-circuit evaluation ===")
+
+
 def side(name, val):
     print(f"  eval {name}", end="")
     return val
+
 
 print("and short-circuit:")
 result = side("A", False) and side("B", True)

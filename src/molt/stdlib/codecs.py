@@ -8,12 +8,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CODECS_DECODE = _require_intrinsic("molt_codecs_decode")
 _MOLT_CODECS_ENCODE = _require_intrinsic("molt_codecs_encode")
-_molt_codecs_normalize_encoding = _require_intrinsic(
-    "molt_codecs_normalize_encoding"
-)
-_molt_codecs_register_error = _require_intrinsic(
-    "molt_codecs_register_error"
-)
+_molt_codecs_normalize_encoding = _require_intrinsic("molt_codecs_normalize_encoding")
+_molt_codecs_register_error = _require_intrinsic("molt_codecs_register_error")
 _molt_codecs_lookup_error = _require_intrinsic("molt_codecs_lookup_error")
 _molt_codecs_bom_utf8 = _require_intrinsic("molt_codecs_bom_utf8")
 _molt_codecs_bom_utf16_le = _require_intrinsic("molt_codecs_bom_utf16_le")
@@ -21,42 +17,20 @@ _molt_codecs_bom_utf16_be = _require_intrinsic("molt_codecs_bom_utf16_be")
 _molt_codecs_bom_utf32_le = _require_intrinsic("molt_codecs_bom_utf32_le")
 _molt_codecs_bom_utf32_be = _require_intrinsic("molt_codecs_bom_utf32_be")
 _molt_inc_enc_new = _require_intrinsic("molt_codecs_incremental_encoder_new")
-_molt_inc_enc_encode = _require_intrinsic(
-    "molt_codecs_incremental_encoder_encode"
-)
-_molt_inc_enc_reset = _require_intrinsic(
-    "molt_codecs_incremental_encoder_reset"
-)
-_molt_inc_enc_drop = _require_intrinsic(
-    "molt_codecs_incremental_encoder_drop"
-)
+_molt_inc_enc_encode = _require_intrinsic("molt_codecs_incremental_encoder_encode")
+_molt_inc_enc_reset = _require_intrinsic("molt_codecs_incremental_encoder_reset")
+_molt_inc_enc_drop = _require_intrinsic("molt_codecs_incremental_encoder_drop")
 _molt_inc_dec_new = _require_intrinsic("molt_codecs_incremental_decoder_new")
-_molt_inc_dec_decode = _require_intrinsic(
-    "molt_codecs_incremental_decoder_decode"
-)
-_molt_inc_dec_reset = _require_intrinsic(
-    "molt_codecs_incremental_decoder_reset"
-)
-_molt_inc_dec_drop = _require_intrinsic(
-    "molt_codecs_incremental_decoder_drop"
-)
+_molt_inc_dec_decode = _require_intrinsic("molt_codecs_incremental_decoder_decode")
+_molt_inc_dec_reset = _require_intrinsic("molt_codecs_incremental_decoder_reset")
+_molt_inc_dec_drop = _require_intrinsic("molt_codecs_incremental_decoder_drop")
 _molt_stream_reader_new = _require_intrinsic("molt_codecs_stream_reader_new")
-_molt_stream_reader_read = _require_intrinsic(
-    "molt_codecs_stream_reader_read"
-)
-_molt_stream_reader_readline = _require_intrinsic(
-    "molt_codecs_stream_reader_readline"
-)
-_molt_stream_reader_drop = _require_intrinsic(
-    "molt_codecs_stream_reader_drop"
-)
+_molt_stream_reader_read = _require_intrinsic("molt_codecs_stream_reader_read")
+_molt_stream_reader_readline = _require_intrinsic("molt_codecs_stream_reader_readline")
+_molt_stream_reader_drop = _require_intrinsic("molt_codecs_stream_reader_drop")
 _molt_stream_writer_new = _require_intrinsic("molt_codecs_stream_writer_new")
-_molt_stream_writer_write = _require_intrinsic(
-    "molt_codecs_stream_writer_write"
-)
-_molt_stream_writer_drop = _require_intrinsic(
-    "molt_codecs_stream_writer_drop"
-)
+_molt_stream_writer_write = _require_intrinsic("molt_codecs_stream_writer_write")
+_molt_stream_writer_drop = _require_intrinsic("molt_codecs_stream_writer_drop")
 _molt_charmap_build = _require_intrinsic("molt_codecs_charmap_build")
 _molt_charmap_decode = _require_intrinsic("molt_codecs_charmap_decode")
 _molt_charmap_encode = _require_intrinsic("molt_codecs_charmap_encode")
@@ -589,5 +563,6 @@ def unicode_escape_encode(input, errors="strict"):
 
 def unicode_escape_decode(input, errors="strict"):
     return _decode_with_consumed(input, "unicode-escape", errors)
+
 
 globals().pop("_require_intrinsic", None)

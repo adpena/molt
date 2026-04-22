@@ -4,19 +4,8 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-# NOTE: typing imports are annotation-only thanks to PEP 563 (from __future__
-# import annotations).  Importing the typing module at runtime pulls in
-# sys._getframe which the Molt native backend does not yet provide.  Keep the
-# import guarded behind TYPE_CHECKING so the compiled binary does not need the
-# typing module.
-TYPE_CHECKING = False
-if TYPE_CHECKING:
-    from typing import Any, Callable, Iterable
-
 _MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj")
-_MOLT_JSON_ENCODE_BASESTRING = _require_intrinsic(
-    "molt_json_encode_basestring_obj"
-)
+_MOLT_JSON_ENCODE_BASESTRING = _require_intrinsic("molt_json_encode_basestring_obj")
 _MOLT_JSON_ENCODE_BASESTRING_ASCII = _require_intrinsic(
     "molt_json_encode_basestring_ascii_obj"
 )
@@ -26,15 +15,9 @@ _MOLT_JSON_DUMPS_EX = _require_intrinsic("molt_json_dumps_ex")
 _MOLT_JSON_RAW_DECODE_EX = _require_intrinsic("molt_json_raw_decode_ex")
 _MOLT_JSON_CALC_LINENO_COL = _require_intrinsic("molt_json_calc_lineno_col")
 _MOLT_JSON_COERCE_TEXT = _require_intrinsic("molt_json_coerce_text")
-_MOLT_JSON_DEFAULT_SEPARATORS = _require_intrinsic(
-    "molt_json_default_separators"
-)
-_MOLT_JSON_FORMAT_DECODE_ERROR = _require_intrinsic(
-    "molt_json_format_decode_error"
-)
-_MOLT_JSON_PARSE_ERROR_MSG = _require_intrinsic(
-    "molt_json_parse_error_msg"
-)
+_MOLT_JSON_DEFAULT_SEPARATORS = _require_intrinsic("molt_json_default_separators")
+_MOLT_JSON_FORMAT_DECODE_ERROR = _require_intrinsic("molt_json_format_decode_error")
+_MOLT_JSON_PARSE_ERROR_MSG = _require_intrinsic("molt_json_parse_error_msg")
 
 
 __all__ = [
@@ -60,9 +43,7 @@ class JSONDecodeError(ValueError):
         return self.__class__, (self.msg, self.doc, self.pos)
 
     def __str__(self) -> str:
-        return str(
-            _MOLT_JSON_FORMAT_DECODE_ERROR(self.msg, self.doc, self.pos)
-        )
+        return str(_MOLT_JSON_FORMAT_DECODE_ERROR(self.msg, self.doc, self.pos))
 
 
 def _raise_json_decode_from_value_error(exc: ValueError, doc: str) -> None:
@@ -344,6 +325,7 @@ class JSONDecoder:
         if not isinstance(s, str):
             raise TypeError(f"first argument must be a string, not {type(s).__name__}")
         import operator
+
         idx = operator.index(idx)
         if idx < 0:
             raise ValueError("idx cannot be negative")
@@ -360,5 +342,6 @@ class JSONDecoder:
             )
         except ValueError as exc:
             _raise_json_decode_from_value_error(exc, s)
+
 
 globals().pop("_require_intrinsic", None)

@@ -72,7 +72,9 @@ def test_guard_root_defaults_to_repo_target_state(monkeypatch) -> None:
     )
 
 
-def test_guard_root_prefers_explicit_and_repo_canonical_overrides(tmp_path: Path) -> None:
+def test_guard_root_prefers_explicit_and_repo_canonical_overrides(
+    tmp_path: Path,
+) -> None:
     explicit_guard = tmp_path / "explicit-guard"
     ext_root = tmp_path / "ext-root"
     cargo_target_dir = tmp_path / "cargo-target"

@@ -25,7 +25,6 @@ Environment:
 """
 
 import argparse
-import glob as globmod
 import json
 import os
 import subprocess
@@ -139,7 +138,9 @@ def compile_to_luau(source_path: str, output_path: str) -> tuple[bool, float]:
     env = {
         **os.environ,
         "MOLT_EXT_ROOT": str(artifact_root),
-        "CARGO_TARGET_DIR": os.environ.get("CARGO_TARGET_DIR", str(artifact_root / "target")),
+        "CARGO_TARGET_DIR": os.environ.get(
+            "CARGO_TARGET_DIR", str(artifact_root / "target")
+        ),
         "RUSTC_WRAPPER": "",
         "PYTHONPATH": "src",
     }
@@ -304,7 +305,9 @@ def generate_markdown_report(results: list[dict], iterations: int) -> str:
 
     for r in results:
         name = r["name"]
-        compile_ms = f"{r['compile_time_ms']:.0f}" if r["compile_time_ms"] is not None else "-"
+        compile_ms = (
+            f"{r['compile_time_ms']:.0f}" if r["compile_time_ms"] is not None else "-"
+        )
 
         if r["cpython"] and "error" not in r["cpython"]:
             cpython_ms = f"{r['cpython']['mean_ms']:.2f}"
@@ -333,7 +336,9 @@ def generate_markdown_report(results: list[dict], iterations: int) -> str:
         else:
             status = "OK"
 
-        lines.append(f"| {name} | {compile_ms} | {cpython_ms} | {luau_ms} | {ratio} | {match} | {status} |")
+        lines.append(
+            f"| {name} | {compile_ms} | {cpython_ms} | {luau_ms} | {ratio} | {match} | {status} |"
+        )
 
     lines.append("")
     return "\n".join(lines)
@@ -365,7 +370,9 @@ examples:
         nargs="*",
         help="Benchmark .py file(s) to run. Defaults to built-in zone generator.",
     )
-    parser.add_argument("--cpython-only", action="store_true", help="Skip Molt/Lune, CPython only")
+    parser.add_argument(
+        "--cpython-only", action="store_true", help="Skip Molt/Lune, CPython only"
+    )
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
     parser.add_argument(
         "--all",
@@ -439,17 +446,19 @@ examples:
                 results.append(result)
             except Exception as exc:
                 print(f"  UNEXPECTED ERROR: {exc}", file=sys.stderr)
-                results.append({
-                    "name": name,
-                    "source": path,
-                    "cpython": None,
-                    "luau": None,
-                    "compile_time_ms": None,
-                    "luau_output_bytes": None,
-                    "output_match": None,
-                    "ratio": None,
-                    "error": f"Exception: {exc}",
-                })
+                results.append(
+                    {
+                        "name": name,
+                        "source": path,
+                        "cpython": None,
+                        "luau": None,
+                        "compile_time_ms": None,
+                        "luau_output_bytes": None,
+                        "output_match": None,
+                        "ratio": None,
+                        "error": f"Exception: {exc}",
+                    }
+                )
             print()
 
         # Summary

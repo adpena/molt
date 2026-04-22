@@ -4,6 +4,7 @@ Ported from: https://github.com/paiml/depyler/blob/main/tests/fixtures/python_sa
 Measures: tight multiplication loops (iterative exponentiation).
 """
 
+
 def power_iterative(base: int, exponent: int) -> int:
     result: int = 1
     i: int = 0

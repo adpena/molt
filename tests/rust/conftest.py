@@ -28,7 +28,9 @@ def pytest_configure(config):
         "MOLT_USE_SCCACHE": "0",
         "RUSTC_WRAPPER": "",
         "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-        "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
+        "MOLT_DEV_CARGO_PROFILE": os.environ.get(
+            "MOLT_DEV_CARGO_PROFILE", "release-fast"
+        ),
         "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
         "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
     }
@@ -42,9 +44,17 @@ def pytest_configure(config):
         # Generous timeout covers daemon cold-start + optional cargo rebuild.
         subprocess.run(
             [
-                (sys.executable or "python3"), "-m", "molt.cli", "build",
-                warmup_path, "--target", "rust", "--profile", "dev",
-                "--output", warmup_out,
+                (sys.executable or "python3"),
+                "-m",
+                "molt.cli",
+                "build",
+                warmup_path,
+                "--target",
+                "rust",
+                "--profile",
+                "dev",
+                "--output",
+                warmup_out,
             ],
             capture_output=True,
             text=True,

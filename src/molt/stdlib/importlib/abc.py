@@ -12,9 +12,7 @@ from . import _bootstrap_external
 from . import machinery
 from ._abc import Loader
 
-_MOLT_IMPORTLIB_IMPORT_OPTIONAL = _require_intrinsic(
-    "molt_importlib_import_optional"
-)
+_MOLT_IMPORTLIB_IMPORT_OPTIONAL = _require_intrinsic("molt_importlib_import_optional")
 _MOLT_IMPORTLIB_IMPORT_OR_FALLBACK = _require_intrinsic(
     "molt_importlib_import_or_fallback"
 )

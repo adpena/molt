@@ -14,6 +14,7 @@ Usage:
     # Headless mode (skip tests that need a visible window, just validate import):
     MOLT_TK_PROFILE_HEADLESS=1 python3 tools/scripts/profile_tk_perf.py
 """
+
 from __future__ import annotations
 
 import os
@@ -158,14 +159,6 @@ def bench_after_callbacks(root: tk.Tk) -> float:
 
     total_time = time.monotonic() - start
 
-    if len(results_ns) >= 2:
-        intervals = [
-            results_ns[i + 1] - results_ns[i] for i in range(len(results_ns) - 1)
-        ]
-        max_jitter = max(intervals) - min(intervals)
-    else:
-        max_jitter = 0.0
-
     return total_time
 
 
@@ -287,7 +280,9 @@ def run_profile() -> list[tuple[str, float]]:
 
 
 def print_results(results: list[tuple[str, float]]) -> None:
-    runtime = "molt" if hasattr(sys, "_molt_version") else f"CPython {sys.version.split()[0]}"
+    runtime = (
+        "molt" if hasattr(sys, "_molt_version") else f"CPython {sys.version.split()[0]}"
+    )
     print()
     print(f"=== Tkinter Performance Profile ({runtime}) ===")
     print()

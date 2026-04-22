@@ -48,16 +48,10 @@ _MOLT_PARTIAL = _require_intrinsic("molt_functools_partial")
 _MOLT_REDUCE = _require_intrinsic("molt_functools_reduce")
 _MOLT_LRU_CACHE = _require_intrinsic("molt_functools_lru_cache")
 _MOLT_SD_NEW = _require_intrinsic("molt_functools_singledispatch_new")
-_MOLT_SD_REGISTER = _require_intrinsic(
-    "molt_functools_singledispatch_register"
-)
+_MOLT_SD_REGISTER = _require_intrinsic("molt_functools_singledispatch_register")
 _MOLT_SD_CALL = _require_intrinsic("molt_functools_singledispatch_call")
-_MOLT_SD_DISPATCH = _require_intrinsic(
-    "molt_functools_singledispatch_dispatch"
-)
-_MOLT_SD_REGISTRY = _require_intrinsic(
-    "molt_functools_singledispatch_registry"
-)
+_MOLT_SD_DISPATCH = _require_intrinsic("molt_functools_singledispatch_dispatch")
+_MOLT_SD_REGISTRY = _require_intrinsic("molt_functools_singledispatch_registry")
 _MOLT_SD_DROP = _require_intrinsic("molt_functools_singledispatch_drop")
 
 _MISSING = _MOLT_KWD_MARK()
@@ -307,5 +301,6 @@ class partialmethod:
                 return func(obj, *p_args, *call_args, **call_kw)
 
         return _bound
+
 
 globals().pop("_require_intrinsic", None)

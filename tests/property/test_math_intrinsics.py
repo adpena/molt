@@ -17,9 +17,7 @@ from hypothesis import strategies as st
 # ---------------------------------------------------------------------------
 
 safe_floats = st.floats(allow_nan=False, allow_infinity=False)
-non_negative_floats = st.floats(
-    min_value=0.0, allow_nan=False, allow_infinity=False
-)
+non_negative_floats = st.floats(min_value=0.0, allow_nan=False, allow_infinity=False)
 all_floats = st.floats()
 small_ints = st.integers(min_value=-10_000, max_value=10_000)
 positive_ints = st.integers(min_value=1, max_value=10_000)

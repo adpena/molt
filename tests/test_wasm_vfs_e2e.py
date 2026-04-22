@@ -1,11 +1,10 @@
 """End-to-end tests for VFS bundle → build → run pipeline."""
+
 from __future__ import annotations
 import json
-import os
 import subprocess
 import sys
 import tarfile
-import io
 from pathlib import Path
 import pytest
 
@@ -15,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def _create_bundle(src_dir: Path, output: Path) -> None:
     """Create a bundle.tar from a source directory."""
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
         "wasm_bundle", PROJECT_ROOT / "tools" / "wasm_bundle.py"
     )
@@ -60,10 +60,21 @@ def test_wasm_build_with_bundle(tmp_path):
     # Build
     output = tmp_path / "output.wasm"
     result = subprocess.run(
-        [sys.executable, "-m", "molt", "build",
-         str(src / "app.py"), "--target", "wasm",
-         "--output", str(output)],
-        capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=180,
+        [
+            sys.executable,
+            "-m",
+            "molt",
+            "build",
+            str(src / "app.py"),
+            "--target",
+            "wasm",
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+        timeout=180,
     )
     # The build should succeed (bundle integration is env-var based)
     assert result.returncode == 0, f"Build failed: {result.stderr}"
@@ -79,11 +90,23 @@ def test_wasm_build_with_profile_cloudflare(tmp_path):
 
     output = tmp_path / "output.wasm"
     result = subprocess.run(
-        [sys.executable, "-m", "molt", "build",
-         str(src / "app.py"), "--target", "wasm",
-         "--profile", "cloudflare",
-         "--output", str(output)],
-        capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=180,
+        [
+            sys.executable,
+            "-m",
+            "molt",
+            "build",
+            str(src / "app.py"),
+            "--target",
+            "wasm",
+            "--profile",
+            "cloudflare",
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+        timeout=180,
     )
     assert result.returncode == 0, f"Build failed: {result.stderr}"
 
@@ -97,11 +120,22 @@ def test_snapshot_generation(tmp_path):
 
     output = tmp_path / "output.wasm"
     result = subprocess.run(
-        [sys.executable, "-m", "molt", "build",
-         str(src / "app.py"), "--target", "wasm",
-         "--snapshot",
-         "--output", str(output)],
-        capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=180,
+        [
+            sys.executable,
+            "-m",
+            "molt",
+            "build",
+            str(src / "app.py"),
+            "--target",
+            "wasm",
+            "--snapshot",
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+        timeout=180,
     )
     assert result.returncode == 0, f"Build failed: {result.stderr}"
 
