@@ -343,7 +343,7 @@ def _fail(
     return code
 
 
-_CliFailure = int | dict[str, Any]
+_CliFailure = int
 
 
 def _coerce_process_text(value: str | bytes | None) -> str:
@@ -1091,7 +1091,7 @@ class _FrontendLayerExecutionContext:
     parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
     fallback_policy: "FallbackPolicy"
-    type_facts: dict[str, Any] | None
+    type_facts: TypeFacts | None
     enable_phi: bool
     known_modules: Collection[str]
     stdlib_allowlist: Collection[str]
@@ -1146,7 +1146,7 @@ class _SerialFrontendLoweringContext:
     parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
     fallback_policy: "FallbackPolicy"
-    type_facts: dict[str, Any] | None
+    type_facts: TypeFacts | None
     enable_phi: bool
     known_modules: Collection[str]
     stdlib_allowlist: Collection[str]
@@ -1195,7 +1195,7 @@ class _EntryFrontendLoweringContext:
     parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
     fallback_policy: "FallbackPolicy"
-    type_facts: dict[str, Any] | None
+    type_facts: TypeFacts | None
     enable_phi: bool
     known_modules: Collection[str]
     known_classes: Mapping[str, Any]
@@ -1399,7 +1399,7 @@ class _PreparedFrontendAnalysis:
     reverse_module_deps: dict[str, set[str]]
     has_back_edges: bool
     module_layers: list[list[str]]
-    module_dep_closures: dict[str, set[str]]
+    module_dep_closures: dict[str, frozenset[str]]
     dirty_lowering_modules: set[str]
 
 
@@ -1480,7 +1480,7 @@ class _PreparedBackendRuntimeContext:
     runtime_lib: Path | None
     runtime_wasm: Path | None
     runtime_reloc_wasm: Path | None
-    ensure_runtime_wasm_shared: Callable[[], bool]
+    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool]
     ensure_runtime_wasm_reloc: Callable[[], bool]
     cache_setup: _BackendCacheSetup
     cache_hit: bool
@@ -1526,7 +1526,7 @@ class _PreparedNativeLink:
     linker_hint: str | None
     normalized_target: str | None
     link_fingerprint_path: Path
-    link_fingerprint: dict[str, Any]
+    link_fingerprint: dict[str, str | None] | None
     link_skipped: bool
     link_process: subprocess.CompletedProcess[str]
 
@@ -2061,7 +2061,7 @@ def _sbom_component_hashes(pkg: dict[str, Any]) -> list[dict[str, str]]:
 def _sbom_component_for_lock_pkg(
     pkg: dict[str, Any],
     allow: dict[str, set[str]],
-) -> _CliFailure | None:
+) -> dict[str, Any] | None:
     name = pkg.get("name")
     if not isinstance(name, str) or not name.strip():
         return None
@@ -2192,7 +2192,7 @@ def _build_cyclonedx_sbom(
             {"name": "molt.deterministic", "value": str(deterministic)},
         ],
     }
-    properties = cast(list[dict[str, str]], component["properties"])
+    properties = component["properties"]
     if effects is not None:
         properties.append({"name": "molt.effects", "value": json.dumps(effects)})
     if capabilities is not None:
@@ -3905,11 +3905,11 @@ def _has_namespace_dir(module_name: str, roots: list[Path]) -> bool:
 
 
 def _collect_namespace_parents(
-    module_graph: dict[str, Path],
+    module_graph: Mapping[str, Path],
     roots: list[Path],
     stdlib_root: Path,
     stdlib_allowlist: set[str],
-    explicit_imports: set[str] | None = None,
+    explicit_imports: Collection[str] | None = None,
     *,
     resolver_cache: _ModuleResolutionCache | None = None,
 ) -> set[str]:
@@ -4697,7 +4697,7 @@ def _module_name_from_relative_parts(
 
 def _module_dependencies_from_imports(
     module_name: str,
-    module_graph: dict[str, Path],
+    module_graph: Mapping[str, Path],
     imports: Iterable[str],
 ) -> set[str]:
     deps: set[str] = set()
@@ -4750,14 +4750,17 @@ def _read_module_source(path: Path) -> str:
         second_line = handle.readline()
         has_utf8_bom = first_line.startswith(codecs.BOM_UTF8)
         _cookie_re = tokenize.cookie_re
-        _is_bytes_re = isinstance(_cookie_re.pattern, bytes)
-        has_encoding_cookie = any(
-            _cookie_re.match(
-                line if _is_bytes_re else line.decode("latin-1", errors="ignore")
+        if isinstance(_cookie_re.pattern, bytes):
+            cookie_re = cast(re.Pattern[bytes], _cookie_re)
+            has_encoding_cookie = any(
+                cookie_re.match(line) for line in (first_line, second_line) if line
             )
-            for line in (first_line, second_line)
-            if line
-        )
+        else:
+            has_encoding_cookie = any(
+                _cookie_re.match(line.decode("latin-1", errors="ignore"))
+                for line in (first_line, second_line)
+                if line
+            )
         if not has_utf8_bom and not has_encoding_cookie:
             return (first_line + second_line + handle.read()).decode("utf-8")
     with tokenize.open(path) as handle:
@@ -5157,7 +5160,7 @@ def _scoped_known_classes(
     module_name: str,
     *,
     module_deps: dict[str, set[str]],
-    known_classes: dict[str, Any],
+    known_classes: Mapping[str, Any],
     module_dep_closures: dict[str, frozenset[str]] | None = None,
 ) -> dict[str, Any]:
     scoped_modules = (
@@ -5252,7 +5255,7 @@ def _build_scoped_known_classes_snapshot(
     *,
     module_deps: dict[str, set[str]],
     module_dep_closures: dict[str, frozenset[str]],
-    known_classes_snapshot: dict[str, Any],
+    known_classes_snapshot: Mapping[str, Any],
 ) -> dict[str, dict[str, Any]]:
     scoped_known_classes_by_module: dict[str, dict[str, Any]] = {}
     for module_name in sorted(module_names):
@@ -5269,7 +5272,7 @@ def _scoped_known_classes_view(
     module_name: str,
     *,
     module_deps: dict[str, set[str]],
-    known_classes_snapshot: dict[str, Any],
+    known_classes_snapshot: Mapping[str, Any],
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -5448,7 +5451,7 @@ def _stdlib_allowlist_cached(project_root_text: str | None) -> frozenset[str]:
                 / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
             )
     if not spec_path.exists():
-        return allowlist
+        return frozenset(allowlist)
     for line in spec_path.read_text().splitlines():
         if not line.startswith("|"):
             continue
@@ -5688,9 +5691,9 @@ def _extend_module_graph_with_closure(
 
 
 def _record_new_module_reasons(
-    module_graph: dict[str, Path],
+    module_graph: Mapping[str, Path],
     before_names: set[str],
-    module_reasons: dict[str, set[str]],
+    module_reasons: MutableMapping[str, set[str]],
     reason: str,
 ) -> None:
     for name in module_graph:
@@ -5700,7 +5703,7 @@ def _record_new_module_reasons(
 
 
 def _build_reason_summary(
-    module_reasons: dict[str, set[str]],
+    module_reasons: Mapping[str, set[str]],
 ) -> dict[str, int]:
     summary: dict[str, int] = {}
     for reasons in module_reasons.values():
@@ -5728,7 +5731,7 @@ def _resolve_build_diagnostics_verbosity(raw: str | None) -> str:
     return "default"
 
 
-def _phase_duration_map(phase_starts: dict[str, float]) -> dict[str, float]:
+def _phase_duration_map(phase_starts: Mapping[str, float]) -> dict[str, float]:
     if not phase_starts:
         return {}
     starts = sorted(phase_starts.items(), key=lambda item: item[1])
@@ -6227,9 +6230,9 @@ def _normalize_midend_pass_stat(raw: dict[str, Any]) -> dict[str, Any]:
 def _build_midend_diagnostics_payload(
     *,
     requested_profile: BuildProfile,
-    policy_outcomes_by_function: dict[str, dict[str, Any]],
-    pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
-) -> _CliFailure | None:
+    policy_outcomes_by_function: Mapping[str, dict[str, Any]],
+    pass_stats_by_function: Mapping[str, dict[str, dict[str, Any]]],
+) -> dict[str, Any] | None:
     if not policy_outcomes_by_function and not pass_stats_by_function:
         return None
 
@@ -6723,7 +6726,7 @@ def _module_lowering_execution_view(
     known_func_defaults: dict[str, dict[str, Any]],
     pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
-    known_classes_snapshot: dict[str, Any],
+    known_classes_snapshot: Mapping[str, Any],
     module_dep_closures: dict[str, frozenset[str]],
     path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
@@ -6988,7 +6991,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _requires_spawn_entry_override(
-    module_graph: dict[str, Path], explicit_imports: set[str]
+    module_graph: Mapping[str, Path], explicit_imports: Collection[str]
 ) -> bool:
     names: set[str] = set(module_graph)
     names.update(explicit_imports)
@@ -7034,9 +7037,11 @@ def _discover_module_graph_from_paths(
     dirty_persisted_modules: set[str] = set()
     use_persisted_graph_cache = project_root is not None and len(entry_paths) == 1
     if use_persisted_graph_cache:
+        cache_project_root = project_root
+        assert cache_project_root is not None
         entry_path = entry_paths[0]
         persisted_graph = _read_persisted_module_graph(
-            project_root,
+            cache_project_root,
             entry_path,
             roots=roots,
             module_roots=module_roots,
@@ -7084,7 +7089,7 @@ def _discover_module_graph_from_paths(
             if use_persisted_graph_cache:
                 with contextlib.suppress(OSError):
                     _write_persisted_import_scan(
-                        project_root,
+                        cache_project_root,
                         path,
                         module_name=module_name,
                         is_package=is_package,
@@ -7145,7 +7150,7 @@ def _discover_module_graph_from_paths(
     if use_persisted_graph_cache:
         with contextlib.suppress(OSError):
             _write_persisted_module_graph(
-                project_root,
+                cache_project_root,
                 entry_paths[0],
                 roots=roots,
                 module_roots=module_roots,
@@ -7491,6 +7496,7 @@ def _runtime_fingerprint(
         rustc=rustc_info,
         meta_digest=meta_digest,
     ):
+        assert stored_fingerprint is not None
         return {
             "hash": cast(str, stored_fingerprint.get("hash")),
             "rustc": rustc_info,
@@ -7785,7 +7791,7 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
 
 
 def _builtin_features_from_import_graph(
-    resolved_modules: set[str] | None,
+    resolved_modules: Collection[str] | None,
     stdlib_profile: str | None,
 ) -> list[str]:
     """Return the ``builtin_*`` and ``stdlib_*`` cargo features required for
@@ -7804,29 +7810,30 @@ def _builtin_features_from_import_graph(
     # No module information available: be safe and enable everything.
     if resolved_modules is None:
         return all_features
+    resolved_module_set = set(resolved_modules)
 
     features: list[str] = []
 
     # Direct module -> feature mapping (contextvars, fcntl, cmath).
     for module_name, feature in _BUILTIN_FEATURE_MODULE_MAP.items():
-        if module_name in resolved_modules and feature not in features:
+        if module_name in resolved_module_set and feature not in features:
             features.append(feature)
 
     # set: included if any set-implying module (or submodule) is present.
     for m in _SET_IMPLYING_MODULES:
-        if m in resolved_modules or any(
-            r.startswith(m + ".") for r in resolved_modules
+        if m in resolved_module_set or any(
+            r.startswith(m + ".") for r in resolved_module_set
         ):
             features.append("builtin_set")
             break
 
     # memoryview: included if struct/array/io/_io/mmap is present.
-    if _MEMORYVIEW_IMPLYING_MODULES & resolved_modules:
+    if _MEMORYVIEW_IMPLYING_MODULES & resolved_module_set:
         features.append("builtin_memoryview")
 
     # Domain features: direct module name match.
     for module_name, feature in _STDLIB_DOMAIN_FEATURE_MAP.items():
-        if module_name in resolved_modules and feature not in features:
+        if module_name in resolved_module_set and feature not in features:
             features.append(feature)
 
     # Domain features: prefix-based match for submodules.
@@ -8215,7 +8222,7 @@ def _is_valid_wasm_binary(path: Path) -> bool:
     return _inspect_wasm_binary(path) == "valid"
 
 
-def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int] | None:
+def _try_read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int] | None:
     value = 0
     shift = 0
     while offset < len(data):
@@ -8241,7 +8248,7 @@ def _wasm_has_nonempty_code_section(path: Path) -> bool:
     while offset < len(data):
         section_id = data[offset]
         offset += 1
-        size_info = _read_wasm_varuint(data, offset)
+        size_info = _try_read_wasm_varuint(data, offset)
         if size_info is None:
             return False
         section_size, offset = size_info
@@ -8249,7 +8256,7 @@ def _wasm_has_nonempty_code_section(path: Path) -> bool:
         if payload_end > len(data):
             return False
         if section_id == 10:
-            count_info = _read_wasm_varuint(data, offset)
+            count_info = _try_read_wasm_varuint(data, offset)
             return bool(count_info and count_info[0] > 0)
         offset = payload_end
     return False
@@ -8511,7 +8518,7 @@ def _build_lock(project_root: Path, name: str):
         yield
         return
     try:
-        import fcntl  # type: ignore
+        import fcntl
     except Exception:
         yield
         return
@@ -8824,7 +8831,8 @@ def _parse_package_grants(
             if not isinstance(entry, dict):
                 errors.append(f"{field}[{idx}] must be a table")
                 continue
-            name = entry.get("name") or entry.get("package")
+            entry_map = cast(Mapping[str, Any], entry)
+            name = entry_map.get("name") or entry_map.get("package")
             if not isinstance(name, str) or not name:
                 errors.append(f"{field}[{idx}].name must be a non-empty string")
                 continue
@@ -12123,7 +12131,7 @@ def _backend_daemon_request_payload_bytes(
 
 def _backend_daemon_compile_request_bytes(
     *,
-    ir: dict[str, Any] | None,
+    ir: Mapping[str, Any] | None,
     backend_output: Path,
     is_wasm: bool,
     wasm_link: bool,
@@ -12203,7 +12211,7 @@ def _backend_daemon_compile_request_bytes(
 
 def _backend_daemon_health_from_response(
     response: dict[str, Any],
-) -> _CliFailure | None:
+) -> dict[str, Any] | None:
     raw = response.get("health")
     if not isinstance(raw, dict):
         return None
@@ -12542,7 +12550,7 @@ def _start_backend_daemon(
 def _compile_with_backend_daemon(
     socket_path: Path,
     *,
-    ir: dict[str, Any],
+    ir: Mapping[str, Any],
     backend_output: Path,
     is_wasm: bool,
     wasm_link: bool,
@@ -12622,6 +12630,7 @@ def _compile_with_backend_daemon(
             socket_path, probe_request_bytes, timeout=timeout, daemon_pid=daemon_pid
         )
     else:
+        assert full_request_bytes is not None
         response, err = _backend_daemon_request_bytes(
             socket_path, full_request_bytes, timeout=timeout, daemon_pid=daemon_pid
         )
@@ -12870,7 +12879,7 @@ def _shared_stdlib_cache_lock(stdlib_object_path: Path) -> Iterator[None]:
         yield
         return
     try:
-        import fcntl  # type: ignore
+        import fcntl
     except Exception:
         yield
         return
@@ -13460,7 +13469,7 @@ def _write_persisted_module_analysis(
         is_package=is_package,
     )
     stat = path.stat()
-    payload = {
+    payload: dict[str, Any] = {
         "version": 1,
         "module_name": module_name,
         "is_package": is_package,
@@ -13705,14 +13714,14 @@ def _module_frontend_generator(
         module_is_namespace=module_is_namespace,
         entry_module=entry_override,
         enable_phi=enable_phi,
-        known_modules=scoped_inputs.known_modules_set,
+        known_modules=set(scoped_inputs.known_modules_set),
         known_classes=scoped_known_classes,
-        stdlib_allowlist=stdlib_allowlist,
+        stdlib_allowlist=set(stdlib_allowlist),
         known_func_defaults=scoped_inputs.known_func_defaults,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=optimization_profile,
-        pgo_hot_functions=scoped_inputs.pgo_hot_function_names_set,
+        optimization_profile=cast(BuildProfile, optimization_profile),
+        pgo_hot_functions=set(scoped_inputs.pgo_hot_function_names_set),
     )
 
 
@@ -14165,7 +14174,7 @@ def _lower_module_serial_with_context(
         known_modules=lowering_context.known_modules,
         known_func_defaults=lowering_context.known_func_defaults,
         pgo_hot_function_names=lowering_context.pgo_hot_function_names,
-        type_facts=cast(TypeFacts | None, lowering_context.type_facts),
+        type_facts=lowering_context.type_facts,
         known_classes_snapshot=lowering_context.known_classes,
         module_dep_closures=lowering_context.module_dep_closures,
         path_stat_by_module=lowering_context.module_path_stats,
@@ -14329,7 +14338,7 @@ def _run_serial_frontend_lower_with_context(
     lowering_context: _SerialFrontendLoweringContext,
     lowering_hooks: _SerialFrontendLoweringHooks,
 ) -> tuple[
-    dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None
+    dict[str, Any] | None, _FrontendModuleResultTimings | None, _CliFailure | None
 ]:
     try:
         result, visit_s, lower_s, total_s = _lower_module_serial_with_context(
@@ -14536,14 +14545,14 @@ def _lower_entry_module_as_main(
         module_spec_name=lowering_context.entry_module,
         entry_module=None,
         enable_phi=lowering_context.enable_phi,
-        known_modules=lowering_context.known_modules,
-        known_classes=lowering_context.known_classes,
-        stdlib_allowlist=lowering_context.stdlib_allowlist,
+        known_modules=set(lowering_context.known_modules),
+        known_classes=cast(Any, lowering_context.known_classes),
+        stdlib_allowlist=set(lowering_context.stdlib_allowlist),
         known_func_defaults=lowering_context.known_func_defaults,
         module_chunking=lowering_context.module_chunking,
         module_chunk_max_ops=lowering_context.module_chunk_max_ops,
-        optimization_profile=lowering_context.optimization_profile,
-        pgo_hot_functions=lowering_context.pgo_hot_function_names,
+        optimization_profile=cast(BuildProfile, lowering_context.optimization_profile),
+        pgo_hot_functions=set(lowering_context.pgo_hot_function_names),
     )
     main_frontend_start = time.perf_counter()
     main_visit_s = 0.0
@@ -16875,9 +16884,11 @@ def _build_build_diagnostics_payload(
             payload["allocations"] = allocations_payload
     payload["frontend_parallel"] = dict(diagnostics_context.frontend_parallel_details)
     midend_payload = _build_midend_diagnostics_payload(
-        requested_profile=diagnostics_context.profile,
-        policy_outcomes_by_function=diagnostics_context.midend_policy_outcomes_by_function,
-        pass_stats_by_function=diagnostics_context.midend_pass_stats_by_function,
+        requested_profile=cast(BuildProfile, diagnostics_context.profile),
+        policy_outcomes_by_function=dict(
+            diagnostics_context.midend_policy_outcomes_by_function
+        ),
+        pass_stats_by_function=dict(diagnostics_context.midend_pass_stats_by_function),
     )
     if midend_payload is not None:
         payload["midend"] = midend_payload
@@ -16964,7 +16975,7 @@ def _resolve_build_output_layout(
     output_root: Path,
     output_base: str,
     out_dir_path: Path | None,
-    project_root: Path | None,
+    project_root: Path,
 ) -> _BuildOutputLayout:
     is_wasm = target in {"wasm", "wasm-freestanding"}
     is_wasm_freestanding = target == "wasm-freestanding"
@@ -17091,7 +17102,7 @@ def _augment_support_modules(
     *,
     module_graph: MutableMapping[str, Path],
     module_reasons: MutableMapping[str, set[str]],
-    roots: Sequence[Path],
+    roots: list[Path],
     stdlib_root: Path,
     stdlib_allowlist: set[str],
     explicit_imports: Collection[str],
@@ -17201,6 +17212,8 @@ def _augment_module_graph_for_entry_and_runtime(
     json_output: bool,
     target: str,
 ) -> tuple[_ModuleGraphAugmentation, _CliFailure | None]:
+    roots = list(roots)
+    module_roots = list(module_roots)
     entry_imports = set(entry_imports)
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
@@ -17372,10 +17385,11 @@ def _prepare_entry_module_graph(
         for module_name in ("importlib", "importlib.util", "importlib.machinery"):
             module_path = _resolve_module_path(module_name, [stdlib_root])
             if module_path is None:
-                return None, {
-                    "kind": "runtime_import_support_missing",
-                    "message": f"Missing required stdlib support module: {module_name}",
-                }
+                return None, _fail(
+                    f"Missing required stdlib support module: {module_name}",
+                    json_output,
+                    command="build",
+                )
             import_support_paths.append(module_path)
         before_support = set(module_graph)
         _extend_module_graph_with_closure(
@@ -17417,7 +17431,7 @@ def _prepare_build_module_outputs(
     *,
     module_graph: MutableMapping[str, Path],
     module_reasons: MutableMapping[str, set[str]],
-    roots: Sequence[Path],
+    roots: list[Path],
     stdlib_root: Path,
     stdlib_allowlist: set[str],
     explicit_imports: Collection[str],
@@ -17440,7 +17454,7 @@ def _prepare_build_module_outputs(
     bin_root: Path,
     output_root: Path,
     output_base: str,
-    out_dir_path: Path,
+    out_dir_path: Path | None,
     project_root: Path,
 ) -> tuple[_PreparedBuildModuleOutputs | None, str | None]:
     support_modules = _augment_support_modules(
@@ -17621,7 +17635,7 @@ def _prepare_frontend_lowering_config(
     json_output: bool,
     warnings: list[str],
     module_deps: dict[str, set[str]],
-    module_dep_closures: dict[str, set[str]],
+    module_dep_closures: dict[str, frozenset[str]],
     has_back_edges: bool,
     known_modules: set[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
@@ -17784,7 +17798,7 @@ def _prepare_frontend_execution(
     known_modules_sorted: tuple[str, ...],
     stdlib_allowlist_sorted: tuple[str, ...],
     pgo_hot_function_names_sorted: tuple[str, ...],
-    module_dep_closures: dict[str, set[str]],
+    module_dep_closures: dict[str, frozenset[str]],
     module_graph_metadata: _ModuleGraphMetadata,
     module_path_stats: dict[str, os.stat_result | None],
     module_chunking: bool,
@@ -17892,7 +17906,7 @@ def _prepare_frontend_execution(
     ) -> tuple[
         dict[str, Any] | None,
         _FrontendModuleResultTimings | None,
-        dict[str, Any] | None,
+        _CliFailure | None,
     ]:
         return _run_serial_frontend_lower_with_context(
             module_name,
@@ -18133,7 +18147,7 @@ def _prepare_backend_dispatch(
                 layout_probe_path = runtime_reloc_wasm
         if "MOLT_WASM_DATA_BASE" not in backend_env:
             if layout_probe_path is None:
-                if not ensure_runtime_wasm_shared():
+                if not ensure_runtime_wasm_shared(None):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
@@ -18181,7 +18195,7 @@ def _prepare_backend_dispatch(
             and runtime_wasm is not None
             and not runtime_wasm.exists()
         ):
-            if not ensure_runtime_wasm_shared():
+            if not ensure_runtime_wasm_shared(None):
                 return None, _fail(
                     "Runtime wasm build failed",
                     json_output,
@@ -18223,7 +18237,7 @@ def _prepare_backend_dispatch(
                 split_runtime_table_probe is None
                 or not split_runtime_table_probe.exists()
             ):
-                if not ensure_runtime_wasm_shared():
+                if not ensure_runtime_wasm_shared(None):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
@@ -19476,7 +19490,7 @@ def _prepare_non_native_build_result(
     json_output: bool,
     runtime_wasm: Path | None,
     runtime_reloc_wasm: Path | None,
-    ensure_runtime_wasm_shared: Callable[[], bool],
+    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
     runtime_cargo_profile: str,
     molt_root: Path,
@@ -19545,7 +19559,7 @@ def _prepare_non_native_build_result(
                         json_output,
                         command="build",
                     )
-                if not ensure_runtime_wasm_shared():
+                if not ensure_runtime_wasm_shared(None):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
@@ -20103,6 +20117,7 @@ def _run_build_pipeline(
         _PreparedFrontendRunTicket,
         dict[str, Path],
         set[str],
+        set[str],
         bool,
         _BuildOutputLayout,
         set[str],
@@ -20197,7 +20212,7 @@ def _prepare_build_callbacks(
 ) -> _PreparedBuildCallbacks:
     timing_config = _FrontendTimingRecorderConfig(
         enabled=frontend_timing_enabled,
-        raw=frontend_timing_raw,
+        raw=bool(frontend_timing_raw),
         threshold=frontend_timing_threshold,
         json_output=json_output,
     )
@@ -20738,7 +20753,7 @@ def _prepare_backend_cache_setup(
     emit_mode: str,
     is_wasm: bool,
     linked: bool,
-    project_root: Path | None,
+    project_root: Path,
     cache_dir: str | None,
     output_artifact: Path,
     warnings: list[str],
@@ -20980,7 +20995,7 @@ def _ensure_runtime_lib_ready(
     molt_root: Path,
     cargo_timeout: float | None,
     stdlib_profile: str | None = "micro",
-    resolved_modules: set[str] | None = None,
+    resolved_modules: Collection[str] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -21088,7 +21103,7 @@ def _run_frontend_parallel_enabled_layers(
     runtime_hooks: _FrontendLayerRuntimeHooks,
     frontend_parallel_config: _FrontendParallelConfig,
     frontend_parallel_layers: list[dict[str, Any]],
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     parallel_pool_usable = True
     with ProcessPoolExecutor(max_workers=frontend_parallel_config.workers) as executor:
         for layer_index, layer in enumerate(module_layers):
@@ -21131,7 +21146,7 @@ def _run_frontend_parallel_enabled_layers(
 def _run_frontend_pipeline(
     *,
     prepared_frontend_run_ticket: _PreparedFrontendRunTicket,
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     frontend_parallel_config = prepared_frontend_run_ticket.frontend_parallel_config
     frontend_parallel_layers = prepared_frontend_run_ticket.frontend_parallel_layers
     frontend_layer_execution_context = (
@@ -21172,7 +21187,7 @@ def _run_frontend_serial_disabled_layers(
     runtime_hooks: _FrontendLayerRuntimeHooks,
     frontend_parallel_layers: list[dict[str, Any]],
     frontend_parallel_config: _FrontendParallelConfig,
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     serial_layer_started_ns = time.time_ns()
     serial_layer_state = _fresh_frontend_parallel_layer_state()
     serial_error = _run_frontend_serial_layer_modules(
@@ -21215,7 +21230,7 @@ def _run_frontend_parallel_layer_batches(
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
-    type_facts: dict[str, Any] | None,
+    type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
@@ -21427,7 +21442,7 @@ def _consume_frontend_module_result(
     accumulate_midend_diagnostics: Callable[..., None],
     fail: Callable[..., _CliFailure],
     json_output: bool,
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     timings = result_timings or _frontend_result_timings(result)
     if record_frontend_timing is not None:
         record_frontend_timing(
@@ -21474,7 +21489,7 @@ def _consume_frontend_parallel_layer_result(
     module_name: str,
     module_path: Path,
     result: Mapping[str, Any],
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     result_error = _frontend_parallel_result_error(module_name, result)
     if result_error is not None:
         return fail(result_error, json_output, command="build")
@@ -21523,7 +21538,7 @@ def _consume_frontend_serial_layer_result(
     result: Mapping[str, Any],
     result_timings: _FrontendModuleResultTimings,
     serial_mode: str,
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     _record_serial_frontend_worker_timing(
         record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
         recorded_worker_timings=layer_state.recorded_worker_timings,
@@ -21733,11 +21748,11 @@ def _module_lowering_context_payload(
     *,
     logical_source_path: str,
     entry_override: str | None,
-    known_classes_snapshot: dict[str, Any],
+    known_classes_snapshot: Mapping[str, Any],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
-    type_facts: dict[str, Any] | None,
+    type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
@@ -21771,7 +21786,7 @@ def _module_lowering_context_payload(
             known_modules=known_modules,
             known_func_defaults=known_func_defaults,
             pgo_hot_function_names=pgo_hot_function_names,
-            type_facts=cast(TypeFacts | None, type_facts),
+            type_facts=type_facts,
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=known_modules_sorted,
@@ -21849,11 +21864,11 @@ def _module_lowering_context_digest_for_module(
     *,
     logical_source_path: str,
     entry_override: str | None,
-    known_classes_snapshot: dict[str, Any],
+    known_classes_snapshot: Mapping[str, Any],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
-    type_facts: dict[str, Any] | None,
+    type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
@@ -21994,7 +22009,7 @@ def _load_cached_module_lowering_result(
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
-    type_facts: dict[str, Any] | None,
+    type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
@@ -22077,7 +22092,7 @@ def _module_worker_payload(
     fallback_policy: FallbackPolicy,
     module_is_namespace: bool,
     entry_module: str | None,
-    type_facts: dict[str, Any] | None,
+    type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
     known_classes_snapshot: dict[str, Any],
@@ -22102,7 +22117,7 @@ def _module_worker_payload(
             known_modules=known_modules,
             known_func_defaults=known_func_defaults,
             pgo_hot_function_names=pgo_hot_function_names,
-            type_facts=cast(TypeFacts | None, type_facts),
+            type_facts=type_facts,
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=tuple(known_modules),
@@ -22152,7 +22167,7 @@ def _prepare_frontend_parallel_batch(
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
-    type_facts: dict[str, Any] | None,
+    type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
@@ -22199,7 +22214,7 @@ def _prepare_frontend_parallel_batch(
             known_modules=known_modules,
             known_func_defaults=known_func_defaults,
             pgo_hot_function_names=pgo_hot_function_names,
-            type_facts=cast(TypeFacts | None, type_facts),
+            type_facts=type_facts,
             known_classes_snapshot=known_classes_snapshot,
             module_dep_closures=module_dep_closures,
             path_stat_by_module=path_stat_by_module,
@@ -22349,6 +22364,7 @@ def _link_fingerprint(
         rustc=None,
         meta_digest=meta_digest,
     ):
+        assert stored_fingerprint is not None
         return {
             "hash": cast(str, stored_fingerprint.get("hash")),
             "rustc": None,
@@ -22393,6 +22409,7 @@ def _backend_fingerprint(
         rustc=rustc_info,
         meta_digest=meta_digest,
     ):
+        assert stored_fingerprint is not None
         return {
             "hash": cast(str, stored_fingerprint.get("hash")),
             "rustc": rustc_info,
@@ -22592,6 +22609,7 @@ def _ensure_backend_binary(
             _probe_target = _backend_probe_target()
             _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
             if _probe_ok:
+                assert fingerprint is not None
                 _write_runtime_fingerprint(fingerprint_path, fingerprint)
                 return True
         if not json_output:
@@ -22802,7 +22820,7 @@ def _ensure_runtime_lib(
     project_root: Path,
     cargo_timeout: float | None,
     stdlib_profile: str | None = "micro",
-    resolved_modules: set[str] | None = None,
+    resolved_modules: Collection[str] | None = None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
@@ -22864,6 +22882,7 @@ def _ensure_runtime_lib(
         if stored_fingerprint is None and _artifact_newer_than_sources(
             runtime_lib, _runtime_source_paths(project_root)
         ):
+            assert fingerprint is not None
             _write_runtime_fingerprint(fingerprint_path, fingerprint)
             _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
@@ -25146,7 +25165,7 @@ def _json_ir_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def _cache_ir_payload(ir: dict[str, Any]) -> bytes:
+def _cache_ir_payload(ir: Mapping[str, Any]) -> bytes:
     funcs = ir.get("functions")
     normalized: dict[str, Any] = dict(ir)
     if isinstance(funcs, list):
@@ -25167,7 +25186,7 @@ def _sorted_ir_functions(functions: list[Any]) -> list[Any]:
     return sorted(functions, key=_func_sort_key)
 
 
-def _cache_payloads_for_ir(ir: dict[str, Any]) -> tuple[bytes, bytes]:
+def _cache_payloads_for_ir(ir: Mapping[str, Any]) -> tuple[bytes, bytes]:
     functions = ir.get("functions")
     sorted_funcs: list[Any] = []
     if isinstance(functions, list):
@@ -25197,7 +25216,7 @@ def _cache_payloads_for_ir(ir: dict[str, Any]) -> tuple[bytes, bytes]:
 
 
 def _cache_key(
-    ir: dict[str, Any],
+    ir: Mapping[str, Any],
     target: str,
     target_triple: str | None,
     variant: str = "",
@@ -25224,7 +25243,7 @@ def _cache_key(
     return digest
 
 
-def _ir_top_level_extras_digest(ir: dict[str, Any]) -> str:
+def _ir_top_level_extras_digest(ir: Mapping[str, Any]) -> str:
     extras = {
         key: value for key, value in ir.items() if key not in {"functions", "profile"}
     }
@@ -25234,7 +25253,7 @@ def _ir_top_level_extras_digest(ir: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _cache_backend_ir_payload(ir: dict[str, Any]) -> bytes:
+def _cache_backend_ir_payload(ir: Mapping[str, Any]) -> bytes:
     _, backend_payload = _cache_payloads_for_ir(ir)
     return backend_payload
 
@@ -25321,6 +25340,7 @@ def _run_subprocess_captured_to_tempfiles(
             if remaining is not None and remaining <= 0:
                 proc.kill()
                 proc.wait()
+                assert timeout is not None
                 raise subprocess.TimeoutExpired(list(cmd), timeout)
             wait_timeout = remaining
             if next_keepalive is not None:
@@ -25336,6 +25356,7 @@ def _run_subprocess_captured_to_tempfiles(
             except subprocess.TimeoutExpired:
                 now = time.monotonic()
                 if next_keepalive is not None and now >= next_keepalive:
+                    assert keepalive_interval is not None
                     elapsed = now - started
                     print(
                         f"{progress_label} still running... ({elapsed:.0f}s)",
@@ -25355,7 +25376,7 @@ def _run_subprocess_captured_to_tempfiles(
 
 
 def _function_cache_key(
-    ir: dict[str, Any],
+    ir: Mapping[str, Any],
     target: str,
     target_triple: str | None,
     variant: str = "",
@@ -26322,7 +26343,7 @@ def run_script(
             capture_output=json_output,
         )
         if json_output:
-            data = {
+            data: dict[str, Any] = {
                 "returncode": run_res.returncode,
                 "timing": {
                     "build_s": build_duration_s,
@@ -26452,6 +26473,7 @@ def compare(
     if module:
         build_cmd.extend(["--module", module])
     else:
+        assert file_path is not None
         build_cmd.append(file_path)
     try:
         build_res = _run_command_timed(
@@ -34774,10 +34796,17 @@ def main() -> int:
             return _fail("Missing entry file or module.", args.json, command="build")
 
         deploy_profile = getattr(args, "profile", None)
-        wasm_opt_level = getattr(args, "wasm_opt_level", "Oz")
-        precompile = getattr(args, "precompile", False)
-        wasm_profile = getattr(args, "wasm_profile", "full")
-        stdlib_profile = getattr(args, "stdlib_profile", None)
+        wasm_opt_level_raw = getattr(args, "wasm_opt_level", "Oz")
+        wasm_opt_level = (
+            wasm_opt_level_raw if isinstance(wasm_opt_level_raw, str) else "Oz"
+        )
+        precompile = bool(getattr(args, "precompile", False))
+        wasm_profile_raw = getattr(args, "wasm_profile", "full")
+        wasm_profile = wasm_profile_raw if isinstance(wasm_profile_raw, str) else "full"
+        stdlib_profile_raw = getattr(args, "stdlib_profile", None)
+        stdlib_profile = (
+            stdlib_profile_raw if isinstance(stdlib_profile_raw, str) else None
+        )
 
         if deploy_profile and deploy_profile in _DEPLOY_PROFILE_DEFAULTS:
             defaults = _DEPLOY_PROFILE_DEFAULTS[deploy_profile]
@@ -34788,13 +34817,19 @@ def main() -> int:
                     a.startswith("--wasm-opt-level") for a in sys.argv
                 )
                 if not _wasm_opt_explicitly_set:
-                    wasm_opt_level = defaults["wasm_opt_level"]
+                    default_wasm_opt_level = defaults.get("wasm_opt_level")
+                    if isinstance(default_wasm_opt_level, str):
+                        wasm_opt_level = default_wasm_opt_level
             if not any(a == "--precompile" for a in sys.argv):
-                precompile = defaults["precompile"]
+                precompile = bool(defaults.get("precompile", precompile))
             if not any(a.startswith("--wasm-profile") for a in sys.argv):
-                wasm_profile = defaults["wasm_profile"]
+                default_wasm_profile = defaults.get("wasm_profile")
+                if isinstance(default_wasm_profile, str):
+                    wasm_profile = default_wasm_profile
             if stdlib_profile is None and "stdlib_profile" in defaults:
-                stdlib_profile = defaults["stdlib_profile"]
+                default_stdlib_profile = defaults.get("stdlib_profile")
+                if isinstance(default_stdlib_profile, str):
+                    stdlib_profile = default_stdlib_profile
 
         # --backend: resolve effective backend and propagate via MOLT_BACKEND.
         # "auto" defaults to cranelift for all builds. LLVM remains opt-in
@@ -35524,9 +35559,10 @@ def _lock_package_graph(
             continue
         packages[name] = pkg
         dep_names: list[str] = []
-        extras = selected_extras.get(name, set())
-        if isinstance(extras, list):
-            extras = set(extras)
+        raw_extras = selected_extras.get(name, set())
+        extras: set[str] = {
+            item for item in raw_extras if isinstance(item, str) and item
+        }
         for dep in pkg.get("dependencies", []):
             dep_name = _normalize_name(dep.get("name", ""))
             marker = dep.get("marker")
@@ -35676,6 +35712,8 @@ def _is_private_ip(host: str) -> bool:
         return True  # unresolvable hosts are blocked conservatively
     for _family, _type, _proto, _canonname, sockaddr in infos:
         ip_str = sockaddr[0]
+        if not isinstance(ip_str, str):
+            return True
         # Strip IPv6 scope-id suffix (e.g. "fe80::1%eth0") before parsing
         bare_ip = ip_str.split("%")[0]
         try:
