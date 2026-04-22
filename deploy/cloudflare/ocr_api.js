@@ -647,7 +647,66 @@ export function decodeOcrTokenArray(tokenIds, tokenizer) {
   if (!tokenizer || typeof tokenizer.decode !== "function") {
     throw new Error("Falcon OCR tokenizer is required to decode OCR token IDs");
   }
-  return tokenizer.decode(Array.from(tokenIds));
+  const ids = Array.from(tokenIds);
+  if (ids.length === 0) {
+    throw new Error("Falcon OCR produced no tokens");
+  }
+  const text = tokenizer.decode(ids);
+  if (typeof text !== "string") {
+    throw new Error("Falcon OCR tokenizer returned non-string text");
+  }
+  if (text.trim().length === 0) {
+    throw new Error("Falcon OCR decoded empty text");
+  }
+  return text;
+}
+
+/**
+ * Validate the OCR success payload before serving or caching it.
+ *
+ * Blank pages need an explicit upstream signal before they can become a
+ * successful OCR response; absent that signal, empty token/text payloads are
+ * invalid model output and must fail closed.
+ *
+ * @param {unknown} payload
+ * @param {string} source
+ * @returns {object}
+ */
+export function normalizeOcrResultPayload(payload, source = "OCR result") {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`${source} is not an object`);
+  }
+  if ("error" in payload) {
+    throw new Error(`${source} contains error output`);
+  }
+
+  const record = /** @type {Record<string, unknown>} */ (payload);
+  const text = record.text;
+  if (typeof text !== "string") {
+    throw new Error(`${source} is missing text`);
+  }
+  if (text.trim().length === 0) {
+    throw new Error(`${source} contains empty text`);
+  }
+
+  const tokens = record.tokens;
+  if (!Array.isArray(tokens)) {
+    throw new Error(`${source} is missing token array`);
+  }
+  if (tokens.length === 0) {
+    throw new Error(`${source} contains no tokens`);
+  }
+  for (const token of tokens) {
+    if (!Number.isInteger(token) || token < 0) {
+      throw new Error(`${source} contains invalid token id`);
+    }
+  }
+
+  return {
+    ...record,
+    text,
+    tokens: tokens.slice(),
+  };
 }
 
 /**
@@ -878,14 +937,15 @@ export async function handleStructuredOcr(request, env, cors, rid) {
         headers: { ...cors, "Content-Type": "application/json" },
       },
     );
-  } catch (_err) {
+  } catch (err) {
     return new Response(
       JSON.stringify({
         error: "Structured OCR processing failed",
+        detail: err.message,
         request_id: rid,
       }),
       {
-        status: 500,
+        status: 502,
         headers: { ...cors, "Content-Type": "application/json" },
       },
     );
@@ -905,414 +965,6 @@ const SECTION_TYPES = [
   "totals", "notes", "terms", "footer",
 ];
 
-/** @type {RegExp} */
-const HEADER_RE = /(?:invoice|credit\s*note|quote|purchase\s*order|receipt|tax\s*invoice|proforma|estimate|bill|statement)/i;
-/** @type {RegExp} */
-const PARTY_RE = /(?:bill\s*to|ship\s*to|from|sold\s*to|buyer|seller|remit\s*to|vendor|customer|client)/i;
-/** @type {RegExp} */
-const METADATA_RE = /(?:invoice\s*#|invoice\s*no|inv\s*no|date|due\s*date|issued|payment\s*terms|terms|p\.?o\.?\s*#|reference|order\s*#|account\s*#)/i;
-/** @type {RegExp} */
-const LINE_ITEM_RE = /(?:description|qty|quantity|unit\s*price|amount|item|service|product|rate|hours|total)/i;
-/** @type {RegExp} */
-const TOTALS_RE = /(?:subtotal|sub\s*total|tax|vat|gst|discount|total\s*due|grand\s*total|balance\s*due|amount\s*due|total$)/i;
-/** @type {RegExp} */
-const NOTES_RE = /(?:notes?|memo|comments?|remarks?|additional\s*info)/i;
-/** @type {RegExp} */
-const TERMS_RE = /(?:terms?\s*(?:&|and)\s*conditions?|payment\s*instructions?|bank\s*details|wire\s*transfer|ach|iban|swift|routing|late\s*fee|penalty)/i;
-/** @type {RegExp} */
-const FOOTER_RE = /(?:thank\s*you|page\s*\d|www\.|https?:\/\/|@|all\s*rights\s*reserved|copyright|\u00a9)/i;
-/** @type {RegExp} */
-const CURRENCY_RE = /[$\u20ac\u00a3\u00a5]?\s*[\d,]+\.?\d*|\d[\d,]*\.?\d*\s*(?:USD|EUR|GBP|JPY|CAD|AUD)/g;
-
-/**
- * Classify a single text block into a section type.
- *
- * @param {{ text: string, bbox: { x: number, y: number, width: number, height: number } }} block
- * @param {number} pageHeight
- * @returns {string}
- */
-function classifyBlock(block, pageHeight) {
-  const text = (block.text || "").trim();
-  if (!text) return "notes";
-
-  /** @type {Record<string, number>} */
-  const scores = {};
-  for (const s of SECTION_TYPES) scores[s] = 0;
-
-  if (HEADER_RE.test(text)) scores.header += 3;
-  if (PARTY_RE.test(text)) scores.parties += 3;
-  if (METADATA_RE.test(text)) scores.metadata += 3;
-  if (LINE_ITEM_RE.test(text)) scores.line_items += 2.5;
-  if (TOTALS_RE.test(text)) scores.totals += 3;
-  if (NOTES_RE.test(text)) scores.notes += 3;
-  if (TERMS_RE.test(text)) scores.terms += 3;
-  if (FOOTER_RE.test(text)) scores.footer += 3;
-
-  const currencyMatches = (text.match(CURRENCY_RE) || []).length;
-  if (currencyMatches > 0) {
-    scores.totals += Math.min(currencyMatches, 3);
-    scores.line_items += 0.5 * Math.min(currencyMatches, 3);
-  }
-
-  if (pageHeight > 0) {
-    const relY = block.bbox.y / pageHeight;
-    if (relY < 0.15) { scores.header += 2; scores.metadata += 1; }
-    else if (relY < 0.30) { scores.parties += 1.5; scores.metadata += 1; }
-    else if (relY < 0.70) { scores.line_items += 1.5; }
-    else if (relY < 0.85) { scores.totals += 1.5; }
-    else { scores.footer += 1.5; scores.terms += 1; }
-  }
-
-  let best = "notes";
-  let bestScore = 0.5;
-  for (const s of SECTION_TYPES) {
-    if (scores[s] > bestScore) { best = s; bestScore = scores[s]; }
-  }
-
-  if (bestScore <= 0.5 && pageHeight > 0) {
-    const relY = block.bbox.y / pageHeight;
-    if (relY < 0.15) return "header";
-    if (relY < 0.30) return "parties";
-    if (relY < 0.70) return "line_items";
-    if (relY < 0.85) return "totals";
-    return "footer";
-  }
-
-  return best;
-}
-
-/**
- * Map a point size to enjoice's headingSize token.
- * @param {number} pt
- * @returns {string}
- */
-function ptToSizeToken(pt) {
-  if (pt <= 10) return "xs";
-  if (pt <= 13) return "sm";
-  if (pt <= 16) return "md";
-  if (pt <= 20) return "lg";
-  if (pt <= 26) return "xl";
-  return "2xl";
-}
-
-/**
- * Run template extraction on OCR text output from Workers AI.
- *
- * Takes the OCR text, uses Workers AI to identify structured sections,
- * then infers styles and layout from the text structure.
- *
- * @param {object} env - Worker environment bindings
- * @param {Uint8Array} imageBytes - Raw image bytes for OCR
- * @param {object} options
- * @param {string} [options.documentType] - Document type
- * @param {boolean} [options.preserveLogo] - Detect logo position
- * @param {boolean} [options.detectColors] - Detect brand colors
- * @returns {Promise<object>} Template definition
- */
-export async function handleTemplateExtract(env, imageBytes, options = {}) {
-  const start = Date.now();
-  const docType = options.documentType || "invoice";
-
-  // Step 1: Run OCR to get text blocks.
-  // Use Workers AI for section classification with a structured prompt.
-  let ocrText = "";
-  let blocks = [];
-
-  if (env.AI && typeof env.AI.run === "function") {
-    const base64Image = uint8ArrayToBase64Worker(imageBytes);
-
-    // First pass: extract raw text with positions
-    const ocrResult = await env.AI.run("@cf/google/gemma-3-12b-it", {
-      messages: [{
-        role: "user",
-        content: `Analyze this ${docType} image. For each text block you can see, output a JSON array of objects with fields: "text" (the exact text), "x" (approximate left position 0-100 as percentage), "y" (approximate top position 0-100 as percentage), "w" (approximate width 0-100), "h" (approximate height 0-100). Output ONLY the JSON array, no other text.\n\n![image](data:image/png;base64,${base64Image})`,
-      }],
-      max_tokens: 4096,
-    });
-
-    ocrText = typeof ocrResult === "string"
-      ? ocrResult
-      : (ocrResult?.response || ocrResult?.choices?.[0]?.message?.content || "");
-
-    // Try to parse structured blocks from AI output
-    try {
-      const jsonMatch = ocrText.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed)) {
-          blocks = parsed.map((b) => ({
-            text: String(b.text || ""),
-            bbox: {
-              x: (Number(b.x) || 0) * 6.12,       // Scale 0-100% to ~612pt page
-              y: (Number(b.y) || 0) * 7.92,       // Scale 0-100% to ~792pt page
-              width: (Number(b.w) || 10) * 6.12,
-              height: (Number(b.h) || 2) * 7.92,
-            },
-            confidence: 0.8,
-          }));
-        }
-      }
-    } catch (_parseErr) {
-      // Fallback: create blocks from line-split text
-    }
-
-    // Fallback: if structured extraction failed, do plain OCR and split lines
-    if (blocks.length === 0) {
-      const plainResult = await env.AI.run("@cf/google/gemma-3-12b-it", {
-        messages: [{
-          role: "user",
-          content: `Extract ALL text from this document image exactly as it appears. Preserve layout and line breaks.\n\n![image](data:image/png;base64,${base64Image})`,
-        }],
-        max_tokens: 2048,
-      });
-
-      const plainText = typeof plainResult === "string"
-        ? plainResult
-        : (plainResult?.response || plainResult?.choices?.[0]?.message?.content || "");
-
-      const lines = plainText.split("\n").filter((l) => l.trim());
-      const lineHeight = 792 / Math.max(lines.length, 1);
-      blocks = lines.map((line, i) => ({
-        text: line.trim(),
-        bbox: {
-          x: 36,
-          y: 36 + i * lineHeight,
-          width: 540,
-          height: lineHeight * 0.8,
-        },
-        confidence: 0.6,
-      }));
-    }
-  } else {
-    // No AI available: return a default template
-    return {
-      template: buildDefaultTemplate(docType),
-      confidence: 0.0,
-      detected_sections: [],
-      time_ms: Date.now() - start,
-      error: "Workers AI not available for section classification",
-    };
-  }
-
-  // Step 2: Classify blocks into sections
-  const pageWidth = 612;
-  const pageHeight = 792;
-  /** @type {Record<string, Array<{text: string, bbox: object, confidence: number}>>} */
-  const sections = {};
-  for (const s of SECTION_TYPES) sections[s] = [];
-
-  for (const block of blocks) {
-    const section = classifyBlock(block, pageHeight);
-    sections[section].push(block);
-  }
-
-  // Sort blocks within each section by y position
-  for (const sectionBlocks of Object.values(sections)) {
-    sectionBlocks.sort((a, b) => a.bbox.y - b.bbox.y);
-  }
-
-  // Step 3: Infer styles
-  const heights = blocks.map((b) => b.bbox.height).filter((h) => h > 0).sort((a, b) => a - b);
-  const medianHeight = heights.length > 0 ? heights[Math.floor(heights.length / 2)] : 14;
-  const p80Height = heights.length > 0 ? heights[Math.floor(heights.length * 0.8)] : 20;
-
-  const bodyPt = Math.max(6, Math.min(14, (medianHeight / pageHeight) * 792 * 0.7));
-  let headingPt = Math.max(10, Math.min(48, (p80Height / pageHeight) * 792 * 0.7));
-  if (headingPt <= bodyPt * 1.2) headingPt = bodyPt * 1.6;
-
-  // Detect alignment from header blocks
-  const headerBlocks = blocks.filter((b) => b.bbox.y < pageHeight * 0.15);
-  let headerAlign = "left";
-  if (headerBlocks.length > 0) {
-    const centers = headerBlocks.map((b) => b.bbox.x + b.bbox.width / 2);
-    const avgCenter = centers.reduce((a, b) => a + b, 0) / centers.length;
-    if (Math.abs(avgCenter - pageWidth / 2) < pageWidth * 0.1) headerAlign = "center";
-    else if (avgCenter > pageWidth * 0.65) headerAlign = "right";
-  }
-
-  // Detect spacing density
-  let isCompact = false;
-  if (blocks.length >= 2) {
-    const sortedByY = [...blocks].sort((a, b) => a.bbox.y - b.bbox.y);
-    const gaps = [];
-    for (let i = 0; i < sortedByY.length - 1; i++) {
-      const gap = sortedByY[i + 1].bbox.y - (sortedByY[i].bbox.y + sortedByY[i].bbox.height);
-      if (gap > 0) gaps.push(gap);
-    }
-    if (gaps.length > 0) {
-      const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-      isCompact = avgGap < medianHeight * 1.5;
-    }
-  }
-
-  // Detect logo position
-  let logoPosition = "left";
-  const topWideBlocks = blocks.filter(
-    (b) => b.bbox.y < pageHeight * 0.10 && b.bbox.width > b.bbox.height,
-  );
-  if (topWideBlocks.length > 0 && pageWidth > 0) {
-    const widest = topWideBlocks.reduce((a, b) => a.bbox.width > b.bbox.width ? a : b);
-    const relX = (widest.bbox.x + widest.bbox.width / 2) / pageWidth;
-    if (relX > 0.65) logoPosition = "right";
-    else if (relX > 0.35) logoPosition = "center";
-  }
-
-  // Step 4: Infer layout
-  /** @type {Array<[string, number]>} */
-  const sectionPositions = [];
-  for (const sType of SECTION_TYPES) {
-    if (sections[sType].length > 0) {
-      const minY = Math.min(...sections[sType].map((b) => b.bbox.y));
-      sectionPositions.push([sType, minY]);
-    }
-  }
-  sectionPositions.sort((a, b) => a[1] - b[1]);
-  const sectionOrder = sectionPositions.map((s) => s[0]);
-  for (const s of SECTION_TYPES) {
-    if (!sectionOrder.includes(s)) sectionOrder.push(s);
-  }
-
-  // Parties layout
-  let partiesLayout = "two-column";
-  const partyBlocks = sections.parties || [];
-  if (partyBlocks.length > 0) {
-    const leftP = partyBlocks.filter((b) => (b.bbox.x + b.bbox.width / 2) < pageWidth * 0.5);
-    const rightP = partyBlocks.filter((b) => (b.bbox.x + b.bbox.width / 2) >= pageWidth * 0.5);
-    partiesLayout = (leftP.length > 0 && rightP.length > 0) ? "two-column" : "stacked";
-  }
-
-  // Totals position
-  let totalsPosition = "right";
-  const totalsBlocks = sections.totals || [];
-  if (totalsBlocks.length > 0) {
-    const avgX = totalsBlocks.reduce((a, b) => a + b.bbox.x + b.bbox.width / 2, 0) / totalsBlocks.length;
-    if (avgX > pageWidth * 0.6) totalsPosition = "right";
-    else if (avgX < pageWidth * 0.4) totalsPosition = "left";
-    else totalsPosition = "full-width";
-  }
-
-  // Step 5: Build template definition
-  const detectedSections = SECTION_TYPES.filter((s) => sections[s].length > 0);
-
-  // Confidence scoring
-  let confidence = 0;
-  const nonEmpty = detectedSections.length;
-  confidence += Math.min(nonEmpty / 6, 1) * 0.4;
-  confidence += Math.min(blocks.length / 10, 1) * 0.3;
-  const avgConf = blocks.length > 0
-    ? blocks.reduce((a, b) => a + (b.confidence || 0), 0) / blocks.length
-    : 0;
-  confidence += avgConf * 0.3;
-  confidence = Math.round(Math.min(1, confidence) * 1000) / 1000;
-
-  const templateId = crypto.randomUUID();
-
-  const template = {
-    id: templateId,
-    name: "Extracted Template",
-    description: "Template extracted from scanned invoice via Falcon-OCR",
-    type: docType,
-    layout: {
-      id: "",
-      name: "Extracted Layout",
-      description: "Layout extracted from scanned invoice",
-      sections: sectionOrder.map((s, i) => ({
-        type: s,
-        visible: true,
-        order: i,
-      })),
-      page: {
-        size: "letter",
-        orientation: "portrait",
-        margins: { top: 28, right: 36, bottom: 28, left: 36 },
-      },
-    },
-    styles: {
-      colors: {
-        primary: "#111111",
-        secondary: "#666666",
-        accent: "#2563EB",
-        text: "#111111",
-        background: "#FFFFFF",
-        border: "#E5E5E5",
-        headerBg: "#F9F9F9",
-        altRowBg: "#FAFAFA",
-      },
-      fonts: {
-        heading: "Inter",
-        body: "Inter",
-        mono: "JetBrains Mono",
-      },
-      spacing: { compact: isCompact },
-      logo: {
-        position: logoPosition,
-        maxWidth: 200,
-        maxHeight: 80,
-      },
-      typography: {
-        headingSize: ptToSizeToken(headingPt),
-        bodySize: Math.round(bodyPt),
-      },
-      layoutHints: {
-        headerAlign,
-        titleAlign: headerAlign,
-        totalsPosition,
-        partiesLayout,
-      },
-    },
-    elementStyles: {},
-    hiddenElements: [],
-    customFields: [],
-    customSections: [],
-  };
-
-  return {
-    template,
-    confidence,
-    detected_sections: detectedSections,
-    auto_filled: true,
-    auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
-    auto_fill_dismissable: true,
-    time_ms: Date.now() - start,
-  };
-}
-
-/**
- * Build a default template when AI is not available.
- * @param {string} docType
- * @returns {object}
- */
-function buildDefaultTemplate(docType) {
-  return {
-    id: crypto.randomUUID(),
-    name: "Default Template",
-    description: "Default template (AI classification unavailable)",
-    type: docType,
-    layout: {
-      id: "",
-      name: "Default Layout",
-      description: "",
-      sections: SECTION_TYPES.map((s, i) => ({ type: s, visible: true, order: i })),
-      page: {
-        size: "letter",
-        orientation: "portrait",
-        margins: { top: 28, right: 36, bottom: 28, left: 36 },
-      },
-    },
-    styles: {
-      colors: {
-        primary: "#111111", secondary: "#666666", accent: "#2563EB",
-        text: "#111111", background: "#FFFFFF", border: "#E5E5E5",
-        headerBg: "#F9F9F9", altRowBg: "#FAFAFA",
-      },
-      fonts: { heading: "Inter", body: "Inter", mono: "JetBrains Mono" },
-      spacing: { compact: false },
-      logo: { position: "left", maxWidth: 200, maxHeight: 80 },
-    },
-    elementStyles: {},
-    hiddenElements: [],
-  };
-}
 
 /**
  * Convert Uint8Array to base64 (Worker-compatible).
@@ -1449,9 +1101,21 @@ export async function handleBatchOcr(request, backend, env, cors, rid, device = 
         if (cacheOps.getCached) {
           const cached = await cacheOps.getCached(imageHash);
           if (cached) {
+            let cachedResult;
+            try {
+              cachedResult = normalizeOcrResultPayload(cached, "cached OCR result");
+            } catch (err) {
+              results.push({
+                text: "",
+                tokens: [],
+                time_ms: Date.now() - imageStart,
+                error: `Image at index ${idx}: invalid cached OCR result: ${err.message}`,
+              });
+              continue;
+            }
             results.push({
-              text: cached.text || "",
-              tokens: cached.tokens || [],
+              text: cachedResult.text,
+              tokens: cachedResult.tokens,
               time_ms: 0,
               cache: "hit",
             });
@@ -1550,6 +1214,61 @@ async function hashImageBytes(bytes) {
 }
 
 /**
+ * Extract a JSON object from a model response that was instructed to emit JSON.
+ *
+ * @param {string} responseText
+ * @param {string} source
+ * @returns {Record<string, unknown>}
+ */
+function parseModelJsonObject(responseText, source) {
+  if (typeof responseText !== "string" || responseText.trim().length === 0) {
+    throw new Error(`${source} returned empty response`);
+  }
+  const stripped = responseText.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
+  const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error(`${source} did not return a JSON object`);
+  }
+  const parsed = JSON.parse(jsonMatch[0]);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${source} JSON root is not an object`);
+  }
+  return /** @type {Record<string, unknown>} */ (parsed);
+}
+
+/**
+ * Validate and normalize a detailed OCR page payload before serving/caching.
+ *
+ * @param {unknown} payload
+ * @param {string} source
+ * @returns {{ text: string, blocks: Array, tables: Array, metadata: object }}
+ */
+export function normalizeDetailedOcrPagePayload(payload, source = "detailed OCR page") {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`${source} is not an object`);
+  }
+  const record = /** @type {Record<string, unknown>} */ (payload);
+  if (typeof record.text !== "string" || record.text.trim().length === 0) {
+    throw new Error(`${source} contains empty text`);
+  }
+  if (!Array.isArray(record.blocks)) {
+    throw new Error(`${source} is missing blocks array`);
+  }
+  if (!Array.isArray(record.tables)) {
+    throw new Error(`${source} is missing tables array`);
+  }
+  if (!record.metadata || typeof record.metadata !== "object" || Array.isArray(record.metadata)) {
+    throw new Error(`${source} is missing metadata object`);
+  }
+  return {
+    text: record.text,
+    blocks: record.blocks,
+    tables: record.tables,
+    metadata: record.metadata,
+  };
+}
+
+/**
  * Run detailed OCR on a single image page, returning blocks, tables, and metadata.
  *
  * @param {object} env - Worker environment bindings
@@ -1578,25 +1297,15 @@ Output ONLY valid JSON, no markdown fences, no explanation.
     ? aiResult
     : (aiResult?.response || aiResult?.choices?.[0]?.message?.content || "");
 
-  // Parse JSON from response (strip any markdown fences the model may add)
-  let parsed = null;
-  try {
-    const stripped = responseText.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
-    const jsonMatch = stripped.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      parsed = JSON.parse(jsonMatch[0]);
-    }
-  } catch (_e) {
-    // Parse failure handled below
+  const parsed = parseModelJsonObject(responseText, "Detailed OCR model");
+  if (!Array.isArray(parsed.blocks)) {
+    throw new Error("Detailed OCR JSON is missing blocks array");
   }
-
-  if (!parsed) {
-    return {
-      text: responseText,
-      blocks: [],
-      tables: [],
-      metadata: { language: "en", orientation: 0, has_handwriting: false },
-    };
+  if (!Array.isArray(parsed.tables)) {
+    throw new Error("Detailed OCR JSON is missing tables array");
+  }
+  if (!parsed.metadata || typeof parsed.metadata !== "object" || Array.isArray(parsed.metadata)) {
+    throw new Error("Detailed OCR JSON is missing metadata object");
   }
 
   // Normalize blocks
@@ -1632,7 +1341,10 @@ Output ONLY valid JSON, no markdown fences, no explanation.
   const text = typeof parsed.text === "string" ? parsed.text
     : blocks.map((b) => b.text).join("\n");
 
-  return { text, blocks, tables, metadata };
+  return normalizeDetailedOcrPagePayload(
+    { text, blocks, tables, metadata },
+    "detailed OCR model output",
+  );
 }
 
 /**
@@ -1729,9 +1441,32 @@ export async function handleDetailedOcr(request, env, cors, rid) {
     }
 
     if (cached) {
-      pages.push(cached);
+      try {
+        pages.push(normalizeDetailedOcrPagePayload(cached, "cached detailed OCR page"));
+      } catch (err) {
+        return new Response(
+          JSON.stringify({
+            error: "Invalid cached detailed OCR page",
+            detail: err.message,
+            request_id: rid,
+          }),
+          { status: 502, headers: { ...cors, "Content-Type": "application/json" } },
+        );
+      }
     } else {
-      const pageResult = await runDetailedOcrPage(env, pageBytes[i]);
+      let pageResult;
+      try {
+        pageResult = await runDetailedOcrPage(env, pageBytes[i]);
+      } catch (err) {
+        return new Response(
+          JSON.stringify({
+            error: "Invalid detailed OCR model output",
+            detail: err.message,
+            request_id: rid,
+          }),
+          { status: 502, headers: { ...cors, "Content-Type": "application/json" } },
+        );
+      }
       pages.push(pageResult);
       // Store in cache (non-blocking, 24h TTL)
       if (env.OCR_CACHE && cacheKey) {
@@ -1840,34 +1575,121 @@ Output ONLY valid JSON, no markdown fences.
     ? aiResult
     : (aiResult?.response || aiResult?.choices?.[0]?.message?.content || "");
 
-  let tables = [];
   try {
-    const stripped = responseText.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
-    const jsonMatch = stripped.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(parsed.tables)) {
-        tables = parsed.tables.map((t) => ({
-          rows: Number(t.rows) || (Array.isArray(t.data) ? t.data.length : 0),
-          cols: Number(t.cols) || (Array.isArray(t.headers) ? t.headers.length : 0),
-          headers: Array.isArray(t.headers) ? t.headers.map(String) : [],
-          data: Array.isArray(t.data) ? t.data.map((row) => Array.isArray(row) ? row.map(String) : []) : [],
-        }));
-      }
-    }
-  } catch (_e) {
-    // Parse failure — return empty tables
+    const tables = parseTableOcrResponse(responseText);
+    return new Response(
+      JSON.stringify({
+        tables,
+        table_count: tables.length,
+        time_ms: Date.now() - start,
+        request_id: rid,
+      }),
+      { status: 200, headers: { ...cors, "Content-Type": "application/json" } },
+    );
+  } catch (err) {
+    return new Response(
+      JSON.stringify({
+        error: "Invalid table OCR model output",
+        detail: err.message,
+        request_id: rid,
+      }),
+      { status: 502, headers: { ...cors, "Content-Type": "application/json" } },
+    );
+  }
+}
+
+/**
+ * Parse and normalize Workers AI table extraction output.
+ *
+ * @param {string} responseText
+ * @returns {Array<{rows: number, cols: number, headers: string[], data: string[][]}>}
+ */
+export function parseTableOcrResponse(responseText) {
+  if (typeof responseText !== "string" || responseText.trim().length === 0) {
+    throw new Error("Table OCR model returned empty response");
   }
 
-  return new Response(
-    JSON.stringify({
-      tables,
-      table_count: tables.length,
-      time_ms: Date.now() - start,
-      request_id: rid,
-    }),
-    { status: 200, headers: { ...cors, "Content-Type": "application/json" } },
-  );
+  const stripped = responseText.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
+  const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error("Table OCR model did not return a JSON object");
+  }
+
+  const parsed = JSON.parse(jsonMatch[0]);
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.tables)) {
+    throw new Error("Table OCR JSON is missing tables array");
+  }
+
+  return parsed.tables.map((t, idx) => {
+    if (!t || typeof t !== "object" || Array.isArray(t)) {
+      throw new Error(`Table OCR table ${idx} is not an object`);
+    }
+    if (!Array.isArray(t.headers)) {
+      throw new Error(`Table OCR table ${idx} is missing headers array`);
+    }
+    if (!Array.isArray(t.data)) {
+      throw new Error(`Table OCR table ${idx} is missing data array`);
+    }
+    const data = t.data.map((row, rowIdx) => {
+      if (!Array.isArray(row)) {
+        throw new Error(`Table OCR table ${idx} row ${rowIdx} is not an array`);
+      }
+      return row.map(String);
+    });
+    const rows = t.rows == null ? data.length : Number(t.rows);
+    const cols = t.cols == null ? t.headers.length : Number(t.cols);
+    if (!Number.isInteger(rows) || rows < 0) {
+      throw new Error(`Table OCR table ${idx} has invalid row count`);
+    }
+    if (!Number.isInteger(cols) || cols < 0) {
+      throw new Error(`Table OCR table ${idx} has invalid column count`);
+    }
+    return {
+      rows,
+      cols,
+      headers: t.headers.map(String),
+      data,
+    };
+  });
+}
+
+/**
+ * Validate template extraction output before serving or caching it.
+ *
+ * @param {unknown} payload
+ * @param {string} source
+ * @returns {object}
+ */
+export function normalizeTemplateExtractionPayload(payload, source = "template extraction result") {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`${source} is not an object`);
+  }
+  if ("error" in payload) {
+    throw new Error(`${source} contains error output`);
+  }
+
+  const record = /** @type {Record<string, unknown>} */ (payload);
+  if (!record.template || typeof record.template !== "object" || Array.isArray(record.template)) {
+    throw new Error(`${source} is missing template object`);
+  }
+  if (!Array.isArray(record.detected_sections)) {
+    throw new Error(`${source} is missing detected_sections array`);
+  }
+  for (const section of record.detected_sections) {
+    if (!SECTION_TYPES.includes(section)) {
+      throw new Error(`${source} contains invalid section`);
+    }
+  }
+  if (!Number.isFinite(record.confidence) || record.confidence < 0 || record.confidence > 1) {
+    throw new Error(`${source} contains invalid confidence`);
+  }
+
+  return {
+    ...record,
+    template: record.template,
+    detected_sections: record.detected_sections.slice(),
+    confidence: record.confidence,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1894,22 +1716,21 @@ export async function handleTemplateExtractFast(env, imageBytes, options = {}) {
   let cacheKey = null;
   if (env.OCR_CACHE) {
     cacheKey = `tpl:${docType}:${await hashImageBytes(imageBytes)}`;
+    let cached = null;
     try {
-      const cached = await env.OCR_CACHE.get(cacheKey, "json");
-      if (cached) {
-        return { ...cached, time_ms: Date.now() - start, cache: "hit" };
-      }
+      cached = await env.OCR_CACHE.get(cacheKey, "json");
     } catch (_e) { /* cache miss */ }
+    if (cached) {
+      return {
+        ...normalizeTemplateExtractionPayload(cached, "cached template extraction result"),
+        time_ms: Date.now() - start,
+        cache: "hit",
+      };
+    }
   }
 
   if (!env.AI || typeof env.AI.run !== "function") {
-    return {
-      template: buildDefaultTemplate(docType),
-      confidence: 0.0,
-      detected_sections: [],
-      time_ms: Date.now() - start,
-      error: "Workers AI not available for template extraction",
-    };
+    throw new Error("Template extraction requires Workers AI binding");
   }
 
   const base64Image = uint8ArrayToBase64Worker(imageBytes);
@@ -1930,30 +1751,18 @@ Only include sections actually present. Output ONLY JSON.
     ? aiResult
     : (aiResult?.response || aiResult?.choices?.[0]?.message?.content || "");
 
-  let layoutInfo = null;
-  try {
-    const stripped = responseText.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
-    const jsonMatch = stripped.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      layoutInfo = JSON.parse(jsonMatch[0]);
-    }
-  } catch (_e) {
-    // Parse failure
-  }
-
-  if (!layoutInfo) {
-    return {
-      template: buildDefaultTemplate(docType),
-      confidence: 0.2,
-      detected_sections: SECTION_TYPES,
-      time_ms: Date.now() - start,
-    };
+  const layoutInfo = parseModelJsonObject(responseText, "Template extraction model output");
+  if (!Array.isArray(layoutInfo.sections)) {
+    throw new Error("Template extraction JSON is missing sections array");
   }
 
   // Build template from AI layout analysis
-  const detectedSections = Array.isArray(layoutInfo.sections)
-    ? layoutInfo.sections.filter((s) => SECTION_TYPES.includes(s))
-    : SECTION_TYPES;
+  const detectedSections = layoutInfo.sections.map(String);
+  for (const section of detectedSections) {
+    if (!SECTION_TYPES.includes(section)) {
+      throw new Error(`Template extraction JSON contains invalid section: ${section}`);
+    }
+  }
 
   const sectionOrder = [...detectedSections];
   for (const s of SECTION_TYPES) {
@@ -2034,7 +1843,7 @@ Only include sections actually present. Output ONLY JSON.
 
   const confidence = Math.min(1, 0.4 + detectedSections.length * 0.08);
 
-  const result = {
+  const result = normalizeTemplateExtractionPayload({
     template,
     confidence: Math.round(confidence * 1000) / 1000,
     detected_sections: detectedSections,
@@ -2042,7 +1851,7 @@ Only include sections actually present. Output ONLY JSON.
     auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
     auto_fill_dismissable: true,
     time_ms: Date.now() - start,
-  };
+  }, "template extraction result");
 
   // Cache result (non-blocking, 24h TTL)
   if (env.OCR_CACHE && cacheKey) {
