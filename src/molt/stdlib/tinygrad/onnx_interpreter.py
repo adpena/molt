@@ -1282,9 +1282,10 @@ def _op_resize(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
         # No resize info — return as-is
         return [x]
 
-    # Only handle 4D (N,C,H,W) nearest-neighbor resize
-    if len(x.shape) != 4 or mode != "nearest":
-        return [x]
+    if len(x.shape) != 4:
+        raise ValueError(f"Resize requires NCHW rank-4 input, got shape {x.shape}")
+    if mode != "nearest":
+        raise ValueError(f"Unsupported Resize mode={mode!r}")
 
     return [_nearest_resize(x, target_shape, coordinate_mode, nearest_mode)]
 

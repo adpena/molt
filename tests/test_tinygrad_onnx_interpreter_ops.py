@@ -258,6 +258,23 @@ def test_onnx_resize_defaults_to_half_pixel_coordinates_for_nearest() -> None:
         assert onnx._realize_floats(out) == [10.0, 30.0, 50.0]
 
 
+def test_onnx_resize_rejects_unsupported_interpolation_modes() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([10.0, 20.0, 30.0], (1, 1, 3, 1))
+
+        with pytest.raises(ValueError, match="Unsupported Resize mode"):
+            onnx._op_resize(
+                [
+                    x,
+                    None,
+                    None,
+                    onnx._make_int_tensor([1, 1, 4, 1], (4,)),
+                ],
+                {"mode": "linear"},
+            )
+
+
 def test_onnx_conv_rejects_non_divisible_group_count() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]
