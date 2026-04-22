@@ -280,6 +280,7 @@ const TEST_HTML = `<!DOCTYPE html>
                 canvas.width = w;
                 canvas.height = h;
                 ctx.drawImage(imageBitmap, 0, 0, w, h);
+                imageBitmap.close();
                 const imageData = ctx.getImageData(0, 0, w, h);
 
                 const start = performance.now();
