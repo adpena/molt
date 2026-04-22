@@ -1,8 +1,8 @@
 // Cloudflare Browser Rendering — GPU inference on the edge.
 //
-// Uses Cloudflare's headless Chrome instances to run Falcon-OCR with REAL
-// WebGPU acceleration on the edge. This is the only path to GPU inference
-// on Cloudflare without dedicated GPU containers (which are not yet
+// Uses Cloudflare's headless Chrome instances to run Falcon-OCR with browser
+// WebGPU acceleration on the edge. This is one Cloudflare-hosted browser-rendering path
+// for GPU-backed OCR experiments without dedicated GPU containers (which are not yet
 // customer-facing).
 //
 // Architecture:

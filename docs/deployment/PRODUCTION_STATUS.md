@@ -15,10 +15,10 @@
 ## OCR Quality
 | Engine | Quality | Speed | Location |
 |--------|---------|-------|----------|
-| PaddleOCR | 99.6% | Instant | Browser (production primary) |
-| Falcon-OCR INT8 CPU | Good (16x better than INT4) | ~60s/token | Edge (sharded load) |
-| Falcon-OCR INT4 CPU | Degraded (14% quant error) | ~24s/token (8 layers) | Edge (fallback) |
-| Falcon-OCR WebGPU | TBD | 10-100x faster than CPU | Browser |
+| PaddleOCR | Requires current benchmark | Browser-dependent | Browser-side OCR option |
+| Falcon-OCR INT8 CPU | Experimental | Benchmark required | Edge sharded load |
+| Falcon-OCR INT4 CPU | Experimental | Benchmark required | Edge recovery path |
+| Falcon-OCR WebGPU | Experimental | Benchmark required | Browser |
 
 ## Model Loading Strategy (Workers, 256 MB limit)
 | Priority | Variant | Total Size | Peak Memory | Strategy |
@@ -26,7 +26,7 @@
 | 0 | INT8 sharded | 257 MB (6 shards) | Full decoded tensor map + one shard buffer | Load one shard buffer at a time; decoded tensors remain resident |
 | 1 | INT4 sharded | 129 MB (5 shards) | Full decoded tensor map + one shard buffer | Same sharded loading approach |
 | 2 | INT4 single | 129 MB | 129 MB | Direct load |
-| 3 | Micro model | 263 KB | <1 MB | Embedded, always works |
+| 3 | Micro model | 263 KB | <1 MB | Embedded recovery option |
 
 ## Assets on R2
 | Asset | Size | Path |
@@ -81,7 +81,7 @@
 | Status | Wired in Worker, awaiting GPU_INFERENCE_URL/KEY/PROVIDER secrets |
 | Docker image | `ghcr.io/tiiuae/falcon-ocr:latest` |
 | Minimum GPU | NVIDIA T4 (16 GB VRAM) for INT8 |
-| Recommended GPU | A100 40 GB for bfloat16 full-precision |
+| GPU sizing | Provider-specific; validate per deployment |
 
 ## WASM Binary Analysis (10.1 MB raw)
 | Section | Size | Notes |

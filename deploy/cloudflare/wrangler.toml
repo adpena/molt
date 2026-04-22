@@ -39,8 +39,8 @@ binding = "AI"
 # Browser Rendering — headless Chrome with WebGPU on the edge.
 #
 # Allows spawning real Chrome instances to run Falcon-OCR with WebGPU
-# acceleration. This is the only path to GPU inference on Cloudflare
-# without dedicated GPU containers (which are not yet customer-facing).
+# acceleration. This is one Cloudflare-hosted browser-rendering path for GPU-backed OCR
+# experiments without dedicated GPU containers.
 #
 # Pricing: $0.02 per session (as of 2026-04).
 # Limits: ~2 concurrent sessions per worker instance.
@@ -121,10 +121,10 @@ memory_mb = 256
 # (see [ai] binding above) which runs on Cloudflare's internal GPU fleet.
 #
 # Alternative GPU hosting options for the Docker image:
-#   - Fly.io GPU Machines: A100/H100, $2.50/hr, deploy with fly deploy
-#   - Modal:               A100/H100, per-second billing, modal deploy
+#   - Fly.io GPU Machines: configure and validate per deployment
+#   - Modal:               configure and validate per deployment
 #   - Replicate:           Push Docker image as a Cog model, pay per prediction
-#   - RunPod:              A100/H100/4090, $0.44/hr+, serverless or pods
+#   - RunPod:              configure and validate per deployment
 #
 # When CF GPU containers ship, uncomment the block below and add a
 # durable_objects binding + migration for FalconOCRContainer.
