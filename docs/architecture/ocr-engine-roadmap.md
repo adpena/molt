@@ -15,7 +15,8 @@
   - Handles Constant graph nodes (PaddleOCR format, not graph.initializer)
   - Supports float32, int32, int64 dtypes
   - onnx library fast path with raw protobuf fallback
-  - Cross-validated: 342 det / 406 rec / 308 cls constants extracted
+  - Cross-validated: 342 detector / 406 recognizer constants extracted
+    in `tests/e2e/test_paddleocr_weights.py`
 - [x] Worker endpoint /ocr/paddle-molt
 - [x] Compile to WASM via molt
 - [x] Harden ONNX interpreter op surface used by PaddleOCR

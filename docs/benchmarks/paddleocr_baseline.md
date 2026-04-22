@@ -88,7 +88,7 @@ PaddleOCR driver compiled successfully to WASM via molt:
 | wasm-opt -Oz | 10.3 MB |
 | Gzipped | 3.2 MB |
 | Compilation | Successful (paddleocr_driver.py) |
-| Node.js execution | Loads without crash |
+| Node.js execution | Starts, then the saved linked-WASM trace ends in an unhandled Molt `TypeError`; see `logs/falcon_ocr_wasm_run_trace.err` |
 
 ## Targets: Beat ONNX Runtime's 9 ms
 
@@ -119,8 +119,17 @@ PaddleOCR driver compiled successfully to WASM via molt:
 - Raw detector/recognizer forward parity against ONNX Runtime is not yet
   checked end to end on real model tensors; the current tests prove parser and
   op-level semantics.
+- Linked Node.js WASM execution still fails in the saved trace at
+  `logs/falcon_ocr_wasm_run_trace.err` with an unhandled Molt `TypeError`.
 - English recognizer (en_mobile) character decoding produces garbled output with `en_ppocr_dict.txt`
   -- the dict file has 437 entries but the model outputs 438 classes. Character mapping needs
   alignment (likely off-by-one in blank token handling).
 - WASM driver compilation succeeds, but real model artifact loading and
   end-to-end execution are still separate wiring/proof tasks.
+
+## Provenance
+
+- ONNX Runtime timing/op inventory: `tests/e2e/test_onnx_interpreter_correctness.py`.
+- Weight parser counts and dtype/data integrity checks: `tests/e2e/test_paddleocr_weights.py`.
+- PaddleOCR architecture and graph-op expectations: `src/molt/stdlib/tinygrad/paddleocr.py`.
+- Linked-WASM execution trace: `logs/falcon_ocr_wasm_run_trace.err`.
