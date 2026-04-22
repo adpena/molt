@@ -405,6 +405,77 @@ def test_onnx_matmul_rejects_unsupported_rank_with_value_error() -> None:
             onnx._op_matmul([lhs, rhs], {})
 
 
+def test_onnx_reshape_rejects_missing_shape() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0], (2,))
+
+        with pytest.raises(ValueError, match="Reshape requires shape"):
+            onnx._op_reshape([x], {})
+
+
+def test_onnx_reshape_rejects_shape_numel_mismatch() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0, 3.0], (3,))
+
+        with pytest.raises(ValueError, match="cannot reshape"):
+            onnx._op_reshape([x, onnx._make_int_tensor([2, 2], (2,))], {})
+
+
+def test_onnx_reshape_rejects_multiple_inferred_dims() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0, 3.0, 4.0], (4,))
+
+        with pytest.raises(ValueError, match="at most one -1"):
+            onnx._op_reshape([x, onnx._make_int_tensor([-1, -1], (2,))], {})
+
+
+def test_onnx_batch_norm_rejects_missing_inputs() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0], (1, 1, 1, 1))
+
+        with pytest.raises(ValueError, match="BatchNormalization requires"):
+            onnx._op_batch_norm([x, None, None, None, None], {})
+
+
+def test_onnx_transpose_rejects_invalid_perm() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0, 3.0, 4.0], (2, 2))
+
+        with pytest.raises(ValueError, match="Transpose perm"):
+            onnx._op_transpose([x], {"perm": [0, 0]})
+
+
+def test_onnx_reduce_mean_rejects_duplicate_axes() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0, 3.0, 4.0], (2, 2))
+
+        with pytest.raises(ValueError, match="ReduceMean axes"):
+            onnx._op_reduce_mean([x], {"axes": [0, 0]})
+
+
+def test_onnx_reduce_mean_rejects_out_of_range_axes() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0, 3.0, 4.0], (2, 2))
+
+        with pytest.raises(ValueError, match="ReduceMean axis"):
+            onnx._op_reduce_mean([x], {"axes": [2]})
+
+
+def test_onnx_concat_rejects_empty_input_list() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+
+        with pytest.raises(ValueError, match="Concat requires at least one tensor"):
+            onnx._op_concat([], {})
+
+
 def test_onnx_conv_rejects_non_divisible_group_count() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]

@@ -9,12 +9,14 @@ import os
 import sys
 import types
 
+import numpy as np
 import pytest
 
 from tests.helpers.paddleocr_paths import (
     hf_snapshot_artifact_candidate,
     require_paddleocr_artifact,
 )
+from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
 
 
 DETECTOR_CANDIDATES = (
@@ -312,6 +314,35 @@ def test_weight_store_integration() -> None:
 
     print(f"WeightStore: {count} tensors loaded, get/contains/names all work")
     print("  PASS")
+
+
+def test_classifier_forward_matches_onnxruntime_single_sample() -> None:
+    """Run one real classifier forward pass and compare raw output to ORT."""
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        pytest.skip("onnxruntime not available for classifier parity")
+
+    onnx_path = require_paddleocr_artifact(*CLASSIFIER_CANDIDATES)
+    rng = np.random.default_rng(42)
+    input_array = rng.standard_normal((1, 3, 48, 192), dtype=np.float32)
+
+    sess = ort.InferenceSession(str(onnx_path))
+    ref = sess.run(None, {sess.get_inputs()[0].name: input_array})[0]
+
+    with tinygrad_stdlib_context("onnx_interpreter", "paddleocr") as modules:
+        Tensor = modules["tensor"].Tensor
+        classifier = modules["paddleocr"].PaddleOCRClassifier()
+        classifier.load(onnx_path.read_bytes())
+        out = classifier.forward(
+            Tensor(input_array.reshape(-1).tolist()).reshape(1, 3, 48, 192)
+        )
+        got = np.array(modules["realize"].realize(out.lazydata), dtype=np.float32).reshape(
+            out.shape
+        )
+
+    assert got.shape == ref.shape == (1, 2)
+    np.testing.assert_allclose(got, ref, rtol=1e-5, atol=1e-6)
 
 
 if __name__ == "__main__":
