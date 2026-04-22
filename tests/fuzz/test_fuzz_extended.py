@@ -8,6 +8,7 @@ end of each parametrized batch.
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -200,6 +201,12 @@ class TestFuzzMoltCompile:
     def test_compile_ten_programs(self, tmp_path: Path) -> None:
         """Compile 10 generated programs with molt build."""
         compile_failures: list[tuple[int, str]] = []
+        env = {
+            **os.environ,
+            "MOLT_BACKEND_DAEMON": "0",
+            "MOLT_USE_SCCACHE": "0",
+            "PYTHONPATH": str(_REPO_ROOT / "src"),
+        }
         for seed in range(10):
             source = _generate(seed, max_depth=3, max_stmts=15)
             src_file = tmp_path / f"fuzz_{seed}.py"
@@ -220,6 +227,7 @@ class TestFuzzMoltCompile:
                     text=True,
                     timeout=120,
                     cwd=str(_REPO_ROOT),
+                    env=env,
                 )
             except subprocess.TimeoutExpired:
                 compile_failures.append((seed, "(timed out)"))
