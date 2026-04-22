@@ -1,5 +1,45 @@
 # Deployment Log
 
+## 2026-04-22: Current-State Reconciliation After Rust Safety Tranche
+
+This entry reconciles deployment documentation with the canonical handoff after
+the Rust Clippy/Miri cleanup in commit `9fe653df`.
+
+### Verified in this tranche
+
+- Local Rust workspace gate passed:
+  `cargo test --workspace --all-targets --quiet`
+- Clippy passed with warnings denied:
+  `cargo clippy --workspace --all-targets -- -D warnings`
+- Strict-provenance Miri passed for:
+  - `molt-lang-obj-model`
+  - `molt-runtime --lib`
+
+### Deployment state not reverified in this tranche
+
+The following remain separate proof points and must be rechecked before making
+deployment claims:
+
+1. rebuild the current `src/molt/stdlib/tinygrad/wasm_driver.py` WASM artifact
+2. confirm linked output size and export surface
+3. confirm R2 object presence at `models/falcon-ocr/falcon-ocr.wasm`
+4. instantiate the WASM module
+5. load weights/config/tokenizer
+6. call `init(...)`
+7. call `ocr_tokens(...)` with a deterministic fixture
+8. wire the proven runtime path into browser/enjoice
+
+### Documentation truth
+
+- `PRIMARY_HANDOFF.md` is the canonical fast resume point.
+- `SUPPORT_TEAM.md` remains detailed parallel-lane context for Falcon-OCR WASM.
+- Older 2026-04-14 entries below are retained as historical deployment logs,
+  including earlier "WASM binary not found / not yet built" observations. They
+  should not be read as the current build claim without the newer handoff
+  context and fresh verification.
+
+---
+
 ## 2026-04-15: Production Launch -- x402 + enjoice Integration
 
 ### x402 Browser Bypass
