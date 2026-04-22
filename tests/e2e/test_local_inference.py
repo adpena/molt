@@ -155,7 +155,7 @@ def test_tokenizer_loads():
     assert id_by_content["<|image|>"] == 227
     assert id_by_content["<|image_cls|>"] == 244
 
-    print(f"PASS: tokenizer.json valid (vocab=65536, merges=64769)")
+    print("PASS: tokenizer.json valid (vocab=65536, merges=64769)")
 
 
 def test_weight_byte_ranges_nonoverlapping():

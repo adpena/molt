@@ -14,8 +14,13 @@ All operations composed from the 26 tinygrad primitives.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
+
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
+
+if TYPE_CHECKING:
+    from tinygrad.kv_cache import TieredKVCache
 
 
 def build_ancestor_mask(tree_structure: list) -> Tensor:

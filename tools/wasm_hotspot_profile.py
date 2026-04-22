@@ -897,7 +897,7 @@ def print_summary(result: HotspotResult) -> None:
         top_funcs = static.get("functions_top20", [])
         p95_count = static.get("p95_function_count", 0)
         total_funcs = static.get("function_count", 0)
-        print(f"\n  --- Static Size Analysis ---")
+        print("\n  --- Static Size Analysis ---")
         print(f"  Total code: {static.get('total_code_kb', 0)} KB across {total_funcs} functions")
         print(f"  p95 by size: {p95_count} functions cover 95% of code section")
 
@@ -916,7 +916,7 @@ def print_summary(result: HotspotResult) -> None:
 
     # Dynamic profiling results
     if result.has_profile:
-        print(f"\n  --- Dynamic Profile (Node.js --cpu-prof) ---")
+        print("\n  --- Dynamic Profile (Node.js --cpu-prof) ---")
         print(f"  Total samples: {result.total_samples}")
         if result.profile_note:
             print(f"  Note: {result.profile_note}")
@@ -940,7 +940,7 @@ def print_summary(result: HotspotResult) -> None:
                 print(f"    {f['self_pct']:>5.1f}%  {f['name'][:60]}")
 
         if result.big_and_slow:
-            print(f"\n  --- Big & Slow (best optimization ROI) ---")
+            print("\n  --- Big & Slow (best optimization ROI) ---")
             print(f"  {'ROI':>6s} {'Self%':>7s} {'Size':>8s} {'Function'}")
             print(f"  {'-' * 6} {'-' * 7} {'-' * 8} {'-' * 40}")
             for f in result.big_and_slow[:10]:
@@ -949,7 +949,7 @@ def print_summary(result: HotspotResult) -> None:
                     f"{f['body_size_kb']:>6.1f}KB {f['name'][:50]}"
                 )
     else:
-        print(f"\n  --- Dynamic Profile: unavailable ---")
+        print("\n  --- Dynamic Profile: unavailable ---")
         if result.profile_note:
             print(f"  {result.profile_note}")
 

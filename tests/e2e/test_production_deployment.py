@@ -483,7 +483,7 @@ def test_no_todos_in_deployment_code():
                 for line_num, line in enumerate(f, 1):
                     if todo_pattern.search(line):
                         violations.append(f"{filepath}:{line_num}: {line.strip()}")
-    assert not violations, f"Found TODO/FIXME in deployment code:\n" + "\n".join(violations)
+    assert not violations, "Found TODO/FIXME in deployment code:\n" + "\n".join(violations)
 
 
 # ---------------------------------------------------------------------------

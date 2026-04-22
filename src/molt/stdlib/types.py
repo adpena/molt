@@ -14,7 +14,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 # for types derivable from existing objects.
 import sys as _sys
 
-def _f(): yield  # noqa: helper to get GeneratorType
+def _f(): yield  # helper to get GeneratorType
 _g = _f()
 
 ModuleType = type(_sys)

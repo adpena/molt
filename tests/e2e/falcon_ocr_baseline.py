@@ -269,7 +269,7 @@ def compare_results(ref_path: str, molt_path: str) -> bool:
     if ref_tokens == molt_tokens:
         print(f"PASS: Token IDs match ({len(ref_tokens)} tokens)")
     else:
-        print(f"FAIL: Token IDs differ")
+        print("FAIL: Token IDs differ")
         print(f"  Reference: {ref_tokens}")
         print(f"  Molt:      {molt_tokens}")
         # Find first divergence
@@ -305,7 +305,7 @@ def compare_results(ref_path: str, molt_path: str) -> bool:
     # 3. Timing comparison (informational, not pass/fail)
     ref_t = ref["timing"]
     molt_t = molt["timing"]
-    print(f"\nPerformance comparison:")
+    print("\nPerformance comparison:")
     print(f"  Init:              ref={ref_t['init_seconds']:.4f}s  molt={molt_t['init_seconds']:.4f}s")
     print(f"  Time-to-first:     ref={ref_t['time_to_first_token_seconds']:.4f}s  molt={molt_t['time_to_first_token_seconds']:.4f}s")
     print(f"  Total inference:   ref={ref_t['total_inference_seconds']:.4f}s  molt={molt_t['total_inference_seconds']:.4f}s")

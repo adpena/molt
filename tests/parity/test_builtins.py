@@ -49,7 +49,7 @@ print(list(zip([1, 2], [3, 4], strict=True)))
 try:
     list(zip([1, 2], [3], strict=True))
 except ValueError as e:
-    print(f"zip strict error: ValueError")
+    print("zip strict error: ValueError")
 
 print("=== map ===")
 print(list(map(str, [1, 2, 3])))

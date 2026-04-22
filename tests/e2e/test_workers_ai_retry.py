@@ -322,7 +322,7 @@ if __name__ == "__main__":
         print(f"[TEST] {name}")
         try:
             test_fn()
-            print(f"  PASS\n")
+            print("  PASS\n")
             passed += 1
         except Exception as e:
             print(f"  FAIL: {e}\n")

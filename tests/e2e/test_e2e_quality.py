@@ -278,7 +278,7 @@ def run_quality_tests() -> None:
     falcon_ok = [r for r in falcon_results if "error" not in r]
     falcon_errors = [r for r in falcon_results if "error" in r]
 
-    print(f"\nFalcon-OCR Worker:")
+    print("\nFalcon-OCR Worker:")
     print(f"  Requests: {len(falcon_results)}")
     print(f"  Success:  {len(falcon_ok)}")
     print(f"  Errors:   {len(falcon_errors)}")
@@ -294,7 +294,7 @@ def run_quality_tests() -> None:
         print(f"  Total extraction:   {total_rate:.0%}")
 
     if falcon_errors:
-        print(f"  Errors:")
+        print("  Errors:")
         for r in falcon_errors:
             print(f"    {r['error'][:100]}")
 
