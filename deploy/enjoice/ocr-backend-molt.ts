@@ -48,7 +48,7 @@ import type { FalconOCR as FalconOCRLoader } from "../browser/falcon-ocr-loader.
 /**
  * Available OCR engines in priority order.
  *
- * - falcon-ocr-webgpu: Falcon-OCR with WebGPU compute (fastest browser path)
+ * - falcon-ocr-webgpu: Falcon-OCR with WebGPU compute (accelerated browser path)
  * - falcon-ocr-wasm: Falcon-OCR with WASM SIMD (browser, no GPU required)
  * - nemotron-v2: Nemotron OCR v2 server-side, explicit configured endpoint only
  * - paddle-ocr: PaddleOCR integration supplied by the product app
@@ -154,12 +154,12 @@ export interface OcrBackendStatus {
  *
  *   detecting    - "Detecting GPU..." (~100ms)
  *   wasm         - "Loading WASM runtime..." (~200ms)
- *   config       - "Reading model config..." (instant)
+ *   config       - "Reading model config..." (local parse)
  *   weights      - "Downloading model (45 MB / 257 MB)..." (progressive)
  *   gpu          - "Initializing GPU compute..." (1-3s)
  *   init         - "Preparing inference engine..." (~500ms)
  *   inferring    - "Running OCR inference..." (1-30s depending on GPU)
- *   decoding     - "Decoding text..." (instant)
+ *   decoding     - "Decoding text..." (local tokenizer decode)
  *   done         - "Done - extracted in 2.3s"
  */
 export type InitProgressPhase =
@@ -304,7 +304,7 @@ export class MoltOcrBackend {
    * Reports progress through the onInitProgress callback (if provided)
    * and through config.onProgress (forwarded to the browser loader).
    *
-   * Returns false if initialization failed (caller should use PaddleOCR fallback).
+   * Returns false if initialization failed; callers should handle this explicitly.
    */
   async initialize(): Promise<boolean> {
     const initStart = performance.now();
