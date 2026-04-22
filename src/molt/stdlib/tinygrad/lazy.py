@@ -94,24 +94,29 @@ def _execute_lazy_op(op: LazyOp, shape: tuple) -> list:
     """
     # Realize all source buffers first
     src_data = []
+    src_shapes = []
     for src in op.srcs:
         if isinstance(src, LazyBuffer):
             src_data.append(src.realize())
+            src_shapes.append(src.shape)
         elif isinstance(src, (int, float)):
             src_data.append(src)
+            src_shapes.append(())
         else:
             src_data.append(src)
+            src_shapes.append(())
 
     numel = 1
     for s in shape:
         numel *= s
 
-    return _dispatch_op(op.op, src_data, op.arg, numel, shape)
+    return _dispatch_op(op.op, src_data, src_shapes, op.arg, numel, shape)
 
 
 def _dispatch_op(
     op_name: str,
     srcs: list,
+    src_shapes: list,
     arg: object,
     numel: int,
     shape: tuple,
@@ -195,9 +200,15 @@ def _dispatch_op(
 
     # Reduce ops
     if op_name == "REDUCE_SUM":
-        return _reduce_op(srcs[0], arg, shape, lambda acc, x: acc + x, 0.0)
+        return _reduce_op(srcs[0], arg, src_shapes[0], lambda acc, x: acc + x, 0.0)
     if op_name == "REDUCE_MAX":
-        return _reduce_op(srcs[0], arg, shape, lambda acc, x: max(acc, x), float("-inf"))
+        return _reduce_op(
+            srcs[0],
+            arg,
+            src_shapes[0],
+            lambda acc, x: max(acc, x),
+            float("-inf"),
+        )
 
     raise ValueError(f"Unknown op: {op_name}")
 
