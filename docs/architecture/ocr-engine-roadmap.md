@@ -17,11 +17,24 @@
   - onnx library fast path with raw protobuf fallback
   - Cross-validated: 342 det / 406 rec / 308 cls constants extracted
 - [x] Worker endpoint /ocr/paddle-molt
-- [ ] Implement DBNet detector forward pass
-- [ ] Implement SVTR recognizer forward pass
+- [x] Compile to WASM via molt
+- [x] Harden ONNX interpreter op surface used by PaddleOCR
+  - Covers detector/recognizer/classifier op families including Conv,
+    ConvTranspose, MaxPool, AveragePool, Slice, Resize, MatMul, Softmax,
+    Squeeze, Unsqueeze, and shape/cast ops.
+  - Fail-fast validation is in place for unsupported Resize modes, invalid
+    Slice inputs/steps, invalid Cast targets, invalid Squeeze/Unsqueeze axes,
+    and invalid grouped Conv channel contracts.
+- [x] Deterministic local PaddleOCR artifact discovery for tests
+  - `MOLT_PADDLEOCR_MODEL_ROOT` is the canonical override.
+  - Tests use explicit relative candidates and `pytest.skip`, not recursive
+    cache globs or print-and-return skips.
+- [ ] Prove DBNet detector raw forward parity against ONNX Runtime
+- [ ] Prove SVTR recognizer raw forward parity against ONNX Runtime
 - [ ] Test on real invoices
-- [ ] Compile to WASM via molt
 - [ ] Benchmark: compiled vs onnxruntime
+- [ ] Wire real model artifacts into end-to-end WASM execution
+- [ ] Resolve English recognizer character mapping / blank-token alignment
 
 ## Phase 3: Falcon-OCR Heavy Duty (DONE)
 - [x] WASM binary (2.9 MB gzipped)
