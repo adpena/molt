@@ -134,6 +134,46 @@ model's acceptance rate is high for typical invoice/document OCR.
 | Buffer pool | ~20 MB | Reusable GPU buffers |
 | **Total GPU memory** | **~340 MB** | Well within 4GB WebGPU limit |
 
+## ONNX Interpreter -> WebGPU Dispatch
+
+When running in the browser with WebGPU available:
+1. ONNX interpreter encounters a Conv node
+2. Instead of running conv2d on CPU, it calls the WebGPU engine's conv2d()
+3. The GPU kernel processes all 62 Conv nodes in parallel
+4. Results stay on GPU (no readback until final output)
+5. Expected speedup: 10-50x for the Conv-heavy detection path
+
+The dispatch is via the compute engine abstraction:
+- Python (WASM) -> JS bridge -> ComputeEngine.conv2d() -> WebGPU dispatch
+
+### PaddleOCR Conv dispatch path
+
+The PaddleOCR detector (DBNet PP-OCRv4) has 62 Conv layers totaling ~60% of
+inference compute. When the ONNX interpreter walks these nodes:
+
+```
+OnnxInterpreter.run()
+  -> node.op_type == "Conv"
+  -> calls tinygrad Conv2d primitive
+  -> molt WASM runtime -> JS host import bridge
+  -> ComputeEngine.conv2dGPU(input, weight, bias, ...)
+  -> WebGPU dispatch: TILE_SIZE=16, workgroups=(cOut/16, oh/16, ow/16)
+  -> result stays as GPUBuffer (no readback)
+```
+
+The 7 WebGPU kernels available for PaddleOCR dispatch:
+1. `molt_conv2d` -- direct convolution (62 layers)
+2. `molt_kernel` -- general matmul (SVTRv2 attention)
+3. `molt_softmax` -- attention softmax
+4. `molt_rms_norm` -- layer normalization
+5. `molt_rope` -- rotary position embeddings
+6. `molt_add` -- residual connections
+7. `molt_mul` -- elementwise multiply (gating)
+
+Conv+Activation fusion (from OnnxInterpreter.optimize_graph()) means the
+62 Conv+Relu/HardSigmoid/HardSwish pairs become 62 fused kernel launches
+instead of 124 separate dispatches.
+
 ## Performance targets
 
 | Metric | Target | Notes |
