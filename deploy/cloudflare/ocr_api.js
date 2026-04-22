@@ -9,6 +9,7 @@
  *   POST /ocr/tokens     — low-level: image + prompt IDs -> token IDs
  *   POST /template/extract — optimized template extraction (Llama 3.2 3B + cache)
  *   POST /invoice/fill   — NL utterance -> structured invoice JSON (Llama 3.2 3B)
+ *   POST /ocr/paddle-molt — PaddleOCR inference via server-side ONNX interpreter
  *   GET  /health         — returns 200 with model status
  *
  * Security:
@@ -2025,6 +2026,1642 @@ Rules:
     auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
     auto_fill_dismissable: true,
     time_ms: Date.now() - start,
+    request_id: rid,
+  }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+}
+
+// ---------------------------------------------------------------------------
+// ONNX Protobuf Parser — minimal implementation for PaddleOCR inference
+// ---------------------------------------------------------------------------
+
+/**
+ * ONNX protobuf wire types.
+ * @enum {number}
+ */
+const WIRE_VARINT = 0;
+const WIRE_64BIT = 1;
+const WIRE_LENGTH = 2;
+const WIRE_32BIT = 5;
+
+/**
+ * Read a varint from a DataView at the given offset.
+ * Returns [value, newOffset].
+ *
+ * @param {DataView} dv
+ * @param {number} off
+ * @returns {[number, number]}
+ */
+function readVarint(dv, off) {
+  let result = 0;
+  let shift = 0;
+  while (off < dv.byteLength) {
+    const b = dv.getUint8(off++);
+    result |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) return [result >>> 0, off];
+    shift += 7;
+    if (shift > 35) throw new Error("Varint too large");
+  }
+  throw new Error("Truncated varint");
+}
+
+/**
+ * Read a signed varint (zigzag decoded).
+ * @param {DataView} dv
+ * @param {number} off
+ * @returns {[number, number]}
+ */
+function readSignedVarint(dv, off) {
+  const [v, newOff] = readVarint(dv, off);
+  return [(v >>> 1) ^ -(v & 1), newOff];
+}
+
+/**
+ * Parse an ONNX TensorProto from protobuf bytes.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {{ dims: number[], dataType: number, floatData: Float32Array|null, rawData: Uint8Array|null, name: string }}
+ */
+function parseOnnxTensor(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let off = 0;
+  const dims = [];
+  let dataType = 1; // FLOAT by default
+  let floatData = null;
+  let rawData = null;
+  let name = "";
+
+  while (off < bytes.length) {
+    const [tag, off1] = readVarint(dv, off);
+    off = off1;
+    const fieldNum = tag >>> 3;
+    const wireType = tag & 7;
+
+    if (wireType === WIRE_VARINT) {
+      const [val, off2] = readVarint(dv, off);
+      off = off2;
+      if (fieldNum === 2) dataType = val; // data_type
+    } else if (wireType === WIRE_LENGTH) {
+      const [len, off2] = readVarint(dv, off);
+      off = off2;
+      const payload = bytes.subarray(off, off + len);
+      off += len;
+
+      if (fieldNum === 1) {
+        // dims — packed repeated int64
+        const pdv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        let po = 0;
+        while (po < payload.length) {
+          const [d, po2] = readVarint(pdv, po);
+          dims.push(d);
+          po = po2;
+        }
+      } else if (fieldNum === 4) {
+        // float_data — packed repeated float
+        floatData = new Float32Array(payload.buffer.slice(
+          payload.byteOffset, payload.byteOffset + payload.byteLength));
+      } else if (fieldNum === 8) {
+        // name
+        name = new TextDecoder().decode(payload);
+      } else if (fieldNum === 13) {
+        // raw_data
+        rawData = payload;
+      }
+    } else if (wireType === WIRE_64BIT) {
+      off += 8;
+    } else if (wireType === WIRE_32BIT) {
+      off += 4;
+    }
+  }
+
+  return { dims, dataType, floatData, rawData, name };
+}
+
+/**
+ * ONNX data type enum to element size in bytes.
+ * @param {number} dt
+ * @returns {number}
+ */
+function onnxDtypeSize(dt) {
+  switch (dt) {
+    case 1: return 4;  // FLOAT
+    case 2: return 1;  // UINT8
+    case 3: return 1;  // INT8
+    case 5: return 2;  // INT16
+    case 6: return 4;  // INT32
+    case 7: return 8;  // INT64
+    case 10: return 2; // FLOAT16
+    case 11: return 8; // DOUBLE
+    case 16: return 2; // BFLOAT16
+    default: return 4;
+  }
+}
+
+/**
+ * Parse an ONNX NodeProto from protobuf bytes.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {{ opType: string, inputs: string[], outputs: string[], attrs: Map<string, any>, name: string }}
+ */
+function parseOnnxNode(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let off = 0;
+  const inputs = [];
+  const outputs = [];
+  const attrs = new Map();
+  let opType = "";
+  let name = "";
+
+  while (off < bytes.length) {
+    const [tag, off1] = readVarint(dv, off);
+    off = off1;
+    const fieldNum = tag >>> 3;
+    const wireType = tag & 7;
+
+    if (wireType === WIRE_VARINT) {
+      readVarint(dv, off); // consume
+      off = readVarint(dv, off)[1];
+    } else if (wireType === WIRE_LENGTH) {
+      const [len, off2] = readVarint(dv, off);
+      off = off2;
+      const payload = bytes.subarray(off, off + len);
+      off += len;
+
+      if (fieldNum === 1) inputs.push(new TextDecoder().decode(payload));
+      else if (fieldNum === 2) outputs.push(new TextDecoder().decode(payload));
+      else if (fieldNum === 3) name = new TextDecoder().decode(payload);
+      else if (fieldNum === 4) opType = new TextDecoder().decode(payload);
+      else if (fieldNum === 5) {
+        // AttributeProto — parse inline
+        const attr = parseOnnxAttribute(payload);
+        if (attr.name) attrs.set(attr.name, attr.value);
+      }
+    } else if (wireType === WIRE_64BIT) {
+      off += 8;
+    } else if (wireType === WIRE_32BIT) {
+      off += 4;
+    }
+  }
+
+  return { opType, inputs, outputs, attrs, name };
+}
+
+/**
+ * Parse an ONNX AttributeProto.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {{ name: string, value: any }}
+ */
+function parseOnnxAttribute(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let off = 0;
+  let name = "";
+  let type = 0;
+  let fVal = 0;
+  let iVal = 0;
+  const ints = [];
+  const floats = [];
+
+  while (off < bytes.length) {
+    const [tag, off1] = readVarint(dv, off);
+    off = off1;
+    const fieldNum = tag >>> 3;
+    const wireType = tag & 7;
+
+    if (wireType === WIRE_VARINT) {
+      const [val, off2] = readVarint(dv, off);
+      off = off2;
+      if (fieldNum === 2) type = val;
+      else if (fieldNum === 4) iVal = val;
+    } else if (wireType === WIRE_32BIT) {
+      if (fieldNum === 3) {
+        fVal = dv.getFloat32(off, true);
+      }
+      off += 4;
+    } else if (wireType === WIRE_64BIT) {
+      off += 8;
+    } else if (wireType === WIRE_LENGTH) {
+      const [len, off2] = readVarint(dv, off);
+      off = off2;
+      const payload = bytes.subarray(off, off + len);
+      off += len;
+
+      if (fieldNum === 1) name = new TextDecoder().decode(payload);
+      else if (fieldNum === 7) {
+        // ints — packed repeated int64
+        const pdv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        let po = 0;
+        while (po < payload.length) {
+          const [v, po2] = readVarint(pdv, po);
+          ints.push(v);
+          po = po2;
+        }
+      } else if (fieldNum === 8) {
+        // floats — packed repeated float
+        const fa = new Float32Array(payload.buffer.slice(
+          payload.byteOffset, payload.byteOffset + payload.byteLength));
+        for (let i = 0; i < fa.length; i++) floats.push(fa[i]);
+      }
+    }
+  }
+
+  let value;
+  switch (type) {
+    case 1: value = fVal; break;        // FLOAT
+    case 2: value = iVal; break;        // INT
+    case 6: value = floats; break;      // FLOATS
+    case 7: value = ints; break;        // INTS
+    default: value = iVal || fVal; break;
+  }
+
+  return { name, value };
+}
+
+/**
+ * Parse an ONNX ModelProto from raw bytes.
+ *
+ * Extracts:
+ *   - Computational graph nodes (opType, inputs, outputs, attributes)
+ *   - Initializer tensors (weights/biases)
+ *   - Input/output value info
+ *
+ * @param {ArrayBuffer} buffer
+ * @returns {{ nodes: Array, initializers: Map<string, {dims: number[], data: Float32Array}>, inputs: string[], outputs: string[] }}
+ */
+function parseOnnxModel(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const dv = new DataView(buffer);
+  let off = 0;
+
+  const nodes = [];
+  const initializers = new Map();
+  const inputNames = [];
+  const outputNames = [];
+
+  // Top-level ModelProto: field 7 = graph (GraphProto)
+  while (off < bytes.length) {
+    const [tag, off1] = readVarint(dv, off);
+    off = off1;
+    const fieldNum = tag >>> 3;
+    const wireType = tag & 7;
+
+    if (wireType === WIRE_VARINT) {
+      off = readVarint(dv, off)[1];
+    } else if (wireType === WIRE_LENGTH) {
+      const [len, off2] = readVarint(dv, off);
+      off = off2;
+      const payload = bytes.subarray(off, off + len);
+      off += len;
+
+      if (fieldNum === 7) {
+        // GraphProto — parse graph fields
+        parseOnnxGraph(payload, nodes, initializers, inputNames, outputNames);
+      }
+    } else if (wireType === WIRE_64BIT) {
+      off += 8;
+    } else if (wireType === WIRE_32BIT) {
+      off += 4;
+    }
+  }
+
+  return { nodes, initializers, inputs: inputNames, outputs: outputNames };
+}
+
+/**
+ * Parse the ONNX GraphProto fields.
+ *
+ * @param {Uint8Array} bytes
+ * @param {Array} nodes
+ * @param {Map} initializers
+ * @param {string[]} inputNames
+ * @param {string[]} outputNames
+ */
+function parseOnnxGraph(bytes, nodes, initializers, inputNames, outputNames) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let off = 0;
+
+  while (off < bytes.length) {
+    const [tag, off1] = readVarint(dv, off);
+    off = off1;
+    const fieldNum = tag >>> 3;
+    const wireType = tag & 7;
+
+    if (wireType === WIRE_VARINT) {
+      off = readVarint(dv, off)[1];
+    } else if (wireType === WIRE_LENGTH) {
+      const [len, off2] = readVarint(dv, off);
+      off = off2;
+      const payload = bytes.subarray(off, off + len);
+      off += len;
+
+      if (fieldNum === 1) {
+        // node
+        nodes.push(parseOnnxNode(payload));
+      } else if (fieldNum === 5) {
+        // initializer (TensorProto)
+        const tensor = parseOnnxTensor(payload);
+        const data = tensor.rawData
+          ? new Float32Array(tensor.rawData.buffer.slice(
+              tensor.rawData.byteOffset,
+              tensor.rawData.byteOffset + tensor.rawData.byteLength))
+          : tensor.floatData;
+        if (data && tensor.name) {
+          initializers.set(tensor.name, { dims: tensor.dims, data });
+        }
+      } else if (fieldNum === 11) {
+        // input — ValueInfoProto, just extract the name
+        const n = extractValueInfoName(payload);
+        if (n) inputNames.push(n);
+      } else if (fieldNum === 12) {
+        // output — ValueInfoProto
+        const n = extractValueInfoName(payload);
+        if (n) outputNames.push(n);
+      }
+    } else if (wireType === WIRE_64BIT) {
+      off += 8;
+    } else if (wireType === WIRE_32BIT) {
+      off += 4;
+    }
+  }
+}
+
+/**
+ * Extract name from ValueInfoProto bytes.
+ * @param {Uint8Array} bytes
+ * @returns {string|null}
+ */
+function extractValueInfoName(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let off = 0;
+  while (off < bytes.length) {
+    const [tag, off1] = readVarint(dv, off);
+    off = off1;
+    const fieldNum = tag >>> 3;
+    const wireType = tag & 7;
+
+    if (wireType === WIRE_LENGTH) {
+      const [len, off2] = readVarint(dv, off);
+      off = off2;
+      if (fieldNum === 1) {
+        return new TextDecoder().decode(bytes.subarray(off, off + len));
+      }
+      off += len;
+    } else if (wireType === WIRE_VARINT) {
+      off = readVarint(dv, off)[1];
+    } else if (wireType === WIRE_64BIT) {
+      off += 8;
+    } else if (wireType === WIRE_32BIT) {
+      off += 4;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// ONNX graph execution engine — CPU ops for PaddleOCR
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute an ONNX graph node-by-node.
+ *
+ * Supports the subset of ops needed for PaddleOCR's DBNet detector
+ * and SVTRv2 recognizer: Conv, BatchNormalization, Relu, Add, Mul,
+ * Sigmoid, Resize, Concat, Transpose, Reshape, MatMul, GlobalAveragePool,
+ * Softmax, Squeeze, Unsqueeze, Clip, Pad, MaxPool, AveragePool, Flatten,
+ * ReduceMean, Div, Sub, Sqrt, Pow, Gather, Shape, Slice, Cast, Exp.
+ *
+ * @param {{ nodes: Array, initializers: Map, inputs: string[], outputs: string[] }} model
+ * @param {Map<string, { dims: number[], data: Float32Array }>} feedDict
+ * @returns {Map<string, { dims: number[], data: Float32Array }>}
+ */
+function executeOnnxGraph(model, feedDict) {
+  const tensors = new Map();
+
+  // Load initializers (weights)
+  for (const [name, val] of model.initializers) {
+    tensors.set(name, { dims: [...val.dims], data: val.data });
+  }
+
+  // Load feed dict (input data)
+  for (const [name, val] of feedDict) {
+    tensors.set(name, { dims: [...val.dims], data: val.data });
+  }
+
+  /**
+   * Get tensor by name, throwing a clear error if missing.
+   * @param {string} name
+   * @returns {{ dims: number[], data: Float32Array }}
+   */
+  function getTensor(name) {
+    const t = tensors.get(name);
+    if (!t) throw new Error(`ONNX exec: missing tensor "${name}"`);
+    return t;
+  }
+
+  /**
+   * Compute total number of elements from dims.
+   * @param {number[]} dims
+   * @returns {number}
+   */
+  function numel(dims) {
+    let n = 1;
+    for (let i = 0; i < dims.length; i++) n *= dims[i];
+    return n;
+  }
+
+  for (const node of model.nodes) {
+    const { opType, inputs, outputs, attrs } = node;
+
+    switch (opType) {
+      case "Conv": {
+        const x = getTensor(inputs[0]);
+        const w = getTensor(inputs[1]);
+        const bias = inputs.length > 2 && inputs[2] ? getTensor(inputs[2]) : null;
+        const pads = attrs.get("pads") || [0, 0, 0, 0];
+        const strides = attrs.get("strides") || [1, 1];
+        const dilations = attrs.get("dilations") || [1, 1];
+        const group = attrs.get("group") || 1;
+
+        const [N, Ci, Hi, Wi] = x.dims;
+        const [Co, CiG, Kh, Kw] = w.dims;
+        const [sh, sw] = strides;
+        const [dh, dw] = dilations;
+        const [pt, pl, pb, pr] = pads;
+        const Ho = Math.floor((Hi + pt + pb - (Kh - 1) * dh - 1) / sh) + 1;
+        const Wo = Math.floor((Wi + pl + pr - (Kw - 1) * dw - 1) / sw) + 1;
+        const out = new Float32Array(N * Co * Ho * Wo);
+
+        const coPerGroup = Co / group;
+        const ciPerGroup = Ci / group;
+
+        for (let n = 0; n < N; n++) {
+          for (let g = 0; g < group; g++) {
+            for (let co = 0; co < coPerGroup; co++) {
+              const coAbs = g * coPerGroup + co;
+              for (let oh = 0; oh < Ho; oh++) {
+                for (let ow = 0; ow < Wo; ow++) {
+                  let sum = bias ? bias.data[coAbs] : 0;
+                  for (let ci = 0; ci < ciPerGroup; ci++) {
+                    const ciAbs = g * ciPerGroup + ci;
+                    for (let kh = 0; kh < Kh; kh++) {
+                      for (let kw = 0; kw < Kw; kw++) {
+                        const ih = oh * sh - pt + kh * dh;
+                        const iw = ow * sw - pl + kw * dw;
+                        if (ih >= 0 && ih < Hi && iw >= 0 && iw < Wi) {
+                          const xIdx = ((n * Ci + ciAbs) * Hi + ih) * Wi + iw;
+                          const wIdx = ((coAbs * CiG + ci) * Kh + kh) * Kw + kw;
+                          sum += x.data[xIdx] * w.data[wIdx];
+                        }
+                      }
+                    }
+                  }
+                  out[((n * Co + coAbs) * Ho + oh) * Wo + ow] = sum;
+                }
+              }
+            }
+          }
+        }
+        tensors.set(outputs[0], { dims: [N, Co, Ho, Wo], data: out });
+        break;
+      }
+
+      case "BatchNormalization": {
+        const x = getTensor(inputs[0]);
+        const scale = getTensor(inputs[1]);
+        const bBias = getTensor(inputs[2]);
+        const mean = getTensor(inputs[3]);
+        const variance = getTensor(inputs[4]);
+        const epsilon = attrs.get("epsilon") || 1e-5;
+
+        const [N, C, H, W] = x.dims;
+        const out = new Float32Array(x.data.length);
+        for (let n = 0; n < N; n++) {
+          for (let c = 0; c < C; c++) {
+            const invStd = 1.0 / Math.sqrt(variance.data[c] + epsilon);
+            const s = scale.data[c] * invStd;
+            const b = bBias.data[c] - mean.data[c] * s;
+            for (let h = 0; h < H; h++) {
+              for (let w = 0; w < W; w++) {
+                const idx = ((n * C + c) * H + h) * W + w;
+                out[idx] = x.data[idx] * s + b;
+              }
+            }
+          }
+        }
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "Relu": {
+        const x = getTensor(inputs[0]);
+        const out = new Float32Array(x.data.length);
+        for (let i = 0; i < x.data.length; i++) {
+          out[i] = x.data[i] > 0 ? x.data[i] : 0;
+        }
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "Sigmoid": {
+        const x = getTensor(inputs[0]);
+        const out = new Float32Array(x.data.length);
+        for (let i = 0; i < x.data.length; i++) {
+          out[i] = 1.0 / (1.0 + Math.exp(-x.data[i]));
+        }
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "Add": {
+        const a = getTensor(inputs[0]);
+        const b = getTensor(inputs[1]);
+        // Support broadcasting: if b is 1D with size matching a's channel dim
+        if (b.dims.length === 1 && a.dims.length === 4 && b.dims[0] === a.dims[1]) {
+          const [N, C, H, W] = a.dims;
+          const out = new Float32Array(a.data.length);
+          for (let n = 0; n < N; n++) {
+            for (let c = 0; c < C; c++) {
+              const bVal = b.data[c];
+              for (let h = 0; h < H; h++) {
+                for (let w = 0; w < W; w++) {
+                  const idx = ((n * C + c) * H + h) * W + w;
+                  out[idx] = a.data[idx] + bVal;
+                }
+              }
+            }
+          }
+          tensors.set(outputs[0], { dims: [...a.dims], data: out });
+        } else {
+          // Element-wise (same shape or broadcastable scalar)
+          const out = new Float32Array(Math.max(a.data.length, b.data.length));
+          const len = out.length;
+          for (let i = 0; i < len; i++) {
+            out[i] = (a.data[i % a.data.length] || 0) + (b.data[i % b.data.length] || 0);
+          }
+          const dims = a.data.length >= b.data.length ? [...a.dims] : [...b.dims];
+          tensors.set(outputs[0], { dims, data: out });
+        }
+        break;
+      }
+
+      case "Mul": {
+        const a = getTensor(inputs[0]);
+        const b = getTensor(inputs[1]);
+        if (b.dims.length === 1 && a.dims.length === 4 && b.dims[0] === a.dims[1]) {
+          const [N, C, H, W] = a.dims;
+          const out = new Float32Array(a.data.length);
+          for (let n = 0; n < N; n++) {
+            for (let c = 0; c < C; c++) {
+              const bVal = b.data[c];
+              for (let h = 0; h < H; h++) {
+                for (let w = 0; w < W; w++) {
+                  const idx = ((n * C + c) * H + h) * W + w;
+                  out[idx] = a.data[idx] * bVal;
+                }
+              }
+            }
+          }
+          tensors.set(outputs[0], { dims: [...a.dims], data: out });
+        } else {
+          const out = new Float32Array(Math.max(a.data.length, b.data.length));
+          for (let i = 0; i < out.length; i++) {
+            out[i] = (a.data[i % a.data.length] || 0) * (b.data[i % b.data.length] || 0);
+          }
+          const dims = a.data.length >= b.data.length ? [...a.dims] : [...b.dims];
+          tensors.set(outputs[0], { dims, data: out });
+        }
+        break;
+      }
+
+      case "Div": {
+        const a = getTensor(inputs[0]);
+        const b = getTensor(inputs[1]);
+        const out = new Float32Array(Math.max(a.data.length, b.data.length));
+        for (let i = 0; i < out.length; i++) {
+          out[i] = (a.data[i % a.data.length] || 0) / (b.data[i % b.data.length] || 1);
+        }
+        const dims = a.data.length >= b.data.length ? [...a.dims] : [...b.dims];
+        tensors.set(outputs[0], { dims, data: out });
+        break;
+      }
+
+      case "Sub": {
+        const a = getTensor(inputs[0]);
+        const b = getTensor(inputs[1]);
+        const out = new Float32Array(Math.max(a.data.length, b.data.length));
+        for (let i = 0; i < out.length; i++) {
+          out[i] = (a.data[i % a.data.length] || 0) - (b.data[i % b.data.length] || 0);
+        }
+        const dims = a.data.length >= b.data.length ? [...a.dims] : [...b.dims];
+        tensors.set(outputs[0], { dims, data: out });
+        break;
+      }
+
+      case "Sqrt": {
+        const x = getTensor(inputs[0]);
+        const out = new Float32Array(x.data.length);
+        for (let i = 0; i < x.data.length; i++) out[i] = Math.sqrt(x.data[i]);
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "Exp": {
+        const x = getTensor(inputs[0]);
+        const out = new Float32Array(x.data.length);
+        for (let i = 0; i < x.data.length; i++) out[i] = Math.exp(x.data[i]);
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "Pow": {
+        const x = getTensor(inputs[0]);
+        const p = getTensor(inputs[1]);
+        const out = new Float32Array(x.data.length);
+        const pVal = p.data[0];
+        for (let i = 0; i < x.data.length; i++) out[i] = Math.pow(x.data[i], pVal);
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "Clip": {
+        const x = getTensor(inputs[0]);
+        const minVal = inputs.length > 1 && inputs[1] && tensors.has(inputs[1])
+          ? getTensor(inputs[1]).data[0] : -Infinity;
+        const maxVal = inputs.length > 2 && inputs[2] && tensors.has(inputs[2])
+          ? getTensor(inputs[2]).data[0] : Infinity;
+        const out = new Float32Array(x.data.length);
+        for (let i = 0; i < x.data.length; i++) {
+          out[i] = Math.min(Math.max(x.data[i], minVal), maxVal);
+        }
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "Reshape": {
+        const x = getTensor(inputs[0]);
+        const shapeTensor = getTensor(inputs[1]);
+        const newShape = [];
+        let inferIdx = -1;
+        let totalKnown = 1;
+        for (let i = 0; i < shapeTensor.data.length; i++) {
+          const v = Math.round(shapeTensor.data[i]);
+          if (v === -1) {
+            inferIdx = i;
+            newShape.push(-1);
+          } else if (v === 0) {
+            const d = x.dims[i] || 1;
+            newShape.push(d);
+            totalKnown *= d;
+          } else {
+            newShape.push(v);
+            totalKnown *= v;
+          }
+        }
+        if (inferIdx >= 0) {
+          newShape[inferIdx] = numel(x.dims) / totalKnown;
+        }
+        tensors.set(outputs[0], { dims: newShape, data: x.data });
+        break;
+      }
+
+      case "Flatten": {
+        const x = getTensor(inputs[0]);
+        const axis = attrs.get("axis") || 1;
+        let d0 = 1, d1 = 1;
+        for (let i = 0; i < axis; i++) d0 *= x.dims[i];
+        for (let i = axis; i < x.dims.length; i++) d1 *= x.dims[i];
+        tensors.set(outputs[0], { dims: [d0, d1], data: x.data });
+        break;
+      }
+
+      case "Transpose": {
+        const x = getTensor(inputs[0]);
+        const perm = attrs.get("perm") || [];
+        if (perm.length === 0) {
+          // Default: reverse dims
+          for (let i = x.dims.length - 1; i >= 0; i--) perm.push(i);
+        }
+        const newDims = perm.map(p => x.dims[p]);
+        const out = new Float32Array(x.data.length);
+        const rank = x.dims.length;
+        const inStrides = new Array(rank);
+        const outStrides = new Array(rank);
+        inStrides[rank - 1] = 1;
+        outStrides[rank - 1] = 1;
+        for (let i = rank - 2; i >= 0; i--) {
+          inStrides[i] = inStrides[i + 1] * x.dims[i + 1];
+          outStrides[i] = outStrides[i + 1] * newDims[i + 1];
+        }
+        const coords = new Array(rank).fill(0);
+        for (let i = 0; i < x.data.length; i++) {
+          // Convert flat index to coords in input space
+          let rem = i;
+          for (let d = 0; d < rank; d++) {
+            coords[d] = Math.floor(rem / inStrides[d]);
+            rem %= inStrides[d];
+          }
+          // Map to output coords via perm
+          let outIdx = 0;
+          for (let d = 0; d < rank; d++) {
+            outIdx += coords[perm[d]] * outStrides[d];
+          }
+          out[outIdx] = x.data[i];
+        }
+        tensors.set(outputs[0], { dims: newDims, data: out });
+        break;
+      }
+
+      case "MatMul": {
+        const a = getTensor(inputs[0]);
+        const b = getTensor(inputs[1]);
+        // Support 2D and batched matmul
+        const aRank = a.dims.length;
+        const bRank = b.dims.length;
+        const M = a.dims[aRank - 2] || 1;
+        const K = a.dims[aRank - 1];
+        const N = b.dims[bRank - 1];
+        const batchSize = aRank > 2 ? numel(a.dims.slice(0, -2)) : 1;
+        const out = new Float32Array(batchSize * M * N);
+        for (let batch = 0; batch < batchSize; batch++) {
+          const aOff = batch * M * K;
+          const bOff = bRank > 2 ? batch * K * N : 0;
+          const oOff = batch * M * N;
+          for (let m = 0; m < M; m++) {
+            for (let n = 0; n < N; n++) {
+              let sum = 0;
+              for (let k = 0; k < K; k++) {
+                sum += a.data[aOff + m * K + k] * b.data[bOff + k * N + n];
+              }
+              out[oOff + m * N + n] = sum;
+            }
+          }
+        }
+        const outDims = batchSize > 1
+          ? [...a.dims.slice(0, -2), M, N]
+          : (aRank >= 2 ? [M, N] : [N]);
+        tensors.set(outputs[0], { dims: outDims, data: out });
+        break;
+      }
+
+      case "Gemm": {
+        const a = getTensor(inputs[0]);
+        const b = getTensor(inputs[1]);
+        const c = inputs.length > 2 && inputs[2] ? getTensor(inputs[2]) : null;
+        const alpha = attrs.get("alpha") || 1.0;
+        const beta = attrs.get("beta") || 1.0;
+        const transA = attrs.get("transA") || 0;
+        const transB = attrs.get("transB") || 0;
+        const M = transA ? a.dims[1] : a.dims[0];
+        const K = transA ? a.dims[0] : a.dims[1];
+        const N = transB ? b.dims[0] : b.dims[1];
+        const out = new Float32Array(M * N);
+        for (let m = 0; m < M; m++) {
+          for (let n = 0; n < N; n++) {
+            let sum = 0;
+            for (let k = 0; k < K; k++) {
+              const aVal = transA ? a.data[k * M + m] : a.data[m * K + k];
+              const bVal = transB ? b.data[n * K + k] : b.data[k * N + n];
+              sum += aVal * bVal;
+            }
+            out[m * N + n] = alpha * sum + (c ? beta * c.data[n % c.data.length] : 0);
+          }
+        }
+        tensors.set(outputs[0], { dims: [M, N], data: out });
+        break;
+      }
+
+      case "GlobalAveragePool": {
+        const x = getTensor(inputs[0]);
+        const [N, C, H, W] = x.dims;
+        const out = new Float32Array(N * C);
+        for (let n = 0; n < N; n++) {
+          for (let c = 0; c < C; c++) {
+            let sum = 0;
+            for (let h = 0; h < H; h++) {
+              for (let w = 0; w < W; w++) {
+                sum += x.data[((n * C + c) * H + h) * W + w];
+              }
+            }
+            out[n * C + c] = sum / (H * W);
+          }
+        }
+        tensors.set(outputs[0], { dims: [N, C, 1, 1], data: out });
+        break;
+      }
+
+      case "AveragePool": {
+        const x = getTensor(inputs[0]);
+        const kernelShape = attrs.get("kernel_shape") || [2, 2];
+        const poolStrides = attrs.get("strides") || [2, 2];
+        const poolPads = attrs.get("pads") || [0, 0, 0, 0];
+        const [N, C, Hi, Wi] = x.dims;
+        const [kh, kw] = kernelShape;
+        const [sh, sw] = poolStrides;
+        const [pt, pl] = poolPads;
+        const Ho = Math.floor((Hi + poolPads[0] + poolPads[2] - kh) / sh) + 1;
+        const Wo = Math.floor((Wi + poolPads[1] + poolPads[3] - kw) / sw) + 1;
+        const out = new Float32Array(N * C * Ho * Wo);
+        for (let n = 0; n < N; n++) {
+          for (let c = 0; c < C; c++) {
+            for (let oh = 0; oh < Ho; oh++) {
+              for (let ow = 0; ow < Wo; ow++) {
+                let sum = 0, count = 0;
+                for (let ki = 0; ki < kh; ki++) {
+                  for (let kj = 0; kj < kw; kj++) {
+                    const ih = oh * sh - pt + ki;
+                    const iw = ow * sw - pl + kj;
+                    if (ih >= 0 && ih < Hi && iw >= 0 && iw < Wi) {
+                      sum += x.data[((n * C + c) * Hi + ih) * Wi + iw];
+                      count++;
+                    }
+                  }
+                }
+                out[((n * C + c) * Ho + oh) * Wo + ow] = count > 0 ? sum / count : 0;
+              }
+            }
+          }
+        }
+        tensors.set(outputs[0], { dims: [N, C, Ho, Wo], data: out });
+        break;
+      }
+
+      case "MaxPool": {
+        const x = getTensor(inputs[0]);
+        const kernelShape = attrs.get("kernel_shape") || [2, 2];
+        const poolStrides = attrs.get("strides") || [2, 2];
+        const poolPads = attrs.get("pads") || [0, 0, 0, 0];
+        const [N, C, Hi, Wi] = x.dims;
+        const [kh, kw] = kernelShape;
+        const [sh, sw] = poolStrides;
+        const [pt, pl] = poolPads;
+        const Ho = Math.floor((Hi + poolPads[0] + poolPads[2] - kh) / sh) + 1;
+        const Wo = Math.floor((Wi + poolPads[1] + poolPads[3] - kw) / sw) + 1;
+        const out = new Float32Array(N * C * Ho * Wo);
+        for (let n = 0; n < N; n++) {
+          for (let c = 0; c < C; c++) {
+            for (let oh = 0; oh < Ho; oh++) {
+              for (let ow = 0; ow < Wo; ow++) {
+                let maxVal = -Infinity;
+                for (let ki = 0; ki < kh; ki++) {
+                  for (let kj = 0; kj < kw; kj++) {
+                    const ih = oh * sh - pt + ki;
+                    const iw = ow * sw - pl + kj;
+                    if (ih >= 0 && ih < Hi && iw >= 0 && iw < Wi) {
+                      const v = x.data[((n * C + c) * Hi + ih) * Wi + iw];
+                      if (v > maxVal) maxVal = v;
+                    }
+                  }
+                }
+                out[((n * C + c) * Ho + oh) * Wo + ow] = maxVal === -Infinity ? 0 : maxVal;
+              }
+            }
+          }
+        }
+        tensors.set(outputs[0], { dims: [N, C, Ho, Wo], data: out });
+        break;
+      }
+
+      case "Resize": {
+        const x = getTensor(inputs[0]);
+        // Resize inputs: X, roi, scales, sizes — we use nearest neighbor
+        const [N, C, Hi, Wi] = x.dims;
+        let Ho, Wo;
+        if (inputs.length > 3 && inputs[3] && tensors.has(inputs[3])) {
+          const sizes = getTensor(inputs[3]);
+          Ho = Math.round(sizes.data[2]);
+          Wo = Math.round(sizes.data[3]);
+        } else if (inputs.length > 2 && inputs[2] && tensors.has(inputs[2])) {
+          const scales = getTensor(inputs[2]);
+          Ho = Math.round(Hi * scales.data[2]);
+          Wo = Math.round(Wi * scales.data[3]);
+        } else {
+          Ho = Hi; Wo = Wi;
+        }
+        const out = new Float32Array(N * C * Ho * Wo);
+        for (let n = 0; n < N; n++) {
+          for (let c = 0; c < C; c++) {
+            for (let oh = 0; oh < Ho; oh++) {
+              for (let ow = 0; ow < Wo; ow++) {
+                const ih = Math.min(Math.floor(oh * Hi / Ho), Hi - 1);
+                const iw = Math.min(Math.floor(ow * Wi / Wo), Wi - 1);
+                out[((n * C + c) * Ho + oh) * Wo + ow] = x.data[((n * C + c) * Hi + ih) * Wi + iw];
+              }
+            }
+          }
+        }
+        tensors.set(outputs[0], { dims: [N, C, Ho, Wo], data: out });
+        break;
+      }
+
+      case "Concat": {
+        const axis = attrs.get("axis") || 0;
+        const parts = inputs.map(n => getTensor(n));
+        const rank = parts[0].dims.length;
+        const outDims = [...parts[0].dims];
+        for (let i = 1; i < parts.length; i++) {
+          outDims[axis] += parts[i].dims[axis];
+        }
+        const out = new Float32Array(numel(outDims));
+
+        // Compute strides for output
+        const outerSize = numel(outDims.slice(0, axis)) || 1;
+        const innerSize = numel(outDims.slice(axis + 1)) || 1;
+        let axisOffset = 0;
+        for (const part of parts) {
+          const partAxisLen = part.dims[axis];
+          for (let outer = 0; outer < outerSize; outer++) {
+            for (let a = 0; a < partAxisLen; a++) {
+              const srcOff = (outer * partAxisLen + a) * innerSize;
+              const dstOff = (outer * outDims[axis] + axisOffset + a) * innerSize;
+              for (let inner = 0; inner < innerSize; inner++) {
+                out[dstOff + inner] = part.data[srcOff + inner];
+              }
+            }
+          }
+          axisOffset += partAxisLen;
+        }
+        tensors.set(outputs[0], { dims: outDims, data: out });
+        break;
+      }
+
+      case "Squeeze": {
+        const x = getTensor(inputs[0]);
+        let axes;
+        if (inputs.length > 1 && inputs[1] && tensors.has(inputs[1])) {
+          const at = getTensor(inputs[1]);
+          axes = Array.from(at.data).map(v => Math.round(v));
+        } else {
+          axes = attrs.get("axes") || [];
+        }
+        const newDims = axes.length > 0
+          ? x.dims.filter((_, i) => !axes.includes(i))
+          : x.dims.filter(d => d !== 1);
+        tensors.set(outputs[0], { dims: newDims, data: x.data });
+        break;
+      }
+
+      case "Unsqueeze": {
+        const x = getTensor(inputs[0]);
+        let axes;
+        if (inputs.length > 1 && inputs[1] && tensors.has(inputs[1])) {
+          const at = getTensor(inputs[1]);
+          axes = Array.from(at.data).map(v => Math.round(v)).sort((a, b) => a - b);
+        } else {
+          axes = (attrs.get("axes") || []).sort((a, b) => a - b);
+        }
+        const newDims = [...x.dims];
+        for (const ax of axes) {
+          newDims.splice(ax, 0, 1);
+        }
+        tensors.set(outputs[0], { dims: newDims, data: x.data });
+        break;
+      }
+
+      case "Softmax": {
+        const x = getTensor(inputs[0]);
+        const axis = attrs.get("axis") || -1;
+        const rank = x.dims.length;
+        const realAxis = axis < 0 ? rank + axis : axis;
+        const outerSize = numel(x.dims.slice(0, realAxis)) || 1;
+        const axisSize = x.dims[realAxis];
+        const innerSize = numel(x.dims.slice(realAxis + 1)) || 1;
+        const out = new Float32Array(x.data.length);
+        for (let outer = 0; outer < outerSize; outer++) {
+          for (let inner = 0; inner < innerSize; inner++) {
+            let maxVal = -Infinity;
+            for (let a = 0; a < axisSize; a++) {
+              const idx = (outer * axisSize + a) * innerSize + inner;
+              if (x.data[idx] > maxVal) maxVal = x.data[idx];
+            }
+            let sum = 0;
+            for (let a = 0; a < axisSize; a++) {
+              const idx = (outer * axisSize + a) * innerSize + inner;
+              out[idx] = Math.exp(x.data[idx] - maxVal);
+              sum += out[idx];
+            }
+            for (let a = 0; a < axisSize; a++) {
+              const idx = (outer * axisSize + a) * innerSize + inner;
+              out[idx] /= sum;
+            }
+          }
+        }
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "ReduceMean": {
+        const x = getTensor(inputs[0]);
+        const axes = attrs.get("axes") || [2, 3];
+        const keepdims = attrs.get("keepdims") !== undefined ? attrs.get("keepdims") : 1;
+        // Simple case: reduce spatial dims of NCHW
+        if (x.dims.length === 4 && axes.length === 2 && axes[0] === 2 && axes[1] === 3) {
+          const [N, C, H, W] = x.dims;
+          const out = new Float32Array(N * C);
+          for (let n = 0; n < N; n++) {
+            for (let c = 0; c < C; c++) {
+              let sum = 0;
+              for (let h = 0; h < H; h++) {
+                for (let w = 0; w < W; w++) {
+                  sum += x.data[((n * C + c) * H + h) * W + w];
+                }
+              }
+              out[n * C + c] = sum / (H * W);
+            }
+          }
+          const dims = keepdims ? [N, C, 1, 1] : [N, C];
+          tensors.set(outputs[0], { dims, data: out });
+        } else {
+          // Fallback: just pass through (unsupported axis combo)
+          tensors.set(outputs[0], { dims: [...x.dims], data: x.data });
+        }
+        break;
+      }
+
+      case "Shape": {
+        const x = getTensor(inputs[0]);
+        tensors.set(outputs[0], {
+          dims: [x.dims.length],
+          data: new Float32Array(x.dims),
+        });
+        break;
+      }
+
+      case "Gather": {
+        const x = getTensor(inputs[0]);
+        const indices = getTensor(inputs[1]);
+        const axis = attrs.get("axis") || 0;
+        // Simple 1D gather from shape output
+        if (x.dims.length === 1 && indices.dims.length === 0 || numel(indices.dims) === 1) {
+          const idx = Math.round(indices.data[0]);
+          tensors.set(outputs[0], { dims: [], data: new Float32Array([x.data[idx]]) });
+        } else {
+          tensors.set(outputs[0], { dims: [...indices.dims], data: x.data });
+        }
+        break;
+      }
+
+      case "Slice": {
+        const x = getTensor(inputs[0]);
+        // Simple passthrough for now — PaddleOCR uses Slice minimally
+        tensors.set(outputs[0], { dims: [...x.dims], data: x.data });
+        break;
+      }
+
+      case "Cast": {
+        const x = getTensor(inputs[0]);
+        // No-op for float-to-float casts
+        tensors.set(outputs[0], { dims: [...x.dims], data: x.data });
+        break;
+      }
+
+      case "Pad": {
+        const x = getTensor(inputs[0]);
+        // Simple passthrough — PaddleOCR detector handles padding in preprocessing
+        tensors.set(outputs[0], { dims: [...x.dims], data: x.data });
+        break;
+      }
+
+      case "Constant": {
+        // Constant nodes carry their value in attributes
+        const value = attrs.get("value");
+        if (value !== undefined) {
+          const data = typeof value === "number"
+            ? new Float32Array([value])
+            : new Float32Array(Array.isArray(value) ? value : [value]);
+          tensors.set(outputs[0], { dims: [data.length], data });
+        } else {
+          tensors.set(outputs[0], { dims: [1], data: new Float32Array([0]) });
+        }
+        break;
+      }
+
+      case "ConstantOfShape": {
+        const shapeTensor = getTensor(inputs[0]);
+        const shape = Array.from(shapeTensor.data).map(v => Math.round(v));
+        const fillVal = attrs.get("value") || 0;
+        const n = numel(shape);
+        const out = new Float32Array(n);
+        if (fillVal !== 0) out.fill(typeof fillVal === "number" ? fillVal : 0);
+        tensors.set(outputs[0], { dims: shape, data: out });
+        break;
+      }
+
+      case "HardSigmoid": {
+        const x = getTensor(inputs[0]);
+        const alpha = attrs.get("alpha") || 0.2;
+        const beta = attrs.get("beta") || 0.5;
+        const out = new Float32Array(x.data.length);
+        for (let i = 0; i < x.data.length; i++) {
+          out[i] = Math.max(0, Math.min(1, alpha * x.data[i] + beta));
+        }
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "HardSwish": {
+        const x = getTensor(inputs[0]);
+        const out = new Float32Array(x.data.length);
+        for (let i = 0; i < x.data.length; i++) {
+          const v = x.data[i];
+          out[i] = v * Math.max(0, Math.min(1, v / 6 + 0.5));
+        }
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "LeakyRelu": {
+        const x = getTensor(inputs[0]);
+        const alpha = attrs.get("alpha") || 0.01;
+        const out = new Float32Array(x.data.length);
+        for (let i = 0; i < x.data.length; i++) {
+          out[i] = x.data[i] > 0 ? x.data[i] : alpha * x.data[i];
+        }
+        tensors.set(outputs[0], { dims: [...x.dims], data: out });
+        break;
+      }
+
+      case "ConvTranspose": {
+        const x = getTensor(inputs[0]);
+        const w = getTensor(inputs[1]);
+        const bias = inputs.length > 2 && inputs[2] ? getTensor(inputs[2]) : null;
+        const strides = attrs.get("strides") || [1, 1];
+        const pads = attrs.get("pads") || [0, 0, 0, 0];
+        const outputPadding = attrs.get("output_padding") || [0, 0];
+        const [N, Ci, Hi, Wi] = x.dims;
+        const [_ci, Co, Kh, Kw] = w.dims;
+        const [sh, sw] = strides;
+        const [pt, pl, pb, pr] = pads;
+        const Ho = (Hi - 1) * sh - pt - pb + Kh + outputPadding[0];
+        const Wo = (Wi - 1) * sw - pl - pr + Kw + outputPadding[1];
+        const out = new Float32Array(N * Co * Ho * Wo);
+        if (bias) {
+          for (let n = 0; n < N; n++) {
+            for (let co = 0; co < Co; co++) {
+              const bVal = bias.data[co];
+              for (let h = 0; h < Ho; h++) {
+                for (let w = 0; w < Wo; w++) {
+                  out[((n * Co + co) * Ho + h) * Wo + w] = bVal;
+                }
+              }
+            }
+          }
+        }
+        for (let n = 0; n < N; n++) {
+          for (let ci = 0; ci < Ci; ci++) {
+            for (let ih = 0; ih < Hi; ih++) {
+              for (let iw = 0; iw < Wi; iw++) {
+                const xVal = x.data[((n * Ci + ci) * Hi + ih) * Wi + iw];
+                for (let kh = 0; kh < Kh; kh++) {
+                  for (let kw = 0; kw < Kw; kw++) {
+                    const oh = ih * sh + kh - pt;
+                    const ow = iw * sw + kw - pl;
+                    if (oh >= 0 && oh < Ho && ow >= 0 && ow < Wo) {
+                      for (let co = 0; co < Co; co++) {
+                        out[((n * Co + co) * Ho + oh) * Wo + ow] +=
+                          xVal * w.data[((ci * Co + co) * Kh + kh) * Kw + kw];
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        tensors.set(outputs[0], { dims: [N, Co, Ho, Wo], data: out });
+        break;
+      }
+
+      default:
+        // Unknown op — skip with warning (the graph may still produce partial results)
+        if (outputs[0]) {
+          // Create a dummy tensor to avoid breaking downstream nodes
+          tensors.set(outputs[0], { dims: [1], data: new Float32Array([0]) });
+        }
+        break;
+    }
+  }
+
+  // Collect outputs
+  const results = new Map();
+  for (const name of model.outputs) {
+    if (tensors.has(name)) {
+      results.set(name, tensors.get(name));
+    }
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// PaddleOCR preprocessing and postprocessing
+// ---------------------------------------------------------------------------
+
+/**
+ * Preprocess image for PaddleOCR DBNet detector.
+ *
+ * Steps:
+ *   1. Resize longest side to maxSideLen, keeping aspect ratio
+ *   2. Pad to multiple of 32
+ *   3. Normalize: (pixel / 255 - mean) / std
+ *   4. Convert HWC RGB -> NCHW float32
+ *
+ * @param {Uint8Array} rgb - HWC RGB pixel data
+ * @param {number} width
+ * @param {number} height
+ * @param {number} maxSideLen - Maximum side length (default 960)
+ * @returns {{ data: Float32Array, dims: number[], scale: number, padH: number, padW: number, origW: number, origH: number }}
+ */
+function paddleDetPreprocess(rgb, width, height, maxSideLen = 960) {
+  // Step 1: Resize to fit maxSideLen
+  let scale = 1.0;
+  const maxSide = Math.max(width, height);
+  if (maxSide > maxSideLen) {
+    scale = maxSideLen / maxSide;
+  }
+  let newW = Math.round(width * scale);
+  let newH = Math.round(height * scale);
+
+  // Ensure minimum size
+  newW = Math.max(newW, 32);
+  newH = Math.max(newH, 32);
+
+  // Step 2: Pad to multiple of 32
+  const padW = Math.ceil(newW / 32) * 32;
+  const padH = Math.ceil(newH / 32) * 32;
+
+  // Step 3 & 4: Resize + normalize + HWC->NCHW
+  const mean = [0.485, 0.456, 0.406];
+  const std = [0.229, 0.224, 0.225];
+  const out = new Float32Array(1 * 3 * padH * padW);
+
+  for (let c = 0; c < 3; c++) {
+    for (let h = 0; h < padH; h++) {
+      for (let w = 0; w < padW; w++) {
+        let val = 0;
+        if (h < newH && w < newW) {
+          // Nearest-neighbor resize from original
+          const srcH = Math.min(Math.floor(h / scale), height - 1);
+          const srcW = Math.min(Math.floor(w / scale), width - 1);
+          val = rgb[(srcH * width + srcW) * 3 + c] / 255.0;
+          val = (val - mean[c]) / std[c];
+        }
+        out[(c * padH + h) * padW + w] = val;
+      }
+    }
+  }
+
+  return {
+    data: out,
+    dims: [1, 3, padH, padW],
+    scale,
+    padH,
+    padW,
+    origW: width,
+    origH: height,
+  };
+}
+
+/**
+ * Postprocess DBNet detector output to extract text bounding boxes.
+ *
+ * Steps:
+ *   1. Threshold the probability map (> 0.3)
+ *   2. Find connected components (simple flood fill)
+ *   3. Compute bounding boxes from components
+ *   4. Scale boxes back to original image coordinates
+ *
+ * @param {Float32Array} probMap - [1, 1, H, W] probability map
+ * @param {number} H - Map height
+ * @param {number} W - Map width
+ * @param {number} scale - Preprocessing scale factor
+ * @param {number} origW - Original image width
+ * @param {number} origH - Original image height
+ * @param {number} threshold - Detection threshold (default 0.3)
+ * @returns {Array<{ x: number, y: number, w: number, h: number, score: number }>}
+ */
+function paddleDetPostprocess(probMap, H, W, scale, origW, origH, threshold = 0.3) {
+  // Binary threshold
+  const binary = new Uint8Array(H * W);
+  for (let i = 0; i < H * W; i++) {
+    binary[i] = probMap[i] > threshold ? 1 : 0;
+  }
+
+  // Connected component labeling via flood fill
+  const labels = new Int32Array(H * W);
+  let labelCount = 0;
+  const boxes = [];
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      if (binary[idx] === 1 && labels[idx] === 0) {
+        labelCount++;
+        // BFS flood fill
+        const queue = [idx];
+        labels[idx] = labelCount;
+        let minX = x, maxX = x, minY = y, maxY = y;
+        let scoreSum = 0;
+        let pixelCount = 0;
+
+        while (queue.length > 0) {
+          const cur = queue.shift();
+          const cy = Math.floor(cur / W);
+          const cx = cur % W;
+          scoreSum += probMap[cur];
+          pixelCount++;
+          minX = Math.min(minX, cx);
+          maxX = Math.max(maxX, cx);
+          minY = Math.min(minY, cy);
+          maxY = Math.max(maxY, cy);
+
+          // 4-connected neighbors
+          const neighbors = [
+            cy > 0 ? cur - W : -1,
+            cy < H - 1 ? cur + W : -1,
+            cx > 0 ? cur - 1 : -1,
+            cx < W - 1 ? cur + 1 : -1,
+          ];
+          for (const n of neighbors) {
+            if (n >= 0 && binary[n] === 1 && labels[n] === 0) {
+              labels[n] = labelCount;
+              queue.push(n);
+            }
+          }
+        }
+
+        // Filter: minimum 10 pixels
+        if (pixelCount >= 10) {
+          boxes.push({
+            x: Math.round(minX / scale),
+            y: Math.round(minY / scale),
+            w: Math.round((maxX - minX + 1) / scale),
+            h: Math.round((maxY - minY + 1) / scale),
+            score: scoreSum / pixelCount,
+          });
+        }
+      }
+    }
+  }
+
+  // Clip to original image bounds
+  for (const box of boxes) {
+    box.x = Math.max(0, Math.min(box.x, origW - 1));
+    box.y = Math.max(0, Math.min(box.y, origH - 1));
+    box.w = Math.min(box.w, origW - box.x);
+    box.h = Math.min(box.h, origH - box.y);
+  }
+
+  // Sort top-to-bottom, left-to-right
+  boxes.sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x);
+
+  return boxes;
+}
+
+/**
+ * Preprocess a cropped text region for the SVTR recognizer.
+ *
+ * @param {Uint8Array} rgb - Full image RGB data (HWC)
+ * @param {number} imgW - Full image width
+ * @param {{ x: number, y: number, w: number, h: number }} box - Bounding box
+ * @param {number} targetH - Target height (default 48 for PP-OCRv4)
+ * @param {number} maxW - Maximum width (default 320)
+ * @returns {{ data: Float32Array, dims: number[] }}
+ */
+function paddleRecPreprocess(rgb, imgW, box, targetH = 48, maxW = 320) {
+  const { x, y, w, h } = box;
+  const aspect = w / Math.max(h, 1);
+  let recW = Math.round(targetH * aspect);
+  recW = Math.max(recW, 1);
+  recW = Math.min(recW, maxW);
+
+  const mean = [0.5, 0.5, 0.5];
+  const std = [0.5, 0.5, 0.5];
+  const out = new Float32Array(1 * 3 * targetH * recW);
+
+  for (let c = 0; c < 3; c++) {
+    for (let rh = 0; rh < targetH; rh++) {
+      for (let rw = 0; rw < recW; rw++) {
+        const srcY = y + Math.min(Math.floor(rh * h / targetH), h - 1);
+        const srcX = x + Math.min(Math.floor(rw * w / recW), w - 1);
+        const idx = (srcY * imgW + srcX) * 3 + c;
+        const val = (rgb[idx] || 0) / 255.0;
+        out[(c * targetH + rh) * recW + rw] = (val - mean[c]) / std[c];
+      }
+    }
+  }
+
+  return { data: out, dims: [1, 3, targetH, recW] };
+}
+
+/**
+ * CTC greedy decode: collapse repeated tokens and remove blank (0).
+ *
+ * @param {Float32Array} logits - [1, T, vocab_size] output from recognizer
+ * @param {number} T - Sequence length
+ * @param {number} vocabSize - Vocabulary size
+ * @param {string} dictText - Dictionary text (one character per line)
+ * @returns {string}
+ */
+function ctcGreedyDecode(logits, T, vocabSize, dictText) {
+  const chars = dictText.split("\n").filter(c => c.length > 0);
+  let text = "";
+  let prevIdx = -1;
+
+  for (let t = 0; t < T; t++) {
+    let maxIdx = 0;
+    let maxVal = logits[t * vocabSize];
+    for (let v = 1; v < vocabSize; v++) {
+      if (logits[t * vocabSize + v] > maxVal) {
+        maxVal = logits[t * vocabSize + v];
+        maxIdx = v;
+      }
+    }
+    // 0 = blank, skip. Also skip repeats.
+    if (maxIdx !== 0 && maxIdx !== prevIdx) {
+      // Dictionary is 1-indexed (0 = blank)
+      const charIdx = maxIdx - 1;
+      if (charIdx >= 0 && charIdx < chars.length) {
+        text += chars[charIdx];
+      }
+    }
+    prevIdx = maxIdx;
+  }
+
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// PaddleOCR server-side inference handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle PaddleOCR inference via the ONNX graph interpreter.
+ *
+ * Pipeline:
+ *   1. Decode image to RGB
+ *   2. Preprocess for DBNet detector
+ *   3. Run detector ONNX graph
+ *   4. Postprocess: threshold -> connected components -> bounding boxes
+ *   5. For each text box: crop, preprocess for recognizer
+ *   6. Run recognizer ONNX graph
+ *   7. CTC decode
+ *   8. Return structured results
+ *
+ * @param {Request} request
+ * @param {object} env
+ * @param {object} cors
+ * @param {string} rid
+ * @returns {Promise<Response>}
+ */
+export async function handlePaddleMoltInference(request, env, cors, rid) {
+  const start = Date.now();
+
+  // Extract and decode image
+  const imageResult = await extractImage(request, env);
+  if (imageResult.error) {
+    return new Response(JSON.stringify({
+      error: imageResult.error,
+      request_id: rid,
+    }), { status: imageResult.status, headers: { ...cors, "Content-Type": "application/json" } });
+  }
+
+  let rgb, imgW, imgH;
+  try {
+    const decoded = await decodeImageToRgb(imageResult.bytes, imageResult.format);
+    rgb = decoded.rgb;
+    imgW = decoded.width;
+    imgH = decoded.height;
+  } catch (e) {
+    return new Response(JSON.stringify({
+      error: `Image decode failed: ${e.message}`,
+      request_id: rid,
+    }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
+  }
+
+  // Ensure models are loaded
+  if (!globalThis._paddleModelsLoaded) {
+    if (!env.WEIGHTS) {
+      return new Response(JSON.stringify({
+        error: "WEIGHTS R2 bucket not configured",
+        request_id: rid,
+      }), { status: 503, headers: { ...cors, "Content-Type": "application/json" } });
+    }
+
+    try {
+      const [detObj, recObj, dictObj] = await Promise.all([
+        env.WEIGHTS.get("models/paddleocr/ch_PP-OCRv4_det.onnx"),
+        env.WEIGHTS.get("models/paddleocr/ch_PP-OCRv4_rec.onnx"),
+        env.WEIGHTS.get("models/paddleocr/dicts/ppocr_keys_v1.txt"),
+      ]);
+      if (!detObj || !recObj || !dictObj) {
+        return new Response(JSON.stringify({
+          error: "PaddleOCR models not found in R2",
+          request_id: rid,
+        }), { status: 503, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+      globalThis._paddleDetBytes = await detObj.arrayBuffer();
+      globalThis._paddleRecBytes = await recObj.arrayBuffer();
+      globalThis._paddleDictText = await dictObj.text();
+      globalThis._paddleModelsLoaded = true;
+    } catch (e) {
+      return new Response(JSON.stringify({
+        error: `Model loading failed: ${e.message}`,
+        request_id: rid,
+      }), { status: 503, headers: { ...cors, "Content-Type": "application/json" } });
+    }
+  }
+
+  const modelLoadMs = Date.now() - start;
+
+  // Parse ONNX models (cached after first parse)
+  if (!globalThis._paddleDetModel) {
+    globalThis._paddleDetModel = parseOnnxModel(globalThis._paddleDetBytes);
+  }
+  if (!globalThis._paddleRecModel) {
+    globalThis._paddleRecModel = parseOnnxModel(globalThis._paddleRecBytes);
+  }
+
+  const parseMs = Date.now() - start - modelLoadMs;
+
+  // Step 1: Preprocess for detector
+  const det = paddleDetPreprocess(rgb, imgW, imgH);
+
+  // Step 2: Run detector
+  const detInput = new Map();
+  // The detector's input name is typically "x" for PaddleOCR
+  const detInputName = globalThis._paddleDetModel.inputs[0] || "x";
+  detInput.set(detInputName, { dims: det.dims, data: det.data });
+  const detOutputs = executeOnnxGraph(globalThis._paddleDetModel, detInput);
+
+  const detMs = Date.now() - start - modelLoadMs - parseMs;
+
+  // Step 3: Postprocess detector output
+  const detOutputName = globalThis._paddleDetModel.outputs[0] || "sigmoid_0.tmp_0";
+  const detResult = detOutputs.get(detOutputName);
+  if (!detResult) {
+    return new Response(JSON.stringify({
+      error: "Detector produced no output",
+      debug: {
+        outputs: Array.from(detOutputs.keys()),
+        expected: detOutputName,
+      },
+      request_id: rid,
+    }), { status: 500, headers: { ...cors, "Content-Type": "application/json" } });
+  }
+
+  const probH = det.padH;
+  const probW = det.padW;
+  const boxes = paddleDetPostprocess(detResult.data, probH, probW, det.scale, imgW, imgH);
+
+  // Step 4: Run recognizer on each text box
+  const results = [];
+  const dictText = globalThis._paddleDictText;
+  const recModel = globalThis._paddleRecModel;
+  const recInputName = recModel.inputs[0] || "x";
+
+  for (const box of boxes) {
+    const rec = paddleRecPreprocess(rgb, imgW, box);
+    const recInput = new Map();
+    recInput.set(recInputName, { dims: rec.dims, data: rec.data });
+    const recOutputs = executeOnnxGraph(recModel, recInput);
+
+    const recOutputName = recModel.outputs[0] || "softmax_0.tmp_0";
+    const recResult = recOutputs.get(recOutputName);
+    if (!recResult) continue;
+
+    // CTC decode
+    const T = recResult.dims.length >= 2 ? recResult.dims[1] : recResult.dims[0];
+    const vocabSize = recResult.dims.length >= 3
+      ? recResult.dims[2]
+      : recResult.dims[recResult.dims.length - 1];
+    const text = ctcGreedyDecode(recResult.data, T, vocabSize, dictText);
+
+    if (text.length > 0) {
+      results.push({
+        text,
+        bbox: [box.x, box.y, box.x + box.w, box.y + box.h],
+        score: box.score,
+      });
+    }
+  }
+
+  const totalMs = Date.now() - start;
+  const fullText = results.map(r => r.text).join("\n");
+
+  return new Response(JSON.stringify({
+    engine: "paddleocr-molt",
+    backend: "onnx-js-interpreter",
+    text: fullText,
+    blocks: results,
+    boxes_detected: boxes.length,
+    timing: {
+      model_load_ms: modelLoadMs,
+      onnx_parse_ms: parseMs,
+      detection_ms: detMs,
+      total_ms: totalMs,
+    },
+    image: {
+      width: imgW,
+      height: imgH,
+    },
     request_id: rid,
   }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 }
