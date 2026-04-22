@@ -6,10 +6,10 @@ tinygrad primitive compositions.  This is more powerful than hand-coding
 any single model architecture because it works for ANY ONNX model —
 PaddleOCR v3/v4/v5, ResNet, MobileNet, BERT, etc.
 
-Supported op set (29 ops — covers PaddleOCR detector + recognizer):
+Supported op set (30 ops — covers PaddleOCR detector + recognizer + classifier):
   Arithmetic:  Add, Sub, Mul, Div, Pow, Sqrt, Sigmoid, Relu, Clip,
                HardSigmoid, HardSwish, Softmax
-  Reduction:   ReduceMean, GlobalAveragePool, AveragePool
+  Reduction:   ReduceMean, GlobalAveragePool, AveragePool, MaxPool
   Convolution: Conv (with groups), ConvTranspose
   Linear:      MatMul
   Shape:       Reshape, Transpose, Squeeze, Unsqueeze, Concat, Slice,
@@ -138,6 +138,12 @@ class OnnxInterpreter:
                 t0 = _time.perf_counter()
 
             outputs = op_func(input_tensors, node["attrs"])
+            declared_outputs = [name for name in node["outputs"] if name]
+            if len(outputs) != len(declared_outputs):
+                raise ValueError(
+                    f"ONNX op {op_type} produced {len(outputs)} outputs for "
+                    f"{len(declared_outputs)} declared outputs"
+                )
 
             if profile:
                 elapsed_ms = (_time.perf_counter() - t0) * 1000.0
@@ -714,6 +720,107 @@ def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     return [_make_tensor(result, (n, c, oh, ow))]
 
 
+def _pool_output_dim(
+    input_size: int,
+    kernel: int,
+    stride: int,
+    dilation: int,
+    pad_begin: int,
+    pad_end: int,
+    ceil_mode: bool,
+) -> int:
+    effective_kernel = (kernel - 1) * dilation + 1
+    numerator = input_size + pad_begin + pad_end - effective_kernel
+    if ceil_mode:
+        out = (numerator + stride - 1) // stride + 1
+        if out > 0 and (out - 1) * stride >= input_size + pad_begin:
+            out -= 1
+    else:
+        out = numerator // stride + 1
+    return max(out, 0)
+
+
+def _op_max_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
+    """MaxPool over NCHW tensors with ONNX pads, strides, and dilations."""
+    x = inputs[0]
+    kernel_shape = _get_attr_ints(attrs, "kernel_shape", [])
+    if len(kernel_shape) != 2:
+        raise ValueError(f"MaxPool requires 2D kernel_shape, got {kernel_shape}")
+
+    auto_pad = _get_attr_string(attrs, "auto_pad", "NOTSET")
+    strides = _get_attr_ints(attrs, "strides", [1, 1])
+    dilations = _get_attr_ints(attrs, "dilations", [1, 1])
+    pads = _get_attr_ints(attrs, "pads", [0, 0, 0, 0])
+    storage_order = _get_attr_int(attrs, "storage_order", 0)
+    ceil_mode = bool(_get_attr_int(attrs, "ceil_mode", 0))
+
+    if storage_order != 0:
+        raise ValueError("MaxPool indices storage_order=1 is unsupported")
+    if len(x.shape) != 4:
+        raise ValueError(f"MaxPool requires NCHW rank-4 input, got shape {x.shape}")
+
+    kh, kw = kernel_shape
+    sh = strides[0]
+    sw = strides[1] if len(strides) > 1 else sh
+    dh = dilations[0]
+    dw = dilations[1] if len(dilations) > 1 else dh
+    pad_top = pads[0] if len(pads) > 0 else 0
+    pad_left = pads[1] if len(pads) > 1 else pad_top
+    pad_bottom = pads[2] if len(pads) > 2 else pad_top
+    pad_right = pads[3] if len(pads) > 3 else pad_left
+
+    n, c, h, w = x.shape
+    if auto_pad != "NOTSET":
+        eff_kh = (kh - 1) * dh + 1
+        eff_kw = (kw - 1) * dw + 1
+        if auto_pad == "VALID":
+            pad_top = pad_left = pad_bottom = pad_right = 0
+        elif auto_pad in ("SAME_UPPER", "SAME_LOWER"):
+            oh_same = (h + sh - 1) // sh
+            ow_same = (w + sw - 1) // sw
+            total_h = max((oh_same - 1) * sh + eff_kh - h, 0)
+            total_w = max((ow_same - 1) * sw + eff_kw - w, 0)
+            if auto_pad == "SAME_UPPER":
+                pad_top = total_h // 2
+                pad_left = total_w // 2
+            else:
+                pad_top = (total_h + 1) // 2
+                pad_left = (total_w + 1) // 2
+            pad_bottom = total_h - pad_top
+            pad_right = total_w - pad_left
+        else:
+            raise ValueError(f"Unsupported MaxPool auto_pad={auto_pad!r}")
+
+    oh = _pool_output_dim(h, kh, sh, dh, pad_top, pad_bottom, ceil_mode)
+    ow = _pool_output_dim(w, kw, sw, dw, pad_left, pad_right, ceil_mode)
+
+    import tinygrad.realize
+
+    flat = tinygrad.realize.realize(x.lazydata)
+    result = [float("-inf")] * (n * c * oh * ow)
+
+    for bn in range(n):
+        for ch in range(c):
+            for oy in range(oh):
+                for ox in range(ow):
+                    best = float("-inf")
+                    for fy in range(kh):
+                        iy = oy * sh + fy * dh - pad_top
+                        if iy < 0 or iy >= h:
+                            continue
+                        for fx in range(kw):
+                            ix = ox * sw + fx * dw - pad_left
+                            if ix < 0 or ix >= w:
+                                continue
+                            idx = bn * (c * h * w) + ch * (h * w) + iy * w + ix
+                            if flat[idx] > best:
+                                best = flat[idx]
+                    out_idx = bn * (c * oh * ow) + ch * (oh * ow) + oy * ow + ox
+                    result[out_idx] = best
+
+    return [_make_tensor(result, (n, c, oh, ow))]
+
+
 def _op_conv(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     """Conv2d supporting groups (depthwise, grouped, standard).
 
@@ -737,7 +844,14 @@ def _op_conv(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     pad_right = pads[3] if len(pads) > 3 else pad_left
     dil_h, dil_w = dilations[0], dilations[1] if len(dilations) > 1 else dilations[0]
 
-    if group == 1 and dil_h == 1 and dil_w == 1 and pad_top == pad_bottom and pad_left == pad_right:
+    if (
+        group == 1
+        and stride_h == stride_w
+        and dil_h == 1
+        and dil_w == 1
+        and pad_top == pad_bottom
+        and pad_left == pad_right
+    ):
         # Standard conv — use Tensor.conv2d (faster im2col path)
         result = Tensor.conv2d(x, weight, bias, stride=stride_h, padding=pad_top)
         return [result]
@@ -1151,6 +1265,7 @@ _OP_DISPATCH: dict[str, object] = {
     "ReduceMean": _op_reduce_mean,
     "GlobalAveragePool": _op_global_avg_pool,
     "AveragePool": _op_average_pool,
+    "MaxPool": _op_max_pool,
     "Conv": _op_conv,
     "ConvTranspose": _op_conv_transpose,
     "MatMul": _op_matmul,
