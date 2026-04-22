@@ -1,11 +1,14 @@
-# Production Status — 2026-04-14
+# Production Status — 2026-04-22
 
 ## Live Endpoints
 | Endpoint | URL | Status |
 |----------|-----|--------|
 | Worker | falcon-ocr.adpena.workers.dev | Live |
 | App | freeinvoicemaker.app | Live |
-| Test Page | falcon-ocr.adpena.workers.dev/test | Live |
+| Test Page | falcon-ocr.adpena.workers.dev/test | Live (200) |
+| PaddleOCR Test | falcon-ocr.adpena.workers.dev/test/paddle | Live (200) |
+| ONNX Bench | falcon-ocr.adpena.workers.dev/test/bench-onnxrt | Live (200) |
+| Dashboard | falcon-ocr.adpena.workers.dev/dashboard | Live (200) |
 | Health | falcon-ocr.adpena.workers.dev/health | Live (503 while loading, 200 when ready) |
 
 ## Differential Test Results
@@ -103,6 +106,42 @@ Reduction opportunities:
 | /health | 20 | 5 | 115ms | 503 (model not warmed) |
 | /invoice/fill (Workers AI) | 10 | 5 | 2.04s | 200 (10/10) |
 | /ocr (GPU proxy) | 1 | 1 | N/A | 503 (x402 payment-gated) |
+
+## Codebase Metrics (2026-04-22)
+| Language | Lines of Code |
+|----------|--------------|
+| Rust | 659,778 |
+| Python | 1,502,134 |
+| JS/TS | 63,215 |
+| HTML/CSS | 13,275 |
+| TOML | 5,097 |
+| Markdown | 61,655 |
+| Test files | 6,347 files |
+
+## ONNX Op Coverage
+- **29/29 ops** implemented and tested
+- Conv2d, BatchNorm, BN folding all pass (max_diff < 4e-6)
+- Full numpy reference parity
+
+## Compute Backend Priority Chain
+1. **WebNN** -- Hardware-accelerated ML (Chrome 127+, Edge)
+2. **WebGPU** -- GPU compute shaders (Chrome, Firefox Nightly)
+3. **WebGL2** -- Fragment shader fallback (universal GPU)
+4. **WASM SIMD** -- CPU vectorized (all modern browsers)
+5. **WASM scalar** -- CPU baseline (universal fallback)
+6. **Workers AI** -- Server-side GPU fleet (Cloudflare)
+7. **External GPU** -- HuggingFace/Replicate/RunPod/Modal/Fly.io
+
+## i18n Language Support
+PaddleOCR supports 10 languages: English, Chinese (Simplified), Chinese (Traditional),
+Japanese, Korean, French, German, Spanish, Portuguese, Italian.
+
+## Load Test Results (2026-04-22)
+| Endpoint | Requests | Concurrency | Avg Latency | Status |
+|----------|----------|-------------|-------------|--------|
+| /health | 50 | 10 | 79ms | 200/503 (model warming) |
+| /invoice/fill (Workers AI) | 10 | 5 | 2.74s | 200 (8/10) |
+| /ocr (GPU proxy) | 1 | 1 | N/A | 501 (not configured) |
 
 ## Production Hardening
 | Check | Status |

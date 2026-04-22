@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>molt/tinygrad OCR</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f1117;
+      color: #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+    .subtitle { color: #9ca3af; margin-bottom: 2rem; font-size: 1.1rem; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; max-width: 900px; width: 100%; }
+    .card {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 12px;
+      padding: 1.5rem;
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: #60a5fa; }
+    .card h2 { font-size: 1.2rem; margin-bottom: 0.5rem; }
+    .card p { color: #9ca3af; font-size: 0.9rem; line-height: 1.5; margin-bottom: 1rem; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .badge-live { background: #065f46; color: #6ee7b7; }
+    .badge-soon { background: #713f12; color: #fcd34d; }
+    a.btn {
+      display: inline-block;
+      background: #2563eb;
+      color: #fff;
+      text-decoration: none;
+      padding: 0.5rem 1.2rem;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+    a.btn:hover { background: #1d4ed8; }
+    .arch { margin-top: 2rem; color: #6b7280; font-size: 0.85rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>molt/tinygrad OCR</h1>
+  <p class="subtitle">AOT-compiled tensor inference in your browser via WASM + WebGPU</p>
+
+  <div class="cards">
+    <div class="card">
+      <h2>PaddleOCR <span class="badge badge-live">Live</span></h2>
+      <p>99.6% accuracy across 10 languages. Upload an invoice image and get structured text back in milliseconds.</p>
+      <a class="btn" href="https://falcon-ocr.adpena.workers.dev/test/paddle" target="_blank" rel="noopener">Try PaddleOCR</a>
+    </div>
+    <div class="card">
+      <h2>Falcon-OCR <span class="badge badge-live">Live</span></h2>
+      <p>300M parameter VLM for complex document understanding. Handles tables, receipts, and multi-column layouts.</p>
+      <a class="btn" href="https://falcon-ocr.adpena.workers.dev/test" target="_blank" rel="noopener">Try Falcon-OCR</a>
+    </div>
+    <div class="card">
+      <h2>Whisper <span class="badge badge-soon">Coming Soon</span></h2>
+      <p>39M parameter speech-to-text. Same 26-primitive decomposition, same compile pipeline, audio instead of images.</p>
+    </div>
+  </div>
+
+  <p class="arch">26 tinygrad primitives &rarr; 7 shader renderers &rarr; WebNN / WebGPU / WebGL2 / WASM SIMD</p>
+</body>
+</html>
