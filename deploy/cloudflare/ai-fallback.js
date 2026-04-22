@@ -1,9 +1,9 @@
 /**
  * Cloudflare Workers AI fallback for OCR inference.
  *
- * When Workers AI is available (via env.AI binding), uses GPU-accelerated
- * vision models for OCR instead of CPU-bound local inference.  This is the
- * most sustainable production architecture:
+ * When Workers AI is available (via env.AI binding), this module can route
+ * image-to-text requests through configured vision models instead of local
+ * inference. Treat quality and latency as deployment-specific until measured:
  *
  *   - Zero CPU cost on the Worker (inference runs on Cloudflare's GPU fleet)
  *   - No model loading, no memory pressure, no cold start penalty
@@ -14,10 +14,10 @@
  *   2. Local CPU inference — Falcon-OCR INT8 sharded model
  *   3. Error response with fallback URL to PaddleOCR
  *
- * Supported Workers AI vision models (ranked by OCR suitability):
- *   - @cf/google/gemma-4-26b-a4b-it  (best: native OCR + multilingual)
- *   - @cf/meta/llama-3.2-11b-vision-instruct  (good: general vision)
- *   - @cf/mistralai/mistral-small-3.1-24b-instruct  (good: vision + long context)
+ * Supported Workers AI vision models, ordered by current preference:
+ *   - @cf/google/gemma-3-12b-it
+ *   - @cf/meta/llama-3.2-11b-vision-instruct
+ *   - @cf/mistralai/mistral-small-3.1-24b-instruct
  *
  * Usage in wrangler.toml:
  *   [ai]
@@ -222,7 +222,7 @@ export async function runWorkersAiOcr(env, imageBytes, options = {}) {
         });
 
         const text = extractTextFromAiResult(result);
-        if (text && text.length > 0) {
+        if (typeof text === "string" && text.trim().length > 0) {
           return {
             text,
             confidence: estimateConfidence(text),
@@ -271,22 +271,22 @@ export async function runWorkersAiOcr(env, imageBytes, options = {}) {
  */
 function extractTextFromAiResult(result) {
   if (typeof result === "string") {
-    return result.trim();
+    return result;
   }
   if (result && typeof result.response === "string") {
-    return result.response.trim();
+    return result.response;
   }
   if (result && result.choices && result.choices.length > 0) {
     const choice = result.choices[0];
     if (choice.message && typeof choice.message.content === "string") {
-      return choice.message.content.trim();
+      return choice.message.content;
     }
     if (typeof choice.text === "string") {
-      return choice.text.trim();
+      return choice.text;
     }
   }
   if (result && typeof result.text === "string") {
-    return result.text.trim();
+    return result.text;
   }
   return "";
 }
