@@ -259,6 +259,58 @@ The OpenCL renderer (`render/opencl.rs`) and device types (`device/opencl.rs`) p
 
 The device module (`device/opencl.rs`) is feature-gated behind `opencl-backend`. It provides type definitions (`OpenClBuffer`, `OpenClProgram`, `OpenClDeviceLimits`) that a future FFI layer will use to interface with the OpenCL runtime. The actual `clCreateContext`/`clEnqueueNDRangeKernel` calls are not yet implemented.
 
+## OCR Engine Strategy
+
+The primitive stack powers two complementary OCR engines:
+
+### PaddleOCR (via molt/tinygrad) — Fast Workhorse
+
+- **99.6% accuracy** on printed invoices/documents (PP-OCRv4 benchmark)
+- **~16 MB total**: detector (4.7 MB) + classifier (0.6 MB) + recognizer (10.8 MB)
+- Standard CNN/transformer ops: Conv2d, BatchNorm, ReLU, MatMul, Softmax, CTC decode
+- All ops decompose to the 26 primitives — no new Rust code needed
+- ONNX weights loaded via minimal protobuf parser (zero external deps)
+- Runs on: **browser (WebGPU/WASM)**, **Workers edge**, **native**
+- Implementation: `src/molt/stdlib/tinygrad/paddleocr.py`
+- Models: PP-OCRv4 mobile ONNX from HuggingFace (OleehyO/paddleocrv4.onnx)
+
+ONNX op decomposition to tinygrad primitives:
+
+| ONNX Op | Count (det/rec/cls) | Tinygrad Decomposition |
+|---------|---------------------|----------------------|
+| Conv | 62/38/53 | `conv2d` (im2col + REDUCE_SUM + MUL) |
+| BatchNorm | 3/0/35 | SUB + MUL + SQRT + RECIPROCAL + ADD |
+| Relu | 12/0/15 | MAX(x, 0) |
+| Sigmoid | 1/7/0 | RECIPROCAL(1 + EXP2(-x * LOG2_E)) |
+| HardSigmoid | 10/0/9 | clip(ax+b) via MAX compositions |
+| MatMul | 0/13/0 | RESHAPE + EXPAND + MUL + REDUCE_SUM |
+| Softmax | 0/1/0 | REDUCE_MAX + SUB + EXP2 + REDUCE_SUM + MUL |
+| GlobalAvgPool | 10/0/10 | REDUCE_SUM / spatial_size |
+| Resize (2x) | 6/0/0 | RESHAPE + EXPAND (nearest neighbor) |
+| ReduceMean | 0/10/0 | REDUCE_SUM / axis_size |
+
+### Falcon-OCR — Heavy Duty VLM
+
+- **300M+ params**, vision-language model (full multimodal understanding)
+- Best for: complex/multi-page/creative layouts, handwriting, mixed content
+- TurboQuant INT4 quantization for edge deployment
+- Runs on: **browser (WebGPU)**, **GPU server (Modal)**, **Workers AI**
+- Higher quality on difficult inputs but 10-100x slower than PaddleOCR
+- Implementation: `src/molt/stdlib/tinygrad/eagle.py`
+
+### Routing Strategy
+
+```
+Input image
+    |
+    v
+[PaddleOCR first-pass] -- 50ms, 99.6% on clean docs
+    |
+    +-- confidence > 0.9 --> return result (fast path)
+    |
+    +-- confidence < 0.9 --> [Falcon-OCR fallback] -- 2-5s, handles edge cases
+```
+
 ## MLIR Dual-Path Rendering
 
 The MLIR serializer (`mlir.rs`) generates MLIR textual IR from FusedKernel. This enables:

@@ -72,3 +72,57 @@ def test_workers_ai_ocr_rejects_whitespace_only_text() -> None:
     assert result["ok"] is False
     assert result["calls"]
     assert "empty response" in result["message"]
+
+
+def test_structured_ocr_rejects_unparseable_model_output() -> None:
+    result = _run_ai_fallback_script(
+        """
+        const mod = await import('./deploy/cloudflare/ai-fallback.js');
+        const env = {
+          AI: {
+            async run() {
+              return { response: 'not json at all' };
+            }
+          }
+        };
+        try {
+          await mod.runStructuredOcr(env, new Uint8Array([1, 2, 3]));
+          process.stdout.write(JSON.stringify({ ok: true }));
+        } catch (err) {
+          process.stdout.write(JSON.stringify({
+            ok: false,
+            message: err.message
+          }));
+        }
+        """
+    )
+
+    assert result["ok"] is False
+    assert "structured ocr model output" in result["message"].lower()
+
+
+def test_structured_ocr_rejects_schema_invalid_model_output() -> None:
+    result = _run_ai_fallback_script(
+        """
+        const mod = await import('./deploy/cloudflare/ai-fallback.js');
+        const env = {
+          AI: {
+            async run() {
+              return { response: '{}' };
+            }
+          }
+        };
+        try {
+          await mod.runStructuredOcr(env, new Uint8Array([1, 2, 3]));
+          process.stdout.write(JSON.stringify({ ok: true }));
+        } catch (err) {
+          process.stdout.write(JSON.stringify({
+            ok: false,
+            message: err.message
+          }));
+        }
+        """
+    )
+
+    assert result["ok"] is False
+    assert "structured invoice" in result["message"].lower()
