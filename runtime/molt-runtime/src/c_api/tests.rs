@@ -2102,6 +2102,84 @@ fn c_api_mapping_keys_values_items() {
 }
 
 #[test]
+fn c_api_public_libmolt_iterator_dict_list_surface() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        let list = PyList_New(0);
+        assert_ne!(list, 0);
+        let first = MoltObject::from_int(10).bits();
+        let second = MoltObject::from_int(20).bits();
+        let append_first = crate::molt_list_append(list, first);
+        assert!(obj_from_bits(append_first).is_none());
+        let append_second = crate::molt_list_append(list, second);
+        assert!(obj_from_bits(append_second).is_none());
+        assert_eq!(PySequence_Length(list), 2);
+
+        let iter = PyObject_GetIter(list);
+        assert_ne!(iter, 0);
+
+        let pair1 = crate::molt_iter_next(iter);
+        let Some(pair1_ptr) = obj_from_bits(pair1).as_ptr() else {
+            panic!("molt_iter_next should return a tuple pair");
+        };
+        let pair1_items = unsafe { seq_vec_ref(pair1_ptr) };
+        assert_eq!(pair1_items.len(), 2);
+        assert_eq!(to_i64(obj_from_bits(pair1_items[0])), Some(10));
+        assert!(!is_truthy(_py, obj_from_bits(pair1_items[1])));
+        dec_ref_bits(_py, pair1);
+
+        let pair2 = crate::molt_iter_next(iter);
+        let Some(pair2_ptr) = obj_from_bits(pair2).as_ptr() else {
+            panic!("molt_iter_next should return a tuple pair");
+        };
+        let pair2_items = unsafe { seq_vec_ref(pair2_ptr) };
+        assert_eq!(to_i64(obj_from_bits(pair2_items[0])), Some(20));
+        assert!(!is_truthy(_py, obj_from_bits(pair2_items[1])));
+        dec_ref_bits(_py, pair2);
+
+        let pair3 = crate::molt_iter_next(iter);
+        let Some(pair3_ptr) = obj_from_bits(pair3).as_ptr() else {
+            panic!("molt_iter_next should return exhausted tuple pair");
+        };
+        let pair3_items = unsafe { seq_vec_ref(pair3_ptr) };
+        assert!(is_truthy(_py, obj_from_bits(pair3_items[1])));
+        dec_ref_bits(_py, pair3);
+        dec_ref_bits(_py, iter);
+
+        let dict = PyDict_New();
+        assert_ne!(dict, 0);
+        let key = MoltObject::from_int(1).bits();
+        let val = MoltObject::from_int(99).bits();
+        assert_eq!(PyDict_SetItem(dict, key, val), 0);
+
+        let borrowed = crate::molt_dict_getitem_borrowed(dict, key);
+        assert_ne!(borrowed, 0);
+        assert_eq!(to_i64(obj_from_bits(borrowed)), Some(99));
+        let missing = crate::molt_dict_getitem_borrowed(dict, MoltObject::from_int(2).bits());
+        assert_eq!(missing, 0);
+        assert!(!exception_pending(_py));
+
+        let keys = crate::molt_dict_keys(dict);
+        assert_ne!(keys, 0);
+        assert_eq!(PySequence_Length(keys), 1);
+        dec_ref_bits(_py, keys);
+
+        let values = crate::molt_dict_values(dict);
+        assert_ne!(values, 0);
+        assert_eq!(PySequence_Length(values), 1);
+        dec_ref_bits(_py, values);
+
+        let items = crate::molt_dict_items(dict);
+        assert_ne!(items, 0);
+        assert_eq!(PySequence_Length(items), 1);
+        dec_ref_bits(_py, items);
+
+        dec_ref_bits(_py, dict);
+        dec_ref_bits(_py, list);
+    });
+}
+
+#[test]
 fn c_api_mapping_getitemstring() {
     let _guard = CApiTestGuard::new();
     // PyMapping_GetItemString → molt_getitem_method → molt_index
