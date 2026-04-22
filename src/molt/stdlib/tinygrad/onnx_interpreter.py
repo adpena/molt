@@ -1142,8 +1142,13 @@ def _op_squeeze(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     axes = sorted([a if a >= 0 else a + ndim for a in axes], reverse=True)
     new_shape = list(x.shape)
     for ax in axes:
-        if new_shape[ax] == 1:
-            new_shape.pop(ax)
+        if ax < 0 or ax >= ndim:
+            raise ValueError(f"Squeeze axis {ax} out of range for rank {ndim}")
+        if new_shape[ax] != 1:
+            raise ValueError(
+                f"Squeeze cannot squeeze dimension {ax} with size {new_shape[ax]}"
+            )
+        new_shape.pop(ax)
     if not new_shape:
         new_shape = [1]
     return [x.reshape(*new_shape)]
@@ -1156,9 +1161,12 @@ def _op_unsqueeze(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
         axes = _realize_ints(inputs[1])
 
     new_shape = list(x.shape)
+    output_rank = len(new_shape) + len(axes)
     for ax in sorted(axes):
         if ax < 0:
-            ax = len(new_shape) + 1 + ax
+            ax = output_rank + ax
+        if ax < 0 or ax >= output_rank:
+            raise ValueError(f"Unsqueeze axis {ax} out of range for output rank {output_rank}")
         new_shape.insert(ax, 1)
     return [x.reshape(*new_shape)]
 
@@ -1172,6 +1180,8 @@ def _op_concat(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
 def _op_slice(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     """Slice(data, starts, ends, axes?, steps?)."""
     x = inputs[0]
+    if len(inputs) < 3 or inputs[1] is None or inputs[2] is None:
+        raise ValueError("Slice requires starts and ends inputs")
     starts = _realize_ints(inputs[1]) if len(inputs) > 1 and inputs[1] is not None else []
     ends = _realize_ints(inputs[2]) if len(inputs) > 2 and inputs[2] is not None else []
     axes = _realize_ints(inputs[3]) if len(inputs) > 3 and inputs[3] is not None else list(range(len(starts)))
@@ -1241,6 +1251,8 @@ def _op_cast(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
         if x.dtype == dtypes.float32:
             vals = _realize_floats(x)
             return [_make_int_tensor([int(v) for v in vals], x.shape)]
+    elif to_type not in (1, 11, 6, 7):
+        raise ValueError(f"Unsupported Cast target type: {to_type}")
     return [x]
 
 
@@ -1282,8 +1294,7 @@ def _op_resize(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     elif scales:
         target_shape = tuple(int(d * s) for d, s in zip(x.shape, scales))
     else:
-        # No resize info — return as-is
-        return [x]
+        raise ValueError("Resize requires scales or sizes")
 
     if len(x.shape) != 4:
         raise ValueError(f"Resize requires NCHW rank-4 input, got shape {x.shape}")
