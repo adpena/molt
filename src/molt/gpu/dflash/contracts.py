@@ -1,8 +1,17 @@
 """DFlash-facing speculative decoding contracts.
 
-This module intentionally contains only generic transport objects. Target-model
-verification logic and draft-model logic stay outside Molt core and communicate
-through these contracts.
+Provenance:
+- Chen, Liang, and Liu, "DFlash: Block Diffusion for Flash Speculative
+  Decoding", arXiv:2602.06036, https://arxiv.org/abs/2602.06036
+- Official DFlash project, https://z-lab.ai/projects/dflash/
+
+The paper/project define DFlash as target-conditioned block-diffusion
+drafting. Target hidden features are fused and injected into each draft
+layer's KV cache; drafting is conditioned on that target context and the last
+verified token. Molt core keeps target-model verification logic and
+draft-model logic outside this module, but the transport contract below is
+strict enough to prevent generic speculative decoding from being mislabeled as
+DFlash.
 """
 
 from __future__ import annotations
@@ -25,6 +34,58 @@ class SpeculativeConditioning:
         self.patch_features = patch_features
         self.position_ids = position_ids
         self.aux = aux
+
+
+class DFlashConditioning(SpeculativeConditioning):
+    """Required target-conditioned payload for a paper-faithful DFlash drafter.
+
+    DFlash drafting is not generic speculative decoding: the drafter must be
+    conditioned on target-model features/KV state and the last verified token.
+    """
+
+    def __init__(
+        self,
+        *,
+        target_features,
+        target_kv,
+        position_ids,
+        last_verified_token: int,
+        patch_features=None,
+        aux=None,
+    ) -> None:
+        if target_features is None:
+            raise ValueError("DFlashConditioning requires target_features")
+        if target_kv is None:
+            raise ValueError("DFlashConditioning requires target_kv")
+        if position_ids is None:
+            raise ValueError("DFlashConditioning requires position_ids")
+        if isinstance(last_verified_token, bool):
+            raise TypeError("last_verified_token must be an integer token id")
+        token = int(last_verified_token)
+        if token != last_verified_token:
+            raise TypeError("last_verified_token must be an integer token id")
+        super().__init__(
+            target_features=target_features,
+            target_kv=target_kv,
+            patch_features=patch_features,
+            position_ids=list(position_ids),
+            aux=aux,
+        )
+        self.last_verified_token = token
+
+
+def require_dflash_conditioning(conditioning, source_name: str = "conditioning"):
+    if not isinstance(conditioning, DFlashConditioning):
+        raise TypeError(f"{source_name} must be DFlashConditioning")
+    if conditioning.target_features is None:
+        raise ValueError(f"{source_name} requires target_features")
+    if conditioning.target_kv is None:
+        raise ValueError(f"{source_name} requires target_kv")
+    if conditioning.position_ids is None:
+        raise ValueError(f"{source_name} requires position_ids")
+    if not hasattr(conditioning, "last_verified_token"):
+        raise ValueError(f"{source_name} requires last_verified_token")
+    return conditioning
 
 
 class SpeculativeDraftRequest:
@@ -84,9 +145,14 @@ class DFlashRuntime:
         *,
         draft_step,
         verify_step,
-        initial_conditioning: SpeculativeConditioning | None = None,
+        initial_conditioning: DFlashConditioning,
         block_size: int | None = None,
     ) -> None:
+        if not callable(draft_step):
+            raise TypeError("DFlashRuntime draft_step must be callable")
+        if not callable(verify_step):
+            raise TypeError("DFlashRuntime verify_step must be callable")
+        require_dflash_conditioning(initial_conditioning, "initial_conditioning")
         self.draft_step = draft_step
         self.verify_step = verify_step
         self.initial_conditioning = initial_conditioning
