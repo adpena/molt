@@ -37,6 +37,33 @@ RUNTIME_OWNED_GPU_EXPORTS = {
     "molt_gpu_interop_decode_bf16_bytes_to_f32",
 }
 
+TINYGRAD_STDLIB_MODULES = {
+    "tinygrad.device",
+    "tinygrad.lazy",
+    "tinygrad.realize",
+    "tinygrad.dtypes",
+    "tinygrad.tensor",
+    "tinygrad.tokenizer",
+    "tinygrad.onnx_interpreter",
+    "tinygrad.paddleocr",
+    "tinygrad.paddleocr_driver",
+    "tinygrad.model_config",
+    "tinygrad.wasm_driver",
+    "tinygrad.examples",
+    "tinygrad.examples.falcon_ocr",
+}
+
+TINYGRAD_STDLIB_GPU_EXPORTS = {
+    "molt_gpu_prim_binary",
+    "molt_gpu_prim_create_tensor",
+    "molt_gpu_prim_device",
+    "molt_gpu_prim_realize",
+    "molt_gpu_prim_reduce",
+    "molt_gpu_prim_unary",
+    "molt_gpu_prim_zeros",
+    "molt_gpu_rope_apply_contiguous",
+}
+
 
 def test_wasm_runtime_import_names_include_ssl_and_set_surface() -> None:
     names = set(wasm_runtime_import_names())
@@ -54,6 +81,13 @@ def test_wasm_runtime_export_link_args_adds_stdlib_intrinsics() -> None:
     flags = wasm_runtime_export_link_args(resolved_modules={"ssl"})
     assert " -C link-arg=--export-if-defined=molt_ssl_cert_none" in flags
     assert " -C link-arg=--export-if-defined=molt_ssl_context_new" in flags
+
+
+def test_wasm_runtime_export_link_args_adds_tinygrad_stdlib_gpu_intrinsics() -> None:
+    flags = wasm_runtime_export_link_args(resolved_modules=TINYGRAD_STDLIB_MODULES)
+
+    for name in sorted(TINYGRAD_STDLIB_GPU_EXPORTS):
+        assert f" -C link-arg=--export-if-defined={name}" in flags
 
 
 def test_wasm_runtime_export_link_args_adds_runtime_owned_gpu_intrinsics() -> None:
