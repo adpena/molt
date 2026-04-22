@@ -2,10 +2,11 @@
  * Compute backend abstraction for Falcon-OCR browser inference.
  *
  * Detects the best available compute backend in priority order:
- *   1. WebGPU  -- tiled matmul via compute shaders (10-100x over CPU)
- *   2. WebGL2  -- fragment shader GPGPU via render-to-texture (3-30x over CPU)
- *   3. WASM SIMD -- 128-bit SIMD intrinsics in WASM (2-4x over scalar)
- *   4. Scalar JS -- baseline, always available
+ *   1. WebNN   -- W3C Neural Network API, hardware-accelerated ML (GPU/NPU/CPU)
+ *   2. WebGPU  -- tiled matmul via compute shaders (10-100x over CPU)
+ *   3. WebGL2  -- fragment shader GPGPU via render-to-texture (3-30x over CPU)
+ *   4. WASM SIMD -- 128-bit SIMD intrinsics in WASM (2-4x over scalar)
+ *   5. Scalar JS -- baseline, always available
  *
  * Each backend implements the same interface:
  *   - matmul(a, b, m, k, n)         -> Promise<Float32Array>
@@ -20,13 +21,14 @@
  * Usage:
  *   import { ComputeEngine } from './compute-engine.js';
  *   const engine = await ComputeEngine.create();
- *   console.log(engine.backendName);  // 'webgpu' | 'webgl2' | 'wasm-simd' | 'scalar'
+ *   console.log(engine.backendName);  // 'webnn' | 'webgpu' | 'webgl2' | 'wasm-simd' | 'scalar'
  */
 
 import { createWebGPUMatmul, cpuMatmul } from './webgpu-matmul.js';
 import { WebGL2Engine as WebGL2GPGPUEngine } from './webgl2-engine.js';
+import { WebNNEngine as WebNNComputeEngine } from './webnn-engine.js';
 
-const AVAILABLE_BACKENDS = new Set(['webgpu', 'webgl2', 'wasm-simd', 'scalar']);
+const AVAILABLE_BACKENDS = new Set(['webnn', 'webgpu', 'webgl2', 'wasm-simd', 'scalar']);
 
 // ---------------------------------------------------------------------------
 // Shared CPU implementations for ops not covered by all backends.
@@ -698,7 +700,13 @@ class ScalarEngine {
 /**
  * Unified compute engine — selects the best available backend.
  *
- * Priority: WebGPU > WebGL2 > WASM SIMD > scalar JS.
+ * Priority: WebNN > WebGPU > WebGL2 > WASM SIMD > scalar JS.
+ *
+ * WebNN is preferred over WebGPU for ML workloads because the browser
+ * can route to GPU, NPU, or optimized CPU (XNNPACK) transparently,
+ * with native op fusion (matmul+bias, conv2d+relu) that custom shaders
+ * cannot achieve. WebGPU remains the fallback for general compute and
+ * browsers that lack WebNN support.
  *
  * All backends expose the same async interface. The caller does not need
  * to know which backend is active.
@@ -709,8 +717,8 @@ export class ComputeEngine {
      *
      * @param {object} [options]
      * @param {string} [options.wasmUrl] - URL to simd-ops.wasm for WASM backend.
-     * @param {string} [options.forceBackend] - Force: 'webgpu' | 'webgl2' | 'wasm-simd' | 'scalar'.
-     * @returns {Promise<WebGPUEngine | WebGL2Engine | WasmSimdEngine | ScalarEngine>}
+     * @param {string} [options.forceBackend] - Force: 'webnn' | 'webgpu' | 'webgl2' | 'wasm-simd' | 'scalar'.
+     * @returns {Promise<WebNNComputeEngine | WebGPUEngine | WebGL2Engine | WasmSimdEngine | ScalarEngine>}
      */
     static async create(options = {}) {
         const { forceBackend, wasmUrl } = options;
@@ -725,7 +733,22 @@ export class ComputeEngine {
             return new ScalarEngine();
         }
 
-        // 1. WebGPU (best: tiled compute shaders, 10-100x over CPU)
+        // 1. WebNN (best for ML: native op fusion, NPU access, no shaders)
+        //    Chrome 130+/Edge 130+ with origin trial. Routes to DirectML,
+        //    CoreML, or XNNPACK depending on platform.
+        if (!forceBackend || forceBackend === 'webnn') {
+            try {
+                const engine = await WebNNComputeEngine.create();
+                if (engine) return engine;
+            } catch {
+                // WebNN not available
+            }
+            if (forceBackend === 'webnn') {
+                throw new Error('ComputeEngine: WebNN requested but not available');
+            }
+        }
+
+        // 2. WebGPU (great: tiled compute shaders, 10-100x over CPU)
         if (!forceBackend || forceBackend === 'webgpu') {
             try {
                 const engine = await WebGPUEngine.create();
@@ -738,7 +761,7 @@ export class ComputeEngine {
             }
         }
 
-        // 2. WebGL2 (good: fragment shader GPGPU, 3-30x over CPU)
+        // 3. WebGL2 (good: fragment shader GPGPU, 3-30x over CPU)
         if (!forceBackend || forceBackend === 'webgl2') {
             try {
                 const engine = await WebGL2Engine.create();
@@ -751,7 +774,7 @@ export class ComputeEngine {
             }
         }
 
-        // 3. WASM SIMD (fallback: CPU with 128-bit SIMD, 2-4x over scalar)
+        // 4. WASM SIMD (fallback: CPU with 128-bit SIMD, 2-4x over scalar)
         if (!forceBackend || forceBackend === 'wasm-simd') {
             try {
                 const engine = await WasmSimdEngine.create(wasmUrl);
@@ -764,9 +787,9 @@ export class ComputeEngine {
             }
         }
 
-        // 4. Scalar JS (always available)
+        // 5. Scalar JS (always available)
         return new ScalarEngine();
     }
 }
 
-export { WebGPUEngine, WebGL2Engine, WasmSimdEngine, ScalarEngine };
+export { WebNNComputeEngine, WebGPUEngine, WebGL2Engine, WasmSimdEngine, ScalarEngine };

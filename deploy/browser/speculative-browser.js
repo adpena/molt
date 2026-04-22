@@ -75,7 +75,7 @@ function softmax(logits) {
  * Single-head attention: Q @ K^T / sqrt(d) -> softmax -> @ V.
  * Operates on pre-projected Q, K, V matrices for one head.
  *
- * @param {import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine} compute
+ * @param {import('./compute-engine.js').WebNNComputeEngine | import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine} compute
  * @param {Float32Array} q - [seqLen, headDim]
  * @param {Float32Array} k - [seqLen, headDim]
  * @param {Float32Array} v - [seqLen, headDim]
@@ -164,7 +164,7 @@ function getWeight(weights, name) {
 // ---------------------------------------------------------------------------
 
 export class SpeculativeBrowserDecoder {
-  /** @type {import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine} */
+  /** @type {import('./compute-engine.js').WebNNComputeEngine | import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine} */
   #compute;
   /** @type {Map<string, { data: Float32Array, shape: number[] }>} */
   #weights;
@@ -180,7 +180,7 @@ export class SpeculativeBrowserDecoder {
   #stats;
 
   /**
-   * @param {import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine} computeEngine
+   * @param {import('./compute-engine.js').WebNNComputeEngine | import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine} computeEngine
    * @param {Map<string, { data: Float32Array, shape: number[] }>} weights - Named weight tensors
    * @param {object} config - Model config (n_layers, hidden_size, n_heads, vocab_size, eos_token_id, etc.)
    * @param {object} [options]
