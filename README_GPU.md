@@ -132,5 +132,43 @@ Analytics are written to Cloudflare Analytics Engine on every request. Query via
 ## Model Variants (priority order)
 
 1. **Workers AI** -- GPU fleet inference, zero CPU cost, preferred for production
-2. **Molt-GPU** -- Local WASM + WebGPU, used for browser-side and high-memory Worker plans
-3. **PaddleOCR** -- CPU fallback, available when GPU paths are exhausted
+2. **External GPU** -- HuggingFace/Replicate/RunPod/Modal/Fly.io, bfloat16 quality (via `X-Use-Backend: gpu`)
+3. **Molt-GPU** -- Local WASM + WebGPU, used for browser-side and high-memory Worker plans
+4. **PaddleOCR** -- CPU fallback, available when GPU paths are exhausted
+
+## External GPU Inference (bfloat16 quality)
+
+For production-quality OCR with the official Falcon-OCR model at full bfloat16 precision,
+use the GPU inference proxy. The Worker forwards requests to an external GPU service.
+
+### Setup
+
+Set three secrets via `wrangler secret put`:
+
+```bash
+wrangler secret put GPU_INFERENCE_URL    # Full endpoint URL
+wrangler secret put GPU_INFERENCE_KEY    # Bearer token / API key
+wrangler secret put GPU_INFERENCE_PROVIDER  # huggingface | replicate | runpod | modal | flyio
+```
+
+### Provider comparison
+
+| Provider | GPU Options | Pricing | Cold Start | Notes |
+|----------|-----------|---------|------------|-------|
+| HuggingFace IE | A10G, A100 | $1.30-6.50/hr | ~60s | Easiest setup for HF models |
+| Replicate | A40, A100 | Per prediction (~$0.005) | ~30s | Push Docker image as Cog model |
+| RunPod | A100, H100, 4090 | $0.00076-0.00146/s | ~5s (serverless) | Lowest latency for sustained load |
+| Modal | A100, H100 | Per-second billing | ~30s | Best for bursty workloads |
+| Fly.io | A100, H100 | $2.50/hr | Persistent | Best for always-on deployment |
+
+### Usage
+
+```bash
+curl -X POST https://falcon-ocr.adpena.workers.dev/ocr \
+  -H "Content-Type: application/json" \
+  -H "X-Use-Backend: gpu" \
+  -H "X-Payment-402: <payment-proof>" \
+  -d '{"image": "<base64>"}'
+```
+
+Docker image for self-hosted backends: `ghcr.io/tiiuae/falcon-ocr:latest`

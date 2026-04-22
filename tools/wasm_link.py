@@ -4438,7 +4438,11 @@ _LEVEL_PASSES: dict[str, list[str]] = {
 
 
 def _run_wasm_opt_via_optimize(
-    linked: Path, level: str = "Oz", *, converge: bool = True
+    linked: Path,
+    level: str = "Oz",
+    *,
+    converge: bool = True,
+    required_exports: set[str] | None = None,
 ) -> bool:
     """Run wasm-opt on the linked binary via tools/wasm_optimize.py.
 
@@ -4466,12 +4470,18 @@ def _run_wasm_opt_via_optimize(
 
     pre_size = linked.stat().st_size
     temp_output = linked.with_suffix(".opt.wasm")
+    if required_exports is None:
+        try:
+            required_exports = set(_collect_function_exports(linked.read_bytes()))
+        except (OSError, ValueError):
+            required_exports = set()
     result = mod.optimize(
         linked,
         output_path=temp_output,
         level=level,
         extra_passes=extra_passes,
         converge=converge,
+        required_exports=required_exports,
     )
 
     if not result["ok"]:

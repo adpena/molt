@@ -51,6 +51,7 @@ async function getSimdOpsWasm() {
   return _simdOpsWasm;
 }
 import { isWorkersAiAvailable } from "./ai-fallback.js";
+import { proxyToGPU, gpuInferenceStatus } from "./gpu-proxy.js";
 
 // ---------------------------------------------------------------------------
 // Embedded browser test page HTML (serves at /test)
@@ -1403,6 +1404,7 @@ export default {
                   note: "Experimental — activate with X-Use-Backend: falcon-ocr header",
                 },
               },
+              gpu_inference: gpuInferenceStatus(env),
               workers_ai_available: isWorkersAiAvailable(env),
               wasm_available: true,
               cache: {
@@ -1499,6 +1501,75 @@ export default {
                 status: 503,
                 headers: { ...cors, "Content-Type": "application/json" },
               },
+            );
+          }
+        }
+
+        // External GPU service path (X-Use-Backend: gpu).
+        // Forwards to an external GPU inference service for bfloat16-quality inference.
+        if (path === "/ocr" && useBackend === "gpu") {
+          try {
+            const body = await request.json();
+            if (!body.image || typeof body.image !== "string") {
+              return new Response(
+                JSON.stringify({ error: "Missing 'image' field (base64 string)", request_id: rid }),
+                { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+              );
+            }
+
+            const gpuStatus = gpuInferenceStatus(env);
+            if (!gpuStatus.configured) {
+              return new Response(
+                JSON.stringify({
+                  error: "GPU inference not configured",
+                  detail: "Set GPU_INFERENCE_URL, GPU_INFERENCE_KEY, and GPU_INFERENCE_PROVIDER secrets",
+                  request_id: rid,
+                  fallback_hint: "Use X-Use-Backend: falcon-ocr for edge CPU, or PaddleOCR client-side",
+                }),
+                { status: 501, headers: { ...cors, "Content-Type": "application/json" } },
+              );
+            }
+
+            const result = await proxyToGPU(env, body.image, {
+              maxTokens: body.max_tokens || 512,
+              category: body.category || "plain",
+              timeout: 30_000,
+            });
+
+            if (!result) {
+              return new Response(
+                JSON.stringify({
+                  error: "GPU inference failed or timed out",
+                  provider: gpuStatus.provider,
+                  request_id: rid,
+                  fallback_hint: "Use X-Use-Backend: falcon-ocr for edge CPU inference",
+                }),
+                { status: 502, headers: { ...cors, "Content-Type": "application/json" } },
+              );
+            }
+
+            return new Response(
+              JSON.stringify({ ...result, request_id: rid }),
+              {
+                status: 200,
+                headers: {
+                  ...cors,
+                  ...receiptHeaders,
+                  "Content-Type": "application/json",
+                  "X-Request-ID": rid,
+                },
+              },
+            );
+          } catch (gpuErr) {
+            console.error(`GPU proxy error: ${gpuErr.message} [rid=${rid}]`);
+            return new Response(
+              JSON.stringify({
+                error: "GPU inference request failed",
+                reason: gpuErr.message,
+                request_id: rid,
+                fallback_hint: "Use X-Use-Backend: falcon-ocr for edge CPU, or PaddleOCR client-side",
+              }),
+              { status: 502, headers: { ...cors, "Content-Type": "application/json" } },
             );
           }
         }
