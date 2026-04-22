@@ -10,6 +10,11 @@ Paper-faithful DFlash support lives behind the explicit adapter contract in
 speculative helpers cannot be imported under the DFlash name.
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_gpu_device = _require_intrinsic("molt_gpu_prim_device")
+
+
 raise ImportError(
     "tinygrad.dflash is not available: DFlash requires a target-conditioned "
     "block-diffusion drafter/verifier adapter. Use molt.gpu.dflash for the "

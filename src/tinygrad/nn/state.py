@@ -21,7 +21,7 @@ def safe_load(blob) -> dict[str, Tensor]:
         raise TypeError(
             f"safe_load expects bytes-like or Tensor, got {type(blob).__name__}"
         )
-    return load_safetensors_bytes(payload)
+    return dict(load_safetensors_bytes(payload).items())
 
 
 def load_state_dict(

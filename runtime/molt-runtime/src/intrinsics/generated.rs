@@ -633,6 +633,41 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
     },
     IntrinsicSpec {
+        name: "molt_gpu_prim_create_tensor",
+        symbol: "molt_gpu_prim_create_tensor",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_gpu_prim_zeros",
+        symbol: "molt_gpu_prim_zeros",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_gpu_prim_realize",
+        symbol: "molt_gpu_prim_realize",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_gpu_prim_unary",
+        symbol: "molt_gpu_prim_unary",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_gpu_prim_binary",
+        symbol: "molt_gpu_prim_binary",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_gpu_prim_reduce",
+        symbol: "molt_gpu_prim_reduce",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_gpu_prim_device",
+        symbol: "molt_gpu_prim_device",
+        arity: 0,
+    },
+    IntrinsicSpec {
         name: "molt_argparse_parse",
         symbol: "molt_argparse_parse",
         arity: 2,
@@ -12877,6 +12912,41 @@ fn resolve_core_symbol(symbol: &str) -> Option<u64> {
         "molt_tuple_getitem_borrowed" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_tuple_getitem_borrowed",
             crate::molt_tuple_getitem_borrowed as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_prim_create_tensor" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_prim_create_tensor",
+            crate::molt_gpu_prim_create_tensor as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_prim_zeros" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_prim_zeros",
+            crate::molt_gpu_prim_zeros as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_prim_realize" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_prim_realize",
+            crate::molt_gpu_prim_realize as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_prim_unary" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_prim_unary",
+            crate::molt_gpu_prim_unary as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_prim_binary" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_prim_binary",
+            crate::molt_gpu_prim_binary as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_prim_reduce" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_prim_reduce",
+            crate::molt_gpu_prim_reduce as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_prim_device" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_prim_device",
+            crate::molt_gpu_prim_device as *const (),
         )),
         _ => None,
     }

@@ -444,15 +444,18 @@ def check_required_probe_execution(
         if normalized not in required:
             continue
         current = latest_by_probe.get(normalized)
+        current_timestamp = (
+            current.get("timestamp") if isinstance(current, dict) else None
+        )
+        payload_timestamp = payload.get("timestamp")
         current_ts = (
-            float(current.get("timestamp"))
-            if isinstance(current, dict)
-            and isinstance(current.get("timestamp"), (int, float))
+            float(current_timestamp)
+            if isinstance(current_timestamp, (int, float))
             else float("-inf")
         )
         new_ts = (
-            float(payload.get("timestamp"))
-            if isinstance(payload.get("timestamp"), (int, float))
+            float(payload_timestamp)
+            if isinstance(payload_timestamp, (int, float))
             else float("-inf")
         )
         if new_ts >= current_ts:

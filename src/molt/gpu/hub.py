@@ -30,7 +30,10 @@ def _validate_revision(revision: str) -> None:
 
 
 def download_model(
-    repo_id: str, filename: str = None, revision: str = "main", cache_dir: str = None
+    repo_id: str,
+    filename: str | None = None,
+    revision: str = "main",
+    cache_dir: str | None = None,
 ) -> str:
     """Download a model file from HuggingFace Hub.
 

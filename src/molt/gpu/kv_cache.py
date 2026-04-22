@@ -8,7 +8,7 @@ import _intrinsics as _molt_intrinsics
 
 from . import Buffer, to_device
 from .tensor import Tensor, tensor_permute_dims, tensor_softmax_last_axis
-from .turboquant import TurboQuantCodec
+from .turboquant import TurboQuantCodec, TurboQuantProdVector
 
 
 def _load_optional_intrinsic(name: str):
@@ -326,17 +326,17 @@ class TurboQuantAttentionKVCache:
 
     def __init__(self, codec: TurboQuantCodec) -> None:
         self.codec = codec
-        self._key_vectors = None
-        self._value_vectors = None
-        self._batch = None
-        self._heads = None
-        self._decoded_value_rows = None
-        self._runtime_mse_signs = None
-        self._runtime_qjl_signs = None
-        self._runtime_key_mse_weight_rows = None
-        self._runtime_key_residual_sign_rows = None
-        self._runtime_key_residual_scale_rows = None
-        self._runtime_value_rows = None
+        self._key_vectors: list[list[list[TurboQuantProdVector]]] | None = None
+        self._value_vectors: list[list[list[TurboQuantProdVector]]] | None = None
+        self._batch: int | None = None
+        self._heads: int | None = None
+        self._decoded_value_rows: list[list[list[list[float]]]] | None = None
+        self._runtime_mse_signs: Tensor | None = None
+        self._runtime_qjl_signs: Tensor | None = None
+        self._runtime_key_mse_weight_rows: Tensor | None = None
+        self._runtime_key_residual_sign_rows: Tensor | None = None
+        self._runtime_key_residual_scale_rows: Tensor | None = None
+        self._runtime_value_rows: Tensor | None = None
 
     def __len__(self) -> int:
         if self._key_vectors is None:
@@ -362,18 +362,22 @@ class TurboQuantAttentionKVCache:
             self._value_vectors = [[[] for _ in range(heads)] for _ in range(batch)]
         elif self._batch != batch or self._heads != heads:
             raise ValueError("KV cache append requires matching batch and head counts")
+        key_vectors = self._key_vectors
+        value_vectors = self._value_vectors
+        assert key_vectors is not None
+        assert value_vectors is not None
 
         k_rows = k.to_list()
         v_rows = v.to_list()
         for batch_index in range(batch):
             for head_index in range(heads):
                 for seq_index in range(seq):
-                    self._key_vectors[batch_index][head_index].append(
+                    key_vectors[batch_index][head_index].append(
                         self.codec.quantize_prod(
                             k_rows[batch_index][head_index][seq_index]
                         )
                     )
-                    self._value_vectors[batch_index][head_index].append(
+                    value_vectors[batch_index][head_index].append(
                         self.codec.quantize_prod(
                             v_rows[batch_index][head_index][seq_index]
                         )
@@ -471,6 +475,9 @@ class TurboQuantAttentionKVCache:
             self._key_vectors is None or self._value_vectors is None
         ):
             raise RuntimeError("cannot attend with an empty KV cache")
+        if self._heads is None:
+            raise RuntimeError("KV cache head count is not initialized")
+        kv_heads = self._heads
 
         batch, heads, query_seq, head_dim = q.shape
         if batch != self._batch:
@@ -491,21 +498,28 @@ class TurboQuantAttentionKVCache:
 
         q_rows = q.to_list()
         result = []
+        runtime_mse_signs = self._runtime_mse_signs
+        runtime_qjl_signs = self._runtime_qjl_signs
+        runtime_key_mse_weight_rows = self._runtime_key_mse_weight_rows
+        runtime_key_residual_sign_rows = self._runtime_key_residual_sign_rows
+        runtime_key_residual_scale_rows = self._runtime_key_residual_scale_rows
+        runtime_value_rows = self._runtime_value_rows
+        key_vectors = self._key_vectors
         shadow_mse_signs = (
-            [float(value) for value in self._runtime_mse_signs.to_list()]
-            if use_shadow
+            [float(value) for value in runtime_mse_signs.to_list()]
+            if use_shadow and runtime_mse_signs is not None
             else None
         )
         shadow_qjl_signs = (
-            [float(value) for value in self._runtime_qjl_signs.to_list()]
-            if use_shadow
+            [float(value) for value in runtime_qjl_signs.to_list()]
+            if use_shadow and runtime_qjl_signs is not None
             else None
         )
 
         for batch_index in range(batch):
             batch_out = []
             for query_head_index in range(heads):
-                kv_head_index = _kv_head_index(heads, self._heads, query_head_index)
+                kv_head_index = _kv_head_index(heads, kv_heads, query_head_index)
                 decoded_values = (
                     self._decoded_values_for_head(batch_index, kv_head_index)
                     if not use_shadow
@@ -516,22 +530,28 @@ class TurboQuantAttentionKVCache:
                     query_row = q_rows[batch_index][query_head_index][query_index]
                     logits = []
                     if use_shadow:
+                        assert shadow_mse_signs is not None
+                        assert shadow_qjl_signs is not None
+                        assert runtime_key_mse_weight_rows is not None
+                        assert runtime_key_residual_sign_rows is not None
+                        assert runtime_key_residual_scale_rows is not None
+                        assert runtime_value_rows is not None
                         rotated_query = _hadamard_apply_with_signs(
                             query_row, shadow_mse_signs
                         )
                         query_sketch = _hadamard_apply_with_signs(
                             query_row, shadow_qjl_signs
                         )
-                        seq_k = self._runtime_key_mse_weight_rows.shape[2]
+                        seq_k = runtime_key_mse_weight_rows.shape[2]
                         for seq_index in range(seq_k):
-                            mse_weights = self._runtime_key_mse_weight_rows[
+                            mse_weights = runtime_key_mse_weight_rows[
                                 batch_index, kv_head_index, seq_index, :
                             ].to_list()
-                            residual_signs = self._runtime_key_residual_sign_rows[
+                            residual_signs = runtime_key_residual_sign_rows[
                                 batch_index, kv_head_index, seq_index, :
                             ].to_list()
                             residual_scale = float(
-                                self._runtime_key_residual_scale_rows[
+                                runtime_key_residual_scale_rows[
                                     batch_index, kv_head_index, seq_index
                                 ].item()
                             )
@@ -547,8 +567,10 @@ class TurboQuantAttentionKVCache:
                                 )
                             logits.append((score + residual * residual_scale) * scale)
                     else:
+                        assert key_vectors is not None
+                        assert decoded_values is not None
                         prepared = self.codec.prepare_query(query_row)
-                        for encoded in self._key_vectors[batch_index][kv_head_index]:
+                        for encoded in key_vectors[batch_index][kv_head_index]:
                             logits.append(
                                 self.codec.estimate_inner_product_prepared(
                                     prepared, encoded
@@ -572,11 +594,12 @@ class TurboQuantAttentionKVCache:
                     weights = Tensor(logits, shape=(len(logits),)).softmax().to_list()
                     out_row = []
                     if use_shadow:
+                        assert runtime_value_rows is not None
                         for dim_index in range(head_dim):
                             acc = 0.0
                             for value_index in range(len(weights)):
                                 value = float(
-                                    self._runtime_value_rows[
+                                    runtime_value_rows[
                                         batch_index,
                                         kv_head_index,
                                         value_index,
@@ -586,6 +609,7 @@ class TurboQuantAttentionKVCache:
                                 acc += weights[value_index] * value
                             out_row.append(acc)
                     else:
+                        assert decoded_values is not None
                         for dim_index in range(head_dim):
                             acc = 0.0
                             for value_index, value_row in enumerate(decoded_values):
@@ -603,12 +627,15 @@ class TurboQuantAttentionKVCache:
         self, batch_index: int, kv_head_index: int
     ) -> list[list[float]]:
         if self._decoded_value_rows is None:
+            assert self._batch is not None
+            assert self._heads is not None
             self._decoded_value_rows = [
                 [[] for _ in range(self._heads)] for _ in range(self._batch)
             ]
         cached = self._decoded_value_rows[batch_index][kv_head_index]
         if cached:
             return cached
+        assert self._value_vectors is not None
         rows = [
             self.codec.dequantize(encoded).to_list()
             for encoded in self._value_vectors[batch_index][kv_head_index]
@@ -638,6 +665,8 @@ class TurboQuantAttentionKVCache:
             raise RuntimeError(
                 "cannot build TurboQuant runtime shadow rows from an empty cache"
             )
+        assert self._batch is not None
+        assert self._heads is not None
 
         batch = self._batch
         heads = self._heads
@@ -711,6 +740,8 @@ class TurboQuantAttentionKVCache:
             return
         if length == current:
             return
+        assert self._batch is not None
+        assert self._heads is not None
         if length == 0:
             self._key_vectors = None
             self._value_vectors = None

@@ -19,7 +19,14 @@ import math
 import operator
 import os
 import _intrinsics as _molt_intrinsics
+from builtins import float as _float
 from . import Buffer, alloc, to_device, from_device
+
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Any
+else:
+    Any = object()
 
 
 def _load_optional_intrinsic(name: str):
@@ -82,7 +89,7 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
         try:
             intrinsic = loader(intrinsic_name)
         except RuntimeError as exc:
-            if _requested_gpu_backend() is not None:
+            if _requested_gpu_backend() is not None and _runtime_intrinsics_active():
                 raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}") from exc
         else:
             if intrinsic is not None:
@@ -94,14 +101,14 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
         try:
             intrinsic = require(intrinsic_name)
         except RuntimeError as exc:
-            if _requested_gpu_backend() is not None:
+            if _requested_gpu_backend() is not None and _runtime_intrinsics_active():
                 raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}") from exc
         else:
             if intrinsic is not None:
                 globals()[cache_name] = intrinsic
                 return intrinsic
 
-    if _requested_gpu_backend() is not None:
+    if _requested_gpu_backend() is not None and _runtime_intrinsics_active():
         raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}")
     return None
 
@@ -353,7 +360,8 @@ def tensor_linear(x: "Tensor", weight: "Tensor") -> "Tensor":
         raise ValueError("linear input must be at least 1D")
 
     in_features = x_shape[-1]
-    out_features, weight_in = weight_shape
+    out_features = weight_shape[0]
+    weight_in = weight_shape[1]
     if in_features != weight_in:
         raise ValueError(f"Linear shape mismatch: {x_shape} with weight {weight_shape}")
 
@@ -448,7 +456,8 @@ def tensor_linear_split_last_dim(
         raise ValueError("split sizes must be non-negative")
 
     in_features = x_shape[-1]
-    out_features, weight_in = weight_shape
+    out_features = weight_shape[0]
+    weight_in = weight_shape[1]
     if in_features != weight_in:
         raise ValueError(f"Linear shape mismatch: {x_shape} with weight {weight_shape}")
     if sum(sizes) != out_features:
@@ -525,7 +534,8 @@ def tensor_linear_squared_relu_gate_interleaved(
         raise ValueError("linear input must be at least 1D")
 
     in_features = x_shape[-1]
-    out_features, weight_in = weight_shape
+    out_features = weight_shape[0]
+    weight_in = weight_shape[1]
     if in_features != weight_in:
         raise ValueError(f"Linear shape mismatch: {x_shape} with weight {weight_shape}")
     if out_features % 2 != 0:
@@ -1031,6 +1041,7 @@ class Tensor:
             shape: optional shape tuple (required if data is flat list)
             dtype: element type (float or int)
         """
+        self._shape: tuple[int, ...]
         if isinstance(data, Buffer):
             self._buf = data
             if shape is None:
@@ -1376,7 +1387,7 @@ class Tensor:
 
     # ── Elementwise arithmetic ────────────────────────────────────────
 
-    def _apply_binary_op(self, a: float, b: float, op_code: int) -> float:
+    def _apply_binary_op(self, a: _float, b: _float, op_code: int) -> _float:
         if op_code == _OP_ADD:
             return a + b
         if op_code == _OP_SUB:
@@ -2047,7 +2058,7 @@ class Tensor:
             out_buf[idx] = value
         return Tensor(out_buf, shape=self._shape, dtype=self._dtype)
 
-    def layernorm(self, axis=-1, eps: float = 1e-5) -> "Tensor":
+    def layernorm(self, axis=-1, eps: _float = 1e-5) -> "Tensor":
         """Layer normalization over one or more axes."""
         if self.ndim == 0:
             raise ValueError("layernorm requires a tensor with at least 1 dimension")
@@ -2084,7 +2095,7 @@ class Tensor:
         k: "Tensor",
         v: "Tensor",
         attn_mask: "Tensor | None" = None,
-        scale: float | None = None,
+        scale: _float | None = None,
         is_causal: bool = False,
     ) -> "Tensor":
         """tinygrad-compatible SDPA instance method."""
@@ -2105,7 +2116,7 @@ class Tensor:
             mask = causal_mask if mask is None else mask + causal_mask
         return tensor_scaled_dot_product_attention(self, k, v, mask, actual_scale)
 
-    def rms_norm(self, eps: float) -> "Tensor":
+    def rms_norm(self, eps: _float) -> "Tensor":
         """RMSNorm over the last axis."""
         if self.ndim == 0:
             raise ValueError("rms_norm requires a tensor with at least 1 dimension")
@@ -2280,7 +2291,7 @@ class Tensor:
 
     # ── Conversion / display ──────────────────────────────────────────
 
-    def to_list(self) -> list:
+    def to_list(self) -> Any:
         """Convert tensor to a (possibly nested) Python list."""
         data = self._data_list()
         if not self._shape:
