@@ -38,7 +38,8 @@ import {
   type OcrResult,
 } from "./falcon-ocr-molt";
 
-// Browser-side Falcon-OCR WASM loader for offline inference
+// Optional legacy browser-driver bridge. The canonical enjoice handoff path is
+// the direct Molt WASM session created by createFalconOcrSession().
 import type { FalconOCR as FalconOCRLoader } from "../browser/falcon-ocr-loader.js";
 
 // --------------------------------------------------------------------------
@@ -46,7 +47,11 @@ import type { FalconOCR as FalconOCRLoader } from "../browser/falcon-ocr-loader.
 // --------------------------------------------------------------------------
 
 /**
- * Available OCR engines in priority order.
+ * Internal OCR engines in priority order.
+ *
+ * Product-level backend selection uses `molt-gpu` / `paddle-wasm` /
+ * `server-side` in capabilities-update.ts. The Falcon-specific names below are
+ * implementation lanes inside MoltOcrBackend.
  *
  * - falcon-ocr-webgpu: Falcon-OCR with WebGPU compute (accelerated browser path)
  * - falcon-ocr-wasm: Falcon-OCR with WASM SIMD (browser, no GPU required)

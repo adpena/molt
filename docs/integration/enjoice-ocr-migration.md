@@ -1,84 +1,77 @@
 # enjoice OCR Migration Guide: molt GPU Stack
 
-This document describes how to update enjoice's Falcon-OCR integration
-to use the new molt-compiled WASM module deployed on Cloudflare Workers.
+This document describes the Molt-owned handoff artifacts for updating
+enjoice's OCR integration to use the molt-compiled Falcon-OCR WASM module.
+The canonical source files in this repository live under `deploy/enjoice/`;
+the `site/src/...` paths below are downstream enjoice application targets.
 
 ## Overview
 
-The current enjoice OCR architecture has three backends (defined in
-`site/src/lib/ocr/index.ts`):
+The downstream enjoice OCR architecture has three product-level backend
+choices (defined in `site/src/lib/ocr/index.ts`):
 
-1. **Falcon-OCR** (browser-side, WebGPU) -- best accuracy, currently
-   loading from a manifest-driven Molt driver module
-2. **PaddleOCR** (browser-side, WASM) -- production-ready fallback
+1. **Molt GPU / Falcon-OCR** (browser-side WebGPU/WASM through
+   `deploy/enjoice/falcon-ocr-molt.ts` and `deploy/enjoice/ocr-backend-molt.ts`)
+2. **PaddleOCR** (browser-side WASM) -- production-ready fallback
 3. **Server-side OCR** (via `/api/ocr`) -- last resort
 
-The migration replaces the browser-side Falcon-OCR path with the new
-molt-compiled WASM module.  PaddleOCR and server-side OCR are
-**unchanged**.
+The migration replaces older manifest-driven Falcon browser-driver wiring
+with the direct Molt WASM session adapter. PaddleOCR and server-side OCR are
+unchanged.
 
 ## What Changes
 
-### 1. `site/src/lib/ocr/falcon-wrapper.ts`
+### 1. `deploy/enjoice/falcon-ocr-molt.ts`
 
-**Current state:** Loads a browser module via dynamic `import()` from a
-configured URL, initializes a `FalconDriverSession`, and calls
-`session.ocrTokens()`.
+**Canonical source:** Molt-owned handoff adapter that downstream enjoice
+copies to `site/src/lib/ocr/falcon-ocr-molt.ts`.
 
-**New state:** Load the molt-compiled `falcon-ocr.wasm` directly.  The
-WASM module exports `init()` and `ocr_tokens()` matching the Python API.
+**Current state:** Creates a direct WASM session, streams weights/config
+from R2/CDN, preprocesses image input, calls the Molt exports, and decodes
+tokens.
 
 Changes required:
 
-- Replace `loadFalconDriverModule()` with a direct `WebAssembly.instantiateStreaming()`
-  call pointing to the deployed WASM URL.
-- Remove `FalconDriverModule` and `FalconDriverSession` interfaces.
-- Replace `session.ocrTokens()` with a direct call to the WASM export:
+- Load the molt-compiled `falcon-ocr.wasm` directly from the configured
+  `wasmUrl`.
+- Call the WASM export:
   `wasmInstance.exports.ocr_tokens(width, height, rgb, promptIds, maxNewTokens)`.
-- Keep the existing `imageToRgbPatchAligned()` logic for image
-  preprocessing (or move it to a local utility since it's no longer
-  part of the driver module).
-- Keep the tokenizer loading and decode logic (`falcon-tokenizer.ts`)
-  -- the WASM module returns token IDs, not text.
+- Keep tokenizer loading/decode local to the adapter because the WASM module
+  returns token IDs, not text.
 
-### 2. `site/src/lib/ocr/falcon-config.ts`
+### 2. `deploy/enjoice/ocr-backend-molt.ts`
 
-**Current state:** Three configurable URLs: browser module, manifest,
-tokenizer.
+**Canonical source:** Molt-owned `OcrBackend` implementation handoff for the
+downstream enjoice app.
 
-**New state:** Two URLs: WASM module and tokenizer.
+**Current state:** Selects the internal Falcon engine (`falcon-ocr-webgpu` or
+`falcon-ocr-wasm`), creates the direct Molt WASM session, and reports
+fallback-ready OCR metadata to enjoice.
 
 Changes required:
 
-- Remove `browserModuleUrl` / `FALCON_OCR_BROWSER_MODULE_URL` -- replaced
-  by a direct WASM URL.
-- Remove `manifestUrl` / `FALCON_OCR_MANIFEST_URL` -- no longer needed.
-- Add `wasmUrl` / `FALCON_OCR_WASM_URL` pointing to the deployed WASM binary
+- Configure `wasmUrl` / `FALCON_OCR_WASM_URL` for the deployed WASM binary
   (default: `https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm`,
   served from R2 via the Worker).
-- Keep `tokenizerUrl` / `FALCON_OCR_TOKENIZER_URL` pointing at the tokenizer
-  artifact (default: `https://falcon-ocr.adpena.workers.dev/tokenizer.json`).
+- Configure `weightsUrl`, `configUrl`, and `tokenizerUrl` to the matching
+  model artifacts. The default tokenizer artifact remains
+  `https://falcon-ocr.adpena.workers.dev/tokenizer.json`.
+- Do not reintroduce manifest-driver URLs for the downstream enjoice app.
 
-### 3. `site/src/lib/capabilities.ts`
+### 3. `deploy/enjoice/capabilities-update.ts`
 
-**No changes required.**  The existing `webgpu` capability check is
-sufficient.  The new WASM module uses WebGPU when available and falls
-back to CPU WASM execution.
+**Canonical source:** Product-level backend selection helper for downstream
+enjoice. Its `molt-gpu` choice maps to the internal Falcon WebGPU/WASM
+engine selection inside `ocr-backend-molt.ts`.
 
 ### 4. `site/src/lib/ocr/index.ts`
 
 **Minimal changes.**  The `OcrResult` type, the multi-backend fallback
 chain, and the PaddleOCR/server paths are all unchanged.
 
-The only change is that `loadFalconOcrWasm()` now loads the new WASM
-module instead of the old manifest-driven driver.  This is encapsulated
-in `falcon-wrapper.ts`, so `index.ts` should not need changes beyond
-possibly updating error messages.
-
-### 5. `site/src/lib/ocr/falcon-tokenizer.ts`
-
-**No changes required.**  Token encoding/decoding is independent of the
-inference module.
+The only change is that the backend factory should instantiate
+`MoltOcrBackend` from the copied `ocr-backend-molt.ts` handoff file when
+`detectOcrCapabilities()` recommends `molt-gpu`.
 
 ## What Does NOT Change
 

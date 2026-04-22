@@ -9,9 +9,11 @@ This directory intentionally lives in `molt`:
   import layer.
 
 Files:
-- `browser.js`: browser-facing runtime loader and `ocrTokens` driver API, with `manifestUrl` bootstrap support
+- `browser.js`: target-local browser-facing runtime loader and `ocrTokens`
+  driver API, with legacy manifest bootstrap support for this driver lane
 - `wrangler.jsonc`: target-local Cloudflare Worker config
-- `worker.ts`: thin Cloudflare manifest/bootstrap worker
+- `worker.ts`: thin Cloudflare manifest/bootstrap worker for this legacy
+  driver-discovery lane
 - `deploy.py`: deployment-surface discovery plus bundle materialization and immutable artifact manifest/hashes
 - `verify.py`: materialize + `wrangler check` + `deploy --dry-run` verifier
 - `bench_hostfed.py`: host-fed benchmark wrapper using Molt's generic helper
@@ -22,7 +24,9 @@ Target root contract:
 - Falcon config at either `config.json` or `weights/config.json`
 
 Bootstrap contract:
-- `initFalconBrowserWebGpu()` always resolves the manifest and artifacts first.
+- `initFalconBrowserWebGpu()` always resolves this driver's manifest and
+  artifacts first. This is intentionally separate from the direct-WASM
+  `deploy/enjoice/` integration path.
 - WebGPU capability is enforced lazily by the browser host only if the loaded
   application actually exercises GPU kernel dispatch, or when the caller
   injects a `gpuKernelDispatcher`.
