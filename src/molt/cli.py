@@ -28689,6 +28689,26 @@ def extension_build(
         link_command.extend(str(path) for path in object_paths)
         link_command.append(str(runtime_lib))
         link_command.extend(["-o", str(built_extension)])
+        _append_darwin_runtime_frameworks(
+            link_command,
+            target_triple=runtime_target_triple,
+        )
+        if sys.platform == "darwin" and runtime_target_triple is None:
+            link_command.extend(["-undefined", "dynamic_lookup"])
+            for framework in ["Metal", "Foundation", "QuartzCore", "AppKit"]:
+                has_framework = any(
+                    link_command[idx] == "-framework"
+                    and idx + 1 < len(link_command)
+                    and link_command[idx + 1] == framework
+                    for idx in range(len(link_command))
+                )
+                if not has_framework:
+                    link_command.extend(["-framework", framework])
+            if "-lobjc" not in link_command:
+                link_command.append("-lobjc")
+        cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
+        link_command.extend(cargo_search)
+        link_command.extend(cargo_libs)
         link_command.extend(link_args)
         link_result = subprocess.run(
             link_command,
