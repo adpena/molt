@@ -431,7 +431,7 @@ def test_embedding_discrimination():
     sim_13 = cosine_similarity(emb1, emb3)
     sim_23 = cosine_similarity(emb2, emb3)
 
-    print(f"Embedding discrimination:")
+    print("Embedding discrimination:")
     print(f"  text-vs-diagonal cosine: {sim_12:.4f}")
     print(f"  text-vs-gray cosine:     {sim_13:.4f}")
     print(f"  diagonal-vs-gray cosine: {sim_23:.4f}")
@@ -456,7 +456,7 @@ def test_embedding_discrimination():
     # At least one pair must be meaningfully different
     min_sim = min(abs(sim_12), abs(sim_13), abs(sim_23))
     assert min_sim < 0.99, \
-        f"All pairwise similarities > 0.99 — projector does not discriminate"
+        "All pairwise similarities > 0.99 — projector does not discriminate"
 
     print("  PASS: Embeddings are discriminative")
 
@@ -656,7 +656,7 @@ def test_logit_distribution():
     top5 = indexed_logits[:5]
     bot5 = indexed_logits[-5:]
 
-    print(f"Logit stats:")
+    print("Logit stats:")
     print(f"  n_logits:      {len(logits)}")
     print(f"  entropy:       {ent:.4f} nats")
     print(f"  max_entropy:   {max_entropy:.4f} nats (uniform)")

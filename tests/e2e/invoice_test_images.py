@@ -292,7 +292,7 @@ def main() -> None:
         extra_str = f" ({', '.join(extras)})" if extras else ""
         print(f"  [{i:02d}] {w}x{h} font={config['font_size']}{extra_str} -> {path.name}")
 
-    print(f"\nDownloading public-domain invoice samples...")
+    print("\nDownloading public-domain invoice samples...")
     downloaded = download_samples()
     print(f"\nDone: {len(downloaded)} samples downloaded")
 

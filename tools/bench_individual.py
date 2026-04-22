@@ -483,9 +483,9 @@ def main() -> None:
             speedup = f" ({result['speedup']:.1f}x)" if result["speedup"] else ""
             print(f"  -> OK  molt={result['molt_time_s']:.4f}s  cpython={result['cpython_time_s']:.4f}s{speedup}")
         elif result["build_ok"]:
-            print(f"  -> BUILD OK, RUN FAIL")
+            print("  -> BUILD OK, RUN FAIL")
         else:
-            print(f"  -> BUILD FAIL")
+            print("  -> BUILD FAIL")
 
     # Summary
     print_summary(results)

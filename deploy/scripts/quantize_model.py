@@ -185,7 +185,7 @@ def main():
     bits = args.bits
     mixed_precision = args.mixed_precision
     model_dir = args.model_dir
-    suffix = f"-mixed" if mixed_precision else ""
+    suffix = "-mixed" if mixed_precision else ""
     output_dir = args.output_dir or os.path.expanduser(
         f"~/.cache/molt/falcon-ocr/quantized-int{bits}{suffix}"
     )

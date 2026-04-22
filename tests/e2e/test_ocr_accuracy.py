@@ -712,10 +712,10 @@ if __name__ == "__main__":
         try:
             print(f"\n{name}:")
             fn()
-            print(f"  PASSED")
+            print("  PASSED")
             passed += 1
         except SystemExit:
-            print(f"  SKIPPED")
+            print("  SKIPPED")
             skipped += 1
         except Exception as e:
             print(f"  FAILED: {e}")

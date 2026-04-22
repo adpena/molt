@@ -20,6 +20,10 @@ import os
 import sys
 import time
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import tkinter as tk
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -47,7 +51,7 @@ def _is_headless() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def pump_events(root: "tk.Tk", cycles: int = 20) -> None:
+def pump_events(root: tk.Tk, cycles: int = 20) -> None:
     """Process pending Tk events without entering mainloop."""
     import tkinter as tk
 
@@ -72,7 +76,7 @@ def timed(label: str, fn: object, results: list) -> None:
 # ---------------------------------------------------------------------------
 
 
-def bench_widget_creation(root: "tk.Tk") -> tuple[list, list]:
+def bench_widget_creation(root: tk.Tk) -> tuple[list, list]:
     """Create NUM_BUTTONS + NUM_LABELS widgets, return (buttons, labels)."""
     import tkinter as tk
 
@@ -92,9 +96,7 @@ def bench_widget_creation(root: "tk.Tk") -> tuple[list, list]:
     return buttons, labels
 
 
-def bench_widget_config(
-    root: "tk.Tk", buttons: list, labels: list
-) -> None:
+def bench_widget_config(root: tk.Tk, buttons: list, labels: list) -> None:
     """Reconfigure every widget (fg, text, relief)."""
     for i, b in enumerate(buttons):
         b.config(text=f"Btn-{i}", fg="#333333", relief="raised")
@@ -103,7 +105,7 @@ def bench_widget_config(
     pump_events(root)
 
 
-def bench_canvas_ops(root: "tk.Tk") -> "tk.Canvas":
+def bench_canvas_ops(root: tk.Tk) -> tk.Canvas:
     """Draw NUM_CANVAS_ITEMS rectangles + ovals on a canvas."""
     import tkinter as tk
 
@@ -120,14 +122,14 @@ def bench_canvas_ops(root: "tk.Tk") -> "tk.Canvas":
     return canvas
 
 
-def bench_canvas_move(root: "tk.Tk", canvas: "tk.Canvas") -> None:
+def bench_canvas_move(root: tk.Tk, canvas: tk.Canvas) -> None:
     """Move every canvas item by (1, 1)."""
     for item_id in canvas.find_all():
         canvas.move(item_id, 1, 1)
     pump_events(root)
 
 
-def bench_after_callbacks(root: "tk.Tk") -> float:
+def bench_after_callbacks(root: tk.Tk) -> float:
     """Schedule NUM_AFTER_CALLBACKS `after` callbacks and measure jitter.
 
     Returns the max deviation from the expected 1 ms interval.
@@ -167,7 +169,7 @@ def bench_after_callbacks(root: "tk.Tk") -> float:
     return total_time
 
 
-def bench_background_thread(root: "tk.Tk") -> tuple[float, float]:
+def bench_background_thread(root: tk.Tk) -> tuple[float, float]:
     """Start a CPU-bound background thread, measure UI responsiveness.
 
     Returns (bg_thread_time, ui_responsiveness_time).

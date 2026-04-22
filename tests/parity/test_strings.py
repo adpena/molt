@@ -106,7 +106,7 @@ print(f"x = {x}")
 print(f"x + 1 = {x + 1}")
 print(f"{'hello'.upper()}")
 print(f"{[1,2,3]}")
-print(f"{{literal braces}}")
+print("{literal braces}")
 
 print("=== Encode / decode ===")
 print("hello".encode("utf-8"))

@@ -213,7 +213,7 @@ def print_report(report: LatencyReport) -> None:
 def main() -> None:
     base_url = "https://falcon-ocr.adpena.workers.dev"
 
-    print(f"Falcon-OCR Worker Latency Test")
+    print("Falcon-OCR Worker Latency Test")
     print(f"Target: {base_url}\n")
 
     # Test /health endpoint

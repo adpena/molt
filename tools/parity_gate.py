@@ -286,7 +286,7 @@ def compare(
     # If Molt could not build/run at all (exit 124 = timeout, 127 = OS error)
     if molt_rc == 124:
         base.status = "error"
-        base.message = f"molt timed out"
+        base.message = "molt timed out"
         return base
     if molt_rc == 127 and molt_out is None:
         base.status = "error"
