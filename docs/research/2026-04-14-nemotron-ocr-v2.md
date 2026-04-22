@@ -1,155 +1,188 @@
 # Nemotron OCR v2: Strategic Assessment
 
 **Date**: 2026-04-14
-**Status**: Research complete. Nemotron v2 is a fundamentally different architecture from Falcon-OCR. Not a drop-in replacement, but a compelling complement for specific deployment targets.
+
+**Updated**: 2026-04-22
+
+**Status**: Research memo plus first wrapper hardening. This is not a claim that
+Molt has a native Nemotron runtime, browser runtime, Workers runtime, ONNX export,
+or llama.cpp/GGUF execution path.
+
+## Evidence Classes
+
+Use these labels when extending this work:
+
+- **Upstream fact**: stated by NVIDIA, llama.cpp, arXiv, or another cited source.
+- **Repo-proven**: backed by committed Molt tests or measured artifacts.
+- **Hypothesis**: technically plausible but not yet implemented or measured in
+  this repo.
+
+Current repo-proven scope:
+
+- `deploy/modal/nemotron_ocr.py` validates `lang` and `merge_level`, cleans temp
+  image files, formats structured OCR output, and calls `NemotronOCRV2` once for
+  batch input. Boundary coverage lives in
+  `tests/test_nemotron_ocr_boundaries.py`.
+- `src/molt/gpu/gguf.py` is a parser/dequantizer only. It does not execute OCR
+  models, tokenizers, image preprocessors, multimodal projectors, or llama.cpp
+  graphs.
 
 ## Architecture Comparison
 
-| Property | Falcon-OCR (300M VLM) | Nemotron OCR v2 English | Nemotron OCR v2 Multilingual |
-|----------|----------------------|------------------------|------------------------------|
-| **Architecture** | Vision-Language Model (autoregressive) | 3-stage pipeline: detector + recognizer + relational | Same |
-| **Detector** | Integrated vision encoder | RegNetX-8GF (45.4M params) | RegNetX-8GF (45.4M params) |
-| **Recognizer** | Causal LM decoder | Pre-norm Transformer (6.1M params, 3 layers) | Pre-norm Transformer (36.1M params, 6 layers) |
-| **Relational** | N/A (token sequence) | Multi-layer relational (2.3M params) | Multi-layer relational (2.3M params) |
-| **Total params** | ~300M | **53.8M** | **83.9M** |
-| **Approach** | Generate text token-by-token | Detect regions, recognize per-crop, reorder | Same |
+| Property | Falcon-OCR | Nemotron OCR v2 English | Nemotron OCR v2 Multilingual |
+|---|---|---|---|
+| Architecture | Generative VLM | Detector + recognizer + relational layout | Same |
+| Detector | Integrated vision encoder | RegNetX-8GF, 45.4M params | RegNetX-8GF, 45.4M params |
+| Recognizer | Causal LM decoder | Pre-norm Transformer, 6.1M params, 3 layers | Pre-norm Transformer, 36.1M params, 6 layers |
+| Relational model | N/A | 2.3M params | 2.3M params |
+| Total params | Approximately 300M in current planning docs | 53.8M | 83.9M |
+| Output shape | Prompted token text | Bboxes, text, confidence, reading-order grouping | Same |
 
-### Key Insight: Different Paradigms
+Nemotron v2 and Falcon-OCR are different model families. Falcon-OCR quality and
+latency are dominated by autoregressive generation. Nemotron v2 quality depends
+on detector recall, recognition quality, and relational ordering. This makes
+Nemotron a strong candidate for structured OCR and batch invoice extraction, but
+it is not a drop-in replacement for a promptable VLM.
 
-Falcon-OCR is a **generative VLM** — it sees the whole image and produces text autoregressively. Nemotron v2 is a **classical OCR pipeline** — detect bounding boxes, crop regions, recognize text in each crop, then use a relational model to determine reading order.
+## Upstream Facts
 
-This has profound implications for deployment:
+NVIDIA's model card states that Nemotron OCR v2:
 
-- **Falcon-OCR**: Quality scales with decode steps. Slow but handles arbitrary layouts.
-- **Nemotron v2**: Quality scales with detector recall. Fast because recognition is parallel per-crop.
+- ships English and multilingual variants;
+- uses a RegNetX-8GF detector, pre-norm Transformer recognizer, and relational
+  layout model;
+- has 53,831,335 parameters for English and 83,853,044 for multilingual;
+- accepts RGB image input and returns structured OCR regions;
+- is currently integrated through PyTorch on Linux with NVIDIA GPUs and a C++
+  CUDA extension.
 
-## Size and Weight Analysis
+NVIDIA's 2026 Hugging Face article reports A100 benchmark throughput of
+40.7 pages/sec for English and 34.7 pages/sec for multilingual on OmniDocBench.
+Those numbers are upstream benchmark claims until reproduced by Molt benchmarks.
 
-### Nemotron v2 English Weights
+NVIDIA's `pipeline_v2.py` source documents the important batch contract:
+`NemotronOCRV2.__call__` accepts a single image or a list of images, returns a
+flat `list[dict]` for single input, and returns `list[list[dict]]` for batch
+input. The Molt Modal wrapper now treats that as the only supported batch path;
+it does not silently serial-loop and call that native batching.
 
-| File | Size | Component |
-|------|------|-----------|
-| `detector.pth` | 182.0 MB | RegNetX-8GF backbone (F32) |
-| `recognizer.pth` | 24.6 MB | Transformer recognizer (F32) |
-| `relational.pth` | 9.0 MB | Layout relational model (F32) |
-| **Total** | **215.6 MB** | **53.8M params at F32** |
+## Size And Quantization Hypotheses
 
-### Quantized Size Estimates
+The English checkpoint has roughly 53.8M parameters. A naive storage estimate is:
 
-| Precision | Detector | Recognizer | Relational | Total |
-|-----------|----------|------------|------------|-------|
-| F32 | 182 MB | 24.6 MB | 9.0 MB | 215.6 MB |
-| F16 | 91 MB | 12.3 MB | 4.5 MB | 107.8 MB |
-| INT8 | 45.5 MB | 6.2 MB | 2.3 MB | **54.0 MB** |
-| INT4 | 22.8 MB | 3.1 MB | 1.1 MB | 27.0 MB |
+| Precision | Approximate size |
+|---|---:|
+| F32 | 215 MB |
+| F16 | 108 MB |
+| INT8 | 54 MB |
+| INT4 | 27 MB |
 
-An ONNX INT8 quantized detector already exists at `satyadevineni/Nemotron_OCR_V2_Detector_EN` (45.6 MB).
+These are storage estimates, not deployment proof. A browser or Workers runtime
+must also account for runtime code, activation memory, temporary tensors,
+pre/post-processing buffers, and allocator overhead. The 54 MB INT8 path is a
+useful target, not a guarantee.
 
-## Speed Comparison (OmniDocBench, A100)
-
-| Model | pages/sec | English NED (lower=better) |
-|-------|----------|---------------------------|
-| PaddleOCR v5 (server) | 1.2 | 0.027 |
-| OpenOCR (server) | 1.5 | 0.024 |
-| EasyOCR | 0.4 | 0.095 |
-| **Nemotron OCR v2 (EN)** | **40.7** | **0.038** |
-| **Nemotron OCR v2 (multi)** | **34.7** | **0.048** |
-
-Nemotron v2 English is **34x faster** than PaddleOCR v5 with only marginally higher error (0.038 vs 0.027 NED). For invoice OCR where English dominance is expected, this is an excellent tradeoff.
-
-## Deployment Feasibility
-
-### Cloudflare Workers (128 MB memory limit)
-
-**Verdict: Possible for English variant at INT8, but requires ONNX/WASM runtime.**
-
-- INT8 English total: ~54 MB. Fits within 128 MB Worker memory.
-- However, Nemotron v2 uses PyTorch with a C++ CUDA extension. No WASM build exists.
-- The ONNX detector export exists (45.6 MB INT8), but recognizer and relational ONNX exports do not yet exist.
-- Would need: ONNX exports for all 3 components + onnxruntime-web WASM backend.
-- The RegNetX-8GF detector is a standard ConvNet — ONNX export is straightforward.
-- The Transformer recognizer is also standard — ONNX export is feasible.
-- The relational model uses custom ops — needs investigation.
-
-### Browser WebGPU/WASM
-
-**Verdict: Feasible but requires significant engineering.**
-
-- No GGUF version exists (not an LLM, so GGUF/llama.cpp is not applicable).
-- CoreML export exists (`mweinbach/nemotron-ocr-v2-coreml`) — confirms the architecture is exportable.
-- ONNX -> WebGPU via onnxruntime-web is the viable path.
-- Would need custom pre/post-processing in JS (NMS, crop extraction, reading order).
-- Total download: ~54 MB INT8 (vs ~260 MB for Falcon-OCR INT8) — significantly smaller.
+## Deployment Assessment
 
 ### Modal / GPU Cloud
 
-**Verdict: Trivial. The official Docker image works out of the box.**
+Status: partially implemented wrapper, not production-proven.
 
-- `docker compose run --rm nemotron-ocr` with GPU access.
-- 34-40 pages/sec on A100, likely 15-20 pages/sec on A10G.
-- Perfect for batch processing and API agents.
-- Could run alongside Falcon-OCR on same Modal deployment.
+The current Modal wrapper is a clean smokeable boundary around the upstream
+PyTorch/CUDA package. It still needs real GPU deployment proof, load tests,
+latency histograms, and cost/performance baselines before any production claim.
+Throughput must be measured on the actual Modal GPU profile rather than inferred
+from A100 numbers.
 
-## Quality Assessment for Invoice OCR
+### Browser WebGPU/WASM
 
-### Strengths
-- Bounding box output with coordinates — essential for structured invoice extraction.
-- Confidence scores per text region — enables quality-gated pipelines.
-- Reading order via relational model — handles multi-column invoices.
-- 34x faster than PaddleOCR — enables real-time batch processing.
+Status: hypothesis.
 
-### Weaknesses
-- English NED 0.038 vs PaddleOCR 0.027 — slightly less accurate on benchmarks.
-- No GGUF/llama.cpp path — the "GGUF OCR" discovery does not apply here.
-- Requires NVIDIA GPU (CUDA C++ extension) — no CPU-only inference without ONNX export.
-- The relational model adds complexity for structured extraction.
+The likely clean path is to re-derive the model in a Molt-owned model package,
+then lower through tinygrad/libmolt/Molt GPU primitives. ONNX/WebGPU may be a
+useful comparison path, but it must not become a hidden runtime dependency for
+compiled Molt binaries. Work needed:
 
-### For Our Invoice Use Case
-- Invoices are primarily English, structured layouts with tables.
-- Bounding boxes are more useful than raw text for field extraction.
-- Speed matters less in browser (single image) but hugely in batch API.
-- The 0.038 NED on English is well within acceptable range for invoices.
+- RegNetX grouped/depthwise convolution coverage and parity tests;
+- detector heads, NMS, rotated boxes, and crop extraction;
+- Transformer recognizer with exact charset handling;
+- relational layout model and reading-order parity;
+- INT8/INT4 quantization with accuracy and activation-memory measurements;
+- browser and Workers memory proof.
 
-## Migration Path
+### Cloudflare Workers
 
-### Phase 1: Modal GPU Deployment (immediate)
-- Add Nemotron v2 as a second Modal endpoint alongside Falcon-OCR.
-- Use for batch processing where speed matters (34 pages/sec vs Falcon's 2.9 img/s).
-- Falcon-OCR remains primary for single-image browser inference.
+Status: hypothesis.
 
-### Phase 2: ONNX Export Pipeline (1-2 weeks)
-- Export recognizer and relational models to ONNX.
-- Validate INT8 quantized accuracy on invoice test set.
-- Build ONNX inference pipeline (Python, no CUDA dependency).
+Workers deployment is not proven by parameter count alone. A Worker path needs
+explicit bundle size, runtime memory, cold-start, and timeout evidence. Until
+then, Workers should be treated as a weight-serving/CDN/control-plane surface,
+not as a proven Nemotron inference host.
 
-### Phase 3: Browser WASM Deployment (2-4 weeks)
-- Port ONNX models to onnxruntime-web.
-- Implement JS pre/post-processing (NMS, crop, reading order).
-- Total browser download drops from ~260 MB to ~54 MB.
-- Faster inference (parallel crop recognition vs autoregressive decode).
+## GGUF And llama.cpp Boundary
 
-### Phase 4: Workers Edge Deployment (4-6 weeks)
-- If ONNX runtime fits in Workers memory with INT8 models.
-- Would enable server-side OCR without GPU — major cost reduction.
-- Fallback: keep Workers as weight-serving CDN, run inference in browser.
+No known Nemotron OCR v2 GGUF artifact is part of the current plan, and Nemotron
+is not naturally a llama.cpp decoder-only OCR model. GGUF still matters for a
+separate OCR baseline lane because llama.cpp now supports OCR-oriented
+multimodal models such as GLM-OCR, LightOnOCR, Qianfan-OCR, PaddleOCR-VL,
+DeepSeek-OCR, dots.ocr, and HunyuanOCR.
 
-## Strategic Recommendation
+Boundary rule:
 
-**Do not replace Falcon-OCR with Nemotron v2. Use both.**
+- `molt.gpu.gguf` may parse GGUF files and expose tensors/metadata.
+- OCR runtime support requires an explicit model executor, image preprocessing
+  contract, tokenizer/projector contract, decoding contract, tests, and
+  provenance. A GGUF parser alone is not OCR support.
+- llama.cpp can be used as an external comparison/oracle or as a libmolt
+  extension experiment, but it must not bypass Molt's runtime ownership.
 
-| Deployment | Model | Reason |
-|------------|-------|--------|
-| Browser (single image) | Falcon-OCR INT8 | Already deployed, working, VLM handles arbitrary layouts |
-| API batch processing | Nemotron v2 EN | 34x faster, bounding box output, structured extraction |
-| Workers edge | Falcon-OCR WASM | Already deployed, too much engineering to port Nemotron |
-| Future browser | Nemotron v2 ONNX | Smaller download (54 MB vs 260 MB), parallel recognition |
+## Recommended Tranche
 
-The llama.cpp GGUF discovery is **not applicable** to Nemotron v2 — it is not an autoregressive LLM. GGUF quantization targets transformer decoders. Nemotron's detector is a ConvNet (RegNetX), and its recognizer is a small encoder-only transformer. The correct quantization path is ONNX INT8/INT4, which already partially exists.
+1. Keep Nemotron model code and weights outside Molt core, ideally in a
+   `molt-ocr` or `molt-falcon-ocr` style package with explicit artifact
+   manifests and provenance.
+2. Use Nemotron as a tinygrad/Molt GPU hardening target: RegNetX, batched image
+   preprocessing, NMS, crop/ROI transforms, Transformer recognizer, and
+   relational layout all exercise different missing pieces.
+3. Use llama.cpp OCR/GGUF models as external accuracy/performance baselines, not
+   as a substitute for native Molt lowering.
+4. Build a canonical OCR benchmark corpus with invoices, receipts, dense
+   documents, tables, rotated scans, low-quality photos, and multilingual pages.
+   Track NED/CER, bbox IoU, reading order, field extraction F1, P50/P95 latency,
+   peak memory, download size, and cold start.
 
-## Open Questions
+## Provenance
 
-1. Can the relational model be exported to ONNX without custom ops?
-2. What is the actual INT8 accuracy degradation on invoice images?
-3. Does onnxruntime-web support RegNetX convolutions efficiently?
-4. Can we run the 3-stage pipeline with acceptable latency in browser WASM?
-5. Is there a community ONNX export for the full pipeline (not just detector)?
+- NVIDIA, "Nemotron OCR v2" model card. Model architecture, parameter counts,
+  current PyTorch/CUDA integration, license, output structure, and upstream
+  benchmark tables. https://huggingface.co/nvidia/nemotron-ocr-v2
+- NVIDIA, "Building a Fast Multilingual OCR Model with Synthetic Data", 2026.
+  FOTS-style shared-backbone rationale and reported A100 throughput.
+  https://huggingface.co/blog/nvidia/nemotron-ocr-v2
+- NVIDIA `NemotronOCRV2` pipeline source. Batch API shape and return contract.
+  https://huggingface.co/nvidia/nemotron-ocr-v2/blame/f7389050a37cf705e47ba26762ba0bb34f901bff/nemotron-ocr/src/nemotron_ocr/inference/pipeline_v2.py
+- Liu, Liang, Yan, Chen, Qiao, Yan, "FOTS: Fast Oriented Text Spotting with a
+  Unified Network", arXiv:1801.01671, 2018. https://arxiv.org/abs/1801.01671
+- Radosavovic, Kosaraju, Girshick, He, Dollar, "Designing Network Design
+  Spaces", arXiv:2003.13678, 2020. RegNet provenance.
+  https://arxiv.org/abs/2003.13678
+- Ouyang et al., "OmniDocBench: Benchmarking Diverse PDF Document Parsing with
+  Comprehensive Annotations", arXiv:2412.07626, CVPR 2025.
+  https://arxiv.org/abs/2412.07626
+- ggml-org, "Using OCR models with llama.cpp", 2026. OCR model list, prompt
+  examples, Q8_0/F16 guidance, and server/CLI usage.
+  https://huggingface.co/blog/ggml-org/using-ocr-models-with-llama-cpp
+- ggml-org/llama.cpp PR #19677, "model: support GLM-OCR", merged 2026-02-18.
+  https://github.com/ggml-org/llama.cpp/pull/19677
+- Duan et al., "GLM-OCR Technical Report", arXiv:2603.10910, 2026.
+  https://arxiv.org/abs/2603.10910
+- Taghadouini, Cavailles, Aubertin, "LightOnOCR: A 1B End-to-End Multilingual
+  Vision-Language Model for State-of-the-Art OCR", arXiv:2601.14251, 2026.
+  https://arxiv.org/abs/2601.14251
+- Dong et al., "Qianfan-OCR: A Unified End-to-End Model for Document
+  Intelligence", arXiv:2603.13398, 2026. https://arxiv.org/abs/2603.13398
+- Hunyuan Vision Team et al., "HunyuanOCR Technical Report", arXiv:2511.19575,
+  2025. https://arxiv.org/abs/2511.19575
+- Li, Yang, Liu, Wang, Zhang, "dots.ocr: Multilingual Document Layout Parsing in
+  a Single Vision-Language Model", arXiv:2512.02498, 2025.
+  https://arxiv.org/abs/2512.02498
