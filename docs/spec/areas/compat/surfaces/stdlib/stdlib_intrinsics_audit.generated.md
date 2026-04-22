@@ -9,9 +9,9 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Progress Summary (Generated)
-- Total audited modules: `912`
+- Total audited modules: `913`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `871`
+- `intrinsic-partial`: `872`
 - `probe-only`: `0`
 - `python-only`: `0`
 
@@ -838,6 +838,7 @@
 - `tinygrad.nn`
 - `tinygrad.onnx_interpreter`
 - `tinygrad.paddleocr`
+- `tinygrad.paddleocr_bench`
 - `tinygrad.paddleocr_driver`
 - `tinygrad.realize`
 - `tinygrad.speculative`
