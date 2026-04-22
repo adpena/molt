@@ -163,7 +163,10 @@
             const backend = ocr.computeBackend;
             gpuInfo.textContent = `Compute backend: ${backend}`;
 
-            if (backend === 'webgpu') {
+            if (backend === 'webnn') {
+                gpuInfo.textContent += '\nWebNN active — hardware-accelerated ML inference (GPU/NPU)';
+                speculativeToggle.disabled = false;
+            } else if (backend === 'webgpu') {
                 gpuInfo.textContent += '\nWebGPU active — tiled matmul via compute shaders';
                 speculativeToggle.disabled = false;
             } else if (backend === 'webgl2') {
@@ -174,8 +177,8 @@
                 speculativeToggle.disabled = true;
             }
 
-            // Try to initialize speculative decoder if GPU is available
-            if (backend === 'webgpu' || backend === 'webgl2') {
+            // Try to initialize speculative decoder if accelerated backend is available
+            if (backend === 'webnn' || backend === 'webgpu' || backend === 'webgl2') {
                 try {
                     const { SpeculativeBrowserDecoder } = await import('./speculative-browser.js');
                     // The speculative decoder will be fully initialized when weights are parsed

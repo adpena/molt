@@ -24,7 +24,7 @@
  *     onProgress: (phase, pct, detail) => console.log(`${phase}: ${pct}% ${detail?.message || ''}`),
  *   });
  *   await ocr.init();
- *   console.log(ocr.computeBackend);  // "webgpu" | "webgl2" | "wasm-simd" | "wasm"
+ *   console.log(ocr.computeBackend);  // "webnn" | "webgpu" | "webgl2" | "wasm-simd" | "wasm"
  *
  *   const canvas = document.createElement('canvas');
  *   // ... draw image to canvas ...
@@ -267,7 +267,7 @@ export class FalconOCR {
     this.onProgress = config.onProgress || (() => {});
     this._instance = null;
     this._ready = false;
-    /** @type {import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine | null} */
+    /** @type {import('./compute-engine.js').WebNNComputeEngine | import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine | null} */
     this._compute = null;
     /** @type {TokenizerDecoder | null} */
     this._tokenizer = null;
@@ -280,7 +280,7 @@ export class FalconOCR {
   /**
    * Download WASM + weights, initialize model. Must be called before recognize().
    *
-   * Detects the best compute backend (WebGPU > WebGL2 > WASM SIMD), downloads
+   * Detects the best compute backend (WebNN > WebGPU > WebGL2 > WASM SIMD), downloads
    * the WASM module and INT8 weights, initializes the compute engine, and
    * uploads weights to GPU memory when a GPU backend is available.
    *
@@ -502,7 +502,7 @@ export class FalconOCR {
 
   /**
    * The active compute backend name.
-   * @returns {string} "webgpu" | "webgl2" | "wasm-simd" | "wasm" | "none"
+   * @returns {string} "webnn" | "webgpu" | "webgl2" | "wasm-simd" | "wasm" | "none"
    */
   get computeBackend() {
     return this._computeBackend;
@@ -510,7 +510,7 @@ export class FalconOCR {
 
   /**
    * The compute engine instance (for advanced use / speculative decoding).
-   * @returns {import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine | null}
+   * @returns {import('./compute-engine.js').WebNNComputeEngine | import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine | null}
    */
   get compute() {
     return this._compute;
