@@ -324,6 +324,51 @@ def test_onnx_resize_rejects_both_scales_and_sizes() -> None:
             )
 
 
+def test_onnx_resize_rejects_missing_scales_and_sizes() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([10.0, 20.0], (1, 1, 2, 1))
+
+        with pytest.raises(ValueError, match="Resize requires scales or sizes"):
+            onnx._op_resize([x, None, None, None], {"mode": "nearest"})
+
+
+def test_onnx_slice_rejects_missing_starts_and_ends() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0], (2,))
+
+        with pytest.raises(ValueError, match="Slice requires starts and ends"):
+            onnx._op_slice([x], {})
+
+
+def test_onnx_cast_rejects_unsupported_target_type() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0], (1,))
+
+        with pytest.raises(ValueError, match="Unsupported Cast target"):
+            onnx._op_cast([x], {"to": 12345})
+
+
+def test_onnx_squeeze_rejects_non_unit_explicit_axis() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0], (2,))
+
+        with pytest.raises(ValueError, match="cannot squeeze dimension"):
+            onnx._op_squeeze([x, onnx._make_int_tensor([0], (1,))], {})
+
+
+def test_onnx_unsqueeze_rejects_out_of_range_axis() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0], (2,))
+
+        with pytest.raises(ValueError, match="Unsqueeze axis"):
+            onnx._op_unsqueeze([x, onnx._make_int_tensor([3], (1,))], {})
+
+
 def test_onnx_conv_rejects_non_divisible_group_count() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]
