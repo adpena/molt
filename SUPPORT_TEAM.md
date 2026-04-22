@@ -93,7 +93,9 @@ python3 -m molt build <tensor_test.py> --target wasm --output /tmp/tensor.wasm
 ### What NOT to do
 - Don't modify `runtime/molt-gpu/` — that's stable and tested
 - Don't modify `deploy/cloudflare/` — that's live in production
-- Don't modify enjoice — that's the other repo
+- Don't modify the external enjoice application repo from this workspace.
+  `deploy/enjoice/` is Molt-owned handoff material and may be updated when the
+  integration contract changes.
 - Do add new intrinsic wrappers in `runtime/molt-runtime/src/builtins/`
 - Do fix any WASM compilation errors in `runtime/molt-runtime/`
 

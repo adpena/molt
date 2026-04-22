@@ -28,6 +28,9 @@ export interface GpuCapabilities {
   estimatedDispatchOverheadUs: number | null;
 }
 
+// Product-level backend choices consumed by enjoice's OCR factory. `molt-gpu`
+// delegates to MoltOcrBackend, which selects its internal Falcon WebGPU/WASM
+// engine lane separately.
 export type OcrBackendChoice = "molt-gpu" | "paddle-wasm" | "server-side";
 
 export interface OcrCapabilities {
