@@ -369,6 +369,25 @@ def test_onnx_unsqueeze_rejects_out_of_range_axis() -> None:
             onnx._op_unsqueeze([x, onnx._make_int_tensor([3], (1,))], {})
 
 
+def test_onnx_matmul_rejects_missing_rhs() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0], (1, 2))
+
+        with pytest.raises(ValueError, match="MatMul requires two tensor inputs"):
+            onnx._op_matmul([x, None], {})
+
+
+def test_onnx_matmul_rejects_unsupported_rank_with_value_error() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        lhs = onnx._make_tensor([1.0], (1, 1, 1))
+        rhs = onnx._make_tensor([1.0], (1,))
+
+        with pytest.raises(ValueError, match="MatMul"):
+            onnx._op_matmul([lhs, rhs], {})
+
+
 def test_onnx_conv_rejects_non_divisible_group_count() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]
