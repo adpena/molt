@@ -633,6 +633,24 @@ function invokeOcrTokens(backend, width, height, rgb, promptIds, maxNewTokens, m
 }
 
 /**
+ * Decode OCR token IDs to text with an explicit tokenizer requirement.
+ *
+ * Returning an empty string when token IDs exist loses model output silently.
+ * Callers that need text must provide the loaded tokenizer; token-only
+ * endpoints should return token IDs directly instead.
+ *
+ * @param {ArrayLike<number>} tokenIds
+ * @param {import("./tokenizer.js").TokenizerDecoder | null} tokenizer
+ * @returns {string}
+ */
+export function decodeOcrTokenArray(tokenIds, tokenizer) {
+  if (!tokenizer || typeof tokenizer.decode !== "function") {
+    throw new Error("Falcon OCR tokenizer is required to decode OCR token IDs");
+  }
+  return tokenizer.decode(Array.from(tokenIds));
+}
+
+/**
  * POST /ocr -- full OCR: image in, text out.
  *
  * @param {Request} request
@@ -688,10 +706,8 @@ export async function handleOcrRequest(request, backend, env, cors, rid, device 
   const maxLayers = device === "cpu" ? 8 : 0;
   const tokens = invokeOcrTokens(backend, finalW, finalH, rgb, promptIds, maxNewTokens, maxLayers);
 
-  // Decode token IDs to text using the server-side tokenizer.
-  // Falls back to empty string if no tokenizer is loaded (browser has its own).
   const tokenArray = Array.from(tokens);
-  const text = tokenizer ? tokenizer.decode(tokenArray) : "";
+  const text = decodeOcrTokenArray(tokenArray, tokenizer);
   const timMs = Date.now() - start;
 
   return new Response(
@@ -1455,7 +1471,7 @@ export async function handleBatchOcr(request, backend, env, cors, rid, device = 
       const tokenArray = Array.from(tokens);
       const timeMs = Date.now() - imageStart;
       const result = {
-        text: tokenizer ? tokenizer.decode(tokenArray) : "",
+        text: decodeOcrTokenArray(tokenArray, tokenizer),
         tokens: tokenArray,
         time_ms: timeMs,
       };

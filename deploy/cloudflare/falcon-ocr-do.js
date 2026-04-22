@@ -204,8 +204,7 @@ export class FalconOCRInference {
       }
 
       // Load tokenizer from R2 for server-side token-to-text decoding.
-      // Non-fatal: if unavailable, responses return empty text and the
-      // browser-side tokenizer handles decoding.
+      // OCR text responses fail closed if token IDs cannot be decoded.
       try {
         const tokObj = await this.env.WEIGHTS.get("models/falcon-ocr/tokenizer.json");
         if (tokObj) {
