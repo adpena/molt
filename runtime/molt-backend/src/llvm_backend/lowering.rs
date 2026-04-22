@@ -160,7 +160,6 @@ mod nanbox {
     pub const TAG_INT: u64 = 0x0001_0000_0000_0000;
     pub const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
     pub const TAG_NONE: u64 = 0x0003_0000_0000_0000;
-    pub const TAG_PTR: u64 = 0x0004_0000_0000_0000;
     pub const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
     pub const INT_SIGN_BIT: u64 = 1 << 46;
     pub const INT_MASK: u64 = (1u64 << 47) - 1;
@@ -5188,7 +5187,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     })
                     .unwrap_or(0);
                 let func = self.ensure_function_symbol(func_name, arity, false);
-                let callable_arity = func.count_params() as usize;
                 let fn_ptr = self
                     .backend
                     .builder
@@ -6876,11 +6874,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
-                        enter_fn,
-                        &[captured_bits.into()],
-                        "exception_enter_handler",
-                    )
+                    .build_call(enter_fn, &[captured_bits.into()], "exception_enter_handler")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -6894,8 +6888,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&captured_id) = op.operands.first() else {
                     return false;
                 };
-                let resolve_fn =
-                    self.ensure_runtime_i64_fn("molt_exception_resolve_captured", 1);
+                let resolve_fn = self.ensure_runtime_i64_fn("molt_exception_resolve_captured", 1);
                 let captured_bits = self.ensure_i64(self.resolve(captured_id));
                 let result = self
                     .backend
