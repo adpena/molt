@@ -21,7 +21,7 @@ def main() -> None:
                 dy: float = y[i] - y[j]
                 dz: float = z[i] - z[j]
                 dist_sq: float = dx * dx + dy * dy + dz * dz
-                dist: float = dist_sq ** 0.5
+                dist: float = dist_sq**0.5
                 mag: float = dt / (dist_sq * dist)
 
                 vx[i] = vx[i] - dx * mass[j] * mag
@@ -44,7 +44,9 @@ def main() -> None:
     energy: float = 0.0
     i: int = 0
     while i < n:
-        energy = energy + 0.5 * mass[i] * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i])
+        energy = energy + 0.5 * mass[i] * (
+            vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]
+        )
         j: int = i + 1
         while j < n:
             dx: float = x[i] - x[j]
@@ -56,5 +58,6 @@ def main() -> None:
         i = i + 1
 
     print(energy)
+
 
 main()

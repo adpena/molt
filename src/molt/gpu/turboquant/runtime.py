@@ -105,7 +105,9 @@ class TurboQuantCodec:
         values = _coerce_vector(vector, dim=self.dim)
         norm = _vector_norm(values)
         if norm == 0.0:
-            return TurboQuantMSEVector([0] * self.dim, norm=0.0, mse_weights=[0.0] * self.dim)
+            return TurboQuantMSEVector(
+                [0] * self.dim, norm=0.0, mse_weights=[0.0] * self.dim
+            )
         unit = [value / norm for value in values]
         indices = self._encode_direction(unit)
         mse_weights = [norm * self.codebook[int(index)] for index in indices]
@@ -132,10 +134,7 @@ class TurboQuantCodec:
         residual_signs = [1.0 if value >= 0.0 else -1.0 for value in residual_sketch]
         mse_weights = [norm * self.codebook[int(index)] for index in indices]
         residual_scale = (
-            math.sqrt(math.pi / 2.0)
-            / float(self.dim)
-            * residual_norm
-            * norm
+            math.sqrt(math.pi / 2.0) / float(self.dim) * residual_norm * norm
         )
         return TurboQuantProdVector(
             indices,
@@ -217,7 +216,9 @@ class TurboQuantKVCache:
         key_rows = _coerce_matrix(keys, dim=codec.dim)
         value_rows = _coerce_matrix(values, dim=codec.dim)
         if len(key_rows) != len(value_rows):
-            raise ValueError("TurboQuant KV cache requires matching key/value row counts")
+            raise ValueError(
+                "TurboQuant KV cache requires matching key/value row counts"
+            )
         key_vectors = [codec.quantize_prod(row) for row in key_rows]
         value_vectors = [codec.quantize_prod(row) for row in value_rows]
         return cls(codec, key_vectors, value_vectors)

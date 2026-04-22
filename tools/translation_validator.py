@@ -574,7 +574,10 @@ class TranslationValidator:
                 arg_names = _extract_value_names_from_args(op.get("args", []))
                 for arg_name in arg_names:
                     arg_before_depth = before_name_to_depth.get(arg_name)
-                    if arg_before_depth is not None and arg_before_depth >= before_depth:
+                    if (
+                        arg_before_depth is not None
+                        and arg_before_depth >= before_depth
+                    ):
                         hoisted_bad.append(
                             f"{n}: arg {arg_name} was at loop depth "
                             f"{arg_before_depth} (>= {before_depth})"
@@ -619,9 +622,7 @@ class TranslationValidator:
         dispatch = {
             "dce": lambda: self.validate_dce(before, after),
             "sccp": lambda: self.validate_sccp(before, after, sccp_result),
-            "sccp_edge_thread": lambda: self.validate_sccp(
-                before, after, sccp_result
-            ),
+            "sccp_edge_thread": lambda: self.validate_sccp(before, after, sccp_result),
             "cse": lambda: self.validate_cse(before, after),
             "licm": lambda: self.validate_licm(before, after),
         }

@@ -57,6 +57,7 @@ def build_ancestor_mask(tree_structure: list) -> Tensor:
             current = tree_structure[current]
 
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     shape = (n, n)
     op = LazyOp("LOAD", (), dtype=dtypes.float32, shape=shape)
     return Tensor(LazyBuffer(op, dtypes.float32, shape, data=mask_data))
@@ -76,9 +77,6 @@ def tree_attention(
 
     Composed from: MATMUL, MUL, ADD (mask), SOFTMAX, MATMUL.
     """
-    d_k = q.shape[-1]
-    scale = 1.0 / math.sqrt(d_k)
-
     # Build ancestor mask
     mask = build_ancestor_mask(tree_structure)
 
@@ -121,6 +119,7 @@ def compact_kv_cache(
 
     new_shape = (n_accepted, d_k)
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     k_op = LazyOp("LOAD", (), dtype=k_cache.dtype, shape=new_shape)
     v_op = LazyOp("LOAD", (), dtype=v_cache.dtype, shape=new_shape)
     return (
@@ -166,7 +165,6 @@ def tiered_tree_attention(
     Prefix tokens (those in the cache but not in tree_positions) are attended
     to by all tree nodes (they are context, not part of the speculative tree).
     """
-    from tinygrad.kv_cache import TieredKVCache
 
     n_nodes = len(tree_structure)
     d_k = q.shape[-1]
@@ -177,6 +175,7 @@ def tiered_tree_attention(
     if k_all is None:
         shape = (n_nodes, d_k)
         from tinygrad.lazy import LazyOp, LazyBuffer
+
         op = LazyOp("LOAD", (), dtype=q.dtype, shape=shape)
         return Tensor(LazyBuffer(op, q.dtype, shape, data=[0.0] * (n_nodes * d_k)))
 
@@ -184,9 +183,6 @@ def tiered_tree_attention(
     k_data = k_all.realize().lazydata._data
     v_data = v_all.realize().lazydata._data
     n_kv = len(all_positions)
-
-    # Build position -> index map for the full KV cache
-    pos_to_kv_idx = {pos: idx for idx, pos in enumerate(all_positions)}
 
     # Build set of tree positions for ancestor masking
     tree_pos_set = set(tree_positions)
@@ -249,6 +245,7 @@ def tiered_tree_attention(
 
     shape = (n_nodes, d_k)
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     op = LazyOp("LOAD", (), dtype=q.dtype, shape=shape)
     return Tensor(LazyBuffer(op, q.dtype, shape, data=output))
 
@@ -292,7 +289,9 @@ def compact_tiered_kv_cache(
         k_hot, _, hot_positions = kv_cache.get_hot_kv()
         if k_hot is not None and hot_positions:
             weights = compute_attention_importance_from_positions(
-                query, k_hot, hot_positions,
+                query,
+                k_hot,
+                hot_positions,
             )
             kv_cache.update_scores(weights)
 

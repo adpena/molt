@@ -56,7 +56,9 @@ class blake2b(_Hash):
             "last_node": last_node,
             "usedforsecurity": usedforsecurity,
         }
-        super().__init__("blake2b", data, _hashlib._validate_options("blake2b", options, "blake2b"))
+        super().__init__(
+            "blake2b", data, _hashlib._validate_options("blake2b", options, "blake2b")
+        )
 
 
 class blake2s(_Hash):
@@ -91,7 +93,9 @@ class blake2s(_Hash):
             "last_node": last_node,
             "usedforsecurity": usedforsecurity,
         }
-        super().__init__("blake2s", data, _hashlib._validate_options("blake2s", options, "blake2s"))
+        super().__init__(
+            "blake2s", data, _hashlib._validate_options("blake2s", options, "blake2s")
+        )
 
 
 globals().pop("_require_intrinsic", None)

@@ -111,6 +111,7 @@ def flash_attention(
                 output[qi * d_k + d] *= inv_sum
 
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     shape = (seq_len, d_k)
     op = LazyOp("LOAD", (), dtype=q.dtype, shape=shape)
     return Tensor(LazyBuffer(op, q.dtype, shape, data=output))
@@ -155,6 +156,7 @@ def speculative_decode(
 
     accepted = []
     import random
+
     for i in range(k):
         token = int(token_data[i])
 
@@ -185,6 +187,7 @@ def speculative_decode(
         accepted = [0.0]
 
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     shape = (len(accepted),)
     op = LazyOp("LOAD", (), dtype=dtypes.int32, shape=shape)
     return (
@@ -229,13 +232,15 @@ def speculative_decode_with_kv_cache(
     and tier management is applied.
     """
     from tinygrad.kv_cache import (
-        TieredKVCache,
         compute_attention_importance_from_positions,
     )
 
     # Step 1: Standard speculative decode verification
     accepted_tokens, n_accepted = speculative_decode(
-        draft_logits, target_logits, draft_tokens, temperature,
+        draft_logits,
+        target_logits,
+        draft_tokens,
+        temperature,
     )
 
     # Step 2: Determine accepted positions
@@ -260,7 +265,9 @@ def speculative_decode_with_kv_cache(
         k_hot, _, hot_positions = kv_cache.get_hot_kv()
         if k_hot is not None and hot_positions:
             weights = compute_attention_importance_from_positions(
-                query, k_hot, hot_positions,
+                query,
+                k_hot,
+                hot_positions,
             )
             kv_cache.update_scores(weights)
 

@@ -72,8 +72,7 @@ _MOLT_PATH_SUFFIX = _require_intrinsic("molt_path_suffix")
 _MOLT_PATH_STEM = _require_intrinsic("molt_path_stem")
 _MOLT_PATH_SUFFIXES = _require_intrinsic("molt_path_suffixes")
 _MOLT_PATH_AS_URI = _require_intrinsic("molt_path_as_uri")
-_MOLT_PATH_RELATIVE_TO_MANY = _require_intrinsic(
-    "molt_path_relative_to_many")
+_MOLT_PATH_RELATIVE_TO_MANY = _require_intrinsic("molt_path_relative_to_many")
 _MOLT_PATH_CHMOD = _require_intrinsic("molt_path_chmod")
 _MOLT_OS_STAT = _require_intrinsic("molt_os_stat")
 _MOLT_OS_LSTAT = _require_intrinsic("molt_os_lstat")
@@ -193,10 +192,7 @@ class Path:
 
     def _splitroot(self) -> tuple[str, str, str]:
         raw = _MOLT_PATHLIB_SPLITROOT(self._path, True)
-        if (
-            not isinstance(raw, (tuple, list))
-            or len(raw) != 3
-        ):
+        if not isinstance(raw, (tuple, list)) or len(raw) != 3:
             raise RuntimeError("path splitroot intrinsic returned invalid value")
         return str(raw[0]), str(raw[1]), str(raw[2])
 
@@ -548,6 +544,7 @@ PurePath = Path
 
 class _PureWindowsPath(Path):
     """Windows path flavor -- all parsing delegated to intrinsic splitroot."""
+
     __slots__ = ()
 
     def _splitroot_win(self) -> tuple[str, str, str]:

@@ -63,11 +63,11 @@ def _parse_python_effect_classes(text: str) -> dict[str, set[str]]:
     if not m:
         return classes
 
-    method_body = text[m.end():]
+    method_body = text[m.end() :]
     # Find next def at same or lesser indentation to bound the method
     end_match = re.search(r"\n    def ", method_body)
     if end_match:
-        method_body = method_body[:end_match.start()]
+        method_body = method_body[: end_match.start()]
 
     # Parse each `if op_kind in { ... }: return "class"` block
     # We look for patterns: set literal followed by return statement
@@ -184,17 +184,13 @@ class TestEffectClassification:
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
         overlap = python_effect_classes["pure"] & python_effect_classes["writes_heap"]
-        assert not overlap, (
-            f"Ops classified as both pure and writes_heap: {overlap}"
-        )
+        assert not overlap, f"Ops classified as both pure and writes_heap: {overlap}"
 
     def test_no_overlap_pure_reads(
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
         overlap = python_effect_classes["pure"] & python_effect_classes["reads_heap"]
-        assert not overlap, (
-            f"Ops classified as both pure and reads_heap: {overlap}"
-        )
+        assert not overlap, f"Ops classified as both pure and reads_heap: {overlap}"
 
 
 class TestPureOpAlignment:
@@ -221,8 +217,15 @@ class TestPureOpAlignment:
             # The op might use a different name mapping; these are acceptable gaps
             # where the Python IR doesn't have a direct 1:1 for bitwise/advanced ops
             acceptable_gaps = {
-                "BIT_AND", "BIT_OR", "BIT_XOR", "LSHIFT", "RSHIFT",
-                "DIV", "FLOORDIV", "POW", "MOD",
+                "BIT_AND",
+                "BIT_OR",
+                "BIT_XOR",
+                "LSHIFT",
+                "RSHIFT",
+                "DIV",
+                "FLOORDIV",
+                "POW",
+                "MOD",
             }
             if upper in acceptable_gaps:
                 continue
@@ -271,9 +274,7 @@ class TestCompilerPassCorrespondence:
     def test_lean_pass_file_exists(self, pass_name: str, spec: tuple[str, str]) -> None:
         filename, _ = spec
         path = LEAN_PASSES_DIR / filename
-        assert path.exists(), (
-            f"Lean pass file missing: {path}"
-        )
+        assert path.exists(), f"Lean pass file missing: {path}"
 
     @pytest.mark.parametrize("pass_name,spec", list(LEAN_PASS_SPECS.items()))
     def test_lean_pass_defines_func(
@@ -284,9 +285,7 @@ class TestCompilerPassCorrespondence:
         if not path.exists():
             pytest.skip(f"Lean pass file not found: {path}")
         text = path.read_text(errors="replace")
-        assert func_name in text, (
-            f"Function {func_name} not found in {path}"
-        )
+        assert func_name in text, f"Function {func_name} not found in {path}"
 
     def test_python_mentions_pass_concepts(self) -> None:
         """Python frontend should reference the same pass concepts as Lean."""
@@ -306,9 +305,7 @@ class TestCompilerPassCorrespondence:
         }
 
         for pass_name, indicators in python_pass_indicators.items():
-            found = any(
-                ind.lower() in py_text.lower() for ind in indicators
-            )
+            found = any(ind.lower() in py_text.lower() for ind in indicators)
             assert found, (
                 f"No reference to {pass_name} concept found in Python frontend. "
                 f"Looked for: {indicators}"

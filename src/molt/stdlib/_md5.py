@@ -15,7 +15,13 @@ _GIL_MINSIZE = 2048
 
 class md5(_hashlib._Hash):
     def __init__(self, data: Any = b"", *, usedforsecurity: bool = True) -> None:
-        super().__init__("md5", data, _hashlib._validate_options("md5", {"usedforsecurity": usedforsecurity}, "md5"))
+        super().__init__(
+            "md5",
+            data,
+            _hashlib._validate_options(
+                "md5", {"usedforsecurity": usedforsecurity}, "md5"
+            ),
+        )
 
 
 MD5Type = md5

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -39,18 +38,61 @@ from pathlib import Path
 # Symbol prefix categories for native binaries.
 CATEGORIES: list[tuple[str, str, list[str]]] = [
     # (display_name, category_key, prefixes)
-    ("Molt runtime", "molt_runtime", ["_molt_", "molt_", "_ZN4molt", "_ZN12molt_runtime", "_ZN11molt_python", "_ZN14molt_obj_model", "_ZN12molt_backend"]),
-    ("Rust std/core", "rust_std", ["_ZN3std", "_ZN4core", "_ZN5alloc", "_ZN3syn", "_ZN5serde", "_ZN9hashbrown"]),
+    (
+        "Molt runtime",
+        "molt_runtime",
+        [
+            "_molt_",
+            "molt_",
+            "_ZN4molt",
+            "_ZN12molt_runtime",
+            "_ZN11molt_python",
+            "_ZN14molt_obj_model",
+            "_ZN12molt_backend",
+        ],
+    ),
+    (
+        "Rust std/core",
+        "rust_std",
+        ["_ZN3std", "_ZN4core", "_ZN5alloc", "_ZN3syn", "_ZN5serde", "_ZN9hashbrown"],
+    ),
     ("RustPython parser", "rustpython", ["_ZN12rustpython"]),
-    ("LLVM/codegen", "llvm_codegen", ["_ZN4llvm", "_ZN7craneli", "_ZN6wasmti", "_ZN6regall"]),
-    ("C runtime/system", "c_runtime", ["_memcpy", "_memset", "_memmove", "_bzero", "___stack_chk", "_malloc", "_free", "_realloc"]),
+    (
+        "LLVM/codegen",
+        "llvm_codegen",
+        ["_ZN4llvm", "_ZN7craneli", "_ZN6wasmti", "_ZN6regall"],
+    ),
+    (
+        "C runtime/system",
+        "c_runtime",
+        [
+            "_memcpy",
+            "_memset",
+            "_memmove",
+            "_bzero",
+            "___stack_chk",
+            "_malloc",
+            "_free",
+            "_realloc",
+        ],
+    ),
 ]
 
 # WASM section IDs.
 WASM_SECTION_NAMES: dict[int, str] = {
-    0: "custom", 1: "type", 2: "import", 3: "function", 4: "table",
-    5: "memory", 6: "global", 7: "export", 8: "start", 9: "element",
-    10: "code", 11: "data", 12: "data_count",
+    0: "custom",
+    1: "type",
+    2: "import",
+    3: "function",
+    4: "table",
+    5: "memory",
+    6: "global",
+    7: "export",
+    8: "start",
+    9: "element",
+    10: "code",
+    11: "data",
+    12: "data_count",
 }
 
 WASM_MAGIC = b"\x00asm"
@@ -63,6 +105,7 @@ DEFAULT_BUDGET_WASM_MB = 20.0
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _fmt_bytes(n: int) -> str:
     """Human-readable byte size."""
@@ -111,6 +154,7 @@ def _read_leb128_u32(data: bytes, offset: int) -> tuple[int, int]:
 # Binary format detection
 # ---------------------------------------------------------------------------
 
+
 def detect_format(path: Path) -> str:
     """Return 'wasm', 'macho', 'elf', or 'unknown'."""
     with open(path, "rb") as f:
@@ -120,9 +164,14 @@ def detect_format(path: Path) -> str:
     if magic[:4] == WASM_MAGIC:
         return "wasm"
     # Mach-O: 0xFEEDFACE (32-bit), 0xFEEDFACF (64-bit), or fat binary 0xCAFEBABE
-    if magic[:4] in (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
-                      b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
-                      b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+    if magic[:4] in (
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"\xce\xfa\xed\xfe",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+    ):
         return "macho"
     # ELF
     if magic[:4] == b"\x7fELF":
@@ -133,6 +182,7 @@ def detect_format(path: Path) -> str:
 # ---------------------------------------------------------------------------
 # Native binary analysis (Mach-O / ELF)
 # ---------------------------------------------------------------------------
+
 
 class SymbolInfo:
     __slots__ = ("name", "size", "kind")
@@ -210,7 +260,9 @@ def _parse_macho_segments(path: Path) -> list[dict]:
     try:
         result = subprocess.run(
             ["size", "-m", str(path)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return []
@@ -222,7 +274,7 @@ def _parse_macho_segments(path: Path) -> list[dict]:
         line = line.rstrip()
         if line.startswith("Segment "):
             # e.g. "Segment __TEXT: 28819456"
-            rest = line[len("Segment "):]
+            rest = line[len("Segment ") :]
             parts = rest.split(":")
             if len(parts) >= 2:
                 seg_name = parts[0].strip()
@@ -235,7 +287,7 @@ def _parse_macho_segments(path: Path) -> list[dict]:
                 segments.append(current_seg)
         elif line.strip().startswith("Section ") and current_seg is not None:
             # e.g. "	Section __text: 26191752"
-            rest = line.strip()[len("Section "):]
+            rest = line.strip()[len("Section ") :]
             parts = rest.split(":")
             if len(parts) >= 2:
                 sec_name = parts[0].strip()
@@ -259,7 +311,9 @@ def analyse_native(path: Path) -> dict:
     try:
         result = subprocess.run(
             ["nm", "--print-size", "--size-sort", "--reverse-sort", str(path)],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         # Check if sizes are actually non-zero (macOS always gives 0).
         symbols = _parse_symbols_gnu(result.stdout)
@@ -271,7 +325,9 @@ def analyse_native(path: Path) -> dict:
         try:
             result = subprocess.run(
                 ["nm", "-n", str(path)],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             symbols = _parse_symbols_from_addresses(result.stdout)
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -329,10 +385,14 @@ def print_native_report(analysis: dict) -> None:
         for seg in segments:
             if seg["name"] == "__PAGEZERO":
                 continue  # virtual, not on disk
-            print(f"  {seg['name']:<38s} {_fmt_bytes(seg['size']):>12s}  {_pct(seg['size'], total):>9s}")
+            print(
+                f"  {seg['name']:<38s} {_fmt_bytes(seg['size']):>12s}  {_pct(seg['size'], total):>9s}"
+            )
             for sec in seg.get("sections", []):
                 label = f"    {sec['name']}"
-                print(f"  {label:<38s} {_fmt_bytes(sec['size']):>12s}  {_pct(sec['size'], total):>9s}")
+                print(
+                    f"  {label:<38s} {_fmt_bytes(sec['size']):>12s}  {_pct(sec['size'], total):>9s}"
+                )
         print()
 
     # Category breakdown from symbol analysis
@@ -341,13 +401,19 @@ def print_native_report(analysis: dict) -> None:
     print("-" * 65)
     for key, size in sorted(cat_totals.items(), key=lambda kv: -kv[1]):
         display = cat_display[key]
-        print(f"  {display:<28s} {_fmt_bytes(size):>12s}  {_pct(size, sym_total):>9s}  {_pct(size, total):>9s}")
+        print(
+            f"  {display:<28s} {_fmt_bytes(size):>12s}  {_pct(size, sym_total):>9s}  {_pct(size, total):>9s}"
+        )
 
     unaccounted = total - sym_total
     if unaccounted > 0:
-        print(f"  {'<headers/debug/unmapped>':<28s} {_fmt_bytes(unaccounted):>12s}  {'':>9s}  {_pct(unaccounted, total):>9s}")
+        print(
+            f"  {'<headers/debug/unmapped>':<28s} {_fmt_bytes(unaccounted):>12s}  {'':>9s}  {_pct(unaccounted, total):>9s}"
+        )
     print("-" * 65)
-    print(f"  {'Symbol total':<28s} {_fmt_bytes(sym_total):>12s}  {'100.0%':>9s}  {_pct(sym_total, total):>9s}")
+    print(
+        f"  {'Symbol total':<28s} {_fmt_bytes(sym_total):>12s}  {'100.0%':>9s}  {_pct(sym_total, total):>9s}"
+    )
     print(f"  {'File total':<28s} {_fmt_bytes(total):>12s}")
 
     # Top 50 largest symbols
@@ -369,10 +435,13 @@ def print_native_report(analysis: dict) -> None:
 # WASM binary analysis
 # ---------------------------------------------------------------------------
 
+
 class WasmSectionInfo:
     __slots__ = ("id", "name", "offset", "size", "custom_name")
 
-    def __init__(self, *, id: int, name: str, offset: int, size: int, custom_name: str = ""):
+    def __init__(
+        self, *, id: int, name: str, offset: int, size: int, custom_name: str = ""
+    ):
         self.id = id
         self.name = name
         self.offset = offset
@@ -400,13 +469,21 @@ def _parse_wasm_sections(path: Path) -> list[WasmSectionInfo]:
         if sec_id == 0 and sec_size > 0:
             try:
                 name_len, name_offset = _read_leb128_u32(data, sec_start)
-                custom_name = data[name_offset:name_offset + name_len].decode("utf-8", errors="replace")
+                custom_name = data[name_offset : name_offset + name_len].decode(
+                    "utf-8", errors="replace"
+                )
             except (IndexError, UnicodeDecodeError):
                 custom_name = "<unparseable>"
 
-        sections.append(WasmSectionInfo(
-            id=sec_id, name=name, offset=sec_start, size=sec_size, custom_name=custom_name,
-        ))
+        sections.append(
+            WasmSectionInfo(
+                id=sec_id,
+                name=name,
+                offset=sec_start,
+                size=sec_size,
+                custom_name=custom_name,
+            )
+        )
         offset += sec_size
 
     return sections
@@ -483,7 +560,9 @@ def print_wasm_report(analysis: dict) -> None:
     accounted = sum(s.size for s in analysis["sections"])
     overhead = total - accounted
     if overhead > 0:
-        print(f"  {'<headers/padding>':<33s} {_fmt_bytes(overhead):>12s}  {overhead / total * 100:>5.1f}%")
+        print(
+            f"  {'<headers/padding>':<33s} {_fmt_bytes(overhead):>12s}  {overhead / total * 100:>5.1f}%"
+        )
 
     print("-" * 57)
     print(f"  {'TOTAL':<33s} {_fmt_bytes(total):>12s}")
@@ -500,16 +579,25 @@ def print_wasm_report(analysis: dict) -> None:
     structural = total - code_total - data_total - custom_total
 
     print("\n--- Estimated Contribution ---")
-    print(f"  Code (functions):      {_fmt_bytes(code_total):>12s}  {_pct(code_total, total)}")
-    print(f"  Data (constants/heap): {_fmt_bytes(data_total):>12s}  {_pct(data_total, total)}")
-    print(f"  Custom sections:       {_fmt_bytes(custom_total):>12s}  {_pct(custom_total, total)}")
-    print(f"  Structural/metadata:   {_fmt_bytes(structural):>12s}  {_pct(structural, total)}")
+    print(
+        f"  Code (functions):      {_fmt_bytes(code_total):>12s}  {_pct(code_total, total)}"
+    )
+    print(
+        f"  Data (constants/heap): {_fmt_bytes(data_total):>12s}  {_pct(data_total, total)}"
+    )
+    print(
+        f"  Custom sections:       {_fmt_bytes(custom_total):>12s}  {_pct(custom_total, total)}"
+    )
+    print(
+        f"  Structural/metadata:   {_fmt_bytes(structural):>12s}  {_pct(structural, total)}"
+    )
     print()
 
 
 # ---------------------------------------------------------------------------
 # Comparison mode
 # ---------------------------------------------------------------------------
+
 
 def compare_binaries(path_a: Path, path_b: Path) -> dict:
     """Compare two binaries and compute deltas."""
@@ -554,8 +642,15 @@ def compare_binaries(path_a: Path, path_b: Path) -> dict:
         for cat in sorted(all_cats):
             sa = a["category_totals"].get(cat, 0)
             sb = b["category_totals"].get(cat, 0)
-            display = a["category_display"].get(cat) or b["category_display"].get(cat, cat)
-            cat_delta[cat] = {"display": display, "before": sa, "after": sb, "delta": sb - sa}
+            display = a["category_display"].get(cat) or b["category_display"].get(
+                cat, cat
+            )
+            cat_delta[cat] = {
+                "display": display,
+                "before": sa,
+                "after": sb,
+                "delta": sb - sa,
+            }
 
         result["category_deltas"] = cat_delta
 
@@ -577,20 +672,30 @@ def print_comparison(comp: dict) -> None:
     if "section_deltas" in comp:
         print(f"{'Section':<30s} {'Before':>10s}  {'After':>10s}  {'Delta':>12s}")
         print("-" * 66)
-        for key, d in sorted(comp["section_deltas"].items(), key=lambda kv: -abs(kv[1]["delta"])):
+        for key, d in sorted(
+            comp["section_deltas"].items(), key=lambda kv: -abs(kv[1]["delta"])
+        ):
             dd = d["delta"]
             s = "+" if dd >= 0 else ""
-            print(f"  {key:<28s} {_fmt_bytes(d['before']):>10s}  {_fmt_bytes(d['after']):>10s}  {s}{_fmt_bytes(dd):>10s}")
+            print(
+                f"  {key:<28s} {_fmt_bytes(d['before']):>10s}  {_fmt_bytes(d['after']):>10s}  {s}{_fmt_bytes(dd):>10s}"
+            )
         print()
-        print(f"  Functions: {comp.get('function_count_before', '?')} -> {comp.get('function_count_after', '?')}")
+        print(
+            f"  Functions: {comp.get('function_count_before', '?')} -> {comp.get('function_count_after', '?')}"
+        )
 
     if "category_deltas" in comp:
         print(f"{'Category':<30s} {'Before':>10s}  {'After':>10s}  {'Delta':>12s}")
         print("-" * 66)
-        for key, d in sorted(comp["category_deltas"].items(), key=lambda kv: -abs(kv[1]["delta"])):
+        for key, d in sorted(
+            comp["category_deltas"].items(), key=lambda kv: -abs(kv[1]["delta"])
+        ):
             dd = d["delta"]
             s = "+" if dd >= 0 else ""
-            print(f"  {d['display']:<28s} {_fmt_bytes(d['before']):>10s}  {_fmt_bytes(d['after']):>10s}  {s}{_fmt_bytes(dd):>10s}")
+            print(
+                f"  {d['display']:<28s} {_fmt_bytes(d['before']):>10s}  {_fmt_bytes(d['after']):>10s}  {s}{_fmt_bytes(dd):>10s}"
+            )
 
     print()
 
@@ -598,6 +703,7 @@ def print_comparison(comp: dict) -> None:
 # ---------------------------------------------------------------------------
 # JSON output
 # ---------------------------------------------------------------------------
+
 
 def to_json(analysis: dict) -> dict:
     """Convert an analysis result to JSON-serialisable dict."""
@@ -621,17 +727,27 @@ def to_json(analysis: dict) -> dict:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Analyse binary size breakdown for Molt native and WASM binaries",
     )
     parser.add_argument("binary", type=Path, nargs="?", help="Path to binary file")
-    parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"),
-                        help="Compare two binaries and show deltas")
-    parser.add_argument("--json", action="store_true", dest="json_output",
-                        help="Output as JSON")
-    parser.add_argument("--budget", type=str, default=None,
-                        help=f"Size budget (e.g. '30MB'). Default: {DEFAULT_BUDGET_NATIVE_MB:.0f}MB native, {DEFAULT_BUDGET_WASM_MB:.0f}MB WASM")
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("BEFORE", "AFTER"),
+        help="Compare two binaries and show deltas",
+    )
+    parser.add_argument(
+        "--json", action="store_true", dest="json_output", help="Output as JSON"
+    )
+    parser.add_argument(
+        "--budget",
+        type=str,
+        default=None,
+        help=f"Size budget (e.g. '30MB'). Default: {DEFAULT_BUDGET_NATIVE_MB:.0f}MB native, {DEFAULT_BUDGET_WASM_MB:.0f}MB WASM",
+    )
     args = parser.parse_args()
 
     # Compare mode
@@ -683,13 +799,17 @@ def main() -> None:
 
     if total > budget_bytes:
         over = total - budget_bytes
-        print(f"BUDGET EXCEEDED: {_fmt_bytes(total)} > {_fmt_bytes(budget_bytes)} "
-              f"(over by {_fmt_bytes(over)})")
+        print(
+            f"BUDGET EXCEEDED: {_fmt_bytes(total)} > {_fmt_bytes(budget_bytes)} "
+            f"(over by {_fmt_bytes(over)})"
+        )
         sys.exit(1)
     else:
         remaining = budget_bytes - total
-        print(f"Budget OK: {_fmt_bytes(total)} / {_fmt_bytes(budget_bytes)} "
-              f"({_fmt_bytes(remaining)} remaining)")
+        print(
+            f"Budget OK: {_fmt_bytes(total)} / {_fmt_bytes(budget_bytes)} "
+            f"({_fmt_bytes(remaining)} remaining)"
+        )
 
 
 if __name__ == "__main__":

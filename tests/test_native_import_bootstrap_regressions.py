@@ -44,7 +44,9 @@ def test_native_bootstrap_target_dir_defaults_to_repo_target() -> None:
     assert diff_target_dir == target_dir
 
 
-def _build_and_run(tmp_path: Path, source: str, name: str) -> subprocess.CompletedProcess[str]:
+def _build_and_run(
+    tmp_path: Path, source: str, name: str
+) -> subprocess.CompletedProcess[str]:
     return _build_and_run_with_env(
         tmp_path,
         source,
@@ -68,7 +70,11 @@ def _build_and_run_with_env(
     extra_env: dict[str, str] | None = None,
     run_timeout_secs: int = 60,
 ) -> subprocess.CompletedProcess[str]:
-    src_path = tmp_path / source_relpath if source_relpath is not None else tmp_path / f"{name}.py"
+    src_path = (
+        tmp_path / source_relpath
+        if source_relpath is not None
+        else tmp_path / f"{name}.py"
+    )
     out_path = tmp_path / name
     src_path.parent.mkdir(parents=True, exist_ok=True)
     if extra_files:
@@ -145,7 +151,9 @@ def _write_safetensors_fixture(path: Path, *, count: int) -> None:
         }
         payload.extend(raw)
         offset += len(raw)
-    header_json = json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    header_json = json.dumps(header, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
     path.write_bytes(struct.pack("<Q", len(header_json)) + header_json + payload)
 
 
@@ -383,7 +391,9 @@ def test_native_builtin_import_tkinter_after_find_spec_is_clean(tmp_path: Path) 
     assert run.stdout.strip().splitlines() == ["PRE", "True", "tkinter"]
 
 
-def test_native_imported_module_dunder_getattr_handles_missing_attr(tmp_path: Path) -> None:
+def test_native_imported_module_dunder_getattr_handles_missing_attr(
+    tmp_path: Path,
+) -> None:
     run = _build_and_run_with_env(
         tmp_path,
         (
@@ -400,14 +410,16 @@ def test_native_imported_module_dunder_getattr_handles_missing_attr(tmp_path: Pa
         backend="cranelift",
         extra_files={
             "probe_mod.py": (
-                "def __getattr__(name):\n"
-                "    raise AttributeError(f'HOOK::{name}')\n"
+                "def __getattr__(name):\n    raise AttributeError(f'HOOK::{name}')\n"
             )
         },
         extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
     )
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip().splitlines() == ["AttributeError", "HOOK::sentinel_missing"]
+    assert run.stdout.strip().splitlines() == [
+        "AttributeError",
+        "HOOK::sentinel_missing",
+    ]
 
 
 def test_native_local_function_raise_is_caught_by_try_except(tmp_path: Path) -> None:
@@ -515,7 +527,9 @@ def test_native_direct_raise_is_caught_by_try_except(tmp_path: Path) -> None:
     ]
 
 
-def test_native_try_multibase_class_statement_preserves_namespace(tmp_path: Path) -> None:
+def test_native_try_multibase_class_statement_preserves_namespace(
+    tmp_path: Path,
+) -> None:
     run = _build_and_run_with_env(
         tmp_path,
         (
@@ -1501,12 +1515,7 @@ def test_native_indirect_noncallable_still_raises_typeerror(
 ) -> None:
     run = _build_and_run(
         tmp_path,
-        (
-            "def f():\n"
-            "    x = 1\n"
-            "    x()\n"
-            "f()\n"
-        ),
+        ("def f():\n    x = 1\n    x()\nf()\n"),
         "indirect_noncallable_typeerror",
     )
     assert run.returncode != 0
@@ -1581,7 +1590,9 @@ def test_native_metaclass_subclass_of_base_metaclass_is_allowed(
     assert run.stdout.strip() == "ok"
 
 
-def test_native_import_builtins_descriptor_types_are_bootstrapped(tmp_path: Path) -> None:
+def test_native_import_builtins_descriptor_types_are_bootstrapped(
+    tmp_path: Path,
+) -> None:
     run = _build_and_run(
         tmp_path,
         (
@@ -1608,13 +1619,12 @@ def test_native_import_builtins_descriptor_types_are_bootstrapped(tmp_path: Path
     ]
 
 
-def test_native_repo_package_imports_include_molt_parent_package(tmp_path: Path) -> None:
+def test_native_repo_package_imports_include_molt_parent_package(
+    tmp_path: Path,
+) -> None:
     run = _build_and_run_with_env(
         tmp_path,
-        (
-            "from molt.gpu.tensor import Tensor\n"
-            "print('ok')\n"
-        ),
+        ("from molt.gpu.tensor import Tensor\nprint('ok')\n"),
         "import_molt_gpu_tensor",
         session_id="pytest-native-bootstrap-package-import",
         cache_dir=ROOT / ".molt_cache-package-import",
@@ -1848,7 +1858,9 @@ def test_native_abc_register_builtin_iterator_type(tmp_path: Path) -> None:
     assert run.stdout.strip() == "ok"
 
 
-def test_native_abc_register_builtin_iterator_type_on_derived_abc(tmp_path: Path) -> None:
+def test_native_abc_register_builtin_iterator_type_on_derived_abc(
+    tmp_path: Path,
+) -> None:
     run = _build_and_run(
         tmp_path,
         (
@@ -1866,7 +1878,9 @@ def test_native_abc_register_builtin_iterator_type_on_derived_abc(tmp_path: Path
     assert run.stdout.strip() == "ok"
 
 
-def test_native_abc_register_builtin_iterator_family_on_derived_abc(tmp_path: Path) -> None:
+def test_native_abc_register_builtin_iterator_family_on_derived_abc(
+    tmp_path: Path,
+) -> None:
     run = _build_and_run(
         tmp_path,
         (

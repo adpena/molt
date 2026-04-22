@@ -1,6 +1,5 @@
 """Transformer text generation example using Molt GPU compute."""
 
-from molt.gpu.tensor import Tensor
 from molt.gpu.transformer import TransformerDecoder
 from molt.gpu.generate import greedy_decode, top_k_sample
 

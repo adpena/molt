@@ -16,9 +16,7 @@ from hypothesis import strategies as st
 # Strategies
 # ---------------------------------------------------------------------------
 
-small_int_lists = st.lists(
-    st.integers(min_value=-1000, max_value=1000), max_size=50
-)
+small_int_lists = st.lists(st.integers(min_value=-1000, max_value=1000), max_size=50)
 nonempty_int_lists = st.lists(
     st.integers(min_value=-1000, max_value=1000), min_size=1, max_size=50
 )
@@ -31,9 +29,7 @@ str_keyed_dicts = st.dictionaries(
     st.integers(min_value=-1000, max_value=1000),
     max_size=30,
 )
-int_sets = st.frozensets(
-    st.integers(min_value=-1000, max_value=1000), max_size=50
-)
+int_sets = st.frozensets(st.integers(min_value=-1000, max_value=1000), max_size=50)
 
 SETTINGS = dict(max_examples=200, deadline=None, database=None)
 

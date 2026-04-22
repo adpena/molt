@@ -109,14 +109,14 @@ def test_verify_stops_at_first_rejection():
 
     # Make second token divergent
     draft_logits = [
-        [5.0, -5.0],   # Strong preference for token 0
-        [-5.0, 5.0],   # Strong preference for token 1
-        [5.0, -5.0],   # Strong preference for token 0
+        [5.0, -5.0],  # Strong preference for token 0
+        [-5.0, 5.0],  # Strong preference for token 1
+        [5.0, -5.0],  # Strong preference for token 0
     ]
     target_logits = [
-        [5.0, -5.0],   # Same as draft
-        [5.0, -5.0],   # Opposite of draft
-        [5.0, -5.0],   # Same as draft
+        [5.0, -5.0],  # Same as draft
+        [5.0, -5.0],  # Opposite of draft
+        [5.0, -5.0],  # Same as draft
     ]
 
     accepted = eagle_verify(draft_logits, target_logits, temperature=1.0)
@@ -140,7 +140,7 @@ def test_speculate_produces_valid_tokens():
     assert len(tokens) == 5, f"Expected 5 draft tokens, got {len(tokens)}"
     assert len(logits) == 5, f"Expected 5 logit vectors, got {len(logits)}"
     assert all(0 <= t < 16 for t in tokens), "Token out of vocabulary range"
-    assert all(len(l) == 16 for l in logits), "Wrong logit vector size"
+    assert all(len(logit_vec) == 16 for logit_vec in logits), "Wrong logit vector size"
 
 
 def test_speculate_empty_hidden_rejects():

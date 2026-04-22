@@ -836,9 +836,7 @@ def _ensure_intrinsics() -> None:
     _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = _require_intrinsic(
         "molt_importlib_exec_restricted_source"
     )
-    _MOLT_IMPORTLIB_EXEC_EXTENSION = _require_intrinsic(
-        "molt_importlib_exec_extension"
-    )
+    _MOLT_IMPORTLIB_EXEC_EXTENSION = _require_intrinsic("molt_importlib_exec_extension")
     _MOLT_IMPORTLIB_EXEC_SOURCELESS = _require_intrinsic(
         "molt_importlib_exec_sourceless"
     )

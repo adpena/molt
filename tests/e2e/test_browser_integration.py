@@ -27,10 +27,7 @@ WASM_URL = f"{BASE_URL}/wasm/falcon-ocr.wasm"
 WEIGHTS_BASE = f"{BASE_URL}/weights/falcon-ocr-int4"
 CONFIG_URL = f"{WEIGHTS_BASE}/config.json"
 INDEX_URL = f"{WEIGHTS_BASE}/model.safetensors.index.json"
-SHARD_URLS = [
-    f"{WEIGHTS_BASE}/model-0000{i}-of-00005.safetensors"
-    for i in range(1, 6)
-]
+SHARD_URLS = [f"{WEIGHTS_BASE}/model-0000{i}-of-00005.safetensors" for i in range(1, 6)]
 ALLOWED_ORIGIN = "https://freeinvoicemaker.app"
 
 # Budget: 200 MB total max for all assets
@@ -94,9 +91,7 @@ def test_cors_allows_origin():
     req = _get(WASM_URL, origin=ALLOWED_ORIGIN)
     with urllib.request.urlopen(req) as r:
         acao = r.headers.get("Access-Control-Allow-Origin", "")
-        assert ALLOWED_ORIGIN in acao or acao == "*", (
-            f"CORS origin not allowed: {acao}"
-        )
+        assert ALLOWED_ORIGIN in acao or acao == "*", f"CORS origin not allowed: {acao}"
 
 
 def test_cors_allows_methods():
@@ -151,9 +146,7 @@ def test_all_weight_shards_accessible():
         with urllib.request.urlopen(req) as r:
             assert r.status == 200, f"Shard {i} returned {r.status}"
             size = int(r.headers.get("Content-Length", 0))
-            assert size > 1_000_000, (
-                f"Shard {i} suspiciously small: {size} bytes"
-            )
+            assert size > 1_000_000, f"Shard {i} suspiciously small: {size} bytes"
             # Read first 8 bytes to verify safetensors header
             header = r.read(8)
             # safetensors format: first 8 bytes are u64 LE header length
@@ -200,9 +193,9 @@ def test_config_model_architecture():
             archs = data["architectures"]
             if isinstance(archs, list) and len(archs) > 0:
                 # May be actual values or schema placeholders
-                assert any(
-                    "Falcon" in str(a) or "string" in str(a) for a in archs
-                ), f"Unexpected architectures: {archs}"
+                assert any("Falcon" in str(a) or "string" in str(a) for a in archs), (
+                    f"Unexpected architectures: {archs}"
+                )
 
 
 def test_config_has_model_dims():

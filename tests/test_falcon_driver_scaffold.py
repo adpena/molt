@@ -36,7 +36,9 @@ def test_falcon_driver_deploy_surface_is_target_root_driven(tmp_path: Path) -> N
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
-    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (weights_dir / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy")
     surface = deploy.build_deploy_surface(
@@ -47,7 +49,9 @@ def test_falcon_driver_deploy_surface_is_target_root_driven(tmp_path: Path) -> N
     assert surface["target"] == "falcon.browser_webgpu"
     assert surface["target_root"] == str(target_root)
     assert surface["artifacts"]["app_wasm"] == str(artifact_dir / "app.wasm")
-    assert surface["artifacts"]["runtime_wasm"] == str(artifact_dir / "molt_runtime.wasm")
+    assert surface["artifacts"]["runtime_wasm"] == str(
+        artifact_dir / "molt_runtime.wasm"
+    )
     assert surface["artifacts"]["config_json"] == str(target_root / "config.json")
     assert surface["artifacts"]["tokenizer_json"] == str(weights_dir / "tokenizer.json")
     assert surface["status"] == "manifest_ready"
@@ -59,7 +63,10 @@ def test_falcon_driver_deploy_surface_is_target_root_driven(tmp_path: Path) -> N
     assert immutable["browser_loader"]["relative_path"] == "browser.js"
     assert immutable["worker_entrypoint"]["relative_path"] == "worker.ts"
     assert immutable["wrangler_config"]["relative_path"] == "wrangler.jsonc"
-    assert surface["artifact_manifest"]["weights"][0]["relative_path"] == "layer0.safetensors"
+    assert (
+        surface["artifact_manifest"]["weights"][0]["relative_path"]
+        == "layer0.safetensors"
+    )
 
 
 def test_falcon_driver_deploy_surface_accepts_weights_config_layout(
@@ -74,7 +81,9 @@ def test_falcon_driver_deploy_surface_accepts_weights_config_layout(
     weights_dir.mkdir()
     (weights_dir / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
-    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (weights_dir / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_weights_config")
     surface = deploy.build_deploy_surface(
@@ -102,12 +111,16 @@ def test_falcon_driver_deploy_surface_accepts_alternate_weights_root(
     default_weights = target_root / "weights"
     default_weights.mkdir()
     (default_weights / "layer0.safetensors").write_bytes(b"old")
-    (default_weights / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (default_weights / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     alt_weights = tmp_path / "falcon-weights-f16"
     alt_weights.mkdir()
     (alt_weights / "model.safetensors").write_bytes(b"new-weights")
-    (alt_weights / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (alt_weights / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_alt_weights")
     surface = deploy.build_deploy_surface(
@@ -117,8 +130,13 @@ def test_falcon_driver_deploy_surface_accepts_alternate_weights_root(
     )
 
     assert surface["artifacts"]["weights_dir"] == str(alt_weights.resolve())
-    assert surface["artifacts"]["tokenizer_json"] == str((alt_weights / "tokenizer.json").resolve())
-    assert surface["artifact_manifest"]["weights"][0]["relative_path"] == "model.safetensors"
+    assert surface["artifacts"]["tokenizer_json"] == str(
+        (alt_weights / "tokenizer.json").resolve()
+    )
+    assert (
+        surface["artifact_manifest"]["weights"][0]["relative_path"]
+        == "model.safetensors"
+    )
 
 
 def test_falcon_driver_deploy_surface_accepts_alternate_weights_root_config_layout(
@@ -134,7 +152,9 @@ def test_falcon_driver_deploy_surface_accepts_alternate_weights_root_config_layo
     alt_weights.mkdir()
     (alt_weights / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
     (alt_weights / "model.safetensors").write_bytes(b"new-weights")
-    (alt_weights / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (alt_weights / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_alt_weights_config")
     surface = deploy.build_deploy_surface(
@@ -143,8 +163,13 @@ def test_falcon_driver_deploy_surface_accepts_alternate_weights_root_config_layo
         weights_root=alt_weights,
     )
 
-    assert surface["artifacts"]["config_json"] == str((alt_weights / "config.json").resolve())
-    assert surface["artifact_manifest"]["immutable"]["config_json"]["relative_path"] == "config.json"
+    assert surface["artifacts"]["config_json"] == str(
+        (alt_weights / "config.json").resolve()
+    )
+    assert (
+        surface["artifact_manifest"]["immutable"]["config_json"]["relative_path"]
+        == "config.json"
+    )
 
 
 def test_falcon_driver_deploy_script_emits_json(tmp_path: Path) -> None:
@@ -157,7 +182,9 @@ def test_falcon_driver_deploy_script_emits_json(tmp_path: Path) -> None:
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
-    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (weights_dir / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     res = subprocess.run(
         [sys.executable, str(DEPLOY_PY), "--target-root", str(target_root)],
@@ -185,7 +212,9 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
-    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (weights_dir / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_materialize")
     bundle = deploy.materialize_deploy_bundle(
@@ -202,9 +231,17 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     assert (bundle_root / "assets" / "molt_vfs_browser.js").exists()
     assert (bundle_root / "assets" / "config.json").exists()
     assert (bundle_root / "assets" / "tokenizer.json").exists()
-    materialized_browser_js = (bundle_root / "assets" / "browser.js").read_text(encoding="utf-8")
-    assert 'import { loadMoltWasm } from "./browser_host.js";' in materialized_browser_js
-    manifest = json.loads((bundle_root / "assets" / "driver-manifest.base.json").read_text(encoding="utf-8"))
+    materialized_browser_js = (bundle_root / "assets" / "browser.js").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'import { loadMoltWasm } from "./browser_host.js";' in materialized_browser_js
+    )
+    manifest = json.loads(
+        (bundle_root / "assets" / "driver-manifest.base.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert manifest["target"] == "falcon.browser_webgpu"
     assert manifest["artifacts"]["app_wasm"]["url"] == "/app.wasm"
     assert manifest["artifacts"]["runtime_wasm"]["url"] == "/molt_runtime.wasm"
@@ -240,7 +277,9 @@ def test_falcon_driver_materialize_bundle_allows_same_origin_weights(
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
-    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (weights_dir / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_require_base_url")
     bundle = deploy.materialize_deploy_bundle(
@@ -250,9 +289,9 @@ def test_falcon_driver_materialize_bundle_allows_same_origin_weights(
     )
 
     manifest = json.loads(
-        (Path(bundle["bundle_root"]) / "assets" / "driver-manifest.base.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            Path(bundle["bundle_root"]) / "assets" / "driver-manifest.base.json"
+        ).read_text(encoding="utf-8")
     )
     assert manifest["weights"]["base_url"] is None
     wrangler = json.loads(
@@ -283,7 +322,9 @@ def test_falcon_driver_verify_wrapper_emits_json(tmp_path: Path) -> None:
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
-    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (weights_dir / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     res = subprocess.run(
         [
@@ -310,7 +351,9 @@ def test_falcon_driver_verify_wrapper_emits_json(tmp_path: Path) -> None:
     assert payload["wrangler_dry_run"]["returncode"] == 0
 
 
-def test_falcon_driver_verify_wrapper_accepts_alternate_weights_root(tmp_path: Path) -> None:
+def test_falcon_driver_verify_wrapper_accepts_alternate_weights_root(
+    tmp_path: Path,
+) -> None:
     target_root = tmp_path / "falcon-target"
     artifact_dir = target_root / "dist" / "browser_split"
     artifact_dir.mkdir(parents=True)
@@ -322,7 +365,9 @@ def test_falcon_driver_verify_wrapper_accepts_alternate_weights_root(tmp_path: P
     weights_root.mkdir()
     (weights_root / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
     (weights_root / "model.safetensors").write_bytes(b"weights-f16")
-    (weights_root / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    (weights_root / "tokenizer.json").write_text(
+        '{"model":{"vocab":{}}}\n', encoding="utf-8"
+    )
 
     res = subprocess.run(
         [
@@ -344,8 +389,12 @@ def test_falcon_driver_verify_wrapper_accepts_alternate_weights_root(tmp_path: P
     )
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
-    manifest = json.loads(Path(payload["bundle"]["manifest_asset"]).read_text(encoding="utf-8"))
-    assert manifest["weights"]["base_url"] == "https://weights.example.invalid/falcon-f16"
+    manifest = json.loads(
+        Path(payload["bundle"]["manifest_asset"]).read_text(encoding="utf-8")
+    )
+    assert (
+        manifest["weights"]["base_url"] == "https://weights.example.invalid/falcon-f16"
+    )
     model_record = next(
         record
         for record in manifest["weights"]["files"]
@@ -375,7 +424,7 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
         encoding="utf-8",
     )
     build_env = {
-        **dict(__import__('os').environ),
+        **dict(__import__("os").environ),
         "PYTHONPATH": str(ROOT / "src"),
         "MOLT_WASM_LINKED": "0",
     }
@@ -435,7 +484,11 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
                 self.end_headers()
                 return
             payload = target.read_bytes()
-            ctype = "application/wasm" if target.suffix == ".wasm" else "application/octet-stream"
+            ctype = (
+                "application/wasm"
+                if target.suffix == ".wasm"
+                else "application/octet-stream"
+            )
             if target.suffix == ".json":
                 ctype = "application/json"
             self.send_response(200)
@@ -505,12 +558,17 @@ console.error(JSON.stringify({{ tokenizerUrl: session.tokenizerUrl }}));
         lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
         assert lines[:7] == ["7", '{"dim":2}', "32", "16", "6", "[257, 258]", "3"]
         assert json.loads(lines[7]) == [257, 258]
-        assert json.loads(run.stderr.strip())["tokenizerUrl"] == f"{base_url}/tokenizer.json"
+        assert (
+            json.loads(run.stderr.strip())["tokenizerUrl"]
+            == f"{base_url}/tokenizer.json"
+        )
     finally:
         server.shutdown()
 
 
-def test_falcon_browser_driver_reuses_cached_weights_on_second_init(tmp_path: Path) -> None:
+def test_falcon_browser_driver_reuses_cached_weights_on_second_init(
+    tmp_path: Path,
+) -> None:
     src = tmp_path / "main_molt.py"
     src.write_text(
         "_initialized = 0\n"
@@ -573,7 +631,9 @@ def test_falcon_browser_driver_reuses_cached_weights_on_second_init(tmp_path: Pa
                 },
                 "weights": {
                     "base_url": "/weights/falcon/test-hash",
-                    "files": [{"path": "model.safetensors", "url": "model.safetensors"}],
+                    "files": [
+                        {"path": "model.safetensors", "url": "model.safetensors"}
+                    ],
                 },
                 "exports": {
                     "init": "main_molt__init",
@@ -610,7 +670,11 @@ def test_falcon_browser_driver_reuses_cached_weights_on_second_init(tmp_path: Pa
             if self.path in hits:
                 hits[self.path] += 1
             payload = target.read_bytes()
-            ctype = "application/wasm" if target.suffix == ".wasm" else "application/octet-stream"
+            ctype = (
+                "application/wasm"
+                if target.suffix == ".wasm"
+                else "application/octet-stream"
+            )
             if target.suffix == ".json":
                 ctype = "application/json"
             self.send_response(200)
@@ -757,7 +821,11 @@ def test_falcon_browser_driver_init_from_manifest_roundtrip(tmp_path: Path) -> N
                 self.end_headers()
                 return
             payload = target.read_bytes()
-            ctype = "application/wasm" if target.suffix == ".wasm" else "application/octet-stream"
+            ctype = (
+                "application/wasm"
+                if target.suffix == ".wasm"
+                else "application/octet-stream"
+            )
             if target.suffix == ".json":
                 ctype = "application/json"
             self.send_response(200)
@@ -917,4 +985,6 @@ try {{
     )
     assert run.returncode == 0, run.stderr
     assert "manifest fetch reached" in run.stdout
-    assert "requires WebGPU support or an injected gpuKernelDispatcher" not in run.stdout
+    assert (
+        "requires WebGPU support or an injected gpuKernelDispatcher" not in run.stdout
+    )

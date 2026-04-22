@@ -62,15 +62,11 @@ _MOLT_SIGNAL_PAUSE = _require_intrinsic("molt_signal_pause")
 _MOLT_SIGNAL_SET_WAKEUP_FD = _require_intrinsic("molt_signal_set_wakeup_fd")
 _MOLT_SIGNAL_VALID_SIGNALS = _require_intrinsic("molt_signal_valid_signals")
 _MOLT_SIGNAL_STRSIGNAL = _require_intrinsic("molt_signal_strsignal")
-_MOLT_SIGNAL_PTHREAD_SIGMASK = _require_intrinsic(
-    "molt_signal_pthread_sigmask"
-)
+_MOLT_SIGNAL_PTHREAD_SIGMASK = _require_intrinsic("molt_signal_pthread_sigmask")
 _MOLT_SIGNAL_PTHREAD_KILL = _require_intrinsic("molt_signal_pthread_kill")
 _MOLT_SIGNAL_SIGPENDING = _require_intrinsic("molt_signal_sigpending")
 _MOLT_SIGNAL_SIGWAIT = _require_intrinsic("molt_signal_sigwait")
-_MOLT_SIGNAL_DEFAULT_INT_HANDLER = _require_intrinsic(
-    "molt_signal_default_int_handler"
-)
+_MOLT_SIGNAL_DEFAULT_INT_HANDLER = _require_intrinsic("molt_signal_default_int_handler")
 
 # -- signal number constants -----------------------------------------------
 SIG_DFL = int(_MOLT_SIGNAL_SIG_DFL())
@@ -245,5 +241,6 @@ def sigpending() -> set[int]:
 def sigwait(sigset: Iterable[int]) -> int:
     """Wait for a signal."""
     return int(_MOLT_SIGNAL_SIGWAIT(list(sigset)))
+
 
 globals().pop("_require_intrinsic", None)

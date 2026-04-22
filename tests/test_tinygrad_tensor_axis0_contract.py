@@ -14,7 +14,7 @@ def _load_isolated_tinygrad_tensor():
         if name == "tinygrad" or name.startswith("tinygrad."):
             sys.modules.pop(name)
     intrinsics = types.ModuleType("_intrinsics")
-    intrinsics.require_intrinsic = lambda _name: (lambda *args, **kwargs: None)
+    intrinsics.require_intrinsic = lambda _name: lambda *args, **kwargs: None
     sys.modules["_intrinsics"] = intrinsics
     pkg = types.ModuleType("tinygrad")
     pkg.__path__ = [str(ROOT / "src/molt/stdlib/tinygrad")]

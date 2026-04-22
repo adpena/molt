@@ -48,7 +48,7 @@ print("=== zip strict ===")
 print(list(zip([1, 2], [3, 4], strict=True)))
 try:
     list(zip([1, 2], [3], strict=True))
-except ValueError as e:
+except ValueError:
     print("zip strict error: ValueError")
 
 print("=== map ===")
@@ -140,8 +140,11 @@ print(type(()))
 print(type(set()))
 
 print("=== hasattr / getattr / setattr ===")
+
+
 class Obj:
     x = 10
+
 
 o = Obj()
 print(hasattr(o, "x"))
@@ -261,10 +264,14 @@ print(ascii("hello"))
 print(ascii("caf\u00e9"))
 
 print("=== vars on object ===")
+
+
 class Simple:
     def __init__(self):
         self.a = 1
         self.b = 2
+
+
 print(sorted(vars(Simple()).items()))
 
 print("=== dir basics ===")

@@ -311,14 +311,20 @@ _MOLT_SYS_VERSION_INFO = _lazy_intrinsic(
     "molt_sys_version_info", _return_version_info_default
 )
 _MOLT_SYS_VERSION = _lazy_intrinsic("molt_sys_version", _return_empty_str)
-_MOLT_SYS_HEXVERSION = _lazy_intrinsic("molt_sys_hexversion", _return_hexversion_default)
+_MOLT_SYS_HEXVERSION = _lazy_intrinsic(
+    "molt_sys_hexversion", _return_hexversion_default
+)
 _MOLT_SYS_API_VERSION = _lazy_intrinsic("molt_sys_api_version", _return_zero)
 _MOLT_SYS_ABIFLAGS = _lazy_intrinsic("molt_sys_abiflags", _return_empty_str)
-_MOLT_SYS_IMPLEMENTATION_PAYLOAD = _lazy_intrinsic("molt_sys_implementation_payload", None)
+_MOLT_SYS_IMPLEMENTATION_PAYLOAD = _lazy_intrinsic(
+    "molt_sys_implementation_payload", None
+)
 _MOLT_SYS_FLAGS_PAYLOAD = _lazy_intrinsic("molt_sys_flags_payload", None)
 _MOLT_SYS_PLATFORM = _lazy_intrinsic("molt_sys_platform", _return_platform_unknown)
 _MOLT_SYS_IS_FINALIZING = _lazy_intrinsic("molt_sys_is_finalizing", _return_false)
-_MOLT_SYS_GETREFCOUNT = _lazy_intrinsic("molt_sys_getrefcount", _return_refcount_default)
+_MOLT_SYS_GETREFCOUNT = _lazy_intrinsic(
+    "molt_sys_getrefcount", _return_refcount_default
+)
 _MOLT_SYS_SETTRACE = _lazy_intrinsic("molt_sys_settrace", None)
 _MOLT_SYS_GETTRACE = _lazy_intrinsic("molt_sys_gettrace", None)
 _MOLT_SYS_SETPROFILE = _lazy_intrinsic("molt_sys_setprofile", None)
@@ -331,7 +337,9 @@ _MOLT_SYS_GETFILESYSTEMENCODEERRORS = _lazy_intrinsic(
 )
 _MOLT_SYS_BOOTSTRAP_PAYLOAD = _lazy_intrinsic("molt_sys_bootstrap_payload", None)
 _MOLT_SYS_MAXSIZE = _lazy_intrinsic("molt_sys_maxsize", _return_maxsize_default)
-_MOLT_SYS_MAXUNICODE = _lazy_intrinsic("molt_sys_maxunicode", _return_maxunicode_default)
+_MOLT_SYS_MAXUNICODE = _lazy_intrinsic(
+    "molt_sys_maxunicode", _return_maxunicode_default
+)
 _MOLT_SYS_BYTEORDER = _lazy_intrinsic("molt_sys_byteorder", _return_little_endian)
 _MOLT_SYS_PREFIX = _lazy_intrinsic("molt_sys_prefix", _return_empty_str)
 _MOLT_SYS_EXEC_PREFIX = _lazy_intrinsic("molt_sys_exec_prefix", _return_empty_str)
@@ -345,9 +353,7 @@ _MOLT_SYS_INT_INFO = _lazy_intrinsic("molt_sys_int_info", None)
 _MOLT_SYS_HASH_INFO = _lazy_intrinsic("molt_sys_hash_info", None)
 _MOLT_SYS_THREAD_INFO = _lazy_intrinsic("molt_sys_thread_info", None)
 _MOLT_SYS_INTERN = _lazy_intrinsic("molt_sys_intern", _return_identity)
-_MOLT_SYS_GETSIZEOF = _lazy_intrinsic(
-    "molt_sys_getsizeof", _return_getsizeof_default
-)
+_MOLT_SYS_GETSIZEOF = _lazy_intrinsic("molt_sys_getsizeof", _return_getsizeof_default)
 _MOLT_SYS_STDLIB_MODULE_NAMES = _lazy_intrinsic(
     "molt_sys_stdlib_module_names", _return_empty_frozenset
 )
@@ -356,7 +362,9 @@ _MOLT_SYS_BUILTIN_MODULE_NAMES = _lazy_intrinsic(
 )
 _MOLT_SYS_ORIG_ARGV = _lazy_intrinsic("molt_sys_orig_argv", _return_empty_list)
 _MOLT_SYS_COPYRIGHT = _lazy_intrinsic("molt_sys_copyright", _return_empty_str)
-_MOLT_TRACEBACK_FORMAT_EXCEPTION = _lazy_intrinsic("molt_traceback_format_exception", None)
+_MOLT_TRACEBACK_FORMAT_EXCEPTION = _lazy_intrinsic(
+    "molt_traceback_format_exception", None
+)
 _MOLT_SYS_GETDEFAULTENCODING = _lazy_intrinsic(
     "molt_sys_getdefaultencoding", _return_utf8
 )
@@ -370,11 +378,17 @@ _MOLT_SYS_SETSWITCHINTERVAL = _lazy_intrinsic("molt_sys_setswitchinterval", None
 _MOLT_SYS_GET_INT_MAX_STR_DIGITS = _lazy_intrinsic(
     "molt_sys_get_int_max_str_digits", _return_4300
 )
-_MOLT_SYS_SET_INT_MAX_STR_DIGITS = _lazy_intrinsic("molt_sys_set_int_max_str_digits", None)
-_MOLT_SYS_CALL_TRACING_VALIDATE = _lazy_intrinsic("molt_sys_call_tracing_validate", None)
+_MOLT_SYS_SET_INT_MAX_STR_DIGITS = _lazy_intrinsic(
+    "molt_sys_set_int_max_str_digits", None
+)
+_MOLT_SYS_CALL_TRACING_VALIDATE = _lazy_intrinsic(
+    "molt_sys_call_tracing_validate", None
+)
 _MOLT_SYS_ADDAUDITHOOK = _lazy_intrinsic("molt_sys_addaudithook", None)
 _MOLT_SYS_AUDIT_HOOK_COUNT = _lazy_intrinsic("molt_sys_audit_hook_count", _return_zero)
-_MOLT_SYS_AUDIT_GET_HOOKS = _lazy_intrinsic("molt_sys_audit_get_hooks", _return_empty_list)
+_MOLT_SYS_AUDIT_GET_HOOKS = _lazy_intrinsic(
+    "molt_sys_audit_get_hooks", _return_empty_list
+)
 _MOLT_SYS_EXIT = _lazy_intrinsic("molt_sys_exit", None)
 _MOLT_SYS_DISPLAYHOOK_WRITE = _lazy_intrinsic("molt_sys_displayhook_write", None)
 _MOLT_SYS_EXCEPTHOOK_WRITE = _lazy_intrinsic("molt_sys_excepthook_write", None)
@@ -512,8 +526,8 @@ def _resolve_implementation(payload: object) -> _ImplementationNamespace:
         raise RuntimeError(f"{intrinsic_name} returned invalid value for name")
     if not isinstance(cache_tag_obj, str):
         raise RuntimeError(f"{intrinsic_name} returned invalid value for cache_tag")
-    name = (name_obj)
-    cache_tag = (cache_tag_obj)
+    name = name_obj
+    cache_tag = cache_tag_obj
     if not name:
         raise RuntimeError(f"{intrinsic_name} returned invalid value for name")
     if not cache_tag:
@@ -545,7 +559,9 @@ _SYS_FLAGS_SEQUENCE_FIELDS = (
 )
 _SYS_FLAGS_SEQUENCE_INDEX = {}
 for _i__SYS_FLAGS_SEQUENCE_INDEX in range(len(_SYS_FLAGS_SEQUENCE_FIELDS)):
-    _SYS_FLAGS_SEQUENCE_INDEX[_SYS_FLAGS_SEQUENCE_FIELDS[_i__SYS_FLAGS_SEQUENCE_INDEX]] = _i__SYS_FLAGS_SEQUENCE_INDEX
+    _SYS_FLAGS_SEQUENCE_INDEX[
+        _SYS_FLAGS_SEQUENCE_FIELDS[_i__SYS_FLAGS_SEQUENCE_INDEX]
+    ] = _i__SYS_FLAGS_SEQUENCE_INDEX
 _SYS_FLAGS_GIL = 1
 
 
@@ -592,7 +608,9 @@ class flags(tuple):
 _VERSION_INFO_FIELDS = ("major", "minor", "micro", "releaselevel", "serial")
 _VERSION_INFO_INDEX = {}
 for _idx__VERSION_INFO_INDEX in range(len(_VERSION_INFO_FIELDS)):
-    _VERSION_INFO_INDEX[_VERSION_INFO_FIELDS[_idx__VERSION_INFO_INDEX]] = _idx__VERSION_INFO_INDEX
+    _VERSION_INFO_INDEX[_VERSION_INFO_FIELDS[_idx__VERSION_INFO_INDEX]] = (
+        _idx__VERSION_INFO_INDEX
+    )
 
 
 class version_info(tuple):
@@ -635,7 +653,9 @@ _FLOAT_INFO_FIELDS = (
 )
 _FLOAT_INFO_INDEX = {}
 for _idx__FLOAT_INFO_INDEX in range(len(_FLOAT_INFO_FIELDS)):
-    _FLOAT_INFO_INDEX[_FLOAT_INFO_FIELDS[_idx__FLOAT_INFO_INDEX]] = _idx__FLOAT_INFO_INDEX
+    _FLOAT_INFO_INDEX[_FLOAT_INFO_FIELDS[_idx__FLOAT_INFO_INDEX]] = (
+        _idx__FLOAT_INFO_INDEX
+    )
 
 
 class float_info(tuple):
@@ -738,7 +758,9 @@ _THREAD_INFO_FIELDS = (
 )
 _THREAD_INFO_INDEX = {}
 for _idx__THREAD_INFO_INDEX in range(len(_THREAD_INFO_FIELDS)):
-    _THREAD_INFO_INDEX[_THREAD_INFO_FIELDS[_idx__THREAD_INFO_INDEX]] = _idx__THREAD_INFO_INDEX
+    _THREAD_INFO_INDEX[_THREAD_INFO_FIELDS[_idx__THREAD_INFO_INDEX]] = (
+        _idx__THREAD_INFO_INDEX
+    )
 
 
 class thread_info(tuple):
@@ -848,7 +870,7 @@ def _init_metadata():
     )
     float_info_values = tuple(
         (
-            1.7976931348623157e+308,
+            1.7976931348623157e308,
             1024,
             308,
             2.2250738585072014e-308,
@@ -861,9 +883,7 @@ def _init_metadata():
             1,
         )
     )
-    int_info_values = tuple(
-        (30, 4, 4300, 640)
-    )
+    int_info_values = tuple((30, 4, 4300, 640))
     hash_info_values = tuple(
         (
             64,
@@ -877,9 +897,7 @@ def _init_metadata():
             0,
         )
     )
-    thread_info_values = tuple(
-        ("pthread", None, None)
-    )
+    thread_info_values = tuple(("pthread", None, None))
 
     g["version"] = version_text
     g["_raw_version_info"] = version_values
@@ -909,6 +927,8 @@ def _init_metadata():
     g["copyright"] = "Copyright (c) Molt contributors."
     g["stdlib_module_names"] = frozenset()
     g["builtin_module_names"] = ()
+
+
 _init_metadata()
 
 
@@ -983,6 +1003,7 @@ if not isinstance(_bootstrap_payload_value, dict):
         "stdlib_root": None,
     }
 
+
 # Extract all payload fields immediately in a local function scope.
 # This avoids a native-backend use-after-free where the dict reference
 # held in the module dict can get corrupted across chunk boundaries
@@ -992,7 +1013,9 @@ def _extract_bootstrap_payload(payload: dict) -> tuple:
     _path_val = payload.get("path") if isinstance(payload, dict) else []
     _pp_val = payload.get("pythonpath_entries") if isinstance(payload, dict) else []
     _mr_val = payload.get("module_roots_entries") if isinstance(payload, dict) else []
-    _vsp_val = payload.get("venv_site_packages_entries") if isinstance(payload, dict) else []
+    _vsp_val = (
+        payload.get("venv_site_packages_entries") if isinstance(payload, dict) else []
+    )
     _pwd_val = payload.get("pwd") if isinstance(payload, dict) else "/"
     _icwd_val = payload.get("include_cwd") if isinstance(payload, dict) else False
     _sr_val = payload.get("stdlib_root") if isinstance(payload, dict) else None
@@ -1015,6 +1038,7 @@ def _extract_bootstrap_payload(payload: dict) -> tuple:
     sr_str = str(_sr_val) if isinstance(_sr_val, str) else None
     return (path_list, pp_list, mr_list, vsp_list, pwd_str, icwd_bool, sr_str)
 
+
 _bp_result = _extract_bootstrap_payload(_bootstrap_payload_value)
 _bp_path_list = _bp_result[0]
 _bp_pythonpath_list = _bp_result[1]
@@ -1030,7 +1054,11 @@ _molt_bootstrap_module_roots = tuple(_bp_module_roots_list)
 _molt_bootstrap_venv_site_packages = tuple(_bp_vsp_list)
 _molt_bootstrap_pwd = _bp_pwd_str
 _molt_bootstrap_include_cwd_val = _bp_include_cwd_bool
-_molt_bootstrap_include_cwd = bool(_molt_bootstrap_include_cwd_val) if _molt_bootstrap_include_cwd_val is not None else False
+_molt_bootstrap_include_cwd = (
+    bool(_molt_bootstrap_include_cwd_val)
+    if _molt_bootstrap_include_cwd_val is not None
+    else False
+)
 _molt_bootstrap_stdlib_root = _bp_stdlib_root_str
 
 
@@ -1064,6 +1092,7 @@ stdout = _boot_stdout if _boot_stdout is not None else _existing_stdout
 stderr = _boot_stderr if _boot_stderr is not None else _existing_stderr
 
 if stdout is None or stderr is None or stdin is None:
+
     class _StdioFallback:
         """Minimal file-like object wrapping a raw fd for bootstrap.
 
@@ -1072,6 +1101,7 @@ if stdout is None or stderr is None or stdin is None:
         The runtime will normally overwrite these with proper TextIOWrapper
         objects in sys_populate_stdio, so this is a last-resort fallback.
         """
+
         def __init__(self, _name: str, _fd: int, _writable: bool = True) -> None:
             self.name = _name
             self._fd = _fd
@@ -1080,6 +1110,7 @@ if stdout is None or stderr is None or stdin is None:
             self.errors = "surrogateescape"
             self.closed = False
             self._writable = _writable
+
         def write(self, s: object) -> int:
             text = str(s) if not isinstance(s, str) else s
             if not text:
@@ -1090,26 +1121,37 @@ if stdout is None or stderr is None or stdin is None:
             except Exception:
                 pass
             return len(text)
+
         def read(self, n: int = -1) -> str:
             return ""
+
         def readline(self, limit: int = -1) -> str:
             return ""
+
         def flush(self) -> None:
             pass
+
         def fileno(self) -> int:
             return self._fd
+
         def isatty(self) -> bool:
             return False
+
         def readable(self) -> bool:
             return not self._writable
+
         def writable(self) -> bool:
             return self._writable
+
         def seekable(self) -> bool:
             return False
+
         def close(self) -> None:
             self.closed = True
+
         def __enter__(self) -> "_StdioFallback":
             return self
+
         def __exit__(self, *_args: object) -> None:
             pass
 
@@ -1168,11 +1210,11 @@ def _getframe(depth: int = 0) -> object | None:
 
 
 def getdefaultencoding() -> str:
-    return (_MOLT_SYS_GETDEFAULTENCODING())
+    return _MOLT_SYS_GETDEFAULTENCODING()
 
 
 def getfilesystemencoding() -> str:
-    return (_MOLT_SYS_GETFILESYSTEMENCODING())
+    return _MOLT_SYS_GETFILESYSTEMENCODING()
 
 
 def getfilesystemencodeerrors() -> str:
@@ -1197,13 +1239,13 @@ def set_asyncgen_hooks(
 def intern(s: object) -> str:
     if not isinstance(s, str):
         raise TypeError(f"intern() argument 1 must be str, not {type(s).__name__}")
-    return (_MOLT_SYS_INTERN(s))
+    return _MOLT_SYS_INTERN(s)
 
 
 def getsizeof(obj: object, default: object = ...) -> int:
     if default is ...:
-        return (_MOLT_SYS_GETSIZEOF(obj, None))
-    return (_MOLT_SYS_GETSIZEOF(obj, default))
+        return _MOLT_SYS_GETSIZEOF(obj, None)
+    return _MOLT_SYS_GETSIZEOF(obj, default)
 
 
 def displayhook(value: object) -> None:
@@ -1240,9 +1282,17 @@ def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
     header = "Traceback (most recent call last):\n"
     frame_line = ""
     if exc_tb is not None:
-        tb_filename = getattr(exc_tb, "tb_filename", None) or getattr(exc_tb, "filename", None)
-        tb_lineno = getattr(exc_tb, "tb_lineno", None) or getattr(exc_tb, "lineno", None)
-        tb_name = getattr(exc_tb, "tb_name", None) or getattr(exc_tb, "name", None) or "<module>"
+        tb_filename = getattr(exc_tb, "tb_filename", None) or getattr(
+            exc_tb, "filename", None
+        )
+        tb_lineno = getattr(exc_tb, "tb_lineno", None) or getattr(
+            exc_tb, "lineno", None
+        )
+        tb_name = (
+            getattr(exc_tb, "tb_name", None)
+            or getattr(exc_tb, "name", None)
+            or "<module>"
+        )
         if tb_filename and tb_lineno:
             frame_line = f'  File "{tb_filename}", line {tb_lineno}, in {tb_name}\n'
         elif tb_lineno:
@@ -1322,6 +1372,7 @@ _xoptions: dict[str, object] = {}
 
 # --- Integer string conversion length limitation (CPython 3.11+) ---
 
+
 def get_int_max_str_digits() -> int:
     """Return the current integer string conversion length limit."""
     return int((_MOLT_SYS_GET_INT_MAX_STR_DIGITS()))
@@ -1355,6 +1406,7 @@ def getrefcount(obj: object) -> int:
 
 
 # --- Thread switch interval (CPython GIL timeslice) ---
+
 
 def getswitchinterval() -> float:
     """Return the interpreter's thread switch interval in seconds."""
@@ -1413,6 +1465,7 @@ def exception() -> BaseException | None:
 
 
 # --- Audit hooks (CPython 3.8+, PEP 578) ---
+
 
 def addaudithook(hook: object) -> None:
     """Append the callable *hook* to the list of active auditing hooks.

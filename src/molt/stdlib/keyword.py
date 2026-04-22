@@ -20,4 +20,5 @@ def iskeyword(value) -> bool:
 def issoftkeyword(value) -> bool:
     return bool(_is_soft_keyword_intrinsic(value))
 
+
 globals().pop("_require_intrinsic", None)

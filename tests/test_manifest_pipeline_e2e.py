@@ -3,6 +3,7 @@
 Tests the full workflow: manifest -> build -> run -> enforcement.
 Falls back to env-var-only tests if molt CLI is unavailable.
 """
+
 from __future__ import annotations
 
 import os
@@ -21,7 +22,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 def _write_manifest(path: Path) -> None:
     """Write a strict capability manifest for testing."""
     path.write_text(
-        '[manifest]\n'
+        "[manifest]\n"
         'version = "2.0"\n'
         "[capabilities]\n"
         'allow = ["time.wall"]\n'
@@ -174,17 +175,13 @@ def test_env_var_round_trip_edge_cases():
     from molt.capability_manifest import CapabilityManifest, ResourceLimits
 
     # Zero duration
-    m = CapabilityManifest(
-        resources=ResourceLimits(max_duration=0.0, max_memory=0)
-    )
+    m = CapabilityManifest(resources=ResourceLimits(max_duration=0.0, max_memory=0))
     env = m.to_env_vars()
     assert env["MOLT_RESOURCE_MAX_DURATION_MS"] == "0"
     assert env["MOLT_RESOURCE_MAX_MEMORY"] == "0"
 
     # Fractional seconds
-    m2 = CapabilityManifest(
-        resources=ResourceLimits(max_duration=1.5)
-    )
+    m2 = CapabilityManifest(resources=ResourceLimits(max_duration=1.5))
     env2 = m2.to_env_vars()
     assert env2["MOLT_RESOURCE_MAX_DURATION_MS"] == "1500"
 
@@ -214,7 +211,7 @@ def test_parse_size_and_duration_from_manifest():
     from molt.capability_manifest import load_manifest
 
     toml_content = (
-        '[manifest]\n'
+        "[manifest]\n"
         'version = "2.0"\n'
         "[resources]\n"
         'max_memory = "256KB"\n'
@@ -294,10 +291,7 @@ def test_molt_build_with_manifest():
             else:
                 print("  BUILD OK but no output binary found")
         else:
-            print(
-                f"  BUILD FAILED (rc={result.returncode}): "
-                f"{result.stderr[:200]}"
-            )
+            print(f"  BUILD FAILED (rc={result.returncode}): {result.stderr[:200]}")
             # Build failure is not a test failure -- molt may not be fully set up.
             # The important thing is the manifest was parsed and passed to the builder.
 
@@ -384,10 +378,7 @@ def test_molt_build_recursion_program():
             else:
                 print("  BUILD OK but no output binary found")
         else:
-            print(
-                f"  BUILD FAILED (rc={result.returncode}): "
-                f"{result.stderr[:200]}"
-            )
+            print(f"  BUILD FAILED (rc={result.returncode}): {result.stderr[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -463,10 +454,7 @@ def test_molt_build_dos_program():
             else:
                 print("  BUILD OK but no output binary found")
         else:
-            print(
-                f"  BUILD FAILED (rc={result.returncode}): "
-                f"{result.stderr[:200]}"
-            )
+            print(f"  BUILD FAILED (rc={result.returncode}): {result.stderr[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -475,9 +463,7 @@ def test_molt_build_dos_program():
 
 if __name__ == "__main__":
     tests = [
-        v
-        for k, v in sorted(globals().items())
-        if k.startswith("test_") and callable(v)
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
     ]
     passed = failed = 0
     for t in tests:

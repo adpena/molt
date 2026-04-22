@@ -20,6 +20,7 @@ Usage:
     # Decode
     decoded = UserProfile.decode(wire_bytes)
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -82,7 +83,9 @@ def field(number: int, *, repeated: bool = False, optional: bool = False) -> Any
     """
     return dataclasses.field(
         default=None if optional else dataclasses.MISSING,
-        metadata={"proto_field": FieldDef(number, repeated=repeated, optional=optional)},
+        metadata={
+            "proto_field": FieldDef(number, repeated=repeated, optional=optional)
+        },
     )
 
 
@@ -110,6 +113,7 @@ def message(proto_name: str):
         proto_name: Fully qualified protobuf message name
                     (e.g., "mypackage.MyMessage")
     """
+
     def decorator(cls):
         # Convert to dataclass if not already
         if not dataclasses.is_dataclass(cls):
@@ -180,15 +184,20 @@ def _encode_message(obj) -> bytes:
             buf.extend(_encode_varint(encoded))
         elif isinstance(value, str):
             encoded = value.encode("utf-8")
-            buf.extend(_encode_varint((field_def.number << 3) | WIRE_TYPE_LENGTH_DELIMITED))
+            buf.extend(
+                _encode_varint((field_def.number << 3) | WIRE_TYPE_LENGTH_DELIMITED)
+            )
             buf.extend(_encode_varint(len(encoded)))
             buf.extend(encoded)
         elif isinstance(value, bytes):
-            buf.extend(_encode_varint((field_def.number << 3) | WIRE_TYPE_LENGTH_DELIMITED))
+            buf.extend(
+                _encode_varint((field_def.number << 3) | WIRE_TYPE_LENGTH_DELIMITED)
+            )
             buf.extend(_encode_varint(len(value)))
             buf.extend(value)
         elif isinstance(value, float):
             import struct
+
             buf.extend(_encode_varint((field_def.number << 3) | WIRE_TYPE_FIXED64))
             buf.extend(struct.pack("<d", value))
 
@@ -229,7 +238,7 @@ def _decode_message(cls, data: bytes):
         elif wire_type == WIRE_TYPE_LENGTH_DELIMITED:
             length, consumed = _decode_varint(data, pos)
             pos += consumed
-            payload = data[pos:pos + length]
+            payload = data[pos : pos + length]
             pos += length
             hints = get_type_hints(cls)
             if hints.get(name) is str:
@@ -238,7 +247,8 @@ def _decode_message(cls, data: bytes):
                 kwargs[name] = bytes(payload)
         elif wire_type == WIRE_TYPE_FIXED64:
             import struct
-            value = struct.unpack("<d", data[pos:pos + 8])[0]
+
+            value = struct.unpack("<d", data[pos : pos + 8])[0]
             pos += 8
             kwargs[name] = value
 

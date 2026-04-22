@@ -247,11 +247,15 @@ class CapabilityManifest:
         if self.resources.max_memory is not None:
             env["MOLT_RESOURCE_MAX_MEMORY"] = str(self.resources.max_memory)
         if self.resources.max_duration is not None:
-            env["MOLT_RESOURCE_MAX_DURATION_MS"] = str(int(self.resources.max_duration * 1000))
+            env["MOLT_RESOURCE_MAX_DURATION_MS"] = str(
+                int(self.resources.max_duration * 1000)
+            )
         if self.resources.max_allocations is not None:
             env["MOLT_RESOURCE_MAX_ALLOCATIONS"] = str(self.resources.max_allocations)
         if self.resources.max_recursion_depth is not None:
-            env["MOLT_RESOURCE_MAX_RECURSION_DEPTH"] = str(self.resources.max_recursion_depth)
+            env["MOLT_RESOURCE_MAX_RECURSION_DEPTH"] = str(
+                self.resources.max_recursion_depth
+            )
         if self.audit.enabled:
             env["MOLT_AUDIT_ENABLED"] = "1"
             env["MOLT_AUDIT_SINK"] = self.audit.sink
@@ -415,7 +419,9 @@ def _parse_resources(data: dict[str, Any]) -> ResourceLimits:
     if "max_allocations" in data:
         v = data["max_allocations"]
         if not isinstance(v, int):
-            raise ManifestError(f"max_allocations must be an integer, got {type(v).__name__}")
+            raise ManifestError(
+                f"max_allocations must be an integer, got {type(v).__name__}"
+            )
         rl.max_allocations = v
     if "max_recursion_depth" in data:
         v = data["max_recursion_depth"]
@@ -427,7 +433,12 @@ def _parse_resources(data: dict[str, Any]) -> ResourceLimits:
 
     # Operation limits sub-table
     op = data.get("operation_limits", {})
-    for op_field in ("max_pow_result", "max_repeat_result", "max_shift_result", "max_string_result"):
+    for op_field in (
+        "max_pow_result",
+        "max_repeat_result",
+        "max_shift_result",
+        "max_string_result",
+    ):
         if op_field in op:
             setattr(rl, op_field, parse_size(op[op_field]))
 
@@ -444,7 +455,9 @@ def _parse_virtual_mounts(data: dict[str, Any]) -> list[VirtualMount]:
             )
         mount_type = mount_cfg.get("type")
         if mount_type is None:
-            raise ManifestError(f"virtual mount {mount_path!r} is missing required 'type' field")
+            raise ManifestError(
+                f"virtual mount {mount_path!r} is missing required 'type' field"
+            )
         if mount_type not in VALID_MOUNT_TYPES:
             raise ManifestError(
                 f"virtual mount {mount_path!r} has invalid type {mount_type!r}; "
@@ -461,8 +474,9 @@ def _parse_virtual_mounts(data: dict[str, Any]) -> list[VirtualMount]:
                 )
             # VFS-internal references (e.g. "/bundle/data") are allowed as-is.
             _VFS_PREFIXES = ("/bundle", "/tmp", "/state", "/dev")
-            is_vfs_ref = any(raw_source == p or raw_source.startswith(p + "/")
-                            for p in _VFS_PREFIXES)
+            is_vfs_ref = any(
+                raw_source == p or raw_source.startswith(p + "/") for p in _VFS_PREFIXES
+            )
             if is_vfs_ref:
                 vm.source = raw_source
             else:
@@ -524,9 +538,9 @@ def _parse_monty(data: dict[str, Any]) -> MontyConfig:
     return mc
 
 
-def _parse_capabilities(data: dict[str, Any]) -> tuple[
-    list[str], list[str], list[str], dict[str, PackageCapabilities]
-]:
+def _parse_capabilities(
+    data: dict[str, Any],
+) -> tuple[list[str], list[str], list[str], dict[str, PackageCapabilities]]:
     """Parse the [capabilities] table.
 
     Returns (allow, deny, effects, packages).
@@ -538,9 +552,7 @@ def _parse_capabilities(data: dict[str, Any]) -> tuple[
     packages: dict[str, PackageCapabilities] = {}
     for pkg_name, pkg_data in data.get("packages", {}).items():
         if not isinstance(pkg_data, dict):
-            raise ManifestError(
-                f"capabilities.packages.{pkg_name} must be a table"
-            )
+            raise ManifestError(f"capabilities.packages.{pkg_name} must be a table")
         packages[pkg_name] = PackageCapabilities(
             name=pkg_name,
             allow=list(pkg_data.get("allow", [])),
@@ -607,7 +619,9 @@ def _load_json(path: Path) -> CapabilityManifest:
         data = json.load(f)
 
     if not isinstance(data, dict):
-        raise ManifestError(f"JSON manifest must be an object, got {type(data).__name__}")
+        raise ManifestError(
+            f"JSON manifest must be an object, got {type(data).__name__}"
+        )
 
     allow = list(data.get("allow", []))
     deny = list(data.get("deny", []))
@@ -664,7 +678,9 @@ def _load_yaml(path: Path) -> CapabilityManifest:
         data = yaml.safe_load(f)
 
     if not isinstance(data, dict):
-        raise ManifestError(f"YAML manifest must be a mapping, got {type(data).__name__}")
+        raise ManifestError(
+            f"YAML manifest must be a mapping, got {type(data).__name__}"
+        )
 
     # YAML uses the same structure as TOML — reuse the TOML parser internals.
     return _parse_v2_dict(data)
@@ -673,6 +689,7 @@ def _load_yaml(path: Path) -> CapabilityManifest:
 # ---------------------------------------------------------------------------
 # Signature verification
 # ---------------------------------------------------------------------------
+
 
 def _parse_and_strip_signature(text: str, suffix: str) -> dict[str, Any]:
     """Parse a manifest file and return the data dict with 'signature' removed.
@@ -719,12 +736,15 @@ def compute_manifest_hash(manifest_path: Path) -> str:
     """
     text = manifest_path.read_text(encoding="utf-8")
     data = _parse_and_strip_signature(text, manifest_path.suffix.lower())
-    canonical = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    canonical = json.dumps(
+        data, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class SignatureStatus:
     """Result of manifest signature verification."""
+
     VERIFIED = "verified"
     UNSIGNED = "unsigned"
 
@@ -786,8 +806,10 @@ def verify_manifest_signature(
             f"invalid signature format {sig!r}; expected 'sha256:<hex_digest>'"
         )
 
-    stored_digest = sig[len("sha256:"):]
-    if len(stored_digest) != 64 or not all(c in "0123456789abcdef" for c in stored_digest):
+    stored_digest = sig[len("sha256:") :]
+    if len(stored_digest) != 64 or not all(
+        c in "0123456789abcdef" for c in stored_digest
+    ):
         raise ManifestError(
             f"invalid signature digest: expected 64 lowercase hex characters, "
             f"got {stored_digest!r}"
@@ -833,7 +855,9 @@ def sign_manifest(manifest_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def load_manifest(path: Union[str, Path], *, require_signed: bool = False) -> CapabilityManifest:
+def load_manifest(
+    path: Union[str, Path], *, require_signed: bool = False
+) -> CapabilityManifest:
     """Load a capability manifest from a TOML, JSON, or YAML file.
 
     The file format is determined by extension:
@@ -899,6 +923,7 @@ def load_manifest(path: Union[str, Path], *, require_signed: bool = False) -> Ca
 # ---------------------------------------------------------------------------
 # Unit tests (run with: python -m molt.capability_manifest)
 # ---------------------------------------------------------------------------
+
 
 def _run_tests() -> None:
     """Self-contained unit tests."""
@@ -1040,9 +1065,7 @@ tier_up_threshold = 50
             "deny": ["fs.write"],
             "effects": ["nondet"],
             "fs": {"read": ["/tmp/data"], "write": []},
-            "packages": {
-                "mypkg": {"allow": ["net"], "effects": ["nondet"]}
-            },
+            "packages": {"mypkg": {"allow": ["net"], "effects": ["nondet"]}},
         }
     )
     with tempfile.NamedTemporaryFile(
@@ -1087,7 +1110,9 @@ tier_up_threshold = 50
         allow=["net"],
         packages={"bad": PackageCapabilities(name="bad", allow=["fs.read"])},
     )
-    _assert_raises(ManifestError, lambda: validate_manifest(m), "package exceeds global allow")
+    _assert_raises(
+        ManifestError, lambda: validate_manifest(m), "package exceeds global allow"
+    )
 
     m = CapabilityManifest(resources=ResourceLimits(max_memory=-1))
     _assert_raises(ManifestError, lambda: validate_manifest(m), "negative max_memory")
@@ -1096,7 +1121,9 @@ tier_up_threshold = 50
     _assert_raises(ManifestError, lambda: validate_manifest(m), "invalid io mode")
 
     m = CapabilityManifest(monty=MontyConfig(tier_up_threshold=-5))
-    _assert_raises(ManifestError, lambda: validate_manifest(m), "negative tier_up_threshold")
+    _assert_raises(
+        ManifestError, lambda: validate_manifest(m), "negative tier_up_threshold"
+    )
 
     # -- File not found --
     print("Testing error cases...")

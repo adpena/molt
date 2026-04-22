@@ -4,12 +4,11 @@
 # ingress handlers, event listeners, and middleware. All types are
 # simple classes with no metaclass magic -- compatible with Molt.
 
-import json
-
 
 # ---------------------------------------------------------------------------
 # PluginConfig -- metadata for a plugin (Django AppConfig-inspired)
 # ---------------------------------------------------------------------------
+
 
 class PluginConfig:
     """Base class for plugin configuration.
@@ -33,6 +32,7 @@ class PluginConfig:
 # Tool -- a registered tool callable by MCP or HTTP
 # ---------------------------------------------------------------------------
 
+
 class Tool:
     """Descriptor for a tool registered by a plugin.
 
@@ -44,16 +44,21 @@ class Tool:
         input_schema: JSON Schema dict for the tool's input parameters.
     """
 
-    def __init__(self, name, handler, description="", plugin_name="",
-                 input_schema=None):
+    def __init__(
+        self, name, handler, description="", plugin_name="", input_schema=None
+    ):
         self.name = name
         self.handler = handler
         self.description = description
         self.plugin_name = plugin_name
-        self.input_schema = input_schema if input_schema is not None else {
-            "type": "object",
-            "properties": {},
-        }
+        self.input_schema = (
+            input_schema
+            if input_schema is not None
+            else {
+                "type": "object",
+                "properties": {},
+            }
+        )
 
     def to_mcp_dict(self):
         """Return the MCP tools/list representation."""
@@ -67,6 +72,7 @@ class Tool:
 # ---------------------------------------------------------------------------
 # IngressHandler -- an HTTP route handler registered by a plugin
 # ---------------------------------------------------------------------------
+
 
 class IngressHandler:
     """Descriptor for an HTTP ingress handler registered by a plugin.
@@ -89,6 +95,7 @@ class IngressHandler:
 # EventListener -- a callback for events from the event bus
 # ---------------------------------------------------------------------------
 
+
 class EventListener:
     """Descriptor for an event listener registered by a plugin.
 
@@ -109,6 +116,7 @@ class EventListener:
 # ---------------------------------------------------------------------------
 # Middleware -- wraps every request through the box
 # ---------------------------------------------------------------------------
+
 
 class Middleware:
     """Base class for plugin middleware.
@@ -142,6 +150,7 @@ class Middleware:
 # ---------------------------------------------------------------------------
 # Event -- a typed event passed through the event bus
 # ---------------------------------------------------------------------------
+
 
 class Event:
     """An event that flows through the event bus.

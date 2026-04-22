@@ -104,8 +104,7 @@ def test_wasm_runtime_export_link_args_adds_runtime_owned_gpu_intrinsics() -> No
         "molt_gpu_tensor__tensor_scaled_dot_product_attention" in flags
     )
     assert (
-        " -C link-arg=--export-if-defined="
-        "molt_gpu_turboquant_attention_packed" in flags
+        " -C link-arg=--export-if-defined=molt_gpu_turboquant_attention_packed" in flags
     )
 
 
@@ -116,7 +115,9 @@ def test_wasm_runtime_export_link_args_adds_required_runtime_imports() -> None:
     assert " -C link-arg=--export-if-defined=molt_set_update" not in flags
 
 
-def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_resolved_modules() -> None:
+def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_resolved_modules() -> (
+    None
+):
     flags = wasm_runtime_export_link_args(
         {"runtime_init"},
         resolved_modules={"ssl"},
@@ -128,7 +129,9 @@ def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_reso
     assert " -C link-arg=--export-if-defined=molt_ssl_context_new" not in flags
 
 
-def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in_minimal_mode() -> None:
+def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in_minimal_mode() -> (
+    None
+):
     flags = wasm_runtime_export_link_args(
         {"runtime_init"},
         resolved_modules={"molt.gpu.tensor"},
@@ -141,14 +144,20 @@ def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in
     )
 
 
-def test_wasm_runtime_dynamic_export_names_reports_runtime_owned_gpu_intrinsics() -> None:
-    names = set(wasm_runtime_dynamic_export_names({"molt.gpu.tensor", "molt.gpu.kv_cache"}))
+def test_wasm_runtime_dynamic_export_names_reports_runtime_owned_gpu_intrinsics() -> (
+    None
+):
+    names = set(
+        wasm_runtime_dynamic_export_names({"molt.gpu.tensor", "molt.gpu.kv_cache"})
+    )
     assert "molt_gpu_linear_contiguous" in names
     assert "molt_gpu_tensor__tensor_scaled_dot_product_attention" in names
     assert "molt_gpu_turboquant_attention_packed" in names
 
 
-def test_wasm_runtime_dynamic_export_names_cover_all_runtime_owned_gpu_intrinsics() -> None:
+def test_wasm_runtime_dynamic_export_names_cover_all_runtime_owned_gpu_intrinsics() -> (
+    None
+):
     names = set(wasm_runtime_dynamic_export_names(RUNTIME_OWNED_GPU_MODULES))
 
     assert names == RUNTIME_OWNED_GPU_EXPORTS
@@ -164,14 +173,18 @@ def test_wasm_runtime_export_link_args_cover_all_runtime_owned_gpu_intrinsics() 
         assert f" -C link-arg=--export-if-defined={name}" in flags
 
 
-def test_wasm_runtime_export_link_args_keeps_host_runtime_exports_in_minimal_mode() -> None:
+def test_wasm_runtime_export_link_args_keeps_host_runtime_exports_in_minimal_mode() -> (
+    None
+):
     flags = wasm_runtime_export_link_args({"runtime_init"})
     assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
     assert " -C link-arg=--export-if-defined=molt_runtime_shutdown" in flags
     assert " -C link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
 
 
-def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports() -> None:
+def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports() -> (
+    None
+):
     flags = wasm_runtime_export_link_args(
         {
             "dict_getitem",

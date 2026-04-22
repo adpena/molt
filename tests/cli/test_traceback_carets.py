@@ -29,6 +29,7 @@ _WARM_NATIVE_BUILD_READY = False
 # Helpers (mirrors test_cli_smoke.py conventions)
 # ---------------------------------------------------------------------------
 
+
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")

@@ -12,6 +12,7 @@ from edgebox.types import PluginConfig
 # Plugin config (Django AppConfig equivalent)
 # ---------------------------------------------------------------------------
 
+
 class GithubPluginConfig(PluginConfig):
     name = "github"
     verbose_name = "GitHub Integration"

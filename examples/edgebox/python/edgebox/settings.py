@@ -16,6 +16,7 @@ import os
 # Settings
 # ---------------------------------------------------------------------------
 
+
 class Settings:
     """Resolved configuration for a box and its plugins.
 
@@ -30,7 +31,7 @@ class Settings:
         # manifest_config: dict of plugin_name -> {key: value}
         self._manifest = manifest_config if manifest_config is not None else {}
         self._defaults = {}  # plugin_name -> {key: value}
-        self._cache = {}     # (plugin_name, key) -> resolved value
+        self._cache = {}  # (plugin_name, key) -> resolved value
 
     def register_defaults(self, plugin_name, defaults):
         """Register default config values for a plugin."""
@@ -113,6 +114,7 @@ class Settings:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _coerce_env_value(val):
     """Try to parse an env var value as JSON; fall back to string.

@@ -4,6 +4,7 @@ Ported from: https://github.com/paiml/depyler/blob/main/tests/fixtures/python_sa
 Measures: string building, character iteration, substring search.
 """
 
+
 def repeat_string(s: str, n: int) -> str:
     result: str = ""
     i: int = 0

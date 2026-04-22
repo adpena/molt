@@ -15,6 +15,7 @@ import textwrap
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _parses_ok(source: str) -> bool:
     """Return True if the source parses without error on this Python version."""
     try:
@@ -27,6 +28,7 @@ def _parses_ok(source: str) -> bool:
 # ---------------------------------------------------------------------------
 # Basic: Molt accepts valid 3.12 code on all supported versions
 # ---------------------------------------------------------------------------
+
 
 def test_basic_312_code_parses() -> None:
     """Core Python 3.12 constructs parse on all supported versions (3.12+)."""
@@ -58,7 +60,13 @@ def test_type_param_syntax_parses() -> None:
 
 def test_exception_group_base_available() -> None:
     """ExceptionGroup is available as a builtin on 3.11+, so always on Molt targets."""
-    assert hasattr(__builtins__ if isinstance(__builtins__, dict) else type(__builtins__), "__name__") or True
+    assert (
+        hasattr(
+            __builtins__ if isinstance(__builtins__, dict) else type(__builtins__),
+            "__name__",
+        )
+        or True
+    )
     # ExceptionGroup is a builtin on 3.11+
     assert ExceptionGroup is not None  # type: ignore[name-defined]
 
@@ -78,6 +86,7 @@ def test_except_star_syntax() -> None:
 # Version-specific feature gating
 # ---------------------------------------------------------------------------
 
+
 def test_version_gated_locals_snapshot() -> None:
     """locals() snapshot semantics changed in 3.13 (PEP 667).
     On 3.13+, locals() returns a snapshot (fresh dict each call).
@@ -93,6 +102,7 @@ def test_version_gated_locals_snapshot() -> None:
             # PEP 667: d1 and d2 are snapshots, but may or may not be the same object
             # The key semantic change is that mutations to d1 don't affect the namespace
             return "x" in d1 and "x" in d2
+
         assert _check_snapshot()
     else:
         # On 3.12, locals() returns a cached dict
@@ -109,6 +119,7 @@ def test_version_gated_deferred_annotations() -> None:
         # The annotationlib module should exist
         try:
             import annotationlib  # noqa: F401
+
             has_annotationlib = True
         except ImportError:
             has_annotationlib = False
@@ -117,6 +128,7 @@ def test_version_gated_deferred_annotations() -> None:
         # On 3.12/3.13, annotationlib does not exist
         try:
             import annotationlib  # noqa: F401
+
             has_annotationlib = True
         except ImportError:
             has_annotationlib = False
@@ -145,6 +157,7 @@ def test_version_gated_type_param_defaults() -> None:
 # ---------------------------------------------------------------------------
 # sys.version_info correctness
 # ---------------------------------------------------------------------------
+
 
 def test_sys_version_info_tuple() -> None:
     """sys.version_info is a named tuple with the expected fields."""

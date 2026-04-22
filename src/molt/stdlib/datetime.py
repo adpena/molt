@@ -6,8 +6,7 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_DATETIME_RUNTIME_READY = _require_intrinsic(
-    "molt_datetime_runtime_ready")
+_MOLT_DATETIME_RUNTIME_READY = _require_intrinsic("molt_datetime_runtime_ready")
 _MOLT_DATETIME_RUNTIME_READY()
 
 _MOLT_DT_VALIDATE_DATE = _require_intrinsic("molt_datetime_validate_date")
@@ -17,27 +16,20 @@ _MOLT_DT_DAYS_IN_MONTH = _require_intrinsic("molt_datetime_days_in_month")
 _MOLT_DT_YMD_TO_ORDINAL = _require_intrinsic("molt_datetime_ymd_to_ordinal")
 _MOLT_DT_ORDINAL_TO_YMD = _require_intrinsic("molt_datetime_ordinal_to_ymd")
 _MOLT_DT_TD_NORMALIZE = _require_intrinsic("molt_datetime_td_normalize")
-_MOLT_DT_TD_TOTAL_SECONDS = _require_intrinsic(
-    "molt_datetime_td_total_seconds")
+_MOLT_DT_TD_TOTAL_SECONDS = _require_intrinsic("molt_datetime_td_total_seconds")
 _MOLT_DT_NOW_LOCAL = _require_intrinsic("molt_datetime_now_local")
 _MOLT_DT_NOW_UTC = _require_intrinsic("molt_datetime_now_utc")
-_MOLT_DT_FROMTIMESTAMP_LOCAL = _require_intrinsic(
-    "molt_datetime_fromtimestamp_local")
-_MOLT_DT_FROMTIMESTAMP_UTC = _require_intrinsic(
-    "molt_datetime_fromtimestamp_utc")
+_MOLT_DT_FROMTIMESTAMP_LOCAL = _require_intrinsic("molt_datetime_fromtimestamp_local")
+_MOLT_DT_FROMTIMESTAMP_UTC = _require_intrinsic("molt_datetime_fromtimestamp_utc")
 _MOLT_DT_TO_TIMESTAMP = _require_intrinsic("molt_datetime_to_timestamp")
 _MOLT_DT_STRFTIME = _require_intrinsic("molt_datetime_strftime")
 _MOLT_DT_STRPTIME = _require_intrinsic("molt_datetime_strptime")
 _MOLT_DT_FORMAT_ISODATE = _require_intrinsic("molt_datetime_format_isodate")
 _MOLT_DT_FORMAT_ISOTIME = _require_intrinsic("molt_datetime_format_isotime")
-_MOLT_DT_FORMAT_ISODATETIME = _require_intrinsic(
-    "molt_datetime_format_isodatetime")
-_MOLT_DT_PARSE_ISOFORMAT = _require_intrinsic(
-    "molt_datetime_parse_isoformat")
-_MOLT_DT_PARSE_ISOFORMAT_DATE = _require_intrinsic(
-    "molt_datetime_parse_isoformat_date")
-_MOLT_DT_PARSE_ISOFORMAT_TIME = _require_intrinsic(
-    "molt_datetime_parse_isoformat_time")
+_MOLT_DT_FORMAT_ISODATETIME = _require_intrinsic("molt_datetime_format_isodatetime")
+_MOLT_DT_PARSE_ISOFORMAT = _require_intrinsic("molt_datetime_parse_isoformat")
+_MOLT_DT_PARSE_ISOFORMAT_DATE = _require_intrinsic("molt_datetime_parse_isoformat_date")
+_MOLT_DT_PARSE_ISOFORMAT_TIME = _require_intrinsic("molt_datetime_parse_isoformat_time")
 _MOLT_DT_HASH_DATE = _require_intrinsic("molt_datetime_hash_date")
 _MOLT_DT_HASH_TIME = _require_intrinsic("molt_datetime_hash_time")
 _MOLT_DT_HASH_DATETIME = _require_intrinsic("molt_datetime_hash_datetime")
@@ -46,16 +38,12 @@ _MOLT_DT_WEEKDAY = _require_intrinsic("molt_datetime_weekday")
 _MOLT_DT_ISOWEEKDAY = _require_intrinsic("molt_datetime_isoweekday")
 _MOLT_DT_ISOCALENDAR = _require_intrinsic("molt_datetime_isocalendar")
 _MOLT_DT_CTIME = _require_intrinsic("molt_datetime_ctime")
-_MOLT_DT_LOCAL_UTCOFFSET = _require_intrinsic(
-    "molt_datetime_local_utcoffset")
+_MOLT_DT_LOCAL_UTCOFFSET = _require_intrinsic("molt_datetime_local_utcoffset")
 _MOLT_TIMEDELTA_ABS = _require_intrinsic("molt_timedelta_abs")
 _MOLT_TIMEDELTA_TRUEDIV_TD = _require_intrinsic("molt_timedelta_truediv_td")
-_MOLT_TIMEDELTA_TRUEDIV_SCALAR = _require_intrinsic(
-    "molt_timedelta_truediv_scalar")
-_MOLT_TIMEDELTA_FLOORDIV_TD = _require_intrinsic(
-    "molt_timedelta_floordiv_td")
-_MOLT_TIMEDELTA_FLOORDIV_SCALAR = _require_intrinsic(
-    "molt_timedelta_floordiv_scalar")
+_MOLT_TIMEDELTA_TRUEDIV_SCALAR = _require_intrinsic("molt_timedelta_truediv_scalar")
+_MOLT_TIMEDELTA_FLOORDIV_TD = _require_intrinsic("molt_timedelta_floordiv_td")
+_MOLT_TIMEDELTA_FLOORDIV_SCALAR = _require_intrinsic("molt_timedelta_floordiv_scalar")
 _MOLT_TIMEDELTA_MOD_TD = _require_intrinsic("molt_timedelta_mod_td")
 _MOLT_DATE_FROMISOCALENDAR = _require_intrinsic("molt_date_fromisocalendar")
 _MOLT_DATETIME_COMBINE = _require_intrinsic("molt_datetime_combine")
@@ -299,9 +287,7 @@ class timezone(tzinfo):
     def tzname(self, dt: datetime | None) -> str:  # noqa: ARG002
         if self._name is not None:
             return self._name
-        return str(
-            _MOLT_TIMEZONE_TZNAME(self._offset.days, self._offset.seconds)
-        )
+        return str(_MOLT_TIMEZONE_TZNAME(self._offset.days, self._offset.seconds))
 
 
 timezone.utc = timezone(timedelta())  # type: ignore[attr-defined]

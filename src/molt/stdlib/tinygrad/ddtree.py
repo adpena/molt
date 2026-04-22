@@ -10,7 +10,6 @@ Tree traversal uses unrolled WHERE chains (no control flow in kernel).
 
 from __future__ import annotations
 
-import math
 import heapq
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
@@ -24,8 +23,13 @@ class DDTreeNode:
     """
 
     __slots__ = (
-        "split_dim", "threshold", "left", "right",
-        "expert_idx", "log_prob", "is_leaf",
+        "split_dim",
+        "threshold",
+        "left",
+        "right",
+        "expert_idx",
+        "log_prob",
+        "is_leaf",
     )
 
     def __init__(
@@ -43,7 +47,7 @@ class DDTreeNode:
         self.right = right
         self.expert_idx = expert_idx
         self.log_prob = log_prob
-        self.is_leaf = (left is None and right is None)
+        self.is_leaf = left is None and right is None
 
 
 class DDTree:
@@ -90,7 +94,9 @@ class DDTree:
                 continue
 
             # Evaluate split condition
-            feat_val = feat_data[node.split_dim] if node.split_dim < len(feat_data) else 0.0
+            feat_val = (
+                feat_data[node.split_dim] if node.split_dim < len(feat_data) else 0.0
+            )
             go_left = feat_val < node.threshold
 
             # The chosen branch gets a higher score (its log_prob is the
@@ -151,12 +157,17 @@ class DDTree:
 
         results = []
         for b in range(batch_size):
-            row = feat_data[b * features.shape[-1]:(b + 1) * features.shape[-1]] if features.ndim > 1 else feat_data
+            row = (
+                feat_data[b * features.shape[-1] : (b + 1) * features.shape[-1]]
+                if features.ndim > 1
+                else feat_data
+            )
             expert = _traverse_unrolled(self.root, row)
             results.append(float(expert))
 
         shape = (batch_size,) if batch_size > 1 else (1,)
         from tinygrad.lazy import LazyOp, LazyBuffer
+
         op = LazyOp("LOAD", (), dtype=dtypes.int32, shape=shape)
         return Tensor(LazyBuffer(op, dtypes.int32, shape, data=results))
 
@@ -190,7 +201,7 @@ def topk_experts(scores: Tensor, k: int) -> Tensor:
 
     for b in range(batch_size):
         row_start = b * n_experts
-        row = list(score_data[row_start:row_start + n_experts])
+        row = list(score_data[row_start : row_start + n_experts])
         selected = []
         for _ in range(k):
             best_idx = 0
@@ -205,11 +216,14 @@ def topk_experts(scores: Tensor, k: int) -> Tensor:
 
     shape = (batch_size, k) if batch_size > 1 else (k,)
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     op = LazyOp("LOAD", (), dtype=dtypes.int32, shape=shape)
     return Tensor(LazyBuffer(op, dtypes.int32, shape, data=results))
 
 
-def load_balance_loss(routing_probs: Tensor, expert_assignments: Tensor, n_experts: int) -> Tensor:
+def load_balance_loss(
+    routing_probs: Tensor, expert_assignments: Tensor, n_experts: int
+) -> Tensor:
     """Compute load balancing loss for MoE training.
 
     loss = n_experts * sum(f_i * P_i)
@@ -241,6 +255,7 @@ def load_balance_loss(routing_probs: Tensor, expert_assignments: Tensor, n_exper
 
     loss *= n_experts
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     op = LazyOp("CONST", (), arg=loss, dtype=dtypes.float32, shape=(1,))
     return Tensor(LazyBuffer(op, dtypes.float32, (1,), data=[loss]))
 
@@ -262,7 +277,9 @@ def _traverse_unrolled(node: DDTreeNode, features: list) -> int:
     """Traverse tree to find expert index (CPU reference)."""
     current = node
     while not current.is_leaf:
-        feat_val = features[current.split_dim] if current.split_dim < len(features) else 0.0
+        feat_val = (
+            features[current.split_dim] if current.split_dim < len(features) else 0.0
+        )
         if feat_val < current.threshold:
             current = current.left
         else:

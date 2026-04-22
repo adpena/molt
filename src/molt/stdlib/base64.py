@@ -8,18 +8,10 @@ from typing import Any
 
 _molt_base64_b64encode = _require_intrinsic("molt_base64_b64encode")
 _molt_base64_b64decode = _require_intrinsic("molt_base64_b64decode")
-_molt_base64_standard_b64encode = _require_intrinsic(
-    "molt_base64_standard_b64encode"
-)
-_molt_base64_standard_b64decode = _require_intrinsic(
-    "molt_base64_standard_b64decode"
-)
-_molt_base64_urlsafe_b64encode = _require_intrinsic(
-    "molt_base64_urlsafe_b64encode"
-)
-_molt_base64_urlsafe_b64decode = _require_intrinsic(
-    "molt_base64_urlsafe_b64decode"
-)
+_molt_base64_standard_b64encode = _require_intrinsic("molt_base64_standard_b64encode")
+_molt_base64_standard_b64decode = _require_intrinsic("molt_base64_standard_b64decode")
+_molt_base64_urlsafe_b64encode = _require_intrinsic("molt_base64_urlsafe_b64encode")
+_molt_base64_urlsafe_b64decode = _require_intrinsic("molt_base64_urlsafe_b64decode")
 _molt_base64_b32encode = _require_intrinsic("molt_base64_b32encode")
 _molt_base64_b32decode = _require_intrinsic("molt_base64_b32decode")
 _molt_base64_b32hexencode = _require_intrinsic("molt_base64_b32hexencode")
@@ -222,5 +214,6 @@ def encodestring(s: Any) -> bytes:
 
 def decodestring(s: Any) -> bytes:
     return decodebytes(s)
+
 
 globals().pop("_require_intrinsic", None)

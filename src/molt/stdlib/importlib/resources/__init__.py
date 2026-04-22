@@ -874,4 +874,5 @@ def path(package: str | object, resource: str) -> _AsFileContext:
             return as_file(_Traversable(resource_path))
     return as_file(files(package).joinpath(resource))
 
+
 globals().pop("_require_intrinsic", None)

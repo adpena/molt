@@ -33,9 +33,7 @@ def extract_metric(bench_data: dict, metric: str) -> dict[str, float]:
     benchmarks = bench_data.get("benchmarks", bench_data.get("results", []))
     if isinstance(benchmarks, dict):
         # Dict-keyed format: {"bench_a": {"molt_build_s": 1.0}, ...}
-        benchmarks = [
-            {**v, "name": k} for k, v in benchmarks.items()
-        ]
+        benchmarks = [{**v, "name": k} for k, v in benchmarks.items()]
 
     for entry in benchmarks:
         name = entry.get("name", entry.get("benchmark", ""))

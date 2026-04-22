@@ -23,6 +23,7 @@ All ops decompose to tinygrad's 26 compute primitives.
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.tensor import Tensor
@@ -40,6 +41,7 @@ def _shape_product(shape: tuple[int, ...] | list[int]) -> int:
 # ONNX attribute helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_attr_int(attrs: dict, name: str, default: int = 0) -> int:
     """Get an integer attribute, handling single-element lists."""
     v = attrs.get(name, default)
@@ -48,7 +50,9 @@ def _get_attr_int(attrs: dict, name: str, default: int = 0) -> int:
     return int(v)
 
 
-def _get_attr_ints(attrs: dict, name: str, default: list[int] | None = None) -> list[int]:
+def _get_attr_ints(
+    attrs: dict, name: str, default: list[int] | None = None
+) -> list[int]:
     """Get an integer-list attribute."""
     v = attrs.get(name, default)
     if v is None:
@@ -75,6 +79,7 @@ def _get_attr_string(attrs: dict, name: str, default: str = "") -> str:
 # ---------------------------------------------------------------------------
 # ONNX Graph Interpreter
 # ---------------------------------------------------------------------------
+
 
 class OnnxInterpreter:
     """Execute an ONNX graph using tinygrad Tensor operations.
@@ -110,7 +115,9 @@ class OnnxInterpreter:
             ) from exc
         self.optimize_graph()
 
-    def run(self, inputs: dict[str, Tensor], profile: bool = False) -> dict[str, Tensor]:
+    def run(
+        self, inputs: dict[str, Tensor], profile: bool = False
+    ) -> dict[str, Tensor]:
         """Execute the ONNX graph with the given input tensors.
 
         Args:
@@ -165,7 +172,9 @@ class OnnxInterpreter:
 
         outputs: dict[str, Tensor] = {}
         for name in self._output_names:
-            value_name = name if name in values else self._output_aliases.get(name, name)
+            value_name = (
+                name if name in values else self._output_aliases.get(name, name)
+            )
             if value_name in values:
                 outputs[name] = values[value_name]
         return outputs
@@ -191,10 +200,14 @@ class OnnxInterpreter:
 
         for op_type, count, total_op, mean_op in entries:
             pct = (total_op / total_ms * 100.0) if total_ms > 0 else 0.0
-            lines.append(f"{op_type:<17s} {count:>4d}   {total_op:>9.2f}  {mean_op:>8.3f}  {pct:>6.1f}%")
+            lines.append(
+                f"{op_type:<17s} {count:>4d}   {total_op:>9.2f}  {mean_op:>8.3f}  {pct:>6.1f}%"
+            )
 
         lines.append("-" * 60)
-        lines.append(f"{'TOTAL':<17s} {sum(len(t) for t in self._op_profile.values()):>4d}   {total_ms:>9.2f}")
+        lines.append(
+            f"{'TOTAL':<17s} {sum(len(t) for t in self._op_profile.values()):>4d}   {total_ms:>9.2f}"
+        )
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -232,7 +245,9 @@ class OnnxInterpreter:
         nodes (24 Relu + 10 HardSigmoid + 28 HardSwish) — matching ONNX
         Runtime's FusedConv optimization.
         """
-        _FUSEABLE_ACTIVATIONS = frozenset({"Relu", "HardSigmoid", "HardSwish", "Sigmoid"})
+        _FUSEABLE_ACTIVATIONS = frozenset(
+            {"Relu", "HardSigmoid", "HardSwish", "Sigmoid"}
+        )
 
         # Build: output_name -> index of the node that produces it
         output_to_idx: dict[str, int] = {}
@@ -289,8 +304,12 @@ class OnnxInterpreter:
             conv_node["attrs"]["_fused_activation"] = act_node["op_type"]
             # Carry activation-specific attrs (HardSigmoid alpha/beta)
             if act_node["op_type"] == "HardSigmoid":
-                conv_node["attrs"]["_act_alpha"] = _get_attr_float(act_node["attrs"], "alpha", 0.2)
-                conv_node["attrs"]["_act_beta"] = _get_attr_float(act_node["attrs"], "beta", 0.5)
+                conv_node["attrs"]["_act_alpha"] = _get_attr_float(
+                    act_node["attrs"], "alpha", 0.2
+                )
+                conv_node["attrs"]["_act_beta"] = _get_attr_float(
+                    act_node["attrs"], "beta", 0.5
+                )
 
             # Rewire: Conv output becomes the activation's output
             act_output = act_node["outputs"][0] if act_node["outputs"] else ""
@@ -302,7 +321,9 @@ class OnnxInterpreter:
             fused_count += 1
 
         if remove_indices:
-            self._graph_nodes = [n for i, n in enumerate(self._graph_nodes) if i not in remove_indices]
+            self._graph_nodes = [
+                n for i, n in enumerate(self._graph_nodes) if i not in remove_indices
+            ]
 
     def _fold_batchnorm(self) -> None:
         """Fold Conv -> BatchNormalization pairs into a single Conv.
@@ -345,7 +366,10 @@ class OnnxInterpreter:
             bn_mean_name = node["inputs"][3] if len(node["inputs"]) > 3 else None
             bn_var_name = node["inputs"][4] if len(node["inputs"]) > 4 else None
 
-            if not all(n and n in self._values for n in [bn_scale_name, bn_bias_name, bn_mean_name, bn_var_name]):
+            if not all(
+                n and n in self._values
+                for n in [bn_scale_name, bn_bias_name, bn_mean_name, bn_var_name]
+            ):
                 continue
 
             bn_gamma = self._values[bn_scale_name]
@@ -355,14 +379,22 @@ class OnnxInterpreter:
             eps = _get_attr_float(node["attrs"], "epsilon", 1e-5)
 
             # Get Conv weight and optional bias
-            conv_weight_name = conv_node["inputs"][1] if len(conv_node["inputs"]) > 1 else None
-            conv_bias_name = conv_node["inputs"][2] if len(conv_node["inputs"]) > 2 else None
+            conv_weight_name = (
+                conv_node["inputs"][1] if len(conv_node["inputs"]) > 1 else None
+            )
+            conv_bias_name = (
+                conv_node["inputs"][2] if len(conv_node["inputs"]) > 2 else None
+            )
 
             if not conv_weight_name or conv_weight_name not in self._values:
                 continue
 
             conv_weight = self._values[conv_weight_name]
-            conv_bias = self._values[conv_bias_name] if conv_bias_name and conv_bias_name in self._values else None
+            conv_bias = (
+                self._values[conv_bias_name]
+                if conv_bias_name and conv_bias_name in self._values
+                else None
+            )
 
             # Realize all parameters to flat lists
             gamma_data = list(tinygrad.realize.realize(bn_gamma.lazydata))
@@ -418,7 +450,9 @@ class OnnxInterpreter:
 
         # Remove folded BN nodes (iterate in reverse to preserve indices)
         if remove_indices:
-            self._graph_nodes = [n for i, n in enumerate(self._graph_nodes) if i not in remove_indices]
+            self._graph_nodes = [
+                n for i, n in enumerate(self._graph_nodes) if i not in remove_indices
+            ]
 
     def _eliminate_identity(self) -> None:
         """Remove Identity nodes by rewiring their input to their output."""
@@ -485,12 +519,20 @@ class OnnxInterpreter:
                         arr = numpy_helper.to_array(t)
                         # Keep int64 constants as int for shape ops
                         if t.data_type in (6, 7):
-                            shape = tuple(int(d) for d in arr.shape) if arr.shape else (arr.size,)
+                            shape = (
+                                tuple(int(d) for d in arr.shape)
+                                if arr.shape
+                                else (arr.size,)
+                            )
                             values = arr.flatten().tolist()
                             self._values[name] = _make_int_tensor(values, shape)
                         else:
                             arr = arr.astype(np.float32)
-                            shape = tuple(int(d) for d in arr.shape) if arr.shape else (arr.size,)
+                            shape = (
+                                tuple(int(d) for d in arr.shape)
+                                if arr.shape
+                                else (arr.size,)
+                            )
                             values = arr.flatten().tolist()
                             self._values[name] = _make_tensor(values, shape)
                     elif attr.name == "value_int":
@@ -515,12 +557,14 @@ class OnnxInterpreter:
                 elif attr.type == 7:  # INTS
                     attrs[attr.name] = list(attr.ints)
 
-            self._graph_nodes.append({
-                "op_type": node.op_type,
-                "inputs": list(node.input),
-                "outputs": list(node.output),
-                "attrs": attrs,
-            })
+            self._graph_nodes.append(
+                {
+                    "op_type": node.op_type,
+                    "inputs": list(node.input),
+                    "outputs": list(node.output),
+                    "attrs": attrs,
+                }
+            )
 
     def _load_raw(self, data: bytes) -> None:
         """Weight-only raw protobuf parser.
@@ -531,6 +575,7 @@ class OnnxInterpreter:
         unavailable.
         """
         from tinygrad.paddleocr import OnnxWeightParser
+
         parsed = OnnxWeightParser.parse(data)
         for name, (shape, dtype_code, values) in parsed.items():
             if not shape:
@@ -554,9 +599,11 @@ class OnnxInterpreter:
 # Tensor construction helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_tensor(values: list[float], shape: tuple[int, ...]) -> Tensor:
     """Create a float32 Tensor from flat values."""
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     op = LazyOp("LOAD", (), dtype=dtypes.float32, shape=shape)
     return Tensor(LazyBuffer(op, dtypes.float32, shape, data=values))
 
@@ -564,6 +611,7 @@ def _make_tensor(values: list[float], shape: tuple[int, ...]) -> Tensor:
 def _make_int_tensor(values: list[int], shape: tuple[int, ...]) -> Tensor:
     """Create an int64 Tensor from flat values (for shape/index constants)."""
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     op = LazyOp("LOAD", (), dtype=dtypes.int64, shape=shape)
     return Tensor(LazyBuffer(op, dtypes.int64, shape, data=values))
 
@@ -571,6 +619,7 @@ def _make_int_tensor(values: list[int], shape: tuple[int, ...]) -> Tensor:
 def _realize_ints(t: Tensor) -> list[int]:
     """Realize a tensor and return its values as a list of ints."""
     import tinygrad.realize
+
     flat = tinygrad.realize.realize(t.lazydata)
     return [int(x) for x in flat]
 
@@ -578,12 +627,14 @@ def _realize_ints(t: Tensor) -> list[int]:
 def _realize_floats(t: Tensor) -> list[float]:
     """Realize a tensor and return its values as a list of floats."""
     import tinygrad.realize
+
     return list(tinygrad.realize.realize(t.lazydata))
 
 
 # ---------------------------------------------------------------------------
 # ONNX Op implementations — each returns a list of output Tensors
 # ---------------------------------------------------------------------------
+
 
 def _broadcast_pair(a: Tensor, b: Tensor) -> tuple[Tensor, Tensor]:
     """Broadcast two tensors to a common shape (ONNX broadcasting rules).
@@ -804,6 +855,7 @@ def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     sw = strides[1] if len(strides) > 1 else sh
 
     import tinygrad.realize
+
     flat = tinygrad.realize.realize(x.lazydata)
     n, c, h, w = x.shape
     pad_top, pad_left, pad_bottom, pad_right = _pool_resolve_pads(
@@ -1029,9 +1081,22 @@ def _op_conv(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
         return [result]
 
     # General grouped conv with arbitrary padding/dilation
-    return [_grouped_conv2d(x, weight, bias, group, stride_h, stride_w,
-                            pad_top, pad_left, pad_bottom, pad_right,
-                            dil_h, dil_w)]
+    return [
+        _grouped_conv2d(
+            x,
+            weight,
+            bias,
+            group,
+            stride_h,
+            stride_w,
+            pad_top,
+            pad_left,
+            pad_bottom,
+            pad_right,
+            dil_h,
+            dil_w,
+        )
+    ]
 
 
 def _apply_fused_activation(result: Tensor, activation: str, attrs: dict) -> Tensor:
@@ -1082,10 +1147,20 @@ def _op_fused_conv_activation(inputs: list[Tensor | None], attrs: dict) -> list[
     return [_apply_fused_activation(result, activation, attrs)]
 
 
-def _grouped_conv2d(x: Tensor, weight: Tensor, bias: Tensor | None,
-                    groups: int, stride_h: int, stride_w: int,
-                    pad_top: int, pad_left: int, pad_bottom: int, pad_right: int,
-                    dil_h: int, dil_w: int) -> Tensor:
+def _grouped_conv2d(
+    x: Tensor,
+    weight: Tensor,
+    bias: Tensor | None,
+    groups: int,
+    stride_h: int,
+    stride_w: int,
+    pad_top: int,
+    pad_left: int,
+    pad_bottom: int,
+    pad_right: int,
+    dil_h: int,
+    dil_w: int,
+) -> Tensor:
     """Grouped conv2d via im2col + matmul, supporting dilation and asymmetric padding."""
     import tinygrad.realize
 
@@ -1127,16 +1202,25 @@ def _grouped_conv2d(x: Tensor, weight: Tensor, bias: Tensor | None,
                                     ih = oh * stride_h - pad_top + fh * dil_h
                                     iw = ow * stride_w - pad_left + fw * dil_w
                                     if 0 <= ih < h and 0 <= iw < w_dim:
-                                        x_idx = (bn * (c_in * h * w_dim) +
-                                                 ic_abs * (h * w_dim) +
-                                                 ih * w_dim + iw)
-                                        w_idx = (oc_abs * (c_in_per_grp * kh * kw) +
-                                                 ic * (kh * kw) +
-                                                 fh * kw + fw)
+                                        x_idx = (
+                                            bn * (c_in * h * w_dim)
+                                            + ic_abs * (h * w_dim)
+                                            + ih * w_dim
+                                            + iw
+                                        )
+                                        w_idx = (
+                                            oc_abs * (c_in_per_grp * kh * kw)
+                                            + ic * (kh * kw)
+                                            + fh * kw
+                                            + fw
+                                        )
                                         s += x_data[x_idx] * w_data[w_idx]
-                        out_idx = (bn * (c_out * h_out * w_out) +
-                                   oc_abs * (h_out * w_out) +
-                                   oh * w_out + ow)
+                        out_idx = (
+                            bn * (c_out * h_out * w_out)
+                            + oc_abs * (h_out * w_out)
+                            + oh * w_out
+                            + ow
+                        )
                         result[out_idx] = s
 
     # Add bias
@@ -1146,8 +1230,12 @@ def _grouped_conv2d(x: Tensor, weight: Tensor, bias: Tensor | None,
             for oc in range(c_out):
                 for oh in range(h_out):
                     for ow in range(w_out):
-                        idx = (bn * (c_out * h_out * w_out) +
-                               oc * (h_out * w_out) + oh * w_out + ow)
+                        idx = (
+                            bn * (c_out * h_out * w_out)
+                            + oc * (h_out * w_out)
+                            + oh * w_out
+                            + ow
+                        )
                         result[idx] += b_data[oc]
 
     return _make_tensor(result, (n, c_out, h_out, w_out))
@@ -1170,6 +1258,7 @@ def _op_conv_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]
     pad_right = pads[3] if len(pads) > 3 else pad_left
 
     import tinygrad.realize
+
     x_data = tinygrad.realize.realize(x.lazydata)
     w_data = tinygrad.realize.realize(weight.lazydata)
 
@@ -1192,9 +1281,12 @@ def _op_conv_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]
                     oc_abs = g * c_out_per_group + oc
                     for ih in range(h_in):
                         for iw in range(w_in):
-                            x_val = x_data[bn * (c_in * h_in * w_in) +
-                                           ic_abs * (h_in * w_in) +
-                                           ih * w_in + iw]
+                            x_val = x_data[
+                                bn * (c_in * h_in * w_in)
+                                + ic_abs * (h_in * w_in)
+                                + ih * w_in
+                                + iw
+                            ]
                             if x_val == 0.0:
                                 continue
                             for fh in range(kh):
@@ -1202,11 +1294,18 @@ def _op_conv_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]
                                     oh = ih * stride_h + fh - pad_top
                                     ow = iw * stride_w + fw - pad_left
                                     if 0 <= oh < h_out and 0 <= ow < w_out:
-                                        w_idx = (ic_abs * (c_out_per_group * kh * kw) +
-                                                 oc * (kh * kw) + fh * kw + fw)
-                                        out_idx = (bn * (c_out * h_out * w_out) +
-                                                   oc_abs * (h_out * w_out) +
-                                                   oh * w_out + ow)
+                                        w_idx = (
+                                            ic_abs * (c_out_per_group * kh * kw)
+                                            + oc * (kh * kw)
+                                            + fh * kw
+                                            + fw
+                                        )
+                                        out_idx = (
+                                            bn * (c_out * h_out * w_out)
+                                            + oc_abs * (h_out * w_out)
+                                            + oh * w_out
+                                            + ow
+                                        )
                                         result[out_idx] += x_val * w_data[w_idx]
 
     if bias is not None:
@@ -1215,8 +1314,12 @@ def _op_conv_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]
             for oc in range(c_out):
                 for oh in range(h_out):
                     for ow in range(w_out):
-                        idx = (bn * (c_out * h_out * w_out) +
-                               oc * (h_out * w_out) + oh * w_out + ow)
+                        idx = (
+                            bn * (c_out * h_out * w_out)
+                            + oc * (h_out * w_out)
+                            + oh * w_out
+                            + ow
+                        )
                         result[idx] += b_data[oc]
 
     return [_make_tensor(result, (n, c_out, h_out, w_out))]
@@ -1260,7 +1363,9 @@ def _op_batch_norm(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     v = var.reshape(*reshape_dims)
 
     inv_std = (v + eps).sqrt().reciprocal()
-    result = (x + m._broadcast_to(x.shape) * (-1.0)) * inv_std._broadcast_to(x.shape) * s._broadcast_to(x.shape) + b._broadcast_to(x.shape)
+    result = (x + m._broadcast_to(x.shape) * (-1.0)) * inv_std._broadcast_to(
+        x.shape
+    ) * s._broadcast_to(x.shape) + b._broadcast_to(x.shape)
     return [result]
 
 
@@ -1307,7 +1412,9 @@ def _op_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
         perm = list(range(len(x.shape) - 1, -1, -1))
     ndim = len(x.shape)
     if sorted(perm) != list(range(ndim)):
-        raise ValueError(f"Transpose perm must be a permutation of rank {ndim}, got {perm}")
+        raise ValueError(
+            f"Transpose perm must be a permutation of rank {ndim}, got {perm}"
+        )
     return [x.permute(*perm)]
 
 
@@ -1353,7 +1460,9 @@ def _op_unsqueeze(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
         if ax < 0:
             ax = output_rank + ax
         if ax < 0 or ax >= output_rank:
-            raise ValueError(f"Unsqueeze axis {ax} out of range for output rank {output_rank}")
+            raise ValueError(
+                f"Unsqueeze axis {ax} out of range for output rank {output_rank}"
+            )
         new_shape.insert(ax, 1)
     return [x.reshape(*new_shape)]
 
@@ -1371,10 +1480,20 @@ def _op_slice(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     x = inputs[0]
     if len(inputs) < 3 or inputs[1] is None or inputs[2] is None:
         raise ValueError("Slice requires starts and ends inputs")
-    starts = _realize_ints(inputs[1]) if len(inputs) > 1 and inputs[1] is not None else []
+    starts = (
+        _realize_ints(inputs[1]) if len(inputs) > 1 and inputs[1] is not None else []
+    )
     ends = _realize_ints(inputs[2]) if len(inputs) > 2 and inputs[2] is not None else []
-    axes = _realize_ints(inputs[3]) if len(inputs) > 3 and inputs[3] is not None else list(range(len(starts)))
-    steps = _realize_ints(inputs[4]) if len(inputs) > 4 and inputs[4] is not None else [1] * len(starts)
+    axes = (
+        _realize_ints(inputs[3])
+        if len(inputs) > 3 and inputs[3] is not None
+        else list(range(len(starts)))
+    )
+    steps = (
+        _realize_ints(inputs[4])
+        if len(inputs) > 4 and inputs[4] is not None
+        else [1] * len(starts)
+    )
 
     ndim = len(x.shape)
     axis_indices = [list(range(dim)) for dim in x.shape]
@@ -1460,7 +1579,9 @@ def _op_resize(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     """
     x = inputs[0]
     mode = _get_attr_string(attrs, "mode", "nearest")
-    coordinate_mode = _get_attr_string(attrs, "coordinate_transformation_mode", "half_pixel")
+    coordinate_mode = _get_attr_string(
+        attrs, "coordinate_transformation_mode", "half_pixel"
+    )
     nearest_mode = _get_attr_string(attrs, "nearest_mode", "round_prefer_floor")
 
     # Determine output size from scales or sizes input

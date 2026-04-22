@@ -33,7 +33,9 @@ import sys
 
 _SNAP_DIR = os.path.join(
     os.path.expanduser("~"),
-    ".cache", "molt", "falcon-ocr",
+    ".cache",
+    "molt",
+    "falcon-ocr",
     "models--tiiuae--Falcon-OCR",
     "snapshots",
     "3a4d95a8b0008f7430df30a82cf35e6c3b6bcb66",
@@ -44,8 +46,7 @@ _CONFIG_PATH = os.path.join(_SNAP_DIR, "config.json")
 _TOKENIZER_PATH = os.path.join(_SNAP_DIR, "tokenizer.json")
 
 _WEIGHTS_AVAILABLE = (
-    os.path.isfile(_MODEL_PATH)
-    and os.path.getsize(_MODEL_PATH) > 1_000_000
+    os.path.isfile(_MODEL_PATH) and os.path.getsize(_MODEL_PATH) > 1_000_000
 )
 _TOKENIZER_AVAILABLE = os.path.isfile(_TOKENIZER_PATH)
 
@@ -55,6 +56,7 @@ def _skip_if_no_weights():
     if not _WEIGHTS_AVAILABLE:
         try:
             import pytest
+
             pytest.skip("Falcon-OCR weights not downloaded")
         except ImportError:
             print("SKIP: Falcon-OCR weights not downloaded")
@@ -65,10 +67,12 @@ def _skip_if_no_pillow():
     """Skip if Pillow is not installed."""
     try:
         from PIL import Image, ImageDraw, ImageFont  # noqa: F401
+
         return True
     except ImportError:
         try:
             import pytest
+
             pytest.skip("Pillow not installed")
         except ImportError:
             print("SKIP: Pillow not installed")
@@ -79,6 +83,7 @@ def _skip_if_no_pillow():
 # ---------------------------------------------------------------------------
 # SafeTensors parser (pure Python, no dependencies)
 # ---------------------------------------------------------------------------
+
 
 def read_safetensors(path: str) -> dict[str, dict]:
     """Parse safetensors file into {name: {shape, dtype, data_bytes}}."""
@@ -122,6 +127,7 @@ def tensor_to_floats(t: dict) -> list[float]:
 # ---------------------------------------------------------------------------
 # Tokenizer
 # ---------------------------------------------------------------------------
+
 
 class SimpleTokenizer:
     """Minimal tokenizer that loads from tokenizer.json (HF format)."""
@@ -173,7 +179,7 @@ class SimpleTokenizer:
             best_len = 0
             best_id = None
             for length in range(min(20, len(text) - i), 0, -1):
-                substr = text[i:i + length]
+                substr = text[i : i + length]
                 # Try with space marker
                 for candidate in [substr, "\u2581" + substr]:
                     if candidate in self.token_to_id:
@@ -195,6 +201,7 @@ class SimpleTokenizer:
 # Accuracy metrics
 # ---------------------------------------------------------------------------
 
+
 def levenshtein_distance(s1: str, s2: str) -> int:
     """Compute Levenshtein edit distance between two strings."""
     if len(s1) < len(s2):
@@ -208,11 +215,13 @@ def levenshtein_distance(s1: str, s2: str) -> int:
         for j, c2 in enumerate(s2):
             # Cost is 0 if chars match, 1 otherwise
             cost = 0 if c1 == c2 else 1
-            curr_row.append(min(
-                curr_row[j] + 1,        # insertion
-                prev_row[j + 1] + 1,    # deletion
-                prev_row[j] + cost,      # substitution
-            ))
+            curr_row.append(
+                min(
+                    curr_row[j] + 1,  # insertion
+                    prev_row[j + 1] + 1,  # deletion
+                    prev_row[j] + cost,  # substitution
+                )
+            )
         prev_row = curr_row
     return prev_row[-1]
 
@@ -230,12 +239,15 @@ def word_error_rate(reference: str, hypothesis: str) -> float:
     hyp_words = hypothesis.split()
     if len(ref_words) == 0:
         return 0.0 if len(hyp_words) == 0 else 1.0
-    return levenshtein_distance(" ".join(ref_words), " ".join(hyp_words)) / len(" ".join(ref_words))
+    return levenshtein_distance(" ".join(ref_words), " ".join(hyp_words)) / len(
+        " ".join(ref_words)
+    )
 
 
 # ---------------------------------------------------------------------------
 # Synthetic image generation
 # ---------------------------------------------------------------------------
+
 
 def generate_invoice_image(
     text_lines: list[str],
@@ -346,6 +358,7 @@ INVOICE_TEST_CASES = [
 # Minimal forward pass (uses the same logic as inference-cpu.js)
 # ---------------------------------------------------------------------------
 
+
 class MinimalInference:
     """Minimal Python inference matching inference-cpu.js logic.
 
@@ -376,12 +389,20 @@ class MinimalInference:
 
         self.layers = []
         for i in range(self.n_layers):
-            self.layers.append({
-                "wqkv": tensor_to_floats(tensors[f"layers.{i}.attention.wqkv.weight"]),
-                "wo": tensor_to_floats(tensors[f"layers.{i}.attention.wo.weight"]),
-                "w13": tensor_to_floats(tensors[f"layers.{i}.feed_forward.w13.weight"]),
-                "w2": tensor_to_floats(tensors[f"layers.{i}.feed_forward.w2.weight"]),
-            })
+            self.layers.append(
+                {
+                    "wqkv": tensor_to_floats(
+                        tensors[f"layers.{i}.attention.wqkv.weight"]
+                    ),
+                    "wo": tensor_to_floats(tensors[f"layers.{i}.attention.wo.weight"]),
+                    "w13": tensor_to_floats(
+                        tensors[f"layers.{i}.feed_forward.w13.weight"]
+                    ),
+                    "w2": tensor_to_floats(
+                        tensors[f"layers.{i}.feed_forward.w2.weight"]
+                    ),
+                }
+            )
 
         # Precompute RoPE
         rope_dim = self.head_dim // 2
@@ -406,7 +427,7 @@ class MinimalInference:
     def embed_token(self, token_id: int) -> list[float]:
         """Get embedding for a single token."""
         start = token_id * self.dim
-        return self.tok_embed[start:start + self.dim]
+        return self.tok_embed[start : start + self.dim]
 
     @staticmethod
     def matmul(a, b, M, K, N):
@@ -455,13 +476,15 @@ class MinimalInference:
         # 3. The argmax token is a real vocabulary entry
 
         # Validate embeddings
-        emb_norm = math.sqrt(sum(x ** 2 for x in embeddings[:dim]))
+        emb_norm = math.sqrt(sum(x**2 for x in embeddings[:dim]))
         assert emb_norm > 0.01, f"Embedding norm too small: {emb_norm}"
-        assert all(math.isfinite(x) for x in embeddings[:dim]), "Non-finite embedding values"
+        assert all(math.isfinite(x) for x in embeddings[:dim]), (
+            "Non-finite embedding values"
+        )
 
         # Run RMSNorm + output projection on just the embeddings
         # (skipping transformer layers -- this tests the projection head)
-        last_hidden = embeddings[(S - 1) * dim:S * dim]
+        last_hidden = embeddings[(S - 1) * dim : S * dim]
         normed = self.rms_norm(last_hidden, dim, self.norm_eps)
 
         # Apply norm weights
@@ -490,12 +513,14 @@ class MinimalInference:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_tokenizer_roundtrip():
     """Verify tokenizer can decode token IDs to readable text."""
     _skip_if_no_weights()
     if not _TOKENIZER_AVAILABLE:
         try:
             import pytest
+
             pytest.skip("tokenizer.json not found")
         except ImportError:
             print("SKIP: tokenizer.json not found")
@@ -529,20 +554,33 @@ def test_model_loads_and_has_correct_structure():
 
     # Verify config has expected fields
     required_fields = [
-        "dim", "n_layers", "n_heads", "head_dim", "n_kv_heads",
-        "ffn_dim", "vocab_size", "norm_eps", "spatial_patch_size",
-        "eos_id", "rope_theta", "max_seq_len",
+        "dim",
+        "n_layers",
+        "n_heads",
+        "head_dim",
+        "n_kv_heads",
+        "ffn_dim",
+        "vocab_size",
+        "norm_eps",
+        "spatial_patch_size",
+        "eos_id",
+        "rope_theta",
+        "max_seq_len",
     ]
     for field in required_fields:
         assert field in config, f"Missing config field: {field}"
 
-    print(f"  Config: dim={config['dim']}, layers={config['n_layers']}, "
-          f"heads={config['n_heads']}, vocab={config['vocab_size']}")
+    print(
+        f"  Config: dim={config['dim']}, layers={config['n_layers']}, "
+        f"heads={config['n_heads']}, vocab={config['vocab_size']}"
+    )
 
     # Check weight file exists and has reasonable size
     size_mb = os.path.getsize(_MODEL_PATH) / (1024 * 1024)
     print(f"  Weights: {size_mb:.1f} MB")
-    assert size_mb > 100, f"Weights too small: {size_mb:.1f} MB (expected ~1 GB for 269M params)"
+    assert size_mb > 100, (
+        f"Weights too small: {size_mb:.1f} MB (expected ~1 GB for 269M params)"
+    )
 
 
 def test_embedding_quality():
@@ -565,8 +603,8 @@ def test_embedding_quality():
     # may have near-zero embeddings by design, e.g. padding tokens).
     embeddings = []
     for tid in range(100, min(110, vocab_size)):
-        emb = floats[tid * dim:(tid + 1) * dim]
-        norm = math.sqrt(sum(x ** 2 for x in emb))
+        emb = floats[tid * dim : (tid + 1) * dim]
+        norm = math.sqrt(sum(x**2 for x in emb))
         embeddings.append((emb, norm))
         assert norm > 0.01, f"Token {tid} embedding norm too small: {norm}"
 
@@ -580,8 +618,10 @@ def test_embedding_quality():
             )
 
     print(f"  Embedding dim={dim}, vocab={vocab_size}")
-    print(f"  Norm range: [{min(e[1] for e in embeddings):.3f}, "
-          f"{max(e[1] for e in embeddings):.3f}]")
+    print(
+        f"  Norm range: [{min(e[1] for e in embeddings):.3f}, "
+        f"{max(e[1] for e in embeddings):.3f}]"
+    )
 
 
 def test_output_projection_produces_valid_logits():
@@ -697,11 +737,17 @@ if __name__ == "__main__":
     tests = [
         ("test_accuracy_metrics", test_accuracy_metrics),
         ("test_tokenizer_roundtrip", test_tokenizer_roundtrip),
-        ("test_model_loads_and_has_correct_structure", test_model_loads_and_has_correct_structure),
+        (
+            "test_model_loads_and_has_correct_structure",
+            test_model_loads_and_has_correct_structure,
+        ),
         ("test_embedding_quality", test_embedding_quality),
         ("test_synthetic_image_generation", test_synthetic_image_generation),
         ("test_patch_extraction", test_patch_extraction),
-        ("test_output_projection_produces_valid_logits", test_output_projection_produces_valid_logits),
+        (
+            "test_output_projection_produces_valid_logits",
+            test_output_projection_produces_valid_logits,
+        ),
     ]
 
     passed = 0

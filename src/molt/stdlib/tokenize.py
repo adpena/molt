@@ -6,9 +6,7 @@ from typing import Callable, Iterator
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_TOKENIZE_RUNTIME_READY = _require_intrinsic(
-    "molt_tokenize_runtime_ready"
-)
+_MOLT_TOKENIZE_RUNTIME_READY = _require_intrinsic("molt_tokenize_runtime_ready")
 _MOLT_TOKENIZE_SCAN = _require_intrinsic("molt_tokenize_scan")
 
 ENDMARKER = 0

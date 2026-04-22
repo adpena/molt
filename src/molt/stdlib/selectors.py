@@ -13,9 +13,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _MOLT_SELECTOR_NEW = _require_intrinsic("molt_select_selector_new")
 _MOLT_SELECTOR_FILENO = _require_intrinsic("molt_select_selector_fileno")
 _MOLT_SELECTOR_REGISTER = _require_intrinsic("molt_select_selector_register")
-_MOLT_SELECTOR_UNREGISTER = _require_intrinsic(
-    "molt_select_selector_unregister"
-)
+_MOLT_SELECTOR_UNREGISTER = _require_intrinsic("molt_select_selector_unregister")
 _MOLT_SELECTOR_MODIFY = _require_intrinsic("molt_select_selector_modify")
 _MOLT_SELECTOR_POLL = _require_intrinsic("molt_select_selector_poll")
 _MOLT_SELECTOR_CLOSE = _require_intrinsic("molt_select_selector_close")
@@ -24,9 +22,7 @@ _MOLT_SELECT_FILENO = _require_intrinsic("molt_select_fileno")
 _MOLT_SELECT_DEFAULT_SELECTOR_KIND = _require_intrinsic(
     "molt_select_default_selector_kind"
 )
-_MOLT_SELECT_BACKEND_AVAILABLE = _require_intrinsic(
-    "molt_select_backend_available"
-)
+_MOLT_SELECT_BACKEND_AVAILABLE = _require_intrinsic("molt_select_backend_available")
 
 
 EVENT_READ = 1 << 0

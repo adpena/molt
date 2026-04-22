@@ -7,8 +7,6 @@ invoice samples from the web.
 
 import os
 import random
-import math
-import struct
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -21,6 +19,7 @@ try:
 except ImportError:
     import subprocess
     import sys
+
     subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
     from PIL import Image, ImageDraw, ImageFont
 
@@ -31,18 +30,34 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # Invoice data generators
 # ---------------------------------------------------------------------------
 COMPANY_NAMES = [
-    "Acme Corporation", "TechNova Inc.", "BlueStar Solutions",
-    "GlobalEdge Ltd.", "Pinnacle Dynamics", "Verdant Systems",
-    "NexGen Consulting", "IronForge Industries", "Celestial Labs",
+    "Acme Corporation",
+    "TechNova Inc.",
+    "BlueStar Solutions",
+    "GlobalEdge Ltd.",
+    "Pinnacle Dynamics",
+    "Verdant Systems",
+    "NexGen Consulting",
+    "IronForge Industries",
+    "Celestial Labs",
     "Quantum Drift Co.",
 ]
 
 ITEM_NAMES = [
-    "Widget Assembly", "Cloud Hosting (monthly)", "Design Consultation",
-    "API Integration Service", "Data Migration", "Premium Support Plan",
-    "SSL Certificate", "Domain Registration", "Custom Dashboard",
-    "Security Audit", "Performance Tuning", "Load Testing",
-    "Backup Service", "Email Hosting", "Content Delivery Network",
+    "Widget Assembly",
+    "Cloud Hosting (monthly)",
+    "Design Consultation",
+    "API Integration Service",
+    "Data Migration",
+    "Premium Support Plan",
+    "SSL Certificate",
+    "Domain Registration",
+    "Custom Dashboard",
+    "Security Audit",
+    "Performance Tuning",
+    "Load Testing",
+    "Backup Service",
+    "Email Hosting",
+    "Content Delivery Network",
 ]
 
 
@@ -153,20 +168,20 @@ def render_invoice(
         grand_total += line_total
         draw.text((col_name_x, y), item["name"], fill=fg_color, font=small_font)
         draw.text((col_qty_x, y), str(item["qty"]), fill=fg_color, font=small_font)
-        draw.text((col_price_x, y), f"${item['price']:.2f}", fill=fg_color, font=small_font)
-        draw.text((col_total_x, y), f"${line_total:.2f}", fill=fg_color, font=small_font)
+        draw.text(
+            (col_price_x, y), f"${item['price']:.2f}", fill=fg_color, font=small_font
+        )
+        draw.text(
+            (col_total_x, y), f"${line_total:.2f}", fill=fg_color, font=small_font
+        )
         y += font_size // 2 + 6
 
     # Grand total
     y += 10
     draw.line([(col_total_x, y), (width - x_margin, y)], fill=fg_color, width=2)
     y += 8
-    draw.text(
-        (col_price_x, y), "TOTAL:", fill=fg_color, font=font
-    )
-    draw.text(
-        (col_total_x, y), f"${grand_total:.2f}", fill=fg_color, font=font
-    )
+    draw.text((col_price_x, y), "TOTAL:", fill=fg_color, font=font)
+    draw.text((col_total_x, y), f"${grand_total:.2f}", fill=fg_color, font=font)
 
     # Add noise
     if noise_level > 0:
@@ -209,35 +224,115 @@ def render_invoice(
 # ---------------------------------------------------------------------------
 INVOICE_CONFIGS = [
     # 0: Standard clean invoice, 800x1000
-    dict(width=800, height=1000, bg_color=(255, 255, 255), fg_color=(0, 0, 0),
-         noise_level=0.0, rotation=0, font_size=24, jpeg_quality=None),
+    dict(
+        width=800,
+        height=1000,
+        bg_color=(255, 255, 255),
+        fg_color=(0, 0, 0),
+        noise_level=0.0,
+        rotation=0,
+        font_size=24,
+        jpeg_quality=None,
+    ),
     # 1: Small resolution, compact
-    dict(width=300, height=400, bg_color=(255, 255, 255), fg_color=(30, 30, 30),
-         noise_level=0.0, rotation=0, font_size=12, jpeg_quality=None),
+    dict(
+        width=300,
+        height=400,
+        bg_color=(255, 255, 255),
+        fg_color=(30, 30, 30),
+        noise_level=0.0,
+        rotation=0,
+        font_size=12,
+        jpeg_quality=None,
+    ),
     # 2: Large high-res
-    dict(width=2000, height=3000, bg_color=(252, 252, 248), fg_color=(10, 10, 10),
-         noise_level=0.0, rotation=0, font_size=36, jpeg_quality=None),
+    dict(
+        width=2000,
+        height=3000,
+        bg_color=(252, 252, 248),
+        fg_color=(10, 10, 10),
+        noise_level=0.0,
+        rotation=0,
+        font_size=36,
+        jpeg_quality=None,
+    ),
     # 3: Slight rotation
-    dict(width=800, height=1000, bg_color=(255, 255, 255), fg_color=(0, 0, 0),
-         noise_level=0.01, rotation=3, font_size=22, jpeg_quality=None),
+    dict(
+        width=800,
+        height=1000,
+        bg_color=(255, 255, 255),
+        fg_color=(0, 0, 0),
+        noise_level=0.01,
+        rotation=3,
+        font_size=22,
+        jpeg_quality=None,
+    ),
     # 4: Moderate noise
-    dict(width=800, height=1000, bg_color=(245, 245, 240), fg_color=(20, 20, 20),
-         noise_level=0.15, rotation=0, font_size=22, jpeg_quality=None),
+    dict(
+        width=800,
+        height=1000,
+        bg_color=(245, 245, 240),
+        fg_color=(20, 20, 20),
+        noise_level=0.15,
+        rotation=0,
+        font_size=22,
+        jpeg_quality=None,
+    ),
     # 5: Heavy noise + rotation
-    dict(width=600, height=800, bg_color=(240, 235, 230), fg_color=(40, 30, 20),
-         noise_level=0.3, rotation=-5, font_size=20, jpeg_quality=None),
+    dict(
+        width=600,
+        height=800,
+        bg_color=(240, 235, 230),
+        fg_color=(40, 30, 20),
+        noise_level=0.3,
+        rotation=-5,
+        font_size=20,
+        jpeg_quality=None,
+    ),
     # 6: JPEG artifacts (quality=5)
-    dict(width=800, height=1000, bg_color=(255, 255, 255), fg_color=(0, 0, 0),
-         noise_level=0.0, rotation=0, font_size=24, jpeg_quality=5),
+    dict(
+        width=800,
+        height=1000,
+        bg_color=(255, 255, 255),
+        fg_color=(0, 0, 0),
+        noise_level=0.0,
+        rotation=0,
+        font_size=24,
+        jpeg_quality=5,
+    ),
     # 7: Low contrast
-    dict(width=800, height=1000, bg_color=(200, 200, 200), fg_color=(150, 150, 150),
-         noise_level=0.05, rotation=0, font_size=22, jpeg_quality=None),
+    dict(
+        width=800,
+        height=1000,
+        bg_color=(200, 200, 200),
+        fg_color=(150, 150, 150),
+        noise_level=0.05,
+        rotation=0,
+        font_size=22,
+        jpeg_quality=None,
+    ),
     # 8: Dark background, light text
-    dict(width=800, height=1000, bg_color=(30, 30, 40), fg_color=(220, 220, 210),
-         noise_level=0.02, rotation=0, font_size=22, jpeg_quality=None),
+    dict(
+        width=800,
+        height=1000,
+        bg_color=(30, 30, 40),
+        fg_color=(220, 220, 210),
+        noise_level=0.02,
+        rotation=0,
+        font_size=22,
+        jpeg_quality=None,
+    ),
     # 9: Very small font
-    dict(width=500, height=700, bg_color=(255, 255, 255), fg_color=(0, 0, 0),
-         noise_level=0.0, rotation=0, font_size=10, jpeg_quality=None),
+    dict(
+        width=500,
+        height=700,
+        bg_color=(255, 255, 255),
+        fg_color=(0, 0, 0),
+        noise_level=0.0,
+        rotation=0,
+        font_size=10,
+        jpeg_quality=None,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -290,7 +385,9 @@ def main() -> None:
         if jpeg_q is not None:
             extras.append(f"jpeg_q={jpeg_q}")
         extra_str = f" ({', '.join(extras)})" if extras else ""
-        print(f"  [{i:02d}] {w}x{h} font={config['font_size']}{extra_str} -> {path.name}")
+        print(
+            f"  [{i:02d}] {w}x{h} font={config['font_size']}{extra_str} -> {path.name}"
+        )
 
     print("\nDownloading public-domain invoice samples...")
     downloaded = download_samples()

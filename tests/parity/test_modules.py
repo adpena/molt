@@ -4,6 +4,7 @@
 
 print("=== import math ===")
 import math
+
 print(math.pi)
 print(math.e)
 print(math.sqrt(16))
@@ -14,14 +15,15 @@ print(math.factorial(10))
 print(math.log(math.e))
 print(math.log2(8))
 print(math.log10(1000))
-print(math.isnan(float('nan')))
-print(math.isinf(float('inf')))
+print(math.isnan(float("nan")))
+print(math.isinf(float("inf")))
 print(math.isfinite(42.0))
 print(math.copysign(1.0, -1.0))
 print(math.fabs(-3.14))
 
 print("=== from math import ===")
 from math import sin, cos, tan, atan2
+
 print(round(sin(0), 10))
 print(round(cos(0), 10))
 print(round(tan(0), 10))
@@ -29,6 +31,7 @@ print(round(atan2(1, 1), 10))
 
 print("=== import sys basics ===")
 import sys
+
 print(type(sys.maxsize).__name__)
 print(sys.maxsize > 0)
 print(type(sys.version).__name__)
@@ -118,6 +121,7 @@ print(operator.pos(-5))
 
 print("=== import string ===")
 import string
+
 print(string.ascii_lowercase)
 print(string.ascii_uppercase)
 print(string.digits)
@@ -154,13 +158,15 @@ print("=== __name__ ===")
 print(__name__)
 
 print("=== Module attributes ===")
-print(hasattr(math, 'pi'))
-print(hasattr(math, 'nonexistent'))
+print(hasattr(math, "pi"))
+print(hasattr(math, "nonexistent"))
 print(type(math).__name__)
 
 print("=== import as ===")
 import math as m
+
 print(m.sqrt(25))
 
 from math import floor as fl
+
 print(fl(3.7))

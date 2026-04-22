@@ -162,4 +162,5 @@ def contents(anchor, *path_names):
         return (name for name in _package_contents(anchor, path_names))
     return (resource.name for resource in _get_resource(anchor, path_names).iterdir())
 
+
 globals().pop("_require_intrinsic", None)

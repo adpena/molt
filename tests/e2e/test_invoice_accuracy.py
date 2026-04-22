@@ -20,7 +20,6 @@ Accuracy evaluation uses:
 
 import base64
 import io
-import json
 import os
 import re
 import time
@@ -41,6 +40,7 @@ RESULTS_DIR = Path(__file__).resolve().parents[2] / "docs" / "benchmarks"
 
 try:
     from PIL import Image, ImageDraw, ImageFont
+
     HAS_PILLOW = True
 except ImportError:
     HAS_PILLOW = False
@@ -49,6 +49,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Font helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_fonts():
     """Load system fonts with graceful fallback."""
@@ -67,9 +68,11 @@ def _get_fonts():
 # Invoice generators
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class InvoiceSpec:
     """Expected fields for accuracy validation."""
+
     name: str
     vendor: str
     invoice_number: Optional[str]
@@ -172,8 +175,13 @@ def generate_invoice_multiline() -> InvoiceSpec:
         vendor="Quantum Dynamics",
         invoice_number="QD-88712",
         total_amount="4,170.74",
-        line_items=["API Integration", "Data Migration", "Security Audit",
-                    "Performance Tuning", "Premium Support"],
+        line_items=[
+            "API Integration",
+            "Data Migration",
+            "Security Audit",
+            "Performance Tuning",
+            "Premium Support",
+        ],
         image_bytes=_img_to_png(img),
     )
 
@@ -292,7 +300,12 @@ def generate_invoice_complex() -> InvoiceSpec:
     y += 25
     draw.text((50, y), "Please remit payment within 30 days.", fill="black", font=small)
     y += 20
-    draw.text((50, y), "Wire transfer preferred. Account details on file.", fill="black", font=small)
+    draw.text(
+        (50, y),
+        "Wire transfer preferred. Account details on file.",
+        fill="black",
+        font=small,
+    )
 
     return InvoiceSpec(
         name="Complex",
@@ -330,6 +343,7 @@ def generate_invoice_minimal() -> InvoiceSpec:
 # OCR submission
 # ---------------------------------------------------------------------------
 
+
 def submit_to_ocr(image_bytes: bytes, max_retries: int = 3) -> dict:
     """Send image to the live Worker OCR endpoint with retry for transient errors."""
     b64 = base64.b64encode(image_bytes).decode("ascii")
@@ -352,7 +366,7 @@ def submit_to_ocr(image_bytes: bytes, max_retries: int = 3) -> dict:
                 f"{resp.status_code} Server Error: Service Unavailable",
                 response=resp,
             )
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
             continue
         resp.raise_for_status()
         return resp.json()
@@ -363,6 +377,7 @@ def submit_to_ocr(image_bytes: bytes, max_retries: int = 3) -> dict:
 # ---------------------------------------------------------------------------
 # Accuracy evaluation
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class AccuracyResult:
@@ -402,7 +417,7 @@ def _levenshtein_distance(s1: str, s2: str) -> int:
 
 def normalize(text: str) -> str:
     """Normalize text for comparison: lowercase, strip, remove punctuation."""
-    return re.sub(r'[^\w\s]', '', text.lower().strip())
+    return re.sub(r"[^\w\s]", "", text.lower().strip())
 
 
 def fuzzy_match(expected: str, text: str, threshold: float = 0.7) -> bool:
@@ -423,7 +438,7 @@ def fuzzy_match(expected: str, text: str, threshold: float = 0.7) -> bool:
     window_size = len(words_expected)
 
     for i in range(max(1, len(words_text) - window_size + 1)):
-        window = " ".join(words_text[i:i + window_size])
+        window = " ".join(words_text[i : i + window_size])
         max_len = max(len(expected_norm), len(window))
         if max_len == 0:
             continue
@@ -445,9 +460,9 @@ def fuzzy_match(expected: str, text: str, threshold: float = 0.7) -> bool:
 def extract_amount(text: str) -> Optional[float]:
     """Extract dollar/currency amounts from text like '$4,200.00' or '4200'."""
     # Try common patterns: $1,234.56 or 1234.56 or 1,234
-    match = re.search(r'[\$\u20ac\u00a3]?\s*([\d,]+\.?\d*)', text.replace(' ', ''))
+    match = re.search(r"[\$\u20ac\u00a3]?\s*([\d,]+\.?\d*)", text.replace(" ", ""))
     if match:
-        num_str = match.group(1).replace(',', '')
+        num_str = match.group(1).replace(",", "")
         try:
             return float(num_str)
         except ValueError:
@@ -462,14 +477,17 @@ def amounts_match(expected_str: str, text: str, tolerance: float = 0.01) -> bool
         return False
 
     # Try to find any amount in the text that matches
-    for match in re.finditer(r'[\$\u20ac\u00a3]?\s*([\d,]+\.?\d*)', text):
-        num_str = match.group(1).replace(',', '')
+    for match in re.finditer(r"[\$\u20ac\u00a3]?\s*([\d,]+\.?\d*)", text):
+        num_str = match.group(1).replace(",", "")
         try:
             found_val = float(num_str)
             if found_val == 0:
                 continue
             # Within 1% tolerance
-            if abs(found_val - expected_val) / max(abs(expected_val), 1e-9) <= tolerance:
+            if (
+                abs(found_val - expected_val) / max(abs(expected_val), 1e-9)
+                <= tolerance
+            ):
                 return True
         except ValueError:
             continue
@@ -480,12 +498,12 @@ def amounts_match(expected_str: str, text: str, tolerance: float = 0.01) -> bool
 def extract_value_from_prose(text: str) -> str:
     """Extract the value from model prose like 'The vendor is Acme Corp' or 'vendor: Acme Corp'."""
     # Try "is <value>" pattern
-    match = re.search(r'\bis\s+(.+?)(?:\.|$)', text, re.IGNORECASE)
+    match = re.search(r"\bis\s+(.+?)(?:\.|$)", text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
     # Try ":<value>" pattern
-    match = re.search(r':\s*(.+?)(?:\.|$)', text)
+    match = re.search(r":\s*(.+?)(?:\.|$)", text)
     if match:
         return match.group(1).strip()
 
@@ -597,6 +615,7 @@ def evaluate_accuracy(spec: InvoiceSpec, ocr_response: dict) -> AccuracyResult:
 # Report generation
 # ---------------------------------------------------------------------------
 
+
 def generate_report(results: list[AccuracyResult]) -> str:
     """Generate a markdown report of accuracy results."""
     lines = [
@@ -623,8 +642,10 @@ def generate_report(results: list[AccuracyResult]) -> str:
         )
 
     overall = total_found / total_expected if total_expected > 0 else 0.0
-    lines.append(f"| **Overall** | **{total_expected}** | **{total_found}** "
-                 f"| **{overall:.0%}** | — |")
+    lines.append(
+        f"| **Overall** | **{total_expected}** | **{total_found}** "
+        f"| **{overall:.0%}** | — |"
+    )
     lines.append("")
 
     # Detail section
@@ -652,6 +673,7 @@ def generate_report(results: list[AccuracyResult]) -> str:
 # ---------------------------------------------------------------------------
 # Test class
 # ---------------------------------------------------------------------------
+
 
 @unittest.skipUnless(HAS_PILLOW, "Pillow not installed")
 class TestInvoiceAccuracy(unittest.TestCase):
@@ -686,9 +708,11 @@ class TestInvoiceAccuracy(unittest.TestCase):
 
             # Per-invoice assertion: at minimum the vendor should be detected
             # (relaxed check — full accuracy is reported, not hard-failed)
-            print(f"  {spec.name}: {result.accuracy:.0%} "
-                  f"({result.fields_found}/{result.fields_expected}) "
-                  f"in {latency_ms:.0f}ms")
+            print(
+                f"  {spec.name}: {result.accuracy:.0%} "
+                f"({result.fields_found}/{result.fields_expected}) "
+                f"in {latency_ms:.0f}ms"
+            )
 
         # Generate and save report
         report = generate_report(results)
@@ -705,8 +729,7 @@ class TestInvoiceAccuracy(unittest.TestCase):
 
         # We use a generous threshold since OCR accuracy depends on the model variant
         self.assertGreaterEqual(
-            overall, 0.40,
-            f"Overall accuracy {overall:.0%} is below 40% threshold"
+            overall, 0.40, f"Overall accuracy {overall:.0%} is below 40% threshold"
         )
 
 

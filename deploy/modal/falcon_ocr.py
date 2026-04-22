@@ -30,10 +30,10 @@ falcon_ocr_image = (
     .run_commands(
         # Pre-download model weights into the image layer so cold starts
         # only pay the container boot cost, not a HuggingFace download.
-        "python3 -c \""
+        'python3 -c "'
         "from huggingface_hub import snapshot_download; "
         "snapshot_download('tiiuae/falcon-ocr', local_dir='/models/falcon-ocr')"
-        "\""
+        '"'
     )
 )
 
@@ -92,10 +92,12 @@ class FalconOCR:
         prompt = f"Extract text.\n<|OCR_{category.upper()}|>"
 
         outputs = self.llm.generate(
-            [{
-                "prompt": prompt,
-                "multi_modal_data": {"image": img},
-            }],
+            [
+                {
+                    "prompt": prompt,
+                    "multi_modal_data": {"image": img},
+                }
+            ],
             self.sampling_params,
         )
 
@@ -111,6 +113,7 @@ class FalconOCR:
 
 
 # --- Web endpoint for direct HTTP access ---
+
 
 @app.function(
     image=falcon_ocr_image,

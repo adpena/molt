@@ -36,7 +36,9 @@ class SyncPlan:
 
 
 def _local_env_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "ops" / "linear" / "runtime" / "local.env"
+    return (
+        Path(__file__).resolve().parents[1] / "ops" / "linear" / "runtime" / "local.env"
+    )
 
 
 def _read_local_env_var(name: str) -> str:

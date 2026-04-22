@@ -3,7 +3,6 @@
 # Registers event listeners on the github plugin for cross-plugin
 # event handling.
 
-import json
 
 from edgebox.plugins.github import plugin
 

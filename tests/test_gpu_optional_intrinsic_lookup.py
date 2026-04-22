@@ -13,9 +13,7 @@ MODULE_NAMES = (
     "molt.gpu.interop",
     "molt.gpu.kv_cache",
 )
-RELATED_MODULE_NAMES = MODULE_NAMES + (
-    "molt.gpu.turboquant",
-)
+RELATED_MODULE_NAMES = MODULE_NAMES + ("molt.gpu.turboquant",)
 
 
 @pytest.fixture(autouse=True)
@@ -137,5 +135,7 @@ def test_tensor_optional_intrinsic_raises_when_runtime_active_and_missing(
     state["runtime_active"] = True
     tensor = tensor_mod.Tensor([1.0, 2.0])
 
-    with pytest.raises(RuntimeError, match="intrinsic unavailable: molt_gpu_buffer_to_list"):
+    with pytest.raises(
+        RuntimeError, match="intrinsic unavailable: molt_gpu_buffer_to_list"
+    ):
         tensor_mod.tensor_data_list(tensor)

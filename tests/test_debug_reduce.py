@@ -182,7 +182,9 @@ def test_reduce_source_and_payload_are_promotion_ready(tmp_path: Path) -> None:
             "trace_events": [
                 {
                     "event": "stdout",
-                    "signature": "KEEP_MARK" if "KEEP_MARK" in candidate else "NO_MATCH",
+                    "signature": "KEEP_MARK"
+                    if "KEEP_MARK" in candidate
+                    else "NO_MATCH",
                 }
             ],
             "manifest": {
@@ -236,7 +238,9 @@ def test_build_candidate_manifest_records_source_identity(tmp_path: Path) -> Non
 
 
 def test_oracle_matches_ignores_noncanonical_matched_shortcut() -> None:
-    oracle = normalize_failure_oracle({"kind": "diff", "mismatch_class": "stderr_mismatch"})
+    oracle = normalize_failure_oracle(
+        {"kind": "diff", "mismatch_class": "stderr_mismatch"}
+    )
     evaluation = {
         "matched": True,
         "diff": {
@@ -250,7 +254,9 @@ def test_oracle_matches_ignores_noncanonical_matched_shortcut() -> None:
 
 def test_bisect_first_bad_pass_returns_canonical_result_shape() -> None:
     passes = ["parse", "typecheck", "lower_inline_cache", "codegen"]
-    oracle = normalize_failure_oracle({"kind": "trace", "signature": "lower_inline_cache"})
+    oracle = normalize_failure_oracle(
+        {"kind": "trace", "signature": "lower_inline_cache"}
+    )
 
     def evaluator(prefix: tuple[str, ...]) -> dict[str, object]:
         return {
@@ -279,12 +285,16 @@ def test_bisect_first_bad_pass_returns_canonical_result_shape() -> None:
 
 
 def test_bisect_backend_profile_ic_returns_minimal_bad_toggle_shape() -> None:
-    oracle = normalize_failure_oracle({"kind": "diff", "mismatch_class": "stderr_mismatch"})
+    oracle = normalize_failure_oracle(
+        {"kind": "diff", "mismatch_class": "stderr_mismatch"}
+    )
 
     def evaluator(config: dict[str, object]) -> dict[str, object]:
         return {
             "diff": {
-                "mismatch_class": "stderr_mismatch" if config["ic"] is False else "match",
+                "mismatch_class": "stderr_mismatch"
+                if config["ic"] is False
+                else "match",
                 "field": "stderr",
             },
         }

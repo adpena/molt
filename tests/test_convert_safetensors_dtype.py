@@ -41,7 +41,9 @@ def _read_header(path: Path) -> dict[str, object]:
     return json.loads(data[8 : 8 + header_len].decode("utf-8"))
 
 
-def test_convert_safetensors_dtype_rewrites_float_dtypes_and_offsets(tmp_path: Path) -> None:
+def test_convert_safetensors_dtype_rewrites_float_dtypes_and_offsets(
+    tmp_path: Path,
+) -> None:
     src = tmp_path / "weights.safetensors"
     out = tmp_path / "weights_f16.safetensors"
     _write_safetensors_fixture(src)

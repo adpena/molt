@@ -12,4 +12,5 @@ def __getattr__(attr: str):
         'stdlib module "zoneinfo._tzpath" is not fully lowered yet; only an intrinsic-first stub is available.'
     )
 
+
 globals().pop("_require_intrinsic", None)

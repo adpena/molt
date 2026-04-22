@@ -74,4 +74,5 @@ def _tk_unavailable_message(operation):
 def _require_tk_runtime(operation):
     return require_tk_runtime(operation)
 
+
 globals().pop("_require_intrinsic", None)

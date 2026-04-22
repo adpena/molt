@@ -11,4 +11,5 @@ def __getattr__(attr: str):
         'stdlib package "concurrent.interpreters" is not fully lowered yet; only an intrinsic-first stub is available.'
     )
 
+
 globals().pop("_require_intrinsic", None)

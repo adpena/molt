@@ -60,9 +60,7 @@ def normalize_debug_payload(
     capabilities: list[DebugCapabilityRecord] | None = None,
     data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    normalized_capabilities = [
-        asdict(record) for record in (capabilities or [])
-    ]
+    normalized_capabilities = [asdict(record) for record in (capabilities or [])]
     normalized_selectors = dict(selectors or {})
     dimensions = {
         "python_tag": f"py{sys.version_info.major}{sys.version_info.minor}",
@@ -81,9 +79,7 @@ def normalize_debug_payload(
         "selectors": normalized_selectors,
         "dimensions": dimensions,
         "failure_class": (
-            str(DebugFailureClass(failure_class))
-            if failure_class is not None
-            else None
+            str(DebugFailureClass(failure_class)) if failure_class is not None else None
         ),
         "message": message,
         "capabilities": normalized_capabilities,

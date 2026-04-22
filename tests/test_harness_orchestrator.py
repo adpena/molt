@@ -1,5 +1,7 @@
 """Tests for the harness orchestrator."""
+
 import sys
+
 sys.path.insert(0, "src")
 
 from molt.harness_report import LayerResult, LayerStatus
@@ -65,14 +67,18 @@ def test_run_profile_no_fail_fast_runs_all():
 
 def test_main_returns_zero_on_success():
     from molt.harness import main
+
     # Run with a mock profile that always passes — use the import check
     # This is a smoke test; full integration tested separately
     from molt.harness import _run_profile
+
     assert callable(main)
+    assert callable(_run_profile)
 
 
 def test_harness_module_importable():
     from molt.harness import run_harness, main, _run_profile
+
     assert callable(run_harness)
     assert callable(main)
     assert callable(_run_profile)

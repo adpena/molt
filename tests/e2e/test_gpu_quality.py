@@ -36,7 +36,6 @@ weight matrices tolerates the quantization noise. For our 300M model, INT8 is
 the minimum viable quantization.
 """
 
-import struct
 import math
 from typing import List, Tuple
 
@@ -45,7 +44,10 @@ from typing import List, Tuple
 # Simulated INT4 quantization and dequantization
 # ---------------------------------------------------------------------------
 
-def quantize_int4(weights: List[float], group_size: int = 32) -> Tuple[List[int], List[float]]:
+
+def quantize_int4(
+    weights: List[float], group_size: int = 32
+) -> Tuple[List[int], List[float]]:
     """
     Quantize f32 weights to INT4 (symmetric, per-group scale).
 
@@ -58,7 +60,7 @@ def quantize_int4(weights: List[float], group_size: int = 32) -> Tuple[List[int]
     scales = []
 
     for i in range(0, len(weights), group_size):
-        group = weights[i:i + group_size]
+        group = weights[i : i + group_size]
         abs_max = max(abs(w) for w in group) if group else 1.0
         # Scale maps abs_max to 7 (max positive INT4 value).
         scale = abs_max / 7.0 if abs_max > 0 else 1.0
@@ -73,7 +75,9 @@ def quantize_int4(weights: List[float], group_size: int = 32) -> Tuple[List[int]
     return quantized, scales
 
 
-def dequantize_int4(quantized: List[int], scales: List[float], group_size: int = 32) -> List[float]:
+def dequantize_int4(
+    quantized: List[int], scales: List[float], group_size: int = 32
+) -> List[float]:
     """
     Dequantize INT4 values back to f32.
 
@@ -92,6 +96,7 @@ def dequantize_int4(quantized: List[int], scales: List[float], group_size: int =
 # ---------------------------------------------------------------------------
 # Matmul implementations (demonstrating identical precision)
 # ---------------------------------------------------------------------------
+
 
 def matmul_f32(a: List[List[float]], b: List[List[float]]) -> List[List[float]]:
     """
@@ -120,6 +125,7 @@ def matmul_f32(a: List[List[float]], b: List[List[float]]) -> List[List[float]]:
 # Quality validation tests
 # ---------------------------------------------------------------------------
 
+
 def test_int4_quantization_error():
     """
     Verify that INT4 quantization introduces significant error for
@@ -128,6 +134,7 @@ def test_int4_quantization_error():
     Expected: relative error > 10% for INT4 at typical weight distributions.
     """
     import random
+
     random.seed(42)
 
     # Simulate a transformer weight matrix (normal distribution, std=0.02).
@@ -141,9 +148,11 @@ def test_int4_quantization_error():
     total_magnitude = 0.0
     for orig, deq in zip(weights, dequantized):
         total_error += (orig - deq) ** 2
-        total_magnitude += orig ** 2
+        total_magnitude += orig**2
 
-    relative_error = math.sqrt(total_error / total_magnitude) if total_magnitude > 0 else 0
+    relative_error = (
+        math.sqrt(total_error / total_magnitude) if total_magnitude > 0 else 0
+    )
     # INT4 with only 16 quantization levels introduces ~14% relative error
     # on normally-distributed weights. This compounds across 22 layers.
     assert relative_error > 0.05, (
@@ -165,6 +174,7 @@ def test_int8_vs_int4_quality():
     Expected: INT8 error is ~16x lower than INT4 (ratio of quantization levels squared).
     """
     import random
+
     random.seed(42)
 
     weights = [random.gauss(0, 0.02) for _ in range(768)]
@@ -178,7 +188,7 @@ def test_int8_vs_int4_quality():
     error_8 = 0.0
     group_size = 32
     for i in range(0, len(weights), group_size):
-        group = weights[i:i + group_size]
+        group = weights[i : i + group_size]
         abs_max = max(abs(w) for w in group) if group else 1.0
         scale = abs_max / 127.0 if abs_max > 0 else 1.0
         for w in group:
@@ -188,7 +198,7 @@ def test_int8_vs_int4_quality():
             error_8 += (w - deq) ** 2
 
     # INT8 should have ~16x less quantization error than INT4.
-    ratio = error_4 / error_8 if error_8 > 0 else float('inf')
+    ratio = error_4 / error_8 if error_8 > 0 else float("inf")
     assert ratio > 10, (
         f"INT8/INT4 error ratio only {ratio:.1f}x. "
         f"Expected > 10x improvement from 8-bit vs 4-bit."
@@ -210,6 +220,7 @@ def test_gpu_vs_cpu_matmul_precision_equivalent():
     level — far below the quantization noise floor.
     """
     import random
+
     random.seed(42)
 
     # Small test: 4x8 @ 8x4 matmul with dequantized INT4 weights.
@@ -266,6 +277,7 @@ def test_quality_bottleneck_is_quantization_not_matmul():
     INT8 output is much closer to FP32. Both use identical f32 matmul.
     """
     import random
+
     random.seed(42)
 
     m, k, n = 8, 64, 32
@@ -286,7 +298,7 @@ def test_quality_bottleneck_is_quantization_not_matmul():
     d8 = []
     group_size = 32
     for gi in range(0, len(raw_weights), group_size):
-        group = raw_weights[gi:gi + group_size]
+        group = raw_weights[gi : gi + group_size]
         abs_max = max(abs(w) for w in group) if group else 1.0
         scale = abs_max / 127.0 if abs_max > 0 else 1.0
         for w in group:
@@ -307,12 +319,16 @@ def test_quality_bottleneck_is_quantization_not_matmul():
     for i in range(m):
         for j in range(n):
             ref = result_fp32[i][j]
-            total_magnitude += ref ** 2
+            total_magnitude += ref**2
             error_int4 += (ref - result_int4[i][j]) ** 2
             error_int8 += (ref - result_int8[i][j]) ** 2
 
-    rel_error_int4 = math.sqrt(error_int4 / total_magnitude) if total_magnitude > 0 else 0
-    rel_error_int8 = math.sqrt(error_int8 / total_magnitude) if total_magnitude > 0 else 0
+    rel_error_int4 = (
+        math.sqrt(error_int4 / total_magnitude) if total_magnitude > 0 else 0
+    )
+    rel_error_int8 = (
+        math.sqrt(error_int8 / total_magnitude) if total_magnitude > 0 else 0
+    )
 
     # INT4 error should be much larger than INT8 error.
     assert rel_error_int4 > rel_error_int8 * 5, (
@@ -323,13 +339,15 @@ def test_quality_bottleneck_is_quantization_not_matmul():
     # Both use the same f32 matmul — the difference is purely from quantization.
     # This proves the quality issue is quantization, not compute precision.
     return {
-        'int4_relative_error': rel_error_int4,
-        'int8_relative_error': rel_error_int8,
-        'improvement_ratio': rel_error_int4 / rel_error_int8 if rel_error_int8 > 0 else float('inf'),
+        "int4_relative_error": rel_error_int4,
+        "int8_relative_error": rel_error_int8,
+        "improvement_ratio": rel_error_int4 / rel_error_int8
+        if rel_error_int8 > 0
+        else float("inf"),
     }
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("=== GPU Quality Validation ===\n")
 
     print("1. INT4 quantization error...")

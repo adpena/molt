@@ -53,4 +53,5 @@ def rgb_to_yiq(r: object, g: object, b: object) -> tuple[float, float, float]:
 def yiq_to_rgb(y: object, i: object, q: object) -> tuple[float, float, float]:
     return _require_tuple3_float(_MOLT_YIQ_TO_RGB(y, i, q), "yiq_to_rgb")
 
+
 globals().pop("_require_intrinsic", None)

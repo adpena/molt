@@ -25,7 +25,9 @@ def _find_rustc() -> str:
     """Return rustc path, preferring the active toolchain."""
     for candidate in ("rustc", os.path.expanduser("~/.cargo/bin/rustc")):
         try:
-            r = subprocess.run([candidate, "--version"], capture_output=True, text=True, timeout=15)
+            r = subprocess.run(
+                [candidate, "--version"], capture_output=True, text=True, timeout=15
+            )
             if r.returncode == 0:
                 return candidate
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -50,7 +52,9 @@ def _find_cpython() -> str:
     for candidate in candidates:
         if not candidate:
             continue
-        if (os.sep in candidate or os.path.isabs(candidate)) and not os.path.exists(candidate):
+        if (os.sep in candidate or os.path.isabs(candidate)) and not os.path.exists(
+            candidate
+        ):
             continue
         try:
             probe = subprocess.run(
@@ -87,7 +91,9 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
             "CARGO_TARGET_DIR": cargo_target,
             "MOLT_USE_SCCACHE": "0",
             "MOLT_BACKEND_DAEMON": "0",
-            "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
+            "MOLT_DEV_CARGO_PROFILE": os.environ.get(
+                "MOLT_DEV_CARGO_PROFILE", "release-fast"
+            ),
             "MOLT_BUILD_STATE_DIR": os.environ.get(
                 "MOLT_BUILD_STATE_DIR",
                 os.path.join(ext_root, "tmp", f"rust-tests-build-state-{os.getpid()}"),
@@ -104,8 +110,15 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
         try:
             result = subprocess.run(
                 [
-                    py_exec, "-m", "molt.cli", "build",
-                    py_path, "--target", "rust", "--output", rs_path,
+                    py_exec,
+                    "-m",
+                    "molt.cli",
+                    "build",
+                    py_path,
+                    "--target",
+                    "rust",
+                    "--output",
+                    rs_path,
                 ],
                 capture_output=True,
                 text=True,
@@ -115,8 +128,7 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
             )
         except subprocess.TimeoutExpired as exc:
             pytest.fail(
-                "molt build --target rust timed out "
-                f"after {build_timeout}s ({exc.cmd})"
+                f"molt build --target rust timed out after {build_timeout}s ({exc.cmd})"
             )
         if result.returncode != 0:
             if expect_fail:
@@ -142,14 +154,14 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
                 "--edition=2021",
                 *[flag for lint in allow_lints for flag in ("-A", lint)],
             ],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
         if result2.returncode != 0:
             if expect_fail:
                 return ""
-            pytest.fail(
-                f"rustc compilation failed:\n{result2.stderr}"
-            )
+            pytest.fail(f"rustc compilation failed:\n{result2.stderr}")
 
         # Step 3: run binary
         result3 = subprocess.run([bin_path], capture_output=True, text=True, timeout=30)
@@ -161,7 +173,9 @@ def _cpython_stdout(python_source: str) -> str:
     cpython = _find_cpython()
     r = subprocess.run(
         [cpython, "-c", python_source],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     return r.stdout.strip()
 
@@ -179,6 +193,7 @@ def assert_rust_eq_python(source: str) -> None:
 
 
 # ─── Basic print / literals ───────────────────────────────────────────────────
+
 
 def test_print_int():
     assert_rust_eq_python("print(42)")
@@ -209,7 +224,7 @@ def test_print_none():
 
 
 def test_print_multiple_args():
-    assert_rust_eq_python('print(1, 2, 3)')
+    assert_rust_eq_python("print(1, 2, 3)")
 
 
 def test_print_mixed_args():
@@ -217,6 +232,7 @@ def test_print_mixed_args():
 
 
 # ─── Arithmetic ───────────────────────────────────────────────────────────────
+
 
 def test_add_ints():
     assert_rust_eq_python("print(3 + 4)")
@@ -256,6 +272,7 @@ def test_mixed_int_float():
 
 # ─── Comparison / bool ────────────────────────────────────────────────────────
 
+
 def test_eq():
     assert_rust_eq_python("print(1 == 1)")
 
@@ -282,6 +299,7 @@ def test_not():
 
 # ─── Variables ────────────────────────────────────────────────────────────────
 
+
 def test_variable_assignment():
     assert_rust_eq_python("x = 10; y = 20; print(x + y)")
 
@@ -295,6 +313,7 @@ def test_swap():
 
 
 # ─── Control flow ─────────────────────────────────────────────────────────────
+
 
 def test_if_true():
     assert_rust_eq_python("if True:\n    print('yes')")
@@ -315,7 +334,9 @@ def test_while_loop():
 
 
 def test_while_break():
-    assert_rust_eq_python("i = 0\nwhile True:\n    if i == 3:\n        break\n    i += 1\nprint(i)")
+    assert_rust_eq_python(
+        "i = 0\nwhile True:\n    if i == 3:\n        break\n    i += 1\nprint(i)"
+    )
 
 
 def test_while_continue():
@@ -325,6 +346,7 @@ def test_while_continue():
 
 
 # ─── For loops / range ────────────────────────────────────────────────────────
+
 
 def test_for_range():
     assert_rust_eq_python("for i in range(5):\n    print(i)")
@@ -348,6 +370,7 @@ def test_for_sum():
 
 # ─── Lists ────────────────────────────────────────────────────────────────────
 
+
 def test_list_literal():
     assert_rust_eq_python("x = [1, 2, 3]\nprint(x[0])")
 
@@ -358,11 +381,7 @@ def test_list_append():
 
 def test_nested_list_append_alias_writeback():
     assert_rust_eq_python(
-        "rows = []\n"
-        "row = []\n"
-        "row.append(7)\n"
-        "rows.append(row)\n"
-        "print(rows[0][0])"
+        "rows = []\nrow = []\nrow.append(7)\nrows.append(row)\nprint(rows[0][0])"
     )
 
 
@@ -401,6 +420,7 @@ def test_list_sum():
 
 # ─── Dict ─────────────────────────────────────────────────────────────────────
 
+
 def test_dict_literal():
     assert_rust_eq_python("d = {'a': 1}\nprint(d['a'])")
 
@@ -414,6 +434,7 @@ def test_dict_len():
 
 
 # ─── Functions ────────────────────────────────────────────────────────────────
+
 
 def test_simple_function():
     assert_rust_eq_python("def add(a, b):\n    return a + b\nprint(add(3, 4))")
@@ -443,6 +464,7 @@ def test_nested_function_calls():
 
 # ─── String operations ────────────────────────────────────────────────────────
 
+
 def test_string_len():
     assert_rust_eq_python("print(len('hello'))")
 
@@ -461,6 +483,7 @@ def test_int_conversion():
 
 # ─── enumerate / zip ─────────────────────────────────────────────────────────
 
+
 def test_enumerate():
     assert_rust_eq_python("for i, x in enumerate([10, 20, 30]):\n    print(i, x)")
 
@@ -470,6 +493,7 @@ def test_zip():
 
 
 # ─── min / max / abs ─────────────────────────────────────────────────────────
+
 
 def test_min():
     assert_rust_eq_python("print(min(3, 7))")
@@ -484,6 +508,7 @@ def test_abs():
 
 
 # ─── End-to-end algorithm ─────────────────────────────────────────────────────
+
 
 def test_bubble_sort():
     assert_rust_eq_python(

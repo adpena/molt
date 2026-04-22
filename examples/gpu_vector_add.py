@@ -3,9 +3,11 @@
 from molt import gpu
 import time
 
+
 @gpu.kernel
-def vector_add(a: gpu.Buffer[float], b: gpu.Buffer[float],
-               c: gpu.Buffer[float], n: int):
+def vector_add(
+    a: gpu.Buffer[float], b: gpu.Buffer[float], c: gpu.Buffer[float], n: int
+):
     tid = gpu.thread_id()
     if tid < n:
         c[tid] = a[tid] + b[tid]

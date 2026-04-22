@@ -13,7 +13,6 @@ Usage:
 """
 
 import json
-import os
 import subprocess
 import sys
 import time
@@ -149,7 +148,9 @@ def run_js_benchmark():
     try:
         result = subprocess.run(
             ["node", tmp_path],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
         if result.returncode != 0:
             print(f"Node.js benchmark failed: {result.stderr}", file=sys.stderr)
@@ -199,10 +200,14 @@ def format_results(results):
     lines.append("## WASM SIMD Expected Speedups")
     lines.append("")
     lines.append("Based on architectural analysis:")
-    lines.append("- Elementwise ops (add, mul, neg): ~3.5-4x (4-wide SIMD, minus overhead)")
+    lines.append(
+        "- Elementwise ops (add, mul, neg): ~3.5-4x (4-wide SIMD, minus overhead)"
+    )
     lines.append("- Transcendental ops (sqrt, exp2): ~2-3x (SIMD + polynomial)")
     lines.append("- Reductions (sum, max): ~2-3x (SIMD accumulate + horizontal)")
-    lines.append("- Fused ops (softmax, rms_norm): ~3-5x (eliminates intermediate buffers)")
+    lines.append(
+        "- Fused ops (softmax, rms_norm): ~3-5x (eliminates intermediate buffers)"
+    )
     lines.append("- matmul: ~10-50x (SIMD + cache-optimized IKJ loop)")
     lines.append("")
     lines.append("## Rust CPU SIMD Coverage")

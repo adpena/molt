@@ -15,7 +15,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -49,9 +48,7 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
     repo_src = str(ROOT / "src")
     current_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath
-        if current_pythonpath
-        else repo_src
+        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
     )
     env["MOLT_WASM_LINKED"] = "0"
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
@@ -184,7 +181,9 @@ class TestWasmOptReduction:
         assert not result["ok"]
         assert "Invalid" in str(result["error"])
 
-    def test_optimize_can_disable_converge_flag(self, tmp_path: Path, monkeypatch) -> None:
+    def test_optimize_can_disable_converge_flag(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
         dummy = tmp_path / "dummy.wasm"
         dummy.write_bytes(b"\x00asm\x01\x00\x00\x00")
         output = tmp_path / "out.wasm"
@@ -262,7 +261,9 @@ class TestOptimisedModuleCorrectness:
 
         data = opt_path.read_bytes()
         assert data[:4] == b"\x00asm", "Missing WASM magic bytes after optimisation"
-        assert data[4:8] == b"\x01\x00\x00\x00", "Unexpected WASM version after optimisation"
+        assert data[4:8] == b"\x01\x00\x00\x00", (
+            "Unexpected WASM version after optimisation"
+        )
 
     @pytest.mark.skipif(
         shutil.which("wasm-opt") is None,

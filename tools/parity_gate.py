@@ -26,7 +26,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -35,9 +35,7 @@ from pathlib import Path
 
 TIMEOUT_SECONDS = 120
 
-_PARITY_MARKER_RE = re.compile(
-    r"^\s*#\s*molt-parity\s*:\s*(\w+)", re.MULTILINE
-)
+_PARITY_MARKER_RE = re.compile(r"^\s*#\s*molt-parity\s*:\s*(\w+)", re.MULTILINE)
 
 # Relaxed normalization patterns
 _ADDR_RE = re.compile(r"\b0x[0-9a-fA-F]+\b")
@@ -165,10 +163,12 @@ def _resolve_molt_cmd() -> tuple[list[str], dict[str, str]]:
 
     venv_candidates: list[Path] = []
     for search_root in venv_search_roots:
-        venv_candidates.extend([
-            search_root / ".venv" / "bin" / "python3",
-            search_root / ".venv" / "bin" / "python",
-        ])
+        venv_candidates.extend(
+            [
+                search_root / ".venv" / "bin" / "python3",
+                search_root / ".venv" / "bin" / "python",
+            ]
+        )
 
     for candidate in venv_candidates:
         if candidate.exists():
@@ -215,7 +215,9 @@ def _run_process(
         return "", f"<error: {exc}>", 127
 
 
-def run_cpython(path: Path, *, timeout: float = TIMEOUT_SECONDS) -> tuple[str, str, int]:
+def run_cpython(
+    path: Path, *, timeout: float = TIMEOUT_SECONDS
+) -> tuple[str, str, int]:
     python = os.environ.get("PARITY_PYTHON", sys.executable) or "python3"
     return _run_process([python, str(path)], timeout=timeout)
 
@@ -437,7 +439,10 @@ def print_result(result: TestResult, *, verbose: bool = False) -> None:
     if verbose and result.status in ("fail", "warn", "error"):
         if result.cpython_stdout:
             print(f"  cpython stdout: {result.cpython_stdout[:200]!r}")
-        if result.molt_stdout is not None and result.molt_stdout != result.cpython_stdout:
+        if (
+            result.molt_stdout is not None
+            and result.molt_stdout != result.cpython_stdout
+        ):
             print(f"  molt stdout:    {result.molt_stdout[:200]!r}")
         if result.molt_stderr:
             print(f"  molt stderr:    {result.molt_stderr[:200]!r}")
@@ -515,7 +520,7 @@ def main() -> int:
         type=float,
         default=None,
         help=f"Per-test timeout in seconds (default: {TIMEOUT_SECONDS}). "
-             "Molt compile+run can take 60-120s on first run.",
+        "Molt compile+run can take 60-120s on first run.",
     )
     args = parser.parse_args()
 
@@ -528,6 +533,7 @@ def main() -> int:
     molt_env: dict[str, str] | None = None
     if args.molt_cmd:
         import shlex
+
         molt_cmd = shlex.split(args.molt_cmd)
     else:
         molt_cmd, molt_env = _resolve_molt_cmd()

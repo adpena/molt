@@ -76,9 +76,7 @@ def test_native_generator_exception_cleanup(tmp_path: Path) -> None:
         stderr = build.stderr
         # Backend killed by daemon management or infra timeout — skip, not fail.
         if "exit code -15" in stderr or "exit code -9" in stderr:
-            pytest.skip(
-                "Backend killed during compilation (stale daemon or timeout)"
-            )
+            pytest.skip("Backend killed during compilation (stale daemon or timeout)")
         assert build.returncode == 0, stderr
 
     run = subprocess.run(

@@ -3,32 +3,38 @@
 These verify that the harness itself works correctly — profile definitions,
 layer execution, baseline ratcheting, report generation.
 """
+
 import json
 import sys
+
 sys.path.insert(0, "src")
 
 from molt.harness_layers import LAYERS, PROFILES, get_layers_for_profile
 from molt.harness_report import Baseline, HarnessReport, LayerResult, LayerStatus
 
+assert callable(get_layers_for_profile)
+
 
 def test_all_layers_have_unique_names():
-    names = [l.name for l in LAYERS]
+    names = [layer.name for layer in LAYERS]
     assert len(names) == len(set(names)), f"duplicate layer names: {names}"
 
 
 def test_profiles_reference_only_existing_layers():
-    layer_names = {l.name for l in LAYERS}
+    layer_names = {layer.name for layer in LAYERS}
     for profile, names in PROFILES.items():
         for name in names:
-            assert name in layer_names, f"profile {profile!r} references unknown layer {name!r}"
+            assert name in layer_names, (
+                f"profile {profile!r} references unknown layer {name!r}"
+            )
 
 
 def test_profiles_are_strict_supersets():
     quick = PROFILES["quick"]
     standard = PROFILES["standard"]
     deep = PROFILES["deep"]
-    assert quick == standard[:len(quick)], "standard must start with all quick layers"
-    assert standard == deep[:len(standard)], "deep must start with all standard layers"
+    assert quick == standard[: len(quick)], "standard must start with all quick layers"
+    assert standard == deep[: len(standard)], "deep must start with all standard layers"
 
 
 def test_layer_count_matches_spec():
@@ -58,13 +64,25 @@ def test_baseline_json_schema():
 
 
 def test_report_json_has_required_fields():
-    report = HarnessReport(profile="quick", results=[
-        LayerResult(name="compile", status=LayerStatus.PASS, duration_s=1.0),
-    ])
+    report = HarnessReport(
+        profile="quick",
+        results=[
+            LayerResult(name="compile", status=LayerStatus.PASS, duration_s=1.0),
+        ],
+    )
     data = json.loads(report.to_json())
-    required = {"profile", "timestamp", "all_passed", "total_duration_s",
-                "pass_count", "fail_count", "results"}
-    assert required.issubset(set(data.keys())), f"missing keys: {required - set(data.keys())}"
+    required = {
+        "profile",
+        "timestamp",
+        "all_passed",
+        "total_duration_s",
+        "pass_count",
+        "fail_count",
+        "results",
+    }
+    assert required.issubset(set(data.keys())), (
+        f"missing keys: {required - set(data.keys())}"
+    )
 
     result = data["results"][0]
     result_required = {"name", "status", "duration_s", "details", "metrics"}
@@ -74,4 +92,6 @@ def test_report_json_has_required_fields():
 def test_every_layer_has_valid_profile():
     valid = {"quick", "standard", "deep"}
     for layer in LAYERS:
-        assert layer.profile in valid, f"layer {layer.name!r} has invalid profile {layer.profile!r}"
+        assert layer.profile in valid, (
+            f"layer {layer.name!r} has invalid profile {layer.profile!r}"
+        )

@@ -4,6 +4,7 @@ from molt import gpu
 from molt.gpu import ops
 import time
 
+
 def main():
     n = 10000
 
@@ -19,9 +20,9 @@ def main():
 
     # Reduce: sum
     start = time.perf_counter()
-    total = ops.reduce(squared, 'sum')
+    total = ops.reduce(squared, "sum")
     reduce_time = time.perf_counter() - start
-    expected = sum(i*i for i in range(n))
+    expected = sum(i * i for i in range(n))
     print(f"  reduce(sum): {total:.0f} (expected {expected:.0f}) — {reduce_time:.4f}s")
 
     # Filter: keep only values > threshold
@@ -32,7 +33,7 @@ def main():
 
     # Scan: cumulative sum
     small = ops.arange(1.0, 11.0)
-    scanned = ops.scan(small, 'sum')
+    scanned = ops.scan(small, "sum")
     scan_result = gpu.from_device(scanned)
     print(f"  scan([1..10]): {scan_result}")
 
@@ -54,6 +55,7 @@ def main():
     print(f"  where: {gpu.from_device(selected)}")
 
     print("\nAll operations complete.")
+
 
 if __name__ == "__main__":
     main()

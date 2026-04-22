@@ -226,14 +226,16 @@ class TestBuildReproducibility:
             state = build_all(order)
             computed = sum(state.artifacts[m] for m in state.done)
             assert computed == canonical, (
-                f"Order {order} produced digest {computed}, "
-                f"expected {canonical}"
+                f"Order {order} produced digest {computed}, expected {canonical}"
             )
 
-    @pytest.mark.parametrize("order", [
-        [0, 1, 2, 3],
-        [0, 2, 1, 3],
-    ])
+    @pytest.mark.parametrize(
+        "order",
+        [
+            [0, 1, 2, 3],
+            [0, 2, 1, 3],
+        ],
+    )
     def test_specific_orderings_match(self, order: list[int]) -> None:
         state = build_all(order)
         assert state.done == MODULES
@@ -324,11 +326,14 @@ class TestParallelBuildDeterminism:
 
         assert parallel_artifacts == sequential_artifacts
 
-    @pytest.mark.parametrize("layer_order", [
-        # Different orderings within layer 1 (modules 1 and 2)
-        [[0], [1, 2], [3]],
-        [[0], [2, 1], [3]],
-    ])
+    @pytest.mark.parametrize(
+        "layer_order",
+        [
+            # Different orderings within layer 1 (modules 1 and 2)
+            [[0], [1, 2], [3]],
+            [[0], [2, 1], [3]],
+        ],
+    )
     def test_within_layer_order_irrelevant(self, layer_order: list[list[int]]) -> None:
         """Order within a parallel layer does not affect the output."""
         artifacts = {}
@@ -420,8 +425,11 @@ class TestRuntimeReproducibility:
         [1, 3, 0, 2],
     ]
 
-    @pytest.mark.parametrize("exec_order", _ORDERINGS,
-                             ids=[f"order_{''.join(map(str, o))}" for o in _ORDERINGS])
+    @pytest.mark.parametrize(
+        "exec_order",
+        _ORDERINGS,
+        ids=[f"order_{''.join(map(str, o))}" for o in _ORDERINGS],
+    )
     def test_results_deterministic(self, exec_order: list[int]) -> None:
         """I2: task results are deterministic regardless of execution order."""
         state = _make_runtime_state()
@@ -434,8 +442,11 @@ class TestRuntimeReproducibility:
                 f"Task {t} result {state.results[t]} != expected {task_result(t)}"
             )
 
-    @pytest.mark.parametrize("exec_order", _ORDERINGS,
-                             ids=[f"order_{''.join(map(str, o))}" for o in _ORDERINGS])
+    @pytest.mark.parametrize(
+        "exec_order",
+        _ORDERINGS,
+        ids=[f"order_{''.join(map(str, o))}" for o in _ORDERINGS],
+    )
     def test_all_results_present(self, exec_order: list[int]) -> None:
         """I4: when all tasks complete, every task has exactly one result."""
         state = _make_runtime_state()
@@ -519,6 +530,7 @@ class TestOrderDependentBug:
 
     def test_polynomial_hash_is_order_dependent(self) -> None:
         """Polynomial hash(A, B, C) != hash(C, A, B)."""
+
         def poly_hash(order: list[int]) -> int:
             acc = 0
             for m in order:
@@ -535,6 +547,7 @@ class TestOrderDependentBug:
 
     def test_additive_hash_is_order_independent(self) -> None:
         """Additive combination (the correct approach) is order-independent."""
+
         def additive_hash(order: list[int]) -> int:
             return sum(compile_digest(m) for m in order)
 

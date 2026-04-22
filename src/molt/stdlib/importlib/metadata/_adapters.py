@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_IMPORTLIB_IMPORT_REQUIRED = _require_intrinsic(
-    "molt_importlib_import_required")
+_MOLT_IMPORTLIB_IMPORT_REQUIRED = _require_intrinsic("molt_importlib_import_required")
 
 email = _MOLT_IMPORTLIB_IMPORT_REQUIRED("email")
 functools = _MOLT_IMPORTLIB_IMPORT_REQUIRED("functools")
@@ -151,5 +150,6 @@ class Message(_email_message.Message):
 
     def set_raw(self, name: str, value: str) -> None:
         super().__setitem__(name, value)
+
 
 globals().pop("_require_intrinsic", None)

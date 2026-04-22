@@ -1,14 +1,17 @@
 """GPU DataFrame example — cuDF-style data processing."""
-from molt.gpu.dataframe import DataFrame, read_csv
+
+from molt.gpu.dataframe import DataFrame
 
 
 def main():
     # Create DataFrame
-    data = DataFrame({
-        "price": [10.5, 20.3, 15.7, 30.2, 25.1, 12.0, 28.5, 18.9],
-        "quantity": [100, 200, 150, 300, 250, 120, 280, 180],
-        "category": ["A", "B", "A", "C", "B", "A", "C", "B"],
-    })
+    data = DataFrame(
+        {
+            "price": [10.5, 20.3, 15.7, 30.2, 25.1, 12.0, 28.5, 18.9],
+            "quantity": [100, 200, 150, 300, 250, 120, 280, 180],
+            "category": ["A", "B", "A", "C", "B", "A", "C", "B"],
+        }
+    )
 
     print("DataFrame:")
     print(data)

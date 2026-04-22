@@ -170,4 +170,5 @@ def dyld_find(name: str, executable_path: str | None = None, env: dict | None = 
 def framework_find(name: str):
     return name
 
+
 globals().pop("_require_intrinsic", None)

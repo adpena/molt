@@ -6,9 +6,7 @@ import datetime as _datetime
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_molt_zoneinfo_runtime_ready = _require_intrinsic(
-    "molt_zoneinfo_runtime_ready"
-)
+_molt_zoneinfo_runtime_ready = _require_intrinsic("molt_zoneinfo_runtime_ready")
 _molt_zoneinfo_new = _require_intrinsic("molt_zoneinfo_new")
 _molt_zoneinfo_drop = _require_intrinsic("molt_zoneinfo_drop")
 _molt_zoneinfo_key = _require_intrinsic("molt_zoneinfo_key")

@@ -17,6 +17,7 @@ Public API:
 
 from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 import json
@@ -26,6 +27,7 @@ import os
 # ---------------------------------------------------------------------------
 # Byte-level BPE utilities
 # ---------------------------------------------------------------------------
+
 
 def _bytes_to_unicode() -> dict[int, str]:
     """Map byte values to unicode characters (GPT-2 byte-level BPE convention).
@@ -61,15 +63,15 @@ class Tokenizer:
     """
 
     __slots__ = (
-        "_vocab",          # str -> int: token string to ID
-        "_vocab_inv",      # int -> str: ID to token string
-        "_merges",         # list of (str, str) merge pairs, priority-ordered
-        "_merge_rank",     # dict (str, str) -> int: merge pair to priority
-        "_added_tokens",   # dict str -> int: special/added tokens
-        "_added_ids",      # dict int -> str: reverse mapping
-        "_eos_id",         # int: end of sequence token ID
-        "_bos_id",         # int: beginning of sequence token ID (if any)
-        "_pad_id",         # int: padding token ID
+        "_vocab",  # str -> int: token string to ID
+        "_vocab_inv",  # int -> str: ID to token string
+        "_merges",  # list of (str, str) merge pairs, priority-ordered
+        "_merge_rank",  # dict (str, str) -> int: merge pair to priority
+        "_added_tokens",  # dict str -> int: special/added tokens
+        "_added_ids",  # dict int -> str: reverse mapping
+        "_eos_id",  # int: end of sequence token ID
+        "_bos_id",  # int: beginning of sequence token ID (if any)
+        "_pad_id",  # int: padding token ID
     )
 
     def __init__(
@@ -156,9 +158,7 @@ class Tokenizer:
 
         # Build sorted list of added tokens by length (longest first)
         # to ensure greedy matching
-        sorted_added = sorted(
-            self._added_tokens.keys(), key=len, reverse=True
-        )
+        sorted_added = sorted(self._added_tokens.keys(), key=len, reverse=True)
 
         # Split text on added tokens
         segments: list[tuple[str, bool]] = []  # (text, is_special)
@@ -168,7 +168,7 @@ class Tokenizer:
             for token_str in sorted_added:
                 if remaining.startswith(token_str):
                     segments.append((token_str, True))
-                    remaining = remaining[len(token_str):]
+                    remaining = remaining[len(token_str) :]
                     found = True
                     break
             if not found:
@@ -260,10 +260,7 @@ class Tokenizer:
 
     def decode_skip_special(self, token_ids: list[int]) -> str:
         """Decode token IDs, skipping all special/added tokens."""
-        filtered = [
-            tid for tid in token_ids
-            if tid not in self._added_ids
-        ]
+        filtered = [tid for tid in token_ids if tid not in self._added_ids]
         return self.decode(filtered)
 
 

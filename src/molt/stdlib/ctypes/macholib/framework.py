@@ -19,4 +19,5 @@ def framework_info(path: str):
         return None
     return match.groupdict()
 
+
 globals().pop("_require_intrinsic", None)

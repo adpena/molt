@@ -13,9 +13,7 @@ _molt_template_get_identifiers = _require_intrinsic(
     "molt_string_template_get_identifiers"
 )
 _molt_formatter_parse = _require_intrinsic("molt_string_formatter_parse")
-_molt_field_name_split = _require_intrinsic(
-    "molt_string_formatter_field_name_split"
-)
+_molt_field_name_split = _require_intrinsic("molt_string_formatter_field_name_split")
 
 
 __all__ = [
@@ -222,5 +220,6 @@ def capwords(s: str, sep: str | None = None) -> str:
     for part in s.split(sep):
         parts.append(_MOLT_STRING_CAPITALIZE(part))
     return sep.join(parts)
+
 
 globals().pop("_require_intrinsic", None)

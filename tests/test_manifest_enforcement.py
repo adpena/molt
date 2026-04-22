@@ -1,13 +1,19 @@
 """End-to-end test: verify manifest env vars propagate correctly."""
+
 import sys
+
 sys.path.insert(0, "src")
 
 
 def test_manifest_env_var_propagation():
     """Verify that to_env_vars produces correct env vars."""
     from molt.capability_manifest import (
-        CapabilityManifest, ResourceLimits, AuditConfig, IoConfig,
+        CapabilityManifest,
+        ResourceLimits,
+        AuditConfig,
+        IoConfig,
     )
+
     m = CapabilityManifest(
         allow=["net"],
         resources=ResourceLimits(max_memory=1048576, max_duration=5.0),
@@ -28,6 +34,7 @@ def test_manifest_env_var_propagation():
 def test_manifest_env_vars_with_deny():
     """Verify deny removes capabilities from effective set."""
     from molt.capability_manifest import CapabilityManifest
+
     m = CapabilityManifest(allow=["net", "fs.read", "fs.write"], deny=["fs.write"])
     env = m.to_env_vars()
     caps = env["MOLT_CAPABILITIES"].split(",")
@@ -39,6 +46,7 @@ def test_manifest_env_vars_with_deny():
 def test_manifest_env_vars_omit_defaults():
     """Verify that default values don't produce env vars."""
     from molt.capability_manifest import CapabilityManifest
+
     m = CapabilityManifest()
     env = m.to_env_vars()
     assert "MOLT_RESOURCE_MAX_MEMORY" not in env
@@ -48,10 +56,9 @@ def test_manifest_env_vars_omit_defaults():
 
 def test_manifest_roundtrip_through_toml(tmp_path):
     """Write a manifest to TOML, load it, convert to env vars."""
-    from molt.capability_manifest import load_manifest, CapabilityManifest
-    import tomllib
+    from molt.capability_manifest import load_manifest
 
-    toml_content = '''
+    toml_content = """
 [manifest]
 version = "2.0"
 
@@ -68,7 +75,7 @@ sink = "stderr"
 
 [io]
 mode = "virtual"
-'''
+"""
     path = tmp_path / "test.toml"
     path.write_text(toml_content)
 

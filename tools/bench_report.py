@@ -239,7 +239,9 @@ def _status_summary(
 
 
 def _update_status_doc(status_path: Path, summary_block: str) -> None:
-    updated = _render_updated_status_doc(status_path.read_text(), status_path, summary_block)
+    updated = _render_updated_status_doc(
+        status_path.read_text(), status_path, summary_block
+    )
     status_path.write_text(updated)
 
 
@@ -553,9 +555,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     manifest = _load_manifest(args.manifest) if args.manifest else {}
-    native_path = args.native or manifest.get("native") or Path("bench/results/bench.json")
-    wasm_path = args.wasm or manifest.get("wasm") or Path("bench/results/bench_wasm.json")
-    out_path = args.out or manifest.get("out") or Path("docs/benchmarks/bench_summary.md")
+    native_path = (
+        args.native or manifest.get("native") or Path("bench/results/bench.json")
+    )
+    wasm_path = (
+        args.wasm or manifest.get("wasm") or Path("bench/results/bench_wasm.json")
+    )
+    out_path = (
+        args.out or manifest.get("out") or Path("docs/benchmarks/bench_summary.md")
+    )
     status_doc_path = (
         args.status_doc_path
         or manifest.get("status_doc")

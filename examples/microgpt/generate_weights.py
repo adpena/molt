@@ -4,16 +4,12 @@ Runs on HOST Python (not WASM). Based on Karpathy's microGPT.
 """
 
 import math
+import os
 import random
 import json
+import urllib.request
 
 random.seed(42)
-
-# ---------------------------------------------------------------------------
-# Real names dataset from Karpathy's makemore
-# ---------------------------------------------------------------------------
-import os
-import urllib.request
 
 names_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "names.txt")
 if not os.path.exists(names_file):
@@ -31,6 +27,7 @@ uchars = sorted(set("".join(docs)))
 BOS = len(uchars)
 vocab_size = len(uchars) + 1
 print(f"vocab size: {vocab_size} | chars: {''.join(uchars)}")
+
 
 # ---------------------------------------------------------------------------
 # Autograd engine (Value)
@@ -53,7 +50,7 @@ class Value:
         return Value(self.data * other.data, (self, other), (other.data, self.data))
 
     def __pow__(self, other):
-        return Value(self.data ** other, (self,), (other * self.data ** (other - 1),))
+        return Value(self.data**other, (self,), (other * self.data ** (other - 1),))
 
     def log(self):
         return Value(math.log(self.data), (self,), (1 / self.data,))
@@ -80,10 +77,10 @@ class Value:
         return self * other
 
     def __truediv__(self, other):
-        return self * other ** -1
+        return self * other**-1
 
     def __rtruediv__(self, other):
-        return other * self ** -1
+        return other * self**-1
 
     def backward(self):
         topo = []
@@ -112,9 +109,10 @@ block_size = 16
 n_head = 4
 head_dim = n_embd // n_head
 
-matrix = lambda nout, nin, std=0.08: [
-    [Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)
-]
+
+def matrix(nout, nin, std=0.08):
+    return [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]
+
 
 state_dict = {
     "wte": matrix(vocab_size, n_embd),
@@ -236,7 +234,7 @@ for step in range(num_steps):
         p.grad = 0
 
     if (step + 1) % 500 == 0:
-        print(f"step {step+1:5d} / {num_steps:5d} | loss {loss.data:.4f}")
+        print(f"step {step + 1:5d} / {num_steps:5d} | loss {loss.data:.4f}")
 
 # ---------------------------------------------------------------------------
 # Quick inference sanity check
@@ -249,12 +247,12 @@ for sample_idx in range(10):
     sample = []
     for pos_id in range(block_size):
         logits = gpt(token_id, pos_id, keys, values)
-        probs = softmax([l / temperature for l in logits])
+        probs = softmax([logit / temperature for logit in logits])
         token_id = random.choices(range(vocab_size), weights=[p.data for p in probs])[0]
         if token_id == BOS:
             break
         sample.append(uchars[token_id])
-    print(f"  {sample_idx+1:2d}: {''.join(sample)}")
+    print(f"  {sample_idx + 1:2d}: {''.join(sample)}")
 
 # ---------------------------------------------------------------------------
 # Export weights to JSON

@@ -76,7 +76,9 @@ for _name, _val in list(_socket_mod.__dict__.items()):
         globals()[_name] = int(_val)
 
 
-def _gethostbyname_ex(hostname: str, _gethostbyname_ex_intrinsic=_MOLT_GETHOSTBYNAME_EX):
+def _gethostbyname_ex(
+    hostname: str, _gethostbyname_ex_intrinsic=_MOLT_GETHOSTBYNAME_EX
+):
     return _gethostbyname_ex_intrinsic(hostname)
 
 

@@ -11,7 +11,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[3]
 SPEC_PATH = ROOT / "docs/spec/areas/compiler/0100_MOLT_IR.md"
 FRONTEND_PATH = ROOT / "src/molt/frontend/__init__.py"
-NATIVE_BACKEND_PATH = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
+NATIVE_BACKEND_PATH = (
+    ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
+)
 WASM_BACKEND_PATH = ROOT / "runtime/molt-backend/src/wasm.rs"
 WASM_IMPORTS_PATH = ROOT / "runtime/molt-backend/src/wasm_imports.rs"
 
@@ -181,7 +183,9 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     SemanticAssertion(
         scope="native",
         description="inc_ref/borrow call local_inc_ref_obj",
-        pattern=(r'"inc_ref"\s*\|\s*"borrow"\s*=>[\s\S]*?emit_inc_ref_obj\(.*local_inc_ref_obj'),
+        pattern=(
+            r'"inc_ref"\s*\|\s*"borrow"\s*=>[\s\S]*?emit_inc_ref_obj\(.*local_inc_ref_obj'
+        ),
     ),
     SemanticAssertion(
         scope="native",
@@ -198,7 +202,11 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
 )
 
 WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
-    SemanticAssertion(scope="wasm", description="dec_ref_obj import is registered", pattern=r'"dec_ref_obj"'),
+    SemanticAssertion(
+        scope="wasm",
+        description="dec_ref_obj import is registered",
+        pattern=r'"dec_ref_obj"',
+    ),
     SemanticAssertion(
         scope="wasm",
         description="call_func/invoke_ffi keep dedicated labels and invoke_ffi import",
@@ -213,8 +221,16 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
             r'"call_bind"\s*\|\s*"call_indirect"\s*=>[\s\S]*?if op\.kind == "call_indirect"[\s\S]*?"call_indirect"[\s\S]*?"call_bind"[\s\S]*?import_ids\["call_indirect_ic"\][\s\S]*?import_ids\["call_bind_ic"\]'
         ),
     ),
-    SemanticAssertion(scope="wasm", description="guard_tag lowering remains explicit", pattern=r'"guard_type"\s*\|\s*"guard_tag"\s*=>'),
-    SemanticAssertion(scope="wasm", description="guard_dict_shape lowering remains explicit", pattern=r'"guard_layout"\s*\|\s*"guard_dict_shape"\s*=>'),
+    SemanticAssertion(
+        scope="wasm",
+        description="guard_tag lowering remains explicit",
+        pattern=r'"guard_type"\s*\|\s*"guard_tag"\s*=>',
+    ),
+    SemanticAssertion(
+        scope="wasm",
+        description="guard_dict_shape lowering remains explicit",
+        pattern=r'"guard_layout"\s*\|\s*"guard_dict_shape"\s*=>',
+    ),
     SemanticAssertion(
         scope="wasm",
         description="inc_ref/borrow call inc_ref_obj import",
@@ -248,7 +264,9 @@ def build_verify_result_payload(checks: list[dict[str, Any]]) -> dict[str, Any]:
                 "name": check["name"],
                 "status": check["status"],
                 "findings": [
-                    _finding_dict(finding) if isinstance(finding, VerificationFinding) else dict(finding)
+                    _finding_dict(finding)
+                    if isinstance(finding, VerificationFinding)
+                    else dict(finding)
                     for finding in findings
                 ],
             }
@@ -283,7 +301,9 @@ def _parse_spec_ops(spec_text: str) -> list[str]:
     marker = "## Instruction categories (minimum set)"
     end = "## Invariants"
     if marker not in spec_text or end not in spec_text:
-        raise RuntimeError("Could not locate instruction categories section in IR spec.")
+        raise RuntimeError(
+            "Could not locate instruction categories section in IR spec."
+        )
     section = spec_text.split(marker, 1)[1].split(end, 1)[0]
     ops: list[str] = []
     for line in section.splitlines():
@@ -386,7 +406,10 @@ def _resolve_probe_run_id(
         file_path = payload.get("file")
         if not isinstance(run_id, str) or not run_id:
             continue
-        if not isinstance(file_path, str) or _normalize_probe_path(file_path) not in required:
+        if (
+            not isinstance(file_path, str)
+            or _normalize_probe_path(file_path) not in required
+        ):
             continue
         timestamp = payload.get("timestamp")
         ts = float(timestamp) if isinstance(timestamp, (int, float)) else float("-inf")
@@ -423,7 +446,8 @@ def check_required_probe_execution(
         current = latest_by_probe.get(normalized)
         current_ts = (
             float(current.get("timestamp"))
-            if isinstance(current, dict) and isinstance(current.get("timestamp"), (int, float))
+            if isinstance(current, dict)
+            and isinstance(current.get("timestamp"), (int, float))
             else float("-inf")
         )
         new_ts = (
@@ -471,9 +495,13 @@ def _read_backend_texts() -> tuple[str, str, str, str]:
     return spec_text, frontend_text, native_backend_text, wasm_backend_text
 
 
-def _build_findings(verifier: str, messages: list[str], *, artifact: str | None = None) -> list[VerificationFinding]:
+def _build_findings(
+    verifier: str, messages: list[str], *, artifact: str | None = None
+) -> list[VerificationFinding]:
     return [
-        VerificationFinding(verifier=verifier, severity="error", message=message, artifact=artifact)
+        VerificationFinding(
+            verifier=verifier, severity="error", message=message, artifact=artifact
+        )
         for message in messages
     ]
 
@@ -486,7 +514,9 @@ def run_default_verify_checks(
     probe_run_id: str | None = None,
     failure_queue: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    spec_text, frontend_text, native_backend_text, wasm_backend_text = _read_backend_texts()
+    spec_text, frontend_text, native_backend_text, wasm_backend_text = (
+        _read_backend_texts()
+    )
 
     spec_ops = _parse_spec_ops(spec_text)
     emit_kinds = _scan_frontend_emit_kinds(frontend_text)
@@ -524,24 +554,35 @@ def run_default_verify_checks(
 
     inventory_messages: list[str] = []
     if unknown_allow:
-        inventory_messages.extend(f"unknown --allow-missing entry: {name}" for name in unknown_allow)
+        inventory_messages.extend(
+            f"unknown --allow-missing entry: {name}" for name in unknown_allow
+        )
     if p0_missing:
-        inventory_messages.extend(f"P0-required IR op missing: {name}" for name in p0_missing)
-    inventory_messages.extend(f"unexpected missing IR op: {name}" for name in unexpected_missing)
+        inventory_messages.extend(
+            f"P0-required IR op missing: {name}" for name in p0_missing
+        )
     inventory_messages.extend(
-        f"unexpected IR op missing lowering coverage: {name}" for name in unexpected_missing_lowering
+        f"unexpected missing IR op: {name}" for name in unexpected_missing
     )
     inventory_messages.extend(
-        f"native backend missing required lowered lane: {kind}" for kind in native_missing_backend_kinds
+        f"unexpected IR op missing lowering coverage: {name}"
+        for name in unexpected_missing_lowering
     )
     inventory_messages.extend(
-        f"wasm backend missing required lowered lane: {kind}" for kind in wasm_missing_backend_kinds
+        f"native backend missing required lowered lane: {kind}"
+        for kind in native_missing_backend_kinds
+    )
+    inventory_messages.extend(
+        f"wasm backend missing required lowered lane: {kind}"
+        for kind in wasm_missing_backend_kinds
     )
     checks.append(
         {
             "name": "ir-inventory",
             "status": "error" if inventory_messages else "ok",
-            "findings": _build_findings("ir-inventory", inventory_messages, artifact=str(SPEC_PATH)),
+            "findings": _build_findings(
+                "ir-inventory", inventory_messages, artifact=str(SPEC_PATH)
+            ),
         }
     )
     errors.extend(inventory_messages)
@@ -591,11 +632,16 @@ def run_default_verify_checks(
         checks.append(
             {
                 "name": "required-probe-execution",
-                "status": "error" if probe_exec_failures or failure_queue_hits else "ok",
+                "status": "error"
+                if probe_exec_failures or failure_queue_hits
+                else "ok",
                 "findings": _build_findings(
                     "required-probe-execution",
                     probe_exec_failures
-                    + [f"required probe still listed in failure queue: {hit}" for hit in failure_queue_hits],
+                    + [
+                        f"required probe still listed in failure queue: {hit}"
+                        for hit in failure_queue_hits
+                    ],
                     artifact=str(probe_rss_metrics_path),
                 )
                 + (
@@ -613,7 +659,10 @@ def run_default_verify_checks(
             }
         )
         errors.extend(probe_exec_failures)
-        errors.extend(f"required probe still listed in failure queue: {hit}" for hit in failure_queue_hits)
+        errors.extend(
+            f"required probe still listed in failure queue: {hit}"
+            for hit in failure_queue_hits
+        )
 
     return checks, errors
 
@@ -622,15 +671,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Verify 0100_MOLT_IR inventory coverage against frontend emit/lowering op kinds."
     )
-    parser.add_argument("--allow-missing", help="Comma-separated spec op names allowed to be missing.")
+    parser.add_argument(
+        "--allow-missing", help="Comma-separated spec op names allowed to be missing."
+    )
     parser.add_argument(
         "--require-probe-execution",
         action="store_true",
         help="Require required differential probes to have status=ok in RSS metrics and to be absent from the failure queue.",
     )
-    parser.add_argument("--probe-rss-metrics", help="Path to rss_metrics.jsonl from differential runs.")
-    parser.add_argument("--probe-run-id", help="Optional differential run_id to validate for probe execution status.")
-    parser.add_argument("--failure-queue", help="Path to differential failure queue file.")
+    parser.add_argument(
+        "--probe-rss-metrics", help="Path to rss_metrics.jsonl from differential runs."
+    )
+    parser.add_argument(
+        "--probe-run-id",
+        help="Optional differential run_id to validate for probe execution status.",
+    )
+    parser.add_argument(
+        "--failure-queue", help="Path to differential failure queue file."
+    )
     return parser
 
 
@@ -640,11 +698,17 @@ def main(argv: list[str] | None = None) -> int:
     checks, errors = run_default_verify_checks(
         allow_missing=args.allow_missing,
         require_probe_execution=args.require_probe_execution,
-        probe_rss_metrics=Path(args.probe_rss_metrics).expanduser() if args.probe_rss_metrics else None,
+        probe_rss_metrics=Path(args.probe_rss_metrics).expanduser()
+        if args.probe_rss_metrics
+        else None,
         probe_run_id=args.probe_run_id,
-        failure_queue=Path(args.failure_queue).expanduser() if args.failure_queue else None,
+        failure_queue=Path(args.failure_queue).expanduser()
+        if args.failure_queue
+        else None,
     )
-    spec_text, frontend_text, native_backend_text, wasm_backend_text = _read_backend_texts()
+    spec_text, frontend_text, native_backend_text, wasm_backend_text = (
+        _read_backend_texts()
+    )
     spec_ops = _parse_spec_ops(spec_text)
     emit_kinds = _scan_frontend_emit_kinds(frontend_text)
     lower_kinds = _scan_frontend_lower_kinds(frontend_text)

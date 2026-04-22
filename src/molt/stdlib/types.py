@@ -14,7 +14,11 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 # for types derivable from existing objects.
 import sys as _sys
 
-def _f(): yield  # helper to get GeneratorType
+
+def _f():
+    yield  # helper to get GeneratorType
+
+
 _g = _f()
 
 ModuleType = type(_sys)
@@ -22,16 +26,18 @@ NoneType = type(None)
 FunctionType = type(lambda: None)
 LambdaType = FunctionType
 GeneratorType = type(_g)
-CodeType = type(_f.__code__) if hasattr(_f, '__code__') else type
+CodeType = type(_f.__code__) if hasattr(_f, "__code__") else type
 BuiltinFunctionType = type(len)
 BuiltinMethodType = type([].append)
 MethodType = type  # placeholder — bound methods don't have a stable type() in Molt
 
 # Types bound by the runtime intrinsic system.  If not yet available,
 # fall back to `type` so the module can still be imported.
-MappingProxyType = type(type.__dict__)  # CPython: MappingProxyType = type(type.__dict__)
+MappingProxyType = type(
+    type.__dict__
+)  # CPython: MappingProxyType = type(type.__dict__)
 SimpleNamespace = type  # placeholder until intrinsic wires it
-GenericAlias = type     # placeholder until intrinsic wires it
+GenericAlias = type  # placeholder until intrinsic wires it
 
 # Types that may not be available yet — fallback to `type` sentinel.
 AsyncGeneratorType = type
@@ -111,6 +117,7 @@ def _bootstrap() -> None:
     # Use module-level assignment instead of globals().update() to avoid
     # the compiled dict lookup bug. Each assignment goes through MODULE_SET_ATTR.
     import sys
+
     mod = sys.modules[__name__]
     for key, val in data.items():
         setattr(mod, key, val)

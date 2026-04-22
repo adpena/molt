@@ -4,6 +4,7 @@ Ported from: https://github.com/paiml/depyler/blob/main/tests/fixtures/python_sa
 Measures: while-loop throughput, modulo arithmetic (Euclidean algorithm).
 """
 
+
 def gcd(a: int, b: int) -> int:
     while b != 0:
         temp: int = b

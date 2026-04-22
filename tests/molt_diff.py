@@ -468,6 +468,7 @@ def _diff_build_timeout(run_timeout: float | None) -> float | None:
     # defaulting too high can leave deadlocked helpers alive for too long.
     return max(run_timeout * 2.0, 300.0)
 
+
 def _diff_root() -> Path:
     raw = os.environ.get("MOLT_DIFF_ROOT", "").strip()
     if raw:
@@ -1185,7 +1186,10 @@ def _batch_compile_server_mark_disabled(reason: str) -> None:
     _BATCH_COMPILE_SERVER_FAILURE_COUNT += 1
     cooldown = _batch_compile_server_disable_cooldown_sec()
     _BATCH_COMPILE_SERVER_DISABLE_REASON = reason.strip()
-    if _BATCH_COMPILE_SERVER_FAILURE_COUNT < _batch_compile_server_disable_after_failures():
+    if (
+        _BATCH_COMPILE_SERVER_FAILURE_COUNT
+        < _batch_compile_server_disable_after_failures()
+    ):
         _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
         return
     if cooldown <= 0:

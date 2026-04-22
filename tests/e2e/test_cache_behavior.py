@@ -16,7 +16,6 @@ Cache architecture (3 levels):
 
 import base64
 import io
-import json
 import os
 import time
 import unittest
@@ -30,6 +29,7 @@ WORKER_URL = os.environ.get(
 
 try:
     from PIL import Image, ImageDraw
+
     HAS_PILLOW = True
 except ImportError:
     HAS_PILLOW = False
@@ -90,25 +90,28 @@ class TestCacheBehavior(unittest.TestCase):
 
         # Verify cache status headers
         # First request should NOT be a cache hit
-        self.assertNotEqual(cache_status_1, "HIT-EDGE",
-                            "First request should not be an edge cache hit")
+        self.assertNotEqual(
+            cache_status_1, "HIT-EDGE", "First request should not be an edge cache hit"
+        )
 
         # Second request should be a cache hit (KV or edge)
-        is_cache_hit = (
-            cache_status_2 in ("HIT-KV", "HIT-EDGE") or
-            body2.get("cache") in ("hit-kv", "hit-edge")
-        )
+        is_cache_hit = cache_status_2 in ("HIT-KV", "HIT-EDGE") or body2.get(
+            "cache"
+        ) in ("hit-kv", "hit-edge")
         # Note: cache hit is not guaranteed if KV write is still propagating.
         # We log but don't hard-fail.
         if not is_cache_hit:
-            print(f"WARNING: Second request was not a cache hit. "
-                  f"Status: {cache_status_2}, body.cache: {body2.get('cache')}")
+            print(
+                f"WARNING: Second request was not a cache hit. "
+                f"Status: {cache_status_2}, body.cache: {body2.get('cache')}"
+            )
             print(f"  Time 1 (miss): {time1_ms:.0f}ms, Time 2: {time2_ms:.0f}ms")
 
         # If it IS a cache hit, verify it's faster
         if is_cache_hit:
             self.assertLess(
-                time2_ms, time1_ms,
+                time2_ms,
+                time1_ms,
                 f"Cache hit ({time2_ms:.0f}ms) should be faster than "
                 f"cache miss ({time1_ms:.0f}ms)",
             )
@@ -125,7 +128,8 @@ class TestCacheBehavior(unittest.TestCase):
         for key in ("text", "tokens", "model_used"):
             if key in body1:
                 self.assertEqual(
-                    body1.get(key), body2.get(key),
+                    body1.get(key),
+                    body2.get(key),
                     f"Field '{key}' should be identical between miss and hit",
                 )
 
@@ -148,11 +152,13 @@ class TestCacheBehavior(unittest.TestCase):
         if text_a and text_b:
             # If both return text, they should not be identical
             # (they have different seed numbers rendered)
-            self.assertNotEqual(text_a, text_b,
-                                "Different images should produce different OCR text")
+            self.assertNotEqual(
+                text_a, text_b, "Different images should produce different OCR text"
+            )
         elif tokens_a and tokens_b:
-            self.assertNotEqual(tokens_a, tokens_b,
-                                "Different images should produce different tokens")
+            self.assertNotEqual(
+                tokens_a, tokens_b, "Different images should produce different tokens"
+            )
 
     def test_cache_ttl_documentation(self):
         """Verify cache TTL constants are reasonable.

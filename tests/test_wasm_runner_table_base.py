@@ -106,7 +106,10 @@ def test_direct_runner_always_initializes_table_before_export_refs() -> None:
     runner = (ROOT / "wasm" / "run_wasm.js").read_text(encoding="utf-8")
 
     assert "hasExportedTableRefs(outputInstance)" not in runner
-    assert "skipping molt_table_init because exported table refs are available" not in runner
+    assert (
+        "skipping molt_table_init because exported table refs are available"
+        not in runner
+    )
     assert "MOLT_WASM_SKIP_TABLE_INIT" not in runner
     assert "molt_table_init();" in runner
     assert "installTableRefs(outputInstance, table, 'output');" in runner

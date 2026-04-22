@@ -34,16 +34,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 
 # ---------------------------------------------------------------------------
 # Delta message types
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class DeltaMessage:
@@ -83,6 +83,7 @@ class FullSnapshot:
 # ---------------------------------------------------------------------------
 # Core delta tracker
 # ---------------------------------------------------------------------------
+
 
 class DeltaTracker:
     """Thread-safe incremental state tracker with delta protocol support.
@@ -248,6 +249,7 @@ class DeltaTracker:
 # Client session helper
 # ---------------------------------------------------------------------------
 
+
 class DeltaClient:
     """Stateful client wrapper that tracks last-seen sequence."""
 
@@ -282,6 +284,7 @@ class DeltaClient:
 # CLI demo
 # ---------------------------------------------------------------------------
 
+
 def _run_demo() -> None:
     tracker = DeltaTracker(max_history=100)
 
@@ -307,10 +310,12 @@ def _run_demo() -> None:
     # More updates
     tracker.update("lean_sorry_count", 45)
     tracker.update("test_pass_rate", 0.96)
-    tracker.batch_update({
-        "compile_governor_level": "reduced",
-        "consecutive_overruns": 3,
-    })
+    tracker.batch_update(
+        {
+            "compile_governor_level": "reduced",
+            "consecutive_overruns": 3,
+        }
+    )
 
     deltas = client.poll()
     print(f"=== Incremental deltas ({len(deltas)} messages) ===")

@@ -1458,7 +1458,9 @@ def test_cli_build_diagnostics_summary_verbosity_trims_stderr(tmp_path: Path) ->
     assert "midend.hotspot.1:" not in res.stderr
 
 
-def test_cli_build_json_diagnostics_include_midend_policy_config(tmp_path: Path) -> None:
+def test_cli_build_json_diagnostics_include_midend_policy_config(
+    tmp_path: Path,
+) -> None:
     if shutil.which("cargo") is None:
         pytest.skip("cargo is required for backend compilation.")
 

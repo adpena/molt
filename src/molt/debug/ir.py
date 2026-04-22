@@ -263,7 +263,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--function", help="Only emit the selected function.")
     parser.add_argument("--module", help="Only emit the selected module.")
-    parser.add_argument("--pass", dest="pass_name", help="Only emit functions touching the selected pass.")
+    parser.add_argument(
+        "--pass",
+        dest="pass_name",
+        help="Only emit functions touching the selected pass.",
+    )
     parser.add_argument(
         "--json",
         action="store_true",

@@ -12,15 +12,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
-_MOLT_EMAIL_UTILS_MAKE_MSGID = _require_intrinsic(
-    "molt_email_utils_make_msgid"
-)
-_MOLT_EMAIL_UTILS_GETADDRESSES = _require_intrinsic(
-    "molt_email_utils_getaddresses"
-)
-_MOLT_EMAIL_UTILS_PARSEDATE_TZ = _require_intrinsic(
-    "molt_email_utils_parsedate_tz"
-)
+_MOLT_EMAIL_UTILS_MAKE_MSGID = _require_intrinsic("molt_email_utils_make_msgid")
+_MOLT_EMAIL_UTILS_GETADDRESSES = _require_intrinsic("molt_email_utils_getaddresses")
+_MOLT_EMAIL_UTILS_PARSEDATE_TZ = _require_intrinsic("molt_email_utils_parsedate_tz")
 _MOLT_EMAIL_UTILS_FORMAT_DATETIME = _require_intrinsic(
     "molt_email_utils_format_datetime"
 )
@@ -174,5 +168,6 @@ def collapse_rfc2231_value(
 
 def decode_params(params):
     return params
+
 
 globals().pop("_require_intrinsic", None)

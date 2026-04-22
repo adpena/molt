@@ -39,25 +39,23 @@ PRESET_EXTREME: int = int(_MOLT_LZMA_PRESET_EXTREME())
 
 # --- Incremental compressor ---
 _MOLT_LZMA_COMPRESSOR_NEW = _require_intrinsic("molt_lzma_compressor_new")
-_MOLT_LZMA_COMPRESSOR_COMPRESS = _require_intrinsic(
-    "molt_lzma_compressor_compress")
-_MOLT_LZMA_COMPRESSOR_FLUSH = _require_intrinsic(
-    "molt_lzma_compressor_flush")
+_MOLT_LZMA_COMPRESSOR_COMPRESS = _require_intrinsic("molt_lzma_compressor_compress")
+_MOLT_LZMA_COMPRESSOR_FLUSH = _require_intrinsic("molt_lzma_compressor_flush")
 _MOLT_LZMA_COMPRESSOR_DROP = _require_intrinsic("molt_lzma_compressor_drop")
 
 # --- Incremental decompressor ---
-_MOLT_LZMA_DECOMPRESSOR_NEW = _require_intrinsic(
-    "molt_lzma_decompressor_new")
+_MOLT_LZMA_DECOMPRESSOR_NEW = _require_intrinsic("molt_lzma_decompressor_new")
 _MOLT_LZMA_DECOMPRESSOR_DECOMPRESS = _require_intrinsic(
-    "molt_lzma_decompressor_decompress")
-_MOLT_LZMA_DECOMPRESSOR_EOF = _require_intrinsic(
-    "molt_lzma_decompressor_eof")
+    "molt_lzma_decompressor_decompress"
+)
+_MOLT_LZMA_DECOMPRESSOR_EOF = _require_intrinsic("molt_lzma_decompressor_eof")
 _MOLT_LZMA_DECOMPRESSOR_NEEDS_INPUT = _require_intrinsic(
-    "molt_lzma_decompressor_needs_input")
+    "molt_lzma_decompressor_needs_input"
+)
 _MOLT_LZMA_DECOMPRESSOR_UNUSED_DATA = _require_intrinsic(
-    "molt_lzma_decompressor_unused_data")
-_MOLT_LZMA_DECOMPRESSOR_DROP = _require_intrinsic(
-    "molt_lzma_decompressor_drop")
+    "molt_lzma_decompressor_unused_data"
+)
+_MOLT_LZMA_DECOMPRESSOR_DROP = _require_intrinsic("molt_lzma_decompressor_drop")
 
 # --- File handle intrinsics ---
 _MOLT_LZMA_FILE_OPEN = _require_intrinsic("molt_lzma_file_open")

@@ -98,6 +98,7 @@ def fmt_pct(val) -> str:
 # Report data collection
 # ---------------------------------------------------------------------------
 
+
 def build_rows(results: dict) -> list[dict]:
     """Build sorted list of row dicts for the report table."""
     rows = []
@@ -107,13 +108,15 @@ def build_rows(results: dict) -> list[dict]:
         cpython_t = entry.get("cpython_time_s")
         molt_t = entry.get("molt_time_s")
         sp = speedup_value(entry)
-        rows.append({
-            "name": name,
-            "cpython_time": cpython_t,
-            "molt_time": molt_t if molt_t and molt_t != 0 else None,
-            "speedup": sp,
-            "status": st,
-        })
+        rows.append(
+            {
+                "name": name,
+                "cpython_time": cpython_t,
+                "molt_time": molt_t if molt_t and molt_t != 0 else None,
+                "speedup": sp,
+                "status": st,
+            }
+        )
     return rows
 
 
@@ -148,8 +151,15 @@ def compute_baseline_diff(rows: list[dict], baseline: dict) -> list[dict]:
         name = row["name"]
         cur_speedup = row["speedup"]
         if name not in baseline_rows:
-            diffs.append({"name": name, "tag": "NEW", "pct_change": None,
-                          "cur_speedup": cur_speedup, "base_speedup": None})
+            diffs.append(
+                {
+                    "name": name,
+                    "tag": "NEW",
+                    "pct_change": None,
+                    "cur_speedup": cur_speedup,
+                    "base_speedup": None,
+                }
+            )
             continue
 
         base_entry = baseline_rows[name]
@@ -170,21 +180,29 @@ def compute_baseline_diff(rows: list[dict], baseline: dict) -> list[dict]:
         else:
             tag = "STABLE"
 
-        diffs.append({
-            "name": name,
-            "tag": tag,
-            "pct_change": pct,
-            "cur_speedup": cur_speedup,
-            "base_speedup": base_speedup,
-        })
+        diffs.append(
+            {
+                "name": name,
+                "tag": tag,
+                "pct_change": pct,
+                "cur_speedup": cur_speedup,
+                "base_speedup": base_speedup,
+            }
+        )
 
     # Check for removed benchmarks
     current_names = {r["name"] for r in rows}
     for name in sorted(baseline_rows):
         if name not in current_names:
-            diffs.append({"name": name, "tag": "REMOVED", "pct_change": None,
-                          "cur_speedup": None,
-                          "base_speedup": speedup_value(baseline_rows[name])})
+            diffs.append(
+                {
+                    "name": name,
+                    "tag": "REMOVED",
+                    "pct_change": None,
+                    "cur_speedup": None,
+                    "base_speedup": speedup_value(baseline_rows[name]),
+                }
+            )
 
     return diffs
 
@@ -193,8 +211,8 @@ def compute_baseline_diff(rows: list[dict], baseline: dict) -> list[dict]:
 # Markdown output
 # ---------------------------------------------------------------------------
 
-def render_markdown(rows: list[dict], summary: dict,
-                    diffs: list[dict] | None) -> str:
+
+def render_markdown(rows: list[dict], summary: dict, diffs: list[dict] | None) -> str:
     lines = []
     lines.append("# Molt Benchmark Dashboard\n")
 
@@ -203,7 +221,9 @@ def render_markdown(rows: list[dict], summary: dict,
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
     lines.append(f"| Total benchmarks | {summary['total']} |")
-    lines.append(f"| Pass / Fail / Skip | {summary['pass_count']} / {summary['fail_count']} / {summary['skip_count']} |")
+    lines.append(
+        f"| Pass / Fail / Skip | {summary['pass_count']} / {summary['fail_count']} / {summary['skip_count']} |"
+    )
     lines.append(f"| Pass rate | {summary['pass_rate']:.1f}% |")
     lines.append(f"| Median speedup | {fmt_speedup(summary['median_speedup'])} |")
     lines.append(f"| Mean speedup | {fmt_speedup(summary['mean_speedup'])} |")
@@ -296,6 +316,7 @@ def render_markdown(rows: list[dict], summary: dict,
 # HTML output
 # ---------------------------------------------------------------------------
 
+
 def speedup_color(s: float | None) -> str:
     if s is None:
         return "#888"
@@ -322,8 +343,7 @@ def diff_color(tag: str) -> str:
     }.get(tag, "#888")
 
 
-def render_html(rows: list[dict], summary: dict,
-                diffs: list[dict] | None) -> str:
+def render_html(rows: list[dict], summary: dict, diffs: list[dict] | None) -> str:
     h = []
     h.append("<!DOCTYPE html>")
     h.append("<html lang='en'><head><meta charset='utf-8'>")
@@ -364,15 +384,18 @@ tr:hover { background: #f6f8fa; }
         ("Worst", fmt_speedup(summary["worst"])),
     ]
     for label, val in cards:
-        h.append(f'<div class="summary-card"><div class="label">{html_escape(label)}</div>'
-                 f'<div class="value">{html_escape(val)}</div></div>')
+        h.append(
+            f'<div class="summary-card"><div class="label">{html_escape(label)}</div>'
+            f'<div class="value">{html_escape(val)}</div></div>'
+        )
     h.append("</div>")
 
     # Main table
     h.append("<h2>Benchmark Results</h2>")
     h.append("<table><thead><tr>")
-    h.append("<th>Benchmark</th><th>CPython</th><th>Molt</th>"
-             "<th>Speedup</th><th>Status</th>")
+    h.append(
+        "<th>Benchmark</th><th>CPython</th><th>Molt</th><th>Speedup</th><th>Status</th>"
+    )
     h.append("</tr></thead><tbody>")
     for r in rows:
         sc = speedup_color(r["speedup"])
@@ -381,10 +404,14 @@ tr:hover { background: #f6f8fa; }
         h.append(f"<td>{html_escape(r['name'])}</td>")
         h.append(f"<td>{html_escape(fmt_time(r['cpython_time']))}</td>")
         h.append(f"<td>{html_escape(fmt_time(r['molt_time']))}</td>")
-        h.append(f'<td style="color:{sc};font-weight:600">'
-                 f'{html_escape(fmt_speedup(r["speedup"]))}</td>')
-        h.append(f'<td><span class="chip" style="background:{stc}">'
-                 f'{html_escape(r["status"])}</span></td>')
+        h.append(
+            f'<td style="color:{sc};font-weight:600">'
+            f"{html_escape(fmt_speedup(r['speedup']))}</td>"
+        )
+        h.append(
+            f'<td><span class="chip" style="background:{stc}">'
+            f"{html_escape(r['status'])}</span></td>"
+        )
         h.append("</tr>")
     h.append("</tbody></table>")
 
@@ -397,43 +424,55 @@ tr:hover { background: #f6f8fa; }
         stable_count = sum(1 for d in diffs if d["tag"] == "STABLE")
 
         h.append("<h2>Baseline Comparison</h2>")
-        h.append(f"<p><strong>{len(improvements)}</strong> improved, "
-                 f"<strong>{len(regressions)}</strong> regressed, "
-                 f"<strong>{stable_count}</strong> stable, "
-                 f"<strong>{len(new_benches)}</strong> new, "
-                 f"<strong>{len(removed)}</strong> removed</p>")
+        h.append(
+            f"<p><strong>{len(improvements)}</strong> improved, "
+            f"<strong>{len(regressions)}</strong> regressed, "
+            f"<strong>{stable_count}</strong> stable, "
+            f"<strong>{len(new_benches)}</strong> new, "
+            f"<strong>{len(removed)}</strong> removed</p>"
+        )
 
         if regressions:
             h.append("<h3>Regressions (&gt;10% slower)</h3>")
-            h.append("<table><thead><tr><th>Benchmark</th><th>Baseline</th>"
-                     "<th>Current</th><th>Change</th></tr></thead><tbody>")
+            h.append(
+                "<table><thead><tr><th>Benchmark</th><th>Baseline</th>"
+                "<th>Current</th><th>Change</th></tr></thead><tbody>"
+            )
             for d in sorted(regressions, key=lambda x: x["pct_change"]):
                 dc = diff_color(d["tag"])
-                h.append(f"<tr><td>{html_escape(d['name'])}</td>"
-                         f"<td>{html_escape(fmt_speedup(d['base_speedup']))}</td>"
-                         f"<td>{html_escape(fmt_speedup(d['cur_speedup']))}</td>"
-                         f'<td style="color:{dc};font-weight:600">'
-                         f'{html_escape(fmt_pct(d["pct_change"]))}</td></tr>')
+                h.append(
+                    f"<tr><td>{html_escape(d['name'])}</td>"
+                    f"<td>{html_escape(fmt_speedup(d['base_speedup']))}</td>"
+                    f"<td>{html_escape(fmt_speedup(d['cur_speedup']))}</td>"
+                    f'<td style="color:{dc};font-weight:600">'
+                    f"{html_escape(fmt_pct(d['pct_change']))}</td></tr>"
+                )
             h.append("</tbody></table>")
 
         if improvements:
             h.append("<h3>Improvements (&gt;10% faster)</h3>")
-            h.append("<table><thead><tr><th>Benchmark</th><th>Baseline</th>"
-                     "<th>Current</th><th>Change</th></tr></thead><tbody>")
+            h.append(
+                "<table><thead><tr><th>Benchmark</th><th>Baseline</th>"
+                "<th>Current</th><th>Change</th></tr></thead><tbody>"
+            )
             for d in sorted(improvements, key=lambda x: -x["pct_change"]):
                 dc = diff_color(d["tag"])
-                h.append(f"<tr><td>{html_escape(d['name'])}</td>"
-                         f"<td>{html_escape(fmt_speedup(d['base_speedup']))}</td>"
-                         f"<td>{html_escape(fmt_speedup(d['cur_speedup']))}</td>"
-                         f'<td style="color:{dc};font-weight:600">'
-                         f'{html_escape(fmt_pct(d["pct_change"]))}</td></tr>')
+                h.append(
+                    f"<tr><td>{html_escape(d['name'])}</td>"
+                    f"<td>{html_escape(fmt_speedup(d['base_speedup']))}</td>"
+                    f"<td>{html_escape(fmt_speedup(d['cur_speedup']))}</td>"
+                    f'<td style="color:{dc};font-weight:600">'
+                    f"{html_escape(fmt_pct(d['pct_change']))}</td></tr>"
+                )
             h.append("</tbody></table>")
 
         if new_benches:
             h.append("<h3>New Benchmarks</h3><ul>")
             for d in new_benches:
-                h.append(f"<li>{html_escape(d['name'])} "
-                         f"({html_escape(fmt_speedup(d['cur_speedup']))})</li>")
+                h.append(
+                    f"<li>{html_escape(d['name'])} "
+                    f"({html_escape(fmt_speedup(d['cur_speedup']))})</li>"
+                )
             h.append("</ul>")
 
         if removed:
@@ -450,26 +489,35 @@ tr:hover { background: #f6f8fa; }
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Molt benchmark performance dashboard")
-    parser.add_argument("files", nargs="+", type=Path,
-                        help="Benchmark result JSON files")
-    parser.add_argument("--baseline", type=Path, default=None,
-                        help="Baseline JSON file for comparison")
-    parser.add_argument("--format", choices=["markdown", "html"],
-                        default="markdown", dest="fmt",
-                        help="Output format (default: markdown)")
-    parser.add_argument("--output", "-o", type=Path, default=None,
-                        help="Output file (default: stdout)")
+    parser = argparse.ArgumentParser(description="Molt benchmark performance dashboard")
+    parser.add_argument(
+        "files", nargs="+", type=Path, help="Benchmark result JSON files"
+    )
+    parser.add_argument(
+        "--baseline", type=Path, default=None, help="Baseline JSON file for comparison"
+    )
+    parser.add_argument(
+        "--format",
+        choices=["markdown", "html"],
+        default="markdown",
+        dest="fmt",
+        help="Output format (default: markdown)",
+    )
+    parser.add_argument(
+        "--output", "-o", type=Path, default=None, help="Output file (default: stdout)"
+    )
 
     args = parser.parse_args()
 
     # Validate input files
     missing = [p for p in args.files if not p.exists()]
     if missing:
-        print(f"Error: files not found: {', '.join(str(p) for p in missing)}",
-              file=sys.stderr)
+        print(
+            f"Error: files not found: {', '.join(str(p) for p in missing)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     results = merge_results(args.files)

@@ -9,12 +9,8 @@ from reprlib import recursive_repr
 from types import MappingProxyType
 from typing import Any, Callable, ClassVar, cast
 
-_MOLT_DATACLASSES_MAKE_DATACLASS = _require_intrinsic(
-    "molt_dataclasses_make_dataclass"
-)
-_MOLT_DATACLASSES_IS_DATACLASS = _require_intrinsic(
-    "molt_dataclasses_is_dataclass"
-)
+_MOLT_DATACLASSES_MAKE_DATACLASS = _require_intrinsic("molt_dataclasses_make_dataclass")
+_MOLT_DATACLASSES_IS_DATACLASS = _require_intrinsic("molt_dataclasses_is_dataclass")
 _MOLT_DATACLASSES_FIELDS = _require_intrinsic("molt_dataclasses_fields")
 _MOLT_DATACLASSES_ASDICT = _require_intrinsic("molt_dataclasses_asdict")
 _MOLT_DATACLASSES_ASTUPLE = _require_intrinsic("molt_dataclasses_astuple")
@@ -25,13 +21,9 @@ _MOLT_DATACLASSES_HASH_FN = _require_intrinsic("molt_dataclasses_hash_fn")
 _MOLT_DATACLASSES_CHECK_DEFAULT_ORDER = _require_intrinsic(
     "molt_dataclasses_check_default_order"
 )
-_MOLT_DATACLASSES_FIELD_FLAGS = _require_intrinsic(
-    "molt_dataclasses_field_flags"
-)
+_MOLT_DATACLASSES_FIELD_FLAGS = _require_intrinsic("molt_dataclasses_field_flags")
 _MOLT_DATACLASSES_POST_INIT = _require_intrinsic("molt_dataclasses_post_init")
-_MOLT_DATACLASSES_FIELD_METADATA = _require_intrinsic(
-    "molt_dataclasses_field_metadata"
-)
+_MOLT_DATACLASSES_FIELD_METADATA = _require_intrinsic("molt_dataclasses_field_metadata")
 _MOLT_DATACLASSES_SET_FIELD_METADATA = _require_intrinsic(
     "molt_dataclasses_set_field_metadata"
 )
@@ -540,9 +532,7 @@ def _molt_apply_dataclass(
     )
     cls.__dataclass_fields__ = fields
     cls.__dataclass_params__ = params
-    cls.__molt_dataclass_has_post_init__ = callable(
-        getattr(cls, "__post_init__", None)
-    )
+    cls.__molt_dataclass_has_post_init__ = callable(getattr(cls, "__post_init__", None))
 
     user_init_marker = cls.__dict__.get("__molt_dataclass_user_init__", MISSING)
     from_make_dataclass = bool(cls.__dict__.get("__molt_make_dataclass__", False))

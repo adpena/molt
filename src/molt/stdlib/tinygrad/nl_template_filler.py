@@ -31,12 +31,34 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _WORD_NUMBERS: dict[str, int] = {
-    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
-    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
-    "seventy": 70, "eighty": 80, "ninety": 90,
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
 }
 
 _WORD_MULTIPLIERS: dict[str, int] = {
@@ -74,11 +96,14 @@ _AMOUNT_PATTERN = re.compile(
 
 # Pattern for word-based amounts like "five grand", "twenty thousand"
 _WORD_AMOUNT_PATTERN = re.compile(
-    r"\b(?P<words>(?:" + "|".join(_WORD_NUMBERS.keys()) + r")(?:\s+(?:" +
-    "|".join(_WORD_NUMBERS.keys()) + r"))*)"
-    r"(?:\s+(?P<multiplier>" + "|".join(
-        k for k in _WORD_MULTIPLIERS.keys() if len(k) > 1
-    ) + r"))?\b",
+    r"\b(?P<words>(?:"
+    + "|".join(_WORD_NUMBERS.keys())
+    + r")(?:\s+(?:"
+    + "|".join(_WORD_NUMBERS.keys())
+    + r"))*)"
+    r"(?:\s+(?P<multiplier>"
+    + "|".join(k for k in _WORD_MULTIPLIERS.keys() if len(k) > 1)
+    + r"))?\b",
     re.IGNORECASE,
 )
 
@@ -151,17 +176,41 @@ def parse_all_amounts(text: str) -> list[tuple[int, str, int, int]]:
 # ---------------------------------------------------------------------------
 
 _MONTHS: dict[str, int] = {
-    "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
-    "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
-    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
-    "october": 10, "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
 }
 
 # "May 15", "May 15, 2026", "May 15th", "15 May 2026"
 _DATE_PATTERN = re.compile(
-    r"\b(?:(?P<month_name>" + "|".join(_MONTHS.keys()) + r")\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?"
+    r"\b(?:(?P<month_name>"
+    + "|".join(_MONTHS.keys())
+    + r")\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?"
     r"(?:[,\s]+(?P<year>\d{4}))?|"
-    r"(?P<day2>\d{1,2})(?:st|nd|rd|th)?\s+(?P<month_name2>" + "|".join(_MONTHS.keys()) + r")"
+    r"(?P<day2>\d{1,2})(?:st|nd|rd|th)?\s+(?P<month_name2>"
+    + "|".join(_MONTHS.keys())
+    + r")"
     r"(?:[,\s]+(?P<year2>\d{4}))?)\b",
     re.IGNORECASE,
 )
@@ -239,8 +288,24 @@ _CLIENT_TRIGGERS = re.compile(
 
 # Words that are NOT part of a client name (stop words)
 _STOP_WORDS = {
-    "for", "due", "net", "total", "amount", "at", "on", "the", "a", "an",
-    "in", "by", "with", "and", "or", "is", "was", "of",
+    "for",
+    "due",
+    "net",
+    "total",
+    "amount",
+    "at",
+    "on",
+    "the",
+    "a",
+    "an",
+    "in",
+    "by",
+    "with",
+    "and",
+    "or",
+    "is",
+    "was",
+    "of",
 }
 
 
@@ -254,7 +319,7 @@ def parse_client_name(text: str) -> str | None:
         "Invoice Acme Corp $4,200 for ..." → "Acme Corp"
     """
     for m in _CLIENT_TRIGGERS.finditer(text):
-        rest = text[m.end():].strip()
+        rest = text[m.end() :].strip()
         # Collect capitalized words (the client name)
         words = []
         for token in rest.split():
@@ -266,7 +331,17 @@ def parse_client_name(text: str) -> str | None:
                 break
             if re.match(r"^\d", clean) and words:
                 break
-            if clean[0:1].isupper() or clean.lower() in ("inc", "llc", "ltd", "corp", "co", "inc.", "llc.", "ltd.", "corp."):
+            if clean[0:1].isupper() or clean.lower() in (
+                "inc",
+                "llc",
+                "ltd",
+                "corp",
+                "co",
+                "inc.",
+                "llc.",
+                "ltd.",
+                "corp.",
+            ):
                 words.append(clean)
             elif not words:
                 # First word after trigger might be lowercase for short names
@@ -304,22 +379,28 @@ def parse_line_items(text: str, total_cents: int | None) -> list[dict[str, Any]]
         if not desc_clean:
             desc_clean = desc_raw
         # Capitalize first letter
-        desc_clean = desc_clean[0].upper() + desc_clean[1:] if desc_clean else desc_clean
+        desc_clean = (
+            desc_clean[0].upper() + desc_clean[1:] if desc_clean else desc_clean
+        )
         amount = total_cents or 0
-        items.append({
-            "description": desc_clean,
-            "qty": 1,
-            "rate": amount,
-            "amount": amount,
-        })
+        items.append(
+            {
+                "description": desc_clean,
+                "qty": 1,
+                "rate": amount,
+                "amount": amount,
+            }
+        )
 
     if not items and total_cents:
-        items.append({
-            "description": "Services",
-            "qty": 1,
-            "rate": total_cents,
-            "amount": total_cents,
-        })
+        items.append(
+            {
+                "description": "Services",
+                "qty": 1,
+                "rate": total_cents,
+                "amount": total_cents,
+            }
+        )
 
     return items
 
@@ -327,6 +408,7 @@ def parse_line_items(text: str, total_cents: int | None) -> list[dict[str, Any]]
 # ---------------------------------------------------------------------------
 # Invoice number generation
 # ---------------------------------------------------------------------------
+
 
 def generate_invoice_number() -> str:
     """Generate a short unique invoice number."""
@@ -336,6 +418,7 @@ def generate_invoice_number() -> str:
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 def fill_template_from_nl(
     template: dict[str, Any],
@@ -407,7 +490,9 @@ def fill_template_from_nl(
     result["items"] = parse_line_items(utterance, total_cents)
 
     # 5. Invoice number
-    result["invoice_number"] = template.get("invoice_number") or generate_invoice_number()
+    result["invoice_number"] = (
+        template.get("invoice_number") or generate_invoice_number()
+    )
 
     # 6. Pass through any template fields we didn't fill
     for key, value in template.items():

@@ -14,7 +14,6 @@ Run: python -m pytest tests/e2e/test_falcon_ocr_parity.py -v
 
 from __future__ import annotations
 
-import array
 import json
 import math
 import os
@@ -25,12 +24,13 @@ import time
 import pytest
 
 # Ensure project root is importable
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from tests.e2e.falcon_ocr_stub_weights import (
-    SEED,
     STUB_CONFIG,
     generate_stub_config_json,
     generate_stub_weights,
@@ -41,14 +41,15 @@ from tests.e2e.falcon_ocr_stub_weights import (
 # Tolerance constants
 # ---------------------------------------------------------------------------
 
-ATOL = 1e-5       # Absolute tolerance for float comparison
-RTOL = 1e-4       # Relative tolerance for float comparison
+ATOL = 1e-5  # Absolute tolerance for float comparison
+RTOL = 1e-4  # Relative tolerance for float comparison
 KL_THRESH = 1e-6  # KL divergence threshold for softmax distributions
 
 
 # ---------------------------------------------------------------------------
 # Helper: check if the Falcon OCR runtime path is importable
 # ---------------------------------------------------------------------------
+
 
 def _falcon_ocr_runtime_available() -> bool:
     """Check if the Falcon OCR runtime modules are importable."""
@@ -61,9 +62,11 @@ def _falcon_ocr_runtime_available() -> bool:
             sys.path.insert(0, src_path)
         from molt.gpu import Buffer, alloc  # noqa: F401
         from molt.stdlib.tinygrad.examples import falcon_ocr  # noqa: F401
+
         return True
     except (ImportError, ModuleNotFoundError, RuntimeError):
         return False
+
 
 _SKIP_RUNTIME = not _falcon_ocr_runtime_available()
 _RUNTIME_REASON = "Falcon OCR runtime path not importable"
@@ -72,6 +75,7 @@ _RUNTIME_REASON = "Falcon OCR runtime path not importable"
 # ---------------------------------------------------------------------------
 # Pure-Python reference implementations for parity checks
 # ---------------------------------------------------------------------------
+
 
 def _ref_rms_norm(x: list, eps: float) -> list:
     """Reference RMSNorm: x / sqrt(mean(x^2) + eps)."""
@@ -86,7 +90,10 @@ def _ref_rope_1d(
     cos_table: list,
     sin_table: list,
     freq_dim: int,
-    B: int, S: int, H: int, D: int,
+    B: int,
+    S: int,
+    H: int,
+    D: int,
     seq_len: int,
 ) -> list:
     """Reference 1D RoPE implementation (pure Python)."""
@@ -126,9 +133,14 @@ def _ref_precompute_freqs(dim: int, max_len: int, theta: float) -> tuple:
 
 
 def _ref_scaled_dot_product_attention(
-    q: list, k: list, v: list,
-    n_heads: int, seq_len: int, head_dim: int,
-    mask: list | None, scale: float,
+    q: list,
+    k: list,
+    v: list,
+    n_heads: int,
+    seq_len: int,
+    head_dim: int,
+    mask: list | None,
+    scale: float,
 ) -> list:
     """Reference SDPA: softmax(Q @ K^T * scale + mask) @ V.
 
@@ -204,11 +216,13 @@ def _max_abs_diff(a: list, b: list) -> float:
 # Deterministic RNG for test inputs
 # ---------------------------------------------------------------------------
 
+
 class _DetRNG:
     """Deterministic RNG that matches the stub weight generator's behavior."""
 
     def __init__(self, seed: int):
         import random
+
         self._rng = random.Random(seed)
 
     def floats(self, n: int, scale: float = 1.0) -> list:
@@ -221,6 +235,7 @@ class _DetRNG:
 # ---------------------------------------------------------------------------
 # Tests: RMSNorm parity
 # ---------------------------------------------------------------------------
+
 
 class TestRMSNormParity:
     """Verify RMSNorm produces identical output between reference and implementation."""
@@ -279,6 +294,7 @@ class TestRMSNormParity:
 # Tests: RoPE parity
 # ---------------------------------------------------------------------------
 
+
 class TestRoPEParity:
     """Verify RoPE produces identical output between reference and implementation."""
 
@@ -331,7 +347,9 @@ class TestRoPEParity:
         # Same values at two positions
         x_pos0 = [1.0] * D
         x_pos3 = list(x_pos0)
-        out0 = _ref_rope_1d(x_pos0, cos_table[:freq_dim], sin_table[:freq_dim], freq_dim, B, 1, H, D, 1)
+        out0 = _ref_rope_1d(
+            x_pos0, cos_table[:freq_dim], sin_table[:freq_dim], freq_dim, B, 1, H, D, 1
+        )
         # For position 3, slice the tables
         cos3 = cos_table[3 * freq_dim : 4 * freq_dim]
         sin3 = sin_table[3 * freq_dim : 4 * freq_dim]
@@ -343,6 +361,7 @@ class TestRoPEParity:
 # Tests: Attention parity
 # ---------------------------------------------------------------------------
 
+
 class TestAttentionParity:
     """Verify scaled dot-product attention produces correct output."""
 
@@ -351,12 +370,14 @@ class TestAttentionParity:
         n_heads, seq_len, head_dim = 1, 2, 2
         scale = 1.0 / math.sqrt(head_dim)
         # Q = K = identity-like, so attention is uniform (after softmax)
-        q = [1.0, 0.0,  0.0, 1.0]  # 2 positions, each of dim 2
-        k = [1.0, 0.0,  0.0, 1.0]
-        v = [10.0, 20.0,  30.0, 40.0]
-        mask = [0.0, -1e9,  0.0, 0.0]  # Causal: pos 0 can only see pos 0
+        q = [1.0, 0.0, 0.0, 1.0]  # 2 positions, each of dim 2
+        k = [1.0, 0.0, 0.0, 1.0]
+        v = [10.0, 20.0, 30.0, 40.0]
+        mask = [0.0, -1e9, 0.0, 0.0]  # Causal: pos 0 can only see pos 0
 
-        out = _ref_scaled_dot_product_attention(q, k, v, n_heads, seq_len, head_dim, mask, scale)
+        out = _ref_scaled_dot_product_attention(
+            q, k, v, n_heads, seq_len, head_dim, mask, scale
+        )
         # Position 0: only sees itself -> V[0] = [10, 20]
         assert abs(out[0] - 10.0) < 0.1
         assert abs(out[1] - 20.0) < 0.1
@@ -370,7 +391,9 @@ class TestAttentionParity:
         v = [3.0, 6.0, 9.0]
         mask = None
 
-        out = _ref_scaled_dot_product_attention(q, k, v, n_heads, seq_len, head_dim, mask, scale)
+        out = _ref_scaled_dot_product_attention(
+            q, k, v, n_heads, seq_len, head_dim, mask, scale
+        )
         # All positions attend equally -> average = 6.0
         for i in range(seq_len):
             assert abs(out[i] - 6.0) < ATOL
@@ -383,12 +406,20 @@ class TestAttentionParity:
         k = [1.0, 1.0, 1.0]
         v = [10.0, 20.0, 30.0]
         mask = [
-            0.0, -1e9, -1e9,
-            0.0,  0.0, -1e9,
-            0.0,  0.0,  0.0,
+            0.0,
+            -1e9,
+            -1e9,
+            0.0,
+            0.0,
+            -1e9,
+            0.0,
+            0.0,
+            0.0,
         ]
 
-        out = _ref_scaled_dot_product_attention(q, k, v, n_heads, seq_len, head_dim, mask, scale)
+        out = _ref_scaled_dot_product_attention(
+            q, k, v, n_heads, seq_len, head_dim, mask, scale
+        )
         # Position 0: only V[0] = 10
         assert abs(out[0] - 10.0) < ATOL
         # Position 1: average of V[0:2] = 15
@@ -401,12 +432,14 @@ class TestAttentionParity:
         n_heads, seq_len, head_dim = 2, 2, 1
         scale = 1.0
         # Head 0: uniform, Head 1: uniform
-        q = [1.0, 1.0,  1.0, 1.0]
-        k = [1.0, 1.0,  1.0, 1.0]
-        v = [10.0, 20.0,  30.0, 40.0]  # H0: [10,20], H1: [30,40]
+        q = [1.0, 1.0, 1.0, 1.0]
+        k = [1.0, 1.0, 1.0, 1.0]
+        v = [10.0, 20.0, 30.0, 40.0]  # H0: [10,20], H1: [30,40]
         mask = None
 
-        out = _ref_scaled_dot_product_attention(q, k, v, n_heads, seq_len, head_dim, mask, scale)
+        out = _ref_scaled_dot_product_attention(
+            q, k, v, n_heads, seq_len, head_dim, mask, scale
+        )
         # Head 0: average = 15, Head 1: average = 35
         assert abs(out[0] - 15.0) < ATOL  # H0, pos 0
         assert abs(out[1] - 15.0) < ATOL  # H0, pos 1
@@ -417,6 +450,7 @@ class TestAttentionParity:
 # ---------------------------------------------------------------------------
 # Tests: Logit distribution parity
 # ---------------------------------------------------------------------------
+
 
 class TestLogitDistributionParity:
     """Verify logit distributions match at every decoding step."""
@@ -459,6 +493,7 @@ class TestLogitDistributionParity:
 # ---------------------------------------------------------------------------
 # Tests: Stub weight determinism
 # ---------------------------------------------------------------------------
+
 
 class TestStubWeightDeterminism:
     """Verify stub weights are deterministic and well-formed."""
@@ -541,6 +576,7 @@ class TestStubWeightDeterminism:
 # Tests: Forward block parity (requires molt runtime)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skipif(_SKIP_RUNTIME, reason=_RUNTIME_REASON)
 class TestForwardBlockParity:
     """Single transformer block produces identical output.
@@ -573,7 +609,9 @@ class TestForwardBlockParity:
         # Tensor path
         buf = Buffer(
             struct.pack(f"<{len(x_data)}f", *x_data),
-            float, len(x_data), format_char="f",
+            float,
+            len(x_data),
+            format_char="f",
         )
         t = TgTensor(buf, shape=(1, 64), dtype=float)
         result = t.rms_norm(eps)
@@ -602,6 +640,7 @@ class TestForwardBlockParity:
 # ---------------------------------------------------------------------------
 # Tests: Full inference parity (requires molt runtime)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(_SKIP_RUNTIME, reason=_RUNTIME_REASON)
 class TestFullInferenceParity:
@@ -663,6 +702,7 @@ class TestFullInferenceParity:
 # Tests: Performance baseline
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skipif(_SKIP_RUNTIME, reason=_RUNTIME_REASON)
 class TestPerformanceBaseline:
     """Measure and report performance metrics.
@@ -704,7 +744,7 @@ class TestPerformanceBaseline:
         ttft = t_total / n_tokens if n_tokens > 0 else 0.0
 
         # Print for visibility in test output
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Falcon-OCR Stub Performance Baseline")
         print(f"  Init time:           {t_init:.4f}s")
         print(f"  Total inference:     {t_total:.4f}s")
@@ -712,7 +752,7 @@ class TestPerformanceBaseline:
         print(f"  Time-to-first-token: {ttft:.4f}s")
         print(f"  Tokens/sec:          {tps:.2f}")
         print(f"  Token IDs:           {tokens}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # Basic sanity: inference should complete
         assert n_tokens > 0

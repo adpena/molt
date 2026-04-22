@@ -18,11 +18,15 @@ def safe_load(blob) -> dict[str, Tensor]:
     elif isinstance(blob, (bytes, bytearray, memoryview)):
         payload = bytes(blob)
     else:
-        raise TypeError(f"safe_load expects bytes-like or Tensor, got {type(blob).__name__}")
+        raise TypeError(
+            f"safe_load expects bytes-like or Tensor, got {type(blob).__name__}"
+        )
     return load_safetensors_bytes(payload)
 
 
-def load_state_dict(model, state, *, strict: bool = True, verbose: bool = False) -> None:
+def load_state_dict(
+    model, state, *, strict: bool = True, verbose: bool = False
+) -> None:
     """Populate dotted-path tensor attributes on a model object."""
     missing: list[str] = []
     for key, value in state.items():

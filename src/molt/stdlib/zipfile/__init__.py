@@ -44,9 +44,7 @@ _MOLT_ZIPFILE_CRC32 = _require_intrinsic("molt_zipfile_crc32")
 _MOLT_ZIPFILE_PARSE_CENTRAL_DIRECTORY = _require_intrinsic(
     "molt_zipfile_parse_central_directory"
 )
-_MOLT_ZIPFILE_BUILD_ZIP64_EXTRA = _require_intrinsic(
-    "molt_zipfile_build_zip64_extra"
-)
+_MOLT_ZIPFILE_BUILD_ZIP64_EXTRA = _require_intrinsic("molt_zipfile_build_zip64_extra")
 
 
 class ZipInfo:

@@ -32,4 +32,5 @@ def pass_none(func):
 
     return _MOLT_UPDATE_WRAPPER(wrapper, func, _WRAPPER_ASSIGNMENTS, _WRAPPER_UPDATES)
 
+
 globals().pop("_require_intrinsic", None)

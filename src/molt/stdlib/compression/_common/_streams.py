@@ -5,7 +5,8 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_COMPRESSION_STREAMS_BUFFER_SIZE = _require_intrinsic(
-    "molt_compression_streams_buffer_size")
+    "molt_compression_streams_buffer_size"
+)
 
 import io
 
@@ -99,5 +100,6 @@ class DecompressReader(io.RawIOBase):
         if decomp is None:
             return False
         return getattr(decomp, "needs_input", True)  # type: ignore[union-attr]
+
 
 globals().pop("_require_intrinsic", None)

@@ -94,7 +94,9 @@ def test_debug_ir_json_supports_pre_post_and_all_stages(tmp_path: Path) -> None:
         assert payload["subcommand"] == "ir"
         assert payload["status"] == "ok"
         assert payload["selectors"]["stage"] == stage
-        assert [entry["stage"] for entry in payload["data"]["snapshots"]] == expected_stages
+        assert [
+            entry["stage"] for entry in payload["data"]["snapshots"]
+        ] == expected_stages
 
         manifest_payload = _load_manifest_from_stdout(res.stdout)
         assert manifest_payload["data"]["snapshots"] == payload["data"]["snapshots"]

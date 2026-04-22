@@ -2065,9 +2065,7 @@ def test_midend_monolith_pressure_lowers_skip_threshold_for_cold_functions() -> 
 
     assert len(lowered) == len(ops) + 1
     outcome = gen.midend_policy_outcomes_by_function["cold_render"]
-    reasons = {
-        event.get("reason") for event in outcome.get("degrade_events", [])
-    }
+    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
     assert "oversized_function_skip" in reasons
     events = [
         event
@@ -2171,9 +2169,7 @@ def test_midend_monolith_pressure_tracks_new_ops_incrementally() -> None:
         module_name="pkg.mod",
     )
     gen.start_function("helper")
-    gen.emit(
-        MoltOp(kind="CONST", args=[1], result=MoltValue("a", type_hint="int"))
-    )
+    gen.emit(MoltOp(kind="CONST", args=[1], result=MoltValue("a", type_hint="int")))
     initial_total_ops = sum(len(info["ops"]) for info in gen.funcs_map.values())
 
     first = gen._resolve_midend_function_policy(
@@ -2182,9 +2178,7 @@ def test_midend_monolith_pressure_tracks_new_ops_incrementally() -> None:
         block_count=1,
     )
 
-    gen.emit(
-        MoltOp(kind="CONST", args=[2], result=MoltValue("b", type_hint="int"))
-    )
+    gen.emit(MoltOp(kind="CONST", args=[2], result=MoltValue("b", type_hint="int")))
     updated_total_ops = sum(len(info["ops"]) for info in gen.funcs_map.values())
 
     second = gen._resolve_midend_function_policy(
@@ -2300,12 +2294,8 @@ def test_missing_taint_propagates_through_phi_to_call() -> None:
     ]
     # The verifier should flag the CALL because "joined" is MISSING-tainted
     # transitively through the PHI.
-    failures = gen._verify_definite_assignment_in_ops(
-        ops, predefined_value_names=set()
-    )
-    call_failures = [
-        (kind, name) for _, kind, name in failures if kind == "CALL"
-    ]
+    failures = gen._verify_definite_assignment_in_ops(ops, predefined_value_names=set())
+    call_failures = [(kind, name) for _, kind, name in failures if kind == "CALL"]
     assert len(call_failures) > 0, (
         "Verifier must flag MISSING-tainted value reaching CALL arg"
     )
@@ -2327,9 +2317,7 @@ def test_missing_taint_does_not_flag_direct_missing_at_call() -> None:
         ),
         MoltOp(kind="RETURN", args=[MoltValue("ret")], result=MoltValue("none")),
     ]
-    failures = gen._verify_definite_assignment_in_ops(
-        ops, predefined_value_names=set()
-    )
+    failures = gen._verify_definite_assignment_in_ops(ops, predefined_value_names=set())
     # There should be no transitive-MISSING-taint failures for direct uses.
     call_failures = [
         (kind, name)
@@ -2383,7 +2371,8 @@ def test_full_pipeline_rejects_missing_leak_through_phi() -> None:
     # What must NOT happen is a PHI-derived value carrying transitive MISSING
     # taint ending up at a CALL arg position.
     direct_missing = {
-        op.result.name for op in rewritten
+        op.result.name
+        for op in rewritten
         if op.kind == "MISSING" and op.result.name != "none"
     }
     # Propagate taint through PHIs

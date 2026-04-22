@@ -1,4 +1,5 @@
 """Intrinsic-backed `tkinter.ttk` wrappers."""
+
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import require_gui_capability as _require_gui_capability
@@ -1186,5 +1187,6 @@ __all__ = [
 
 def __getattr__(attr):
     raise AttributeError(f'module "{__name__}" has no attribute "{attr}"')
+
 
 globals().pop("_require_intrinsic", None)

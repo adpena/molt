@@ -4,6 +4,7 @@ Ported from: https://github.com/paiml/depyler/blob/main/tests/fixtures/python_sa
 Measures: recursive function calls, integer multiplication.
 """
 
+
 def factorial(n: int) -> int:
     if n <= 1:
         return 1

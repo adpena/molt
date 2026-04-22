@@ -1,4 +1,5 @@
 """Reproducer: itertools.islice and itertools.accumulate return empty lists."""
+
 import itertools
 
 # islice basic

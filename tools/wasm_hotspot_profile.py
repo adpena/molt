@@ -172,7 +172,6 @@ def parse_function_sizes(wasm_path: Path) -> list[dict[str, Any]]:
     if len(data) < 8 or data[:4] != WASM_MAGIC:
         return []
 
-    sections = parse_wasm_sections(wasm_path)
     code_functions: list[dict[str, Any]] = []
     name_map: dict[int, str] = {}
 
@@ -293,9 +292,19 @@ def _parse_name_section(
 def parse_section_sizes(wasm_path: Path) -> dict[str, int]:
     """Quick section-level size breakdown (reuses wasm_size_audit logic)."""
     SECTION_NAMES: dict[int, str] = {
-        0: "custom", 1: "type", 2: "import", 3: "function", 4: "table",
-        5: "memory", 6: "global", 7: "export", 8: "start", 9: "element",
-        10: "code", 11: "data", 12: "data_count",
+        0: "custom",
+        1: "type",
+        2: "import",
+        3: "function",
+        4: "table",
+        5: "memory",
+        6: "global",
+        7: "export",
+        8: "start",
+        9: "element",
+        10: "code",
+        11: "data",
+        12: "data_count",
     }
     data = wasm_path.read_bytes()
     if len(data) < 8 or data[:4] != WASM_MAGIC:
@@ -320,6 +329,7 @@ def parse_section_sizes(wasm_path: Path) -> dict[str, int]:
 @dataclass
 class FunctionSample:
     """Aggregated sample data for one function."""
+
     name: str
     func_index: int | None = None
     total_samples: int = 0
@@ -451,7 +461,8 @@ def _compile_wasm(src: Path, out_dir: Path) -> tuple[bool, Path, str, float]:
     t0 = time.monotonic()
     try:
         r = subprocess.run(
-            python_cmd + [
+            python_cmd
+            + [
                 "build",
                 str(src),
                 "--target",
@@ -468,7 +479,12 @@ def _compile_wasm(src: Path, out_dir: Path) -> tuple[bool, Path, str, float]:
             timeout=180,
         )
     except subprocess.TimeoutExpired:
-        return False, out_dir / "output.wasm", "compile timeout (180s)", time.monotonic() - t0
+        return (
+            False,
+            out_dir / "output.wasm",
+            "compile timeout (180s)",
+            time.monotonic() - t0,
+        )
 
     elapsed = time.monotonic() - t0
     wasm = out_dir / "output.wasm"
@@ -546,7 +562,11 @@ def _try_profile_wasm_node(
 
     # Check if Node exited cleanly (WASM ran to completion)
     ran_ok = r is not None and r.returncode == 0
-    return True, profile_path, "" if ran_ok else "WASM execution failed but profile captured"
+    return (
+        True,
+        profile_path,
+        "" if ran_ok else "WASM execution failed but profile captured",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +577,7 @@ def _try_profile_wasm_node(
 @dataclass
 class FunctionSizeEntry:
     """A function's code size from static WASM analysis."""
+
     index: int
     name: str
     body_size_bytes: int
@@ -581,12 +602,14 @@ def static_size_analysis(func_sizes: list[dict[str, Any]]) -> dict[str, Any]:
     entries: list[FunctionSizeEntry] = []
     for f in func_sizes:
         pct = f["body_size_bytes"] / total_code * 100 if total_code > 0 else 0
-        entries.append(FunctionSizeEntry(
-            index=f["index"],
-            name=f.get("name", f"func_{f['index']}"),
-            body_size_bytes=f["body_size_bytes"],
-            pct_of_code=pct,
-        ))
+        entries.append(
+            FunctionSizeEntry(
+                index=f["index"],
+                name=f.get("name", f"func_{f['index']}"),
+                body_size_bytes=f["body_size_bytes"],
+                pct_of_code=pct,
+            )
+        )
 
     # Sort by size descending
     entries.sort(key=lambda e: e.body_size_bytes, reverse=True)
@@ -632,6 +655,7 @@ def static_size_analysis(func_sizes: list[dict[str, Any]]) -> dict[str, Any]:
 @dataclass
 class HotspotResult:
     """Complete hotspot analysis for one program."""
+
     program: str
     ok: bool
     error: str = ""
@@ -721,7 +745,10 @@ def analyze_hotspots(
             print("    Running static size analysis...", end=" ", flush=True)
         static = static_size_analysis(func_sizes)
         if verbose:
-            print(f"{static.get('p95_function_count', 0)} p95-by-size functions", flush=True)
+            print(
+                f"{static.get('p95_function_count', 0)} p95-by-size functions",
+                flush=True,
+            )
 
         # Step 4: Attempt dynamic profiling
         has_profile = False
@@ -898,7 +925,9 @@ def print_summary(result: HotspotResult) -> None:
         p95_count = static.get("p95_function_count", 0)
         total_funcs = static.get("function_count", 0)
         print("\n  --- Static Size Analysis ---")
-        print(f"  Total code: {static.get('total_code_kb', 0)} KB across {total_funcs} functions")
+        print(
+            f"  Total code: {static.get('total_code_kb', 0)} KB across {total_funcs} functions"
+        )
         print(f"  p95 by size: {p95_count} functions cover 95% of code section")
 
         dist = static.get("size_distribution", {})
@@ -921,7 +950,9 @@ def print_summary(result: HotspotResult) -> None:
         if result.profile_note:
             print(f"  Note: {result.profile_note}")
 
-        print(f"\n  {'Rank':<6s} {'Total%':>7s} {'Self%':>7s} {'Size':>8s} {'Function'}")
+        print(
+            f"\n  {'Rank':<6s} {'Total%':>7s} {'Self%':>7s} {'Size':>8s} {'Function'}"
+        )
         print(f"  {'-' * 6} {'-' * 7} {'-' * 7} {'-' * 8} {'-' * 40}")
         for i, f in enumerate(result.profiled_functions[:15], 1):
             size_str = (

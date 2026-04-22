@@ -38,23 +38,20 @@ _freqs: list | None = None
 _freqs_len = 0
 
 
-_MOLT_GPU_ROPE_APPLY_CONTIGUOUS = _require_intrinsic(
-    "molt_gpu_rope_apply_contiguous"
-)
+_MOLT_GPU_ROPE_APPLY_CONTIGUOUS = _require_intrinsic("molt_gpu_rope_apply_contiguous")
 
 
 def _require_weight(state, name: str):
     try:
         return state[name]
     except KeyError as exc:
-        raise KeyError(
-            f"Falcon-OCR weights missing required tensor: {name}"
-        ) from exc
+        raise KeyError(f"Falcon-OCR weights missing required tensor: {name}") from exc
 
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+
 
 class FalconOCRConfig:
     def __init__(
@@ -119,14 +116,33 @@ class FalconOCRConfig:
     def from_json(cls, s: str) -> "FalconOCRConfig":
         data = json.loads(s)
         known = {
-            "dim", "n_layers", "n_heads", "head_dim", "n_kv_heads", "ffn_dim",
-            "vocab_size", "max_seq_len", "rope_theta", "norm_eps",
-            "rms_inner_eps", "channel_size", "spatial_patch_size",
-            "temporal_patch_size", "eos_id", "img_id", "img_row_sep_id",
-            "img_start_id", "img_end_id", "coord_token_id", "size_token_id",
-            "image_cls_token_id", "image_reg_1_token_id",
-            "image_reg_2_token_id", "image_reg_3_token_id",
-            "image_reg_4_token_id", "seg_token_id",
+            "dim",
+            "n_layers",
+            "n_heads",
+            "head_dim",
+            "n_kv_heads",
+            "ffn_dim",
+            "vocab_size",
+            "max_seq_len",
+            "rope_theta",
+            "norm_eps",
+            "rms_inner_eps",
+            "channel_size",
+            "spatial_patch_size",
+            "temporal_patch_size",
+            "eos_id",
+            "img_id",
+            "img_row_sep_id",
+            "img_start_id",
+            "img_end_id",
+            "coord_token_id",
+            "size_token_id",
+            "image_cls_token_id",
+            "image_reg_1_token_id",
+            "image_reg_2_token_id",
+            "image_reg_3_token_id",
+            "image_reg_4_token_id",
+            "seg_token_id",
         }
         kwargs = {k: v for k, v in data.items() if k in known}
         return cls(**kwargs)
@@ -135,6 +151,7 @@ class FalconOCRConfig:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _rms_norm(x: Tensor, eps: float) -> Tensor:
     """Unit-scale RMSNorm: x / sqrt(mean(x^2) + eps)."""
@@ -151,6 +168,7 @@ def _repeat_kv(x: Tensor, n_rep: int) -> Tensor:
 # ---------------------------------------------------------------------------
 # RoPE (1D temporal)
 # ---------------------------------------------------------------------------
+
 
 def precompute_freqs_cis_1d(dim: int, max_seq_len: int, theta: float) -> list:
     """Precompute cos/sin tables for 1D RoPE."""
@@ -227,6 +245,7 @@ def apply_rope_1d(x: Tensor, freqs: list, seq_len: int) -> Tensor:
 # Modules (using plain Python classes -- molt compiles these)
 # ---------------------------------------------------------------------------
 
+
 def _apply_rms_norm_weight(x: Tensor, weight: Tensor, eps: float) -> Tensor:
     return _rms_norm(x, eps) * weight
 
@@ -278,7 +297,9 @@ def _attention_call(
     return out.dot(wo)
 
 
-def _feed_forward_call(cfg: FalconOCRConfig, w13: Tensor, w2: Tensor, x: Tensor) -> Tensor:
+def _feed_forward_call(
+    cfg: FalconOCRConfig, w13: Tensor, w2: Tensor, x: Tensor
+) -> Tensor:
     h = _rms_norm(x, cfg.rms_inner_eps)
     return h.dot(w13).squared_relu_gate_interleaved().dot(w2)
 
@@ -343,7 +364,9 @@ def _gather_freqs_for_positions(freqs: list, positions: list[int]) -> list:
     ]
 
 
-def _build_hybrid_mask_state(token_ids: list[int]) -> tuple[list[bool], list[int], list[tuple[int, int]]]:
+def _build_hybrid_mask_state(
+    token_ids: list[int],
+) -> tuple[list[bool], list[int], list[tuple[int, int]]]:
     assert _config is not None
     in_block = [False] * len(token_ids)
     block_idx = [-1] * len(token_ids)
@@ -461,7 +484,9 @@ def _generate(
     image_positions = [i for i, tid in enumerate(prefix_ids) if tid == _config.img_id]
     if image_positions:
         projected_patches = patch_features.dot(_img_projector)
-        prefix_embed = prefix_embed.scatter(0, Tensor(image_positions), projected_patches)
+        prefix_embed = prefix_embed.scatter(
+            0, Tensor(image_positions), projected_patches
+        )
 
     positions: list[int] = []
     running = 0
@@ -567,9 +592,18 @@ def _generate(
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def init(weights_bytes: bytes, config_json: str) -> None:
     """Initialize model from SafeTensors bytes and config JSON."""
-    global _config, _tok_embeddings, _img_projector, _layers, _norm_weight, _output, _freqs, _freqs_len
+    global \
+        _config, \
+        _tok_embeddings, \
+        _img_projector, \
+        _layers, \
+        _norm_weight, \
+        _output, \
+        _freqs, \
+        _freqs_len
     _config = FalconOCRConfig.from_json(config_json)
     state = load_safetensors_bytes(weights_bytes)
     _tok_embeddings = _require_weight(state, "tok_embeddings.weight")

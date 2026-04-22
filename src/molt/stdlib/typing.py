@@ -598,6 +598,7 @@ Tuple = _SpecialGenericAlias(tuple, "Tuple")
 Set = _SpecialGenericAlias(set, "Set")
 FrozenSet = _SpecialGenericAlias(frozenset, "FrozenSet")
 
+
 class _TypeVarLike(_TypingBase):
     __slots__ = (
         "__name__",
@@ -732,6 +733,7 @@ class _ParamSpecKwargs(_TypingBase):
         return f"{self._owner.__name__}.kwargs"
 
     __str__ = __repr__
+
 
 def TypeVar(
     name: str,
@@ -1285,5 +1287,6 @@ def get_type_hints(
             evaluated = evaluated.__origin__
         hints[name] = evaluated
     return hints
+
 
 globals().pop("_require_intrinsic", None)

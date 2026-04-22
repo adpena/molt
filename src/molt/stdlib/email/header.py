@@ -9,8 +9,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from email.charset import Charset
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-_MOLT_EMAIL_HEADER_ENCODE_WORD = _require_intrinsic(
-    "molt_email_header_encode_word")
+_MOLT_EMAIL_HEADER_ENCODE_WORD = _require_intrinsic("molt_email_header_encode_word")
 
 NL = "\n"
 SPACE = " "
@@ -101,5 +100,6 @@ def make_header(
             text = str(item)
         h.append(text, charset=charset)
     return h
+
 
 globals().pop("_require_intrinsic", None)

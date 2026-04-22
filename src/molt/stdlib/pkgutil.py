@@ -11,9 +11,7 @@ __all__ = ["ModuleInfo", "iter_modules", "walk_packages"]
 
 
 _MOLT_PKGUTIL_ITER_MODULES = _require_intrinsic("molt_pkgutil_iter_modules")
-_MOLT_PKGUTIL_WALK_PACKAGES = _require_intrinsic(
-    "molt_pkgutil_walk_packages"
-)
+_MOLT_PKGUTIL_WALK_PACKAGES = _require_intrinsic("molt_pkgutil_walk_packages")
 
 
 class ModuleInfo:
@@ -69,5 +67,6 @@ def walk_packages(
     source = sys.path if path is None else path
     rows = _MOLT_PKGUTIL_WALK_PACKAGES(source, prefix)
     yield from _rows_to_module_info(rows)
+
 
 globals().pop("_require_intrinsic", None)

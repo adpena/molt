@@ -12,6 +12,7 @@ Public API:
 
 from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 import json
@@ -153,12 +154,26 @@ def validate_config(
     # Cross-validate with model_args if provided
     if model_args is not None:
         shared_fields = [
-            "dim", "n_layers", "n_heads", "head_dim", "n_kv_heads", "ffn_dim",
-            "vocab_size", "max_seq_len", "rope_theta", "norm_eps",
-            "channel_size", "spatial_patch_size", "temporal_patch_size",
-            "eos_id", "img_id", "img_end_id",
-            "image_cls_token_id", "image_reg_1_token_id",
-            "image_reg_2_token_id", "image_reg_3_token_id",
+            "dim",
+            "n_layers",
+            "n_heads",
+            "head_dim",
+            "n_kv_heads",
+            "ffn_dim",
+            "vocab_size",
+            "max_seq_len",
+            "rope_theta",
+            "norm_eps",
+            "channel_size",
+            "spatial_patch_size",
+            "temporal_patch_size",
+            "eos_id",
+            "img_id",
+            "img_end_id",
+            "image_cls_token_id",
+            "image_reg_1_token_id",
+            "image_reg_2_token_id",
+            "image_reg_3_token_id",
             "image_reg_4_token_id",
         ]
         for field in shared_fields:
@@ -172,11 +187,19 @@ def validate_config(
         # model_args has extra fields not in config.json
         extra_model_args = set(model_args.keys()) - set(config.keys())
         expected_extras = {
-            "coord_dec_dim", "coord_enc_dim", "coord_out_dim",
-            "coord_token_id", "img_row_sep_id", "img_start_id",
-            "num_segm_layers", "perception_heads",
-            "seg_token_id", "segm_out_dim",
-            "size_dec_dim", "size_enc_dim", "size_out_dim",
+            "coord_dec_dim",
+            "coord_enc_dim",
+            "coord_out_dim",
+            "coord_token_id",
+            "img_row_sep_id",
+            "img_start_id",
+            "num_segm_layers",
+            "perception_heads",
+            "seg_token_id",
+            "segm_out_dim",
+            "size_dec_dim",
+            "size_enc_dim",
+            "size_out_dim",
             "size_token_id",
         }
         unexpected_extras = extra_model_args - expected_extras
@@ -218,7 +241,7 @@ def summary(config: dict) -> str:
         if isinstance(ffn_dim, int):
             params += n_layers * (
                 ffn_dim * 2 * dim  # w13
-                + dim * ffn_dim    # w2
+                + dim * ffn_dim  # w2
             )
 
     param_str = f"{params / 1e6:.1f}M" if params > 0 else "?"

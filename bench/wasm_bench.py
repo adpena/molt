@@ -55,6 +55,7 @@ class CompileResult:
 @dataclass
 class OptimizeResult:
     """Result of running wasm-opt on a module."""
+
     ok: bool = False
     input_bytes: int = 0
     output_bytes: int = 0
@@ -267,8 +268,7 @@ def run_benchmarks(
                 entry.wasm_samples.append(result)
         if entry.wasm_ok():
             print(
-                f"wasm={entry.wasm_size_kb():.1f}KB "
-                f"({entry.wasm_median_s():.2f}s) ",
+                f"wasm={entry.wasm_size_kb():.1f}KB ({entry.wasm_median_s():.2f}s) ",
                 end="",
                 flush=True,
             )
@@ -278,8 +278,6 @@ def run_benchmarks(
         # Optimization pass
         if do_optimize and entry.wasm_ok():
             with tempfile.TemporaryDirectory(prefix=f"molt_opt_{name}_") as td:
-                # Re-build once to get a fresh module for optimisation
-                last_ok = [s for s in entry.wasm_samples if s.ok][-1]
                 # Re-compile to get the .wasm in this temp dir
                 opt_result = _compile_wasm(src, Path(td))
                 if opt_result.ok:
@@ -293,7 +291,11 @@ def run_benchmarks(
                             flush=True,
                         )
                     else:
-                        print(f"opt=FAIL({entry.optimize_result.error[:40]}) ", end="", flush=True)
+                        print(
+                            f"opt=FAIL({entry.optimize_result.error[:40]}) ",
+                            end="",
+                            flush=True,
+                        )
 
         # Native
         if not skip_native:

@@ -13,6 +13,7 @@ This adapter creates modified copies that:
 
 Output goes to tests/harness/corpus/molt_adapted/
 """
+
 from __future__ import annotations
 
 import re
@@ -33,13 +34,13 @@ def parse_expectation(filepath: Path) -> tuple[str, str]:
     for line in reversed(lines):
         stripped = line.strip()
         if stripped.startswith("# Return="):
-            return ("return", stripped[len("# Return="):])
+            return ("return", stripped[len("# Return=") :])
         if stripped.startswith("# Return.str="):
-            return ("return_str", stripped[len("# Return.str="):])
+            return ("return_str", stripped[len("# Return.str=") :])
         if stripped.startswith("# Return.type="):
-            return ("return_type", stripped[len("# Return.type="):])
+            return ("return_type", stripped[len("# Return.type=") :])
         if stripped.startswith("# Raise="):
-            return ("raise", stripped[len("# Raise="):])
+            return ("raise", stripped[len("# Raise=") :])
         if stripped.startswith("# NoException"):
             return ("noexception", "")
         if stripped.startswith("# ref-counts="):
@@ -50,7 +51,7 @@ def parse_expectation(filepath: Path) -> tuple[str, str]:
 
     # Check for TRACEBACK: docstring block (135 files use this pattern)
     traceback_match = re.search(
-        r'TRACEBACK:\s*\n.*?(\w+Error|\w+Exception|SyntaxError|ImportError)',
+        r"TRACEBACK:\s*\n.*?(\w+Error|\w+Exception|SyntaxError|ImportError)",
         text,
         re.DOTALL,
     )
@@ -163,9 +164,12 @@ def adapt_file(src: Path, dst: Path) -> bool:
         # exceptions where str(e) differs from the Raise= comment's message.
         try:
             import subprocess
+
             cp_result = subprocess.run(
                 [sys.executable, str(dst)],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if cp_result.returncode == 0 and cp_result.stdout.strip():
                 dst.with_suffix(".expected").write_text(cp_result.stdout.strip() + "\n")
@@ -202,9 +206,12 @@ def adapt_file(src: Path, dst: Path) -> bool:
         # Generate expected by running through CPython (same as raise handler)
         try:
             import subprocess
+
             cp_result = subprocess.run(
                 [sys.executable, str(dst)],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if cp_result.returncode == 0 and cp_result.stdout.strip():
                 dst.with_suffix(".expected").write_text(cp_result.stdout.strip() + "\n")
@@ -234,6 +241,7 @@ def main() -> int:
     # Clean previous run to avoid stale files from skipped tests
     if dst_dir.exists():
         import shutil
+
         shutil.rmtree(dst_dir)
     dst_dir.mkdir(parents=True, exist_ok=True)
 

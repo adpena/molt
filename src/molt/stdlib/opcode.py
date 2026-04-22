@@ -26,10 +26,8 @@ __all__ = [
     "EXTENDED_ARG",
 ]
 
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
-    "molt_import_smoke_runtime_ready")
-_MOLT_OPCODE_PAYLOAD_312_JSON = _require_intrinsic(
-    "molt_opcode_payload_312_json")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_OPCODE_PAYLOAD_312_JSON = _require_intrinsic("molt_opcode_payload_312_json")
 
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
@@ -131,5 +129,6 @@ del _PAYLOAD
 
 def is_pseudo(op):
     return MIN_PSEUDO_OPCODE <= op <= MAX_PSEUDO_OPCODE
+
 
 globals().pop("_require_intrinsic", None)

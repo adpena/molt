@@ -8,18 +8,16 @@
 # from both the Box subclass (via decorators) and from installed plugins.
 
 import json
-import sys
 
 from edgebox.plugin import PluginRegistry, _set_current_box
-from edgebox.events import EventBus
 from edgebox.settings import Settings, load_manifest_config, load_manifest_plugins
-from edgebox.types import Event
 
 
 # ---------------------------------------------------------------------------
 # Decorator: @tool(name=..., description=...)
 # Marks a method as an MCP-callable tool.
 # ---------------------------------------------------------------------------
+
 
 def tool(name="", description=""):
     """Decorator that registers a method as a Box tool."""
@@ -38,6 +36,7 @@ def tool(name="", description=""):
 # Marks a method as a scheduled alarm handler.
 # ---------------------------------------------------------------------------
 
+
 def alarm(name):
     """Decorator that registers a method as a Box alarm handler."""
 
@@ -52,6 +51,7 @@ def alarm(name):
 # ---------------------------------------------------------------------------
 # Base Box class
 # ---------------------------------------------------------------------------
+
 
 class Box:
     """Base class for all edgebox boxes.
@@ -176,10 +176,12 @@ class Box:
         while idx < len(names):
             name = names[idx]
             method = self._tools[name]
-            result.append({
-                "name": name,
-                "description": getattr(method, "_tool_description", ""),
-            })
+            result.append(
+                {
+                    "name": name,
+                    "description": getattr(method, "_tool_description", ""),
+                }
+            )
             idx = idx + 1
 
         # Plugin tools
@@ -188,10 +190,12 @@ class Box:
         while idx < len(plugin_tools):
             t = plugin_tools[idx]
             idx = idx + 1
-            result.append({
-                "name": t.name,
-                "description": t.description,
-            })
+            result.append(
+                {
+                    "name": t.name,
+                    "description": t.description,
+                }
+            )
 
         return result
 
@@ -241,6 +245,7 @@ class Box:
         # MCP endpoint
         if path == "/mcp":
             from edgebox.mcp import handle_mcp
+
             response = handle_mcp(self, req)
             return self._apply_after_middleware(req, response)
 

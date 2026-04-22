@@ -110,9 +110,7 @@ def NamedTemporaryFile(
 
     # Close the raw fd and re-open with the requested mode
     _os.close(fd)
-    handle = open(
-        path, mode, buffering=buffering, encoding=encoding, newline=newline
-    )
+    handle = open(path, mode, buffering=buffering, encoding=encoding, newline=newline)
     return _NamedTemporaryFile(handle, path, should_delete)
 
 
@@ -145,5 +143,6 @@ class TemporaryDirectory:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.cleanup()
+
 
 globals().pop("_require_intrinsic", None)

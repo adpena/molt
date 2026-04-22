@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import math
 from tinygrad.tensor import Tensor
-from tinygrad.dtypes import dtypes
 
 
 # ln(2) for base conversion: exp(x) = exp2(x / ln(2))
@@ -84,9 +83,7 @@ def flash_attention_v3(
 
     seq_len, d_k = q.shape
     if k.shape != (seq_len, d_k) or v.shape != (seq_len, d_k):
-        raise ValueError(
-            f"Shape mismatch: q={q.shape}, k={k.shape}, v={v.shape}"
-        )
+        raise ValueError(f"Shape mismatch: q={q.shape}, k={k.shape}, v={v.shape}")
 
     # Compute block sizes: Br = min(d_k, 128), Bc = min(d_k, 128)
     br = block_br if block_br is not None else min(d_k, 128)
@@ -185,14 +182,13 @@ def flash_attention_v3(
                 output[qi * d_k + d] *= inv_sum
 
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     shape = (seq_len, d_k)
     op = LazyOp("LOAD", (), dtype=q.dtype, shape=shape)
     return Tensor(LazyBuffer(op, q.dtype, shape, data=output))
 
 
-def naive_attention(
-    q: Tensor, k: Tensor, v: Tensor, causal: bool = False
-) -> Tensor:
+def naive_attention(q: Tensor, k: Tensor, v: Tensor, causal: bool = False) -> Tensor:
     """Naive O(n^2) attention for correctness reference.
 
     attention(Q, K, V) = softmax(Q @ K^T / sqrt(d_k)) @ V
@@ -246,6 +242,7 @@ def naive_attention(
                 output[i * d_k + d] += w * v_data[j * d_k + d]
 
     from tinygrad.lazy import LazyOp, LazyBuffer
+
     shape = (seq_len, d_k)
     op = LazyOp("LOAD", (), dtype=q.dtype, shape=shape)
     return Tensor(LazyBuffer(op, q.dtype, shape, data=output))

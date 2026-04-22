@@ -59,9 +59,20 @@ class OpIR:
     def to_dict(self) -> dict:
         d: dict = {"kind": self.kind}
         for fld in (
-            "value", "f_value", "s_value", "var", "args", "out",
-            "fast_int", "fast_float", "type_hint", "bytes",
-            "task_kind", "container_type", "stack_eligible", "raw_int",
+            "value",
+            "f_value",
+            "s_value",
+            "var",
+            "args",
+            "out",
+            "fast_int",
+            "fast_float",
+            "type_hint",
+            "bytes",
+            "task_kind",
+            "container_type",
+            "stack_eligible",
+            "raw_int",
         ):
             v = getattr(self, fld)
             if v is not None:
@@ -158,9 +169,28 @@ TOKEN_PATTERNS = [
 ]
 
 KEYWORDS = {
-    "local", "function", "end", "if", "then", "else", "elseif",
-    "for", "do", "while", "repeat", "until", "return", "and", "or",
-    "not", "true", "false", "nil", "in", "break", "continue",
+    "local",
+    "function",
+    "end",
+    "if",
+    "then",
+    "else",
+    "elseif",
+    "for",
+    "do",
+    "while",
+    "repeat",
+    "until",
+    "return",
+    "and",
+    "or",
+    "not",
+    "true",
+    "false",
+    "nil",
+    "in",
+    "break",
+    "continue",
 }
 
 _token_re = re.compile(
@@ -299,11 +329,13 @@ class LuauPhysicsParser:
         # Ensure function ends with a return
         if not ops or ops[-1].kind not in ("ret", "ret_void"):
             ops.append(OpIR(kind="ret_void"))
-        self.functions.append(FunctionIR(
-            name=name_tok.value,
-            params=params,
-            ops=ops,
-        ))
+        self.functions.append(
+            FunctionIR(
+                name=name_tok.value,
+                params=params,
+                ops=ops,
+            )
+        )
 
     def _parse_module_function(self) -> None:
         self.expect("KW_FUNCTION")
@@ -317,11 +349,13 @@ class LuauPhysicsParser:
         self.expect("KW_END")
         if not ops or ops[-1].kind not in ("ret", "ret_void"):
             ops.append(OpIR(kind="ret_void"))
-        self.functions.append(FunctionIR(
-            name=full_name,
-            params=params,
-            ops=ops,
-        ))
+        self.functions.append(
+            FunctionIR(
+                name=full_name,
+                params=params,
+                ops=ops,
+            )
+        )
 
     def _parse_param_list(self) -> list[str]:
         self.expect("LPAREN")
@@ -366,7 +400,15 @@ class LuauPhysicsParser:
                     break
                 depth -= 1
                 self.advance()
-            elif depth == 0 and tok.type in ("COMMA", "KW_END", "KW_LOCAL", "KW_FUNCTION", "KW_IF", "KW_FOR", "KW_RETURN"):
+            elif depth == 0 and tok.type in (
+                "COMMA",
+                "KW_END",
+                "KW_LOCAL",
+                "KW_FUNCTION",
+                "KW_IF",
+                "KW_FOR",
+                "KW_RETURN",
+            ):
                 break
             elif depth == 0 and tok.value in (")", "]", "}"):
                 break
@@ -426,7 +468,9 @@ class LuauPhysicsParser:
                 ops.append(OpIR(kind="copy", args=[expr_var], out=name))
                 for i, extra in enumerate(extra_names):
                     # For multi-return, we need tuple_get
-                    ops.append(OpIR(kind="tuple_get", args=[expr_var], value=i + 1, out=extra))
+                    ops.append(
+                        OpIR(kind="tuple_get", args=[expr_var], value=i + 1, out=extra)
+                    )
             elif expr_var != name:
                 # Rename the last op's output to the target variable name
                 # This avoids store_local which doesn't populate 'defined'
@@ -482,8 +526,14 @@ class LuauPhysicsParser:
 
     def _parse_comparison(self, ops: list[OpIR]) -> str:
         left = self._parse_add_sub(ops)
-        cmp_ops = {"LT": "compare_lt", "GT": "compare_gt", "LTEQ": "compare_le",
-                    "GTEQ": "compare_ge", "EQ": "compare_eq", "NEQ": "compare_ne"}
+        cmp_ops = {
+            "LT": "compare_lt",
+            "GT": "compare_gt",
+            "LTEQ": "compare_le",
+            "GTEQ": "compare_ge",
+            "EQ": "compare_eq",
+            "NEQ": "compare_ne",
+        }
         while self.peek() and self.peek().type in cmp_ops:  # type: ignore[union-attr]
             op_tok = self.advance()
             right = self._parse_add_sub(ops)
@@ -510,7 +560,14 @@ class LuauPhysicsParser:
             right = self._parse_power(ops)
             out = self._temp()
             kind_map = {"STAR": "mul", "SLASH": "div", "PERCENT": "mod"}
-            ops.append(OpIR(kind=kind_map[op_tok.type], args=[left, right], out=out, fast_float=True))
+            ops.append(
+                OpIR(
+                    kind=kind_map[op_tok.type],
+                    args=[left, right],
+                    out=out,
+                    fast_float=True,
+                )
+            )
             left = out
         return left
 
@@ -556,7 +613,11 @@ class LuauPhysicsParser:
             self.advance()
             out = self._temp()
             val = float(tok.value)
-            if val == int(val) and "." not in tok.value and "e" not in tok.value.lower():
+            if (
+                val == int(val)
+                and "." not in tok.value
+                and "e" not in tok.value.lower()
+            ):
                 ops.append(OpIR(kind="const", out=out, value=int(val)))
             else:
                 ops.append(OpIR(kind="const_float", out=out, f_value=val))
@@ -631,20 +692,24 @@ class LuauPhysicsParser:
                 # Check for math intrinsics
                 if base in MATH_INTRINSICS:
                     intrinsic = MATH_INTRINSICS[base]
-                    ops.append(OpIR(
-                        kind="call_intrinsic",
-                        s_value=intrinsic,
-                        args=call_args,
-                        out=out,
-                        fast_float=True,
-                    ))
+                    ops.append(
+                        OpIR(
+                            kind="call_intrinsic",
+                            s_value=intrinsic,
+                            args=call_args,
+                            out=out,
+                            fast_float=True,
+                        )
+                    )
                 else:
-                    ops.append(OpIR(
-                        kind="call_func",
-                        s_value=base,
-                        args=call_args,
-                        out=out,
-                    ))
+                    ops.append(
+                        OpIR(
+                            kind="call_func",
+                            s_value=base,
+                            args=call_args,
+                            out=out,
+                        )
+                    )
                 base = out
 
             # Field access
@@ -660,11 +725,13 @@ class LuauPhysicsParser:
                 idx_var = self._parse_expression(ops)
                 self.expect("RBRACKET")
                 out = self._temp()
-                ops.append(OpIR(
-                    kind="get_item",
-                    args=[base, idx_var],
-                    out=out,
-                ))
+                ops.append(
+                    OpIR(
+                        kind="get_item",
+                        args=[base, idx_var],
+                        out=out,
+                    )
+                )
                 base = out
 
             else:
@@ -769,11 +836,17 @@ class LuauPhysicsParser:
 
         # Increment
         if step_var:
-            ops.append(OpIR(kind="add", args=[var_name, step_var], out=var_name, fast_float=True))
+            ops.append(
+                OpIR(
+                    kind="add", args=[var_name, step_var], out=var_name, fast_float=True
+                )
+            )
         else:
             one = self._temp()
             ops.append(OpIR(kind="const", out=one, value=1))
-            ops.append(OpIR(kind="add", args=[var_name, one], out=var_name, fast_float=True))
+            ops.append(
+                OpIR(kind="add", args=[var_name, one], out=var_name, fast_float=True)
+            )
 
         ops.append(OpIR(kind="jump", s_value=loop_label))
         ops.append(OpIR(kind="label", s_value=end_label))
@@ -794,12 +867,14 @@ class LuauPhysicsParser:
                 # Field store
                 key_tmp = self._temp()
                 ops.append(OpIR(kind="const_string", out=key_tmp, s_value=field))
-                ops.append(OpIR(kind="set_attr", args=[name, key_tmp, val_var], s_value=field))
+                ops.append(
+                    OpIR(kind="set_attr", args=[name, key_tmp, val_var], s_value=field)
+                )
                 return
 
             # Could be a function call: Module.func(...)
             if self.peek() and self.peek().type == "LPAREN":  # type: ignore[union-attr]
-                result = self._parse_postfix(ops, target)
+                self._parse_postfix(ops, target)
                 return
 
         # Simple assignment or compound assignment
@@ -819,7 +894,9 @@ class LuauPhysicsParser:
             self.advance()  # +
             self.advance()  # =
             val_var = self._parse_expression(ops)
-            ops.append(OpIR(kind="add", args=[name, val_var], out=name, fast_float=True))
+            ops.append(
+                OpIR(kind="add", args=[name, val_var], out=name, fast_float=True)
+            )
             return
 
         # Bare function call
@@ -861,7 +938,9 @@ def parse_luau_file(path: Path, function_filter: str | None = None) -> SimpleIR:
     return ir
 
 
-def parse_physics_directory(physics_dir: Path, function_filter: str | None = None) -> SimpleIR:
+def parse_physics_directory(
+    physics_dir: Path, function_filter: str | None = None
+) -> SimpleIR:
     """Parse all .luau files in a physics directory."""
     combined = SimpleIR()
     for luau_file in sorted(physics_dir.glob("*.luau")):
@@ -871,7 +950,10 @@ def parse_physics_directory(physics_dir: Path, function_filter: str | None = Non
         try:
             ir = parse_luau_file(luau_file, function_filter)
             combined.functions.extend(ir.functions)
-            print(f"  Parsed {luau_file.name}: {len(ir.functions)} functions", file=sys.stderr)
+            print(
+                f"  Parsed {luau_file.name}: {len(ir.functions)} functions",
+                file=sys.stderr,
+            )
         except SyntaxError as e:
             print(f"  SKIP {luau_file.name}: {e}", file=sys.stderr)
     return combined
@@ -886,10 +968,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Transpile Vertigo physics Luau modules to Molt SimpleIR"
     )
-    parser.add_argument("--input", required=True, help="Path to .luau file or directory")
-    parser.add_argument("--output", default="-", help="Output JSON file (default: stdout)")
-    parser.add_argument("--function", default=None, help="Only emit functions matching this name")
-    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
+    parser.add_argument(
+        "--input", required=True, help="Path to .luau file or directory"
+    )
+    parser.add_argument(
+        "--output", default="-", help="Output JSON file (default: stdout)"
+    )
+    parser.add_argument(
+        "--function", default=None, help="Only emit functions matching this name"
+    )
+    parser.add_argument(
+        "--pretty", action="store_true", help="Pretty-print JSON output"
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -903,7 +993,10 @@ def main() -> None:
 
     print(f"Total functions: {len(ir.functions)}", file=sys.stderr)
     for func in ir.functions:
-        print(f"  {func.name}({', '.join(func.params)}): {len(func.ops)} ops", file=sys.stderr)
+        print(
+            f"  {func.name}({', '.join(func.params)}): {len(func.ops)} ops",
+            file=sys.stderr,
+        )
 
     indent = 2 if args.pretty else None
     json_str = json.dumps(ir.to_dict(), indent=indent)

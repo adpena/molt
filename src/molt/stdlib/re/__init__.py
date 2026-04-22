@@ -13,9 +13,7 @@ _molt_re_finditer_collect = _require_intrinsic("molt_re_finditer_collect")
 _molt_re_pattern_info = _require_intrinsic("molt_re_pattern_info")
 _molt_re_strip_verbose = _require_intrinsic("molt_re_strip_verbose")
 _molt_re_fullmatch_check = _require_intrinsic("molt_re_fullmatch_check")
-_molt_re_expand_replacement = _require_intrinsic(
-    "molt_re_expand_replacement"
-)
+_molt_re_expand_replacement = _require_intrinsic("molt_re_expand_replacement")
 _molt_re_group_values = _require_intrinsic("molt_re_group_values")
 _molt_re_split = _require_intrinsic("molt_re_split")
 _molt_re_sub = _require_intrinsic("molt_re_sub")
@@ -474,5 +472,6 @@ def escape(pattern: object) -> str:
     if not isinstance(pattern, str):
         pattern = str(pattern)
     return _molt_re_escape(pattern)
+
 
 globals().pop("_require_intrinsic", None)

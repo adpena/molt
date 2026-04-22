@@ -153,10 +153,10 @@ def _parse_python_effect_classes(text: str) -> dict[str, set[str]]:
     m = re.search(r"def _op_effect_class\(self, op_kind: str\) -> str:", text)
     if not m:
         return classes
-    method_body = text[m.end():]
+    method_body = text[m.end() :]
     end_match = re.search(r"\n    def ", method_body)
     if end_match:
-        method_body = method_body[:end_match.start()]
+        method_body = method_body[: end_match.start()]
     for block_match in re.finditer(
         r'if\s+op_kind\s+in\s+\{([^}]+)\}:\s*\n\s*return\s+"(\w+)"',
         method_body,
@@ -209,7 +209,11 @@ def check_nanbox_constants(verbose: bool) -> bool:
         lv = lean_consts[lean_name]
         rv = rust_consts[rust_name]
         if lv != rv:
-            print(red(f"  FAIL: {lean_name}/{rust_name}: Lean=0x{lv:016x} Rust=0x{rv:016x}"))
+            print(
+                red(
+                    f"  FAIL: {lean_name}/{rust_name}: Lean=0x{lv:016x} Rust=0x{rv:016x}"
+                )
+            )
             ok = False
         elif verbose:
             print(green(f"  ok: {lean_name}/{rust_name} = 0x{lv:016x}"))
@@ -245,8 +249,17 @@ def check_operator_counts(verbose: bool) -> bool:
             missing_binops.append(v)
     if missing_binops:
         # Some are acceptable (bitwise/advanced ops not in Python pure set)
-        acceptable = {"bit_and", "bit_or", "bit_xor", "lshift", "rshift",
-                       "div", "floordiv", "pow", "mod"}
+        acceptable = {
+            "bit_and",
+            "bit_or",
+            "bit_xor",
+            "lshift",
+            "rshift",
+            "div",
+            "floordiv",
+            "pow",
+            "mod",
+        }
         real_missing = [m for m in missing_binops if m not in acceptable]
         if real_missing:
             print(red(f"  FAIL: Lean BinOps missing from Python: {real_missing}"))
@@ -271,7 +284,11 @@ def check_operator_counts(verbose: bool) -> bool:
             ok = False
 
     if ok:
-        print(green(f"  BinOp: {len(lean_binops)} variants, UnOp: {len(lean_unops)} variants -- aligned"))
+        print(
+            green(
+                f"  BinOp: {len(lean_binops)} variants, UnOp: {len(lean_unops)} variants -- aligned"
+            )
+        )
     return ok
 
 
@@ -299,7 +316,11 @@ def check_pure_op_alignment(verbose: bool) -> bool:
     for op in expected_pure_binops:
         if op in [v for v in lean_binops]:
             if op.upper() not in pure_ops:
-                print(red(f"  FAIL: BinOp.{op} in Lean but {op.upper()} not in Python pure ops"))
+                print(
+                    red(
+                        f"  FAIL: BinOp.{op} in Lean but {op.upper()} not in Python pure ops"
+                    )
+                )
                 ok = False
             elif verbose:
                 print(green(f"  ok: BinOp.{op} -> {op.upper()} is pure"))
@@ -307,7 +328,11 @@ def check_pure_op_alignment(verbose: bool) -> bool:
     for op in expected_pure_unops:
         if op in [v for v in lean_unops]:
             if op.upper() not in pure_ops:
-                print(red(f"  FAIL: UnOp.{op} in Lean but {op.upper()} not in Python pure ops"))
+                print(
+                    red(
+                        f"  FAIL: UnOp.{op} in Lean but {op.upper()} not in Python pure ops"
+                    )
+                )
                 ok = False
             elif verbose:
                 print(green(f"  ok: UnOp.{op} -> {op.upper()} is pure"))
@@ -355,7 +380,9 @@ def check_compiler_passes(verbose: bool) -> bool:
             print(green(f"  ok: {pass_name}: {filename} + {pass_name}Correct.lean"))
 
     if ok:
-        print(green(f"  {len(passes)} passes verified (definition + correctness proof)"))
+        print(
+            green(f"  {len(passes)} passes verified (definition + correctness proof)")
+        )
     return ok
 
 

@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.wasm_linked_runner import build_wasm_linked, require_wasm_toolchain, run_wasm_linked
+from tests.wasm_linked_runner import (
+    build_wasm_linked,
+    require_wasm_toolchain,
+    run_wasm_linked,
+)
 
 
 def _flatten_numeric(values):

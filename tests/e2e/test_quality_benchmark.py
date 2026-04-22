@@ -26,7 +26,6 @@ import math
 import os
 import struct
 import sys
-from pathlib import Path
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -35,7 +34,9 @@ from typing import Optional
 
 _SNAP_DIR = os.path.join(
     os.path.expanduser("~"),
-    ".cache", "molt", "falcon-ocr",
+    ".cache",
+    "molt",
+    "falcon-ocr",
     "models--tiiuae--Falcon-OCR",
     "snapshots",
     "3a4d95a8b0008f7430df30a82cf35e6c3b6bcb66",
@@ -50,8 +51,12 @@ _INT8_CONFIG_PATH = os.path.join(_INT8_SHARD_DIR, "config.json")
 _INT8_SCALES_PATH = os.path.join(_INT8_SHARD_DIR, "scales.json")
 _INT8_INDEX_PATH = os.path.join(_INT8_SHARD_DIR, "model.safetensors.index.json")
 
-_F32_AVAILABLE = os.path.isfile(_F32_MODEL_PATH) and os.path.getsize(_F32_MODEL_PATH) > 1_000_000
-_INT8_AVAILABLE = os.path.isfile(_INT8_CONFIG_PATH) and os.path.isfile(_INT8_SCALES_PATH)
+_F32_AVAILABLE = (
+    os.path.isfile(_F32_MODEL_PATH) and os.path.getsize(_F32_MODEL_PATH) > 1_000_000
+)
+_INT8_AVAILABLE = os.path.isfile(_INT8_CONFIG_PATH) and os.path.isfile(
+    _INT8_SCALES_PATH
+)
 _TOKENIZER_AVAILABLE = os.path.isfile(_TOKENIZER_PATH)
 _WEIGHTS_AVAILABLE = _F32_AVAILABLE or _INT8_AVAILABLE
 
@@ -60,6 +65,7 @@ def _skip_if_no_weights():
     if not _WEIGHTS_AVAILABLE:
         try:
             import pytest
+
             pytest.skip("Falcon-OCR weights not downloaded (F32 or INT8)")
         except ImportError:
             print("SKIP: Falcon-OCR weights not downloaded")
@@ -69,10 +75,12 @@ def _skip_if_no_weights():
 def _skip_if_no_pillow():
     try:
         from PIL import Image, ImageDraw, ImageFont  # noqa: F401
+
         return True
     except ImportError:
         try:
             import pytest
+
             pytest.skip("Pillow not installed")
         except ImportError:
             print("SKIP: Pillow not installed")
@@ -83,6 +91,7 @@ def _skip_if_no_pillow():
 # ---------------------------------------------------------------------------
 # SafeTensors parser
 # ---------------------------------------------------------------------------
+
 
 def read_safetensors(path: str) -> dict:
     """Parse safetensors into {name: {shape, dtype, data_bytes}}."""
@@ -126,8 +135,9 @@ def load_int8_sharded_tensors() -> dict:
     return all_tensors
 
 
-def tensor_to_floats(tensor_info: dict, scales: Optional[dict] = None,
-                     tensor_name: Optional[str] = None) -> list[float]:
+def tensor_to_floats(
+    tensor_info: dict, scales: Optional[dict] = None, tensor_name: Optional[str] = None
+) -> list[float]:
     """Convert a tensor's raw bytes to a list of float values."""
     dtype = tensor_info["dtype"]
     data = tensor_info["data"]
@@ -161,6 +171,7 @@ def tensor_to_floats(tensor_info: dict, scales: Optional[dict] = None,
 # Synthetic invoice generation
 # ---------------------------------------------------------------------------
 
+
 def generate_synthetic_invoices():
     """Generate 10 synthetic invoice images with exact known text.
 
@@ -174,7 +185,11 @@ def generate_synthetic_invoices():
             "number": "INV-2026-00142",
             "date": "2026-04-14",
             "total": "$4,285.50",
-            "items": ["Widget Pro x10 @ $199.00", "Service Fee $295.50", "Shipping $40.00"],
+            "items": [
+                "Widget Pro x10 @ $199.00",
+                "Service Fee $295.50",
+                "Shipping $40.00",
+            ],
             "company": "Acme Corp",
         },
         {
@@ -190,7 +205,12 @@ def generate_synthetic_invoices():
             "number": "REC-88431",
             "date": "03/28/2026",
             "total": "$87.63",
-            "items": ["Coffee Beans 2lb $24.99", "Milk Frother $42.99", "Tax $6.15", "Tip $13.50"],
+            "items": [
+                "Coffee Beans 2lb $24.99",
+                "Milk Frother $42.99",
+                "Tax $6.15",
+                "Tip $13.50",
+            ],
             "company": "Bean & Brew",
         },
         {
@@ -206,7 +226,11 @@ def generate_synthetic_invoices():
             "number": "BL-20260414-001",
             "date": "14 Apr 2026",
             "total": "GBP 1,299.99",
-            "items": ["Annual Subscription GBP 999.99", "VAT @ 20% GBP 200.00", "Credit GBP -100.00"],
+            "items": [
+                "Annual Subscription GBP 999.99",
+                "VAT @ 20% GBP 200.00",
+                "Credit GBP -100.00",
+            ],
             "company": "CloudServ Ltd",
         },
         {
@@ -292,7 +316,10 @@ def generate_synthetic_invoices():
         # Extract RGB bytes
         rgb_data = img.tobytes()
         expected_text_parts = [
-            inv["company"], inv["title"], inv["number"], inv["date"],
+            inv["company"],
+            inv["title"],
+            inv["number"],
+            inv["date"],
             inv["total"],
         ] + inv["items"]
         expected_text = "\n".join(expected_text_parts)
@@ -306,6 +333,7 @@ def generate_synthetic_invoices():
 # Embedding quality analysis
 # ---------------------------------------------------------------------------
 
+
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors."""
     dot = sum(x * y for x, y in zip(a, b))
@@ -316,10 +344,17 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def compute_patch_embedding(rgb_data: bytes, width: int, height: int,
-                            proj_weights: list[float], proj_shape: list[int],
-                            patch_size: int = 16, channels: int = 3,
-                            patch_x: int = 0, patch_y: int = 0) -> list[float]:
+def compute_patch_embedding(
+    rgb_data: bytes,
+    width: int,
+    height: int,
+    proj_weights: list[float],
+    proj_shape: list[int],
+    patch_size: int = 16,
+    channels: int = 3,
+    patch_x: int = 0,
+    patch_y: int = 0,
+) -> list[float]:
     """Compute patch embeddings using the image projector weights.
 
     The image projector maps (patch_size * patch_size * channels) -> dim.
@@ -375,6 +410,7 @@ def entropy(logits: list[float]) -> float:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_embedding_discrimination():
     """Different image patches must produce different embeddings.
@@ -443,20 +479,26 @@ def test_embedding_discrimination():
     emb2_norm = math.sqrt(sum(x * x for x in emb2))
     emb3_norm = math.sqrt(sum(x * x for x in emb3))
 
-    print(f"  emb norms: text={emb1_norm:.4f}, diagonal={emb2_norm:.4f}, gray={emb3_norm:.4f}")
+    print(
+        f"  emb norms: text={emb1_norm:.4f}, diagonal={emb2_norm:.4f}, gray={emb3_norm:.4f}"
+    )
 
     assert emb1_norm > 0.01, "Text patch embedding has zero norm — projector is dead"
-    assert emb2_norm > 0.01, "Diagonal patch embedding has zero norm — projector is dead"
+    assert emb2_norm > 0.01, (
+        "Diagonal patch embedding has zero norm — projector is dead"
+    )
 
     # Pairwise similarities should NOT all be 1.0 (that would mean the projector
     # maps everything to the same vector).
-    assert not (abs(sim_12 - 1.0) < 0.01 and abs(sim_13 - 1.0) < 0.01), \
+    assert not (abs(sim_12 - 1.0) < 0.01 and abs(sim_13 - 1.0) < 0.01), (
         "All embeddings are identical — projector has collapsed"
+    )
 
     # At least one pair must be meaningfully different
     min_sim = min(abs(sim_12), abs(sim_13), abs(sim_23))
-    assert min_sim < 0.99, \
+    assert min_sim < 0.99, (
         "All pairwise similarities > 0.99 — projector does not discriminate"
+    )
 
     print("  PASS: Embeddings are discriminative")
 
@@ -473,6 +515,7 @@ def test_vocabulary_coverage():
     if not _TOKENIZER_AVAILABLE:
         try:
             import pytest
+
             pytest.skip("tokenizer.json not found")
         except ImportError:
             print("SKIP: tokenizer.json not found")
@@ -500,24 +543,48 @@ def test_vocabulary_coverage():
         # Currency symbols
         ("dollar_sign", lambda: "$" in vocab_strings or "Ġ$" in vocab_strings),
         # Common invoice words (check as subwords too)
-        ("invoice_token", lambda: any(
-            t in vocab_strings for t in [
-                "Invoice", "invoice", "INVOICE", "Inv", "inv",
-                "ĠInvoice", "Ġinvoice",
-            ]
-        )),
-        ("total_token", lambda: any(
-            t in vocab_strings for t in [
-                "Total", "total", "TOTAL", "Tot",
-                "ĠTotal", "Ġtotal",
-            ]
-        )),
-        ("date_token", lambda: any(
-            t in vocab_strings for t in [
-                "Date", "date", "DATE",
-                "ĠDate", "Ġdate",
-            ]
-        )),
+        (
+            "invoice_token",
+            lambda: any(
+                t in vocab_strings
+                for t in [
+                    "Invoice",
+                    "invoice",
+                    "INVOICE",
+                    "Inv",
+                    "inv",
+                    "ĠInvoice",
+                    "Ġinvoice",
+                ]
+            ),
+        ),
+        (
+            "total_token",
+            lambda: any(
+                t in vocab_strings
+                for t in [
+                    "Total",
+                    "total",
+                    "TOTAL",
+                    "Tot",
+                    "ĠTotal",
+                    "Ġtotal",
+                ]
+            ),
+        ),
+        (
+            "date_token",
+            lambda: any(
+                t in vocab_strings
+                for t in [
+                    "Date",
+                    "date",
+                    "DATE",
+                    "ĠDate",
+                    "Ġdate",
+                ]
+            ),
+        ),
         # Punctuation
         ("period", lambda: "." in vocab_strings),
         ("comma", lambda: "," in vocab_strings),
@@ -541,8 +608,9 @@ def test_vocabulary_coverage():
     total = len(critical_patterns)
     pass_rate = passed / total
     print(f"\nVocabulary coverage: {passed}/{total} ({pass_rate * 100:.0f}%)")
-    assert pass_rate >= 0.8, \
+    assert pass_rate >= 0.8, (
         f"Vocabulary coverage too low: {passed}/{total} critical patterns found"
+    )
     print("  PASS: Vocabulary covers invoice-relevant tokens")
 
 
@@ -664,25 +732,32 @@ def test_logit_distribution():
     print(f"  top-5 logits:  {[(idx, f'{val:.4f}') for idx, val in top5]}")
     print(f"  bottom-5:      {[(idx, f'{val:.4f}') for idx, val in bot5]}")
     print(f"  logit range:   {min(logits):.4f} to {max(logits):.4f}")
-    print(f"  logit std:     {(sum((v - sum(logits)/len(logits))**2 for v in logits) / len(logits))**0.5:.4f}")
+    print(
+        f"  logit std:     {(sum((v - sum(logits) / len(logits)) ** 2 for v in logits) / len(logits)) ** 0.5:.4f}"
+    )
 
     # With a synthetic hidden state, the distribution will be less peaked
     # than real inference. We check two weaker but still meaningful conditions:
     #   1. The logit range is non-trivial (not all zeros — weights are non-degenerate)
     #   2. The standard deviation is > 0 (outputs vary across vocabulary)
     logit_range = max(logits) - min(logits)
-    logit_std = (sum((v - sum(logits)/len(logits))**2 for v in logits) / len(logits))**0.5
+    logit_std = (
+        sum((v - sum(logits) / len(logits)) ** 2 for v in logits) / len(logits)
+    ) ** 0.5
 
-    assert logit_range > 0.01, \
+    assert logit_range > 0.01, (
         f"Logit range is near-zero ({logit_range:.6f}). Output projection may be dead."
-    assert logit_std > 0.01, \
+    )
+    assert logit_std > 0.01, (
         f"Logit std is near-zero ({logit_std:.6f}). Output projection is degenerate."
+    )
 
     # Entropy ratio check: with synthetic hidden state, near-uniform is expected.
     # But the distribution must not be PERFECTLY uniform (ratio == 1.0).
-    assert entropy_ratio < 1.0 - 1e-6, \
-        f"Logit distribution is perfectly uniform (ratio {entropy_ratio:.8f}). " \
+    assert entropy_ratio < 1.0 - 1e-6, (
+        f"Logit distribution is perfectly uniform (ratio {entropy_ratio:.8f}). "
         f"Output projection produces identical logits for all tokens."
+    )
 
     print("  PASS: Output projection produces non-degenerate logit distribution")
 
@@ -697,6 +772,7 @@ def test_int8_embedding_fidelity():
     if not (_F32_AVAILABLE and _INT8_AVAILABLE):
         try:
             import pytest
+
             pytest.skip("Need both F32 and INT8 weights for fidelity test")
         except ImportError:
             print("SKIP: Need both F32 and INT8 weights")
@@ -736,10 +812,12 @@ def test_int8_embedding_fidelity():
     weight_sim = cosine_similarity(f32_proj[:n], int8_proj[:n])
     print(f"INT8 vs F32 weight cosine similarity (first {n}): {weight_sim:.6f}")
 
-    assert sim > 0.90, \
+    assert sim > 0.90, (
         f"INT8 embedding fidelity too low: cosine={sim:.4f} (need > 0.90)"
-    assert weight_sim > 0.95, \
+    )
+    assert weight_sim > 0.95, (
         f"INT8 weight fidelity too low: cosine={weight_sim:.4f} (need > 0.95)"
+    )
 
     print("  PASS: INT8 quantization preserves embedding fidelity")
 
@@ -778,10 +856,15 @@ def test_synthetic_invoice_patches():
         # white on all invoices, so we offset into the content area.
         # Use different patches for different invoices to maximize discrimination.
         patch_y = 20 + (idx * 16) % 80  # stagger vertically across invoices
-        patch_x = 16 + (idx * 8) % 64   # stagger horizontally
+        patch_x = 16 + (idx * 8) % 64  # stagger horizontally
         emb = compute_patch_embedding(
-            rgb_data, width, height, proj_floats, proj_shape,
-            patch_x=patch_x, patch_y=patch_y,
+            rgb_data,
+            width,
+            height,
+            proj_floats,
+            proj_shape,
+            patch_x=patch_x,
+            patch_y=patch_y,
         )
         embeddings.append((inv_data["company"], emb))
 
@@ -810,6 +893,7 @@ def test_synthetic_invoice_patches():
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
+
 
 def main():
     """Run all quality benchmarks."""

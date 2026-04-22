@@ -34,11 +34,11 @@ def _render_compat_summary(audit_text: str, platform_text: str) -> str:
     intrinsic_backed = _extract_count(audit_text, "`intrinsic-backed`")
     intrinsic_partial = _extract_count(audit_text, "`intrinsic-partial`")
     python_only = _extract_count(audit_text, "`python-only`")
-    availability = _extract_count(platform_text, "Modules with explicit Availability metadata")
-    wasi_blocked = _extract_count(platform_text, "WASI blocked (any lane)")
-    emscripten_blocked = _extract_count(
-        platform_text, "Emscripten blocked (any lane)"
+    availability = _extract_count(
+        platform_text, "Modules with explicit Availability metadata"
     )
+    wasi_blocked = _extract_count(platform_text, "WASI blocked (any lane)")
+    emscripten_blocked = _extract_count(platform_text, "Emscripten blocked (any lane)")
     return "\n".join(
         [
             (

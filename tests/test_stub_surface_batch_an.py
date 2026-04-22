@@ -50,7 +50,9 @@ def _install_intrinsics() -> tuple[types.ModuleType | None, object]:
     return previous_intrinsics_mod, previous_builtins
 
 
-def _restore_intrinsics(previous_intrinsics_mod: types.ModuleType | None, previous_builtins: object) -> None:
+def _restore_intrinsics(
+    previous_intrinsics_mod: types.ModuleType | None, previous_builtins: object
+) -> None:
     if previous_intrinsics_mod is None:
         sys.modules.pop("_intrinsics", None)
     else:
@@ -76,17 +78,22 @@ def _load_module(path: Path, module_name: str) -> types.ModuleType:
 
 def test_unittest_sqlite3_and_test_support_hide_raw_capability_intrinsic() -> None:
     previous_intrinsics_mod, previous_builtins = _install_intrinsics()
-    previous_modules = {name: sys.modules.get(name) for name in [
-        "test",
-        "test.support",
-        "test.support._fallback_support",
-        "test.support.os_helper",
-        "test.support.import_helper",
-        "test.support.warnings_helper",
-    ]}
+    previous_modules = {
+        name: sys.modules.get(name)
+        for name in [
+            "test",
+            "test.support",
+            "test.support._fallback_support",
+            "test.support.os_helper",
+            "test.support.import_helper",
+            "test.support.warnings_helper",
+        ]
+    }
     try:
         for index, path in enumerate(UNITTEST_STUBS):
-            module = _load_module(path, f"_molt_test_stub_surface_batch_an_unittest_{index}")
+            module = _load_module(
+                path, f"_molt_test_stub_surface_batch_an_unittest_{index}"
+            )
             assert "molt_capabilities_has" not in module.__dict__
             assert "_MOLT_CAPABILITIES_HAS" in module.__dict__
             try:
@@ -94,10 +101,14 @@ def test_unittest_sqlite3_and_test_support_hide_raw_capability_intrinsic() -> No
             except RuntimeError as exc:
                 assert "only an intrinsic-first stub is available" in str(exc)
             else:
-                raise AssertionError(f"{path} did not raise RuntimeError from __getattr__")
+                raise AssertionError(
+                    f"{path} did not raise RuntimeError from __getattr__"
+                )
 
         for index, path in enumerate(SQLITE3_STUBS):
-            module = _load_module(path, f"_molt_test_stub_surface_batch_an_sqlite3_{index}")
+            module = _load_module(
+                path, f"_molt_test_stub_surface_batch_an_sqlite3_{index}"
+            )
             assert "molt_capabilities_has" not in module.__dict__
             assert "_MOLT_CAPABILITIES_HAS" in module.__dict__
             try:
@@ -105,7 +116,9 @@ def test_unittest_sqlite3_and_test_support_hide_raw_capability_intrinsic() -> No
             except RuntimeError as exc:
                 assert "only an intrinsic-first stub is available" in str(exc)
             else:
-                raise AssertionError(f"{path} did not raise RuntimeError from __getattr__")
+                raise AssertionError(
+                    f"{path} did not raise RuntimeError from __getattr__"
+                )
 
         test_pkg = types.ModuleType("test")
         test_pkg.__path__ = [str(TEST_SUPPORT_PACKAGE.parent)]
@@ -115,9 +128,12 @@ def test_unittest_sqlite3_and_test_support_hide_raw_capability_intrinsic() -> No
         sys.modules["test.support"] = support_pkg
 
         fallback = _load_module(
-            TEST_SUPPORT_PACKAGE / "_fallback_support.py", "test.support._fallback_support"
+            TEST_SUPPORT_PACKAGE / "_fallback_support.py",
+            "test.support._fallback_support",
         )
-        os_helper = _load_module(TEST_SUPPORT_PACKAGE / "os_helper.py", "test.support.os_helper")
+        os_helper = _load_module(
+            TEST_SUPPORT_PACKAGE / "os_helper.py", "test.support.os_helper"
+        )
         import_helper = _load_module(
             TEST_SUPPORT_PACKAGE / "import_helper.py", "test.support.import_helper"
         )

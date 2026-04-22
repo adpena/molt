@@ -5,6 +5,7 @@ Measures: integer arithmetic, modulo, sqrt approximation, tight loops.
 Uses Depyler's is_prime plus a counting loop to create meaningful work.
 """
 
+
 def is_prime(n: int) -> int:
     if n < 2:
         return 0

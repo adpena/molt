@@ -343,6 +343,9 @@ def _fail(
     return code
 
 
+_CliFailure = int | dict[str, Any]
+
+
 def _coerce_process_text(value: str | bytes | None) -> str:
     if value is None:
         return ""
@@ -1119,14 +1122,14 @@ class _FrontendLayerRuntimeHooks:
     record_frontend_timing: Callable[..., None]
     integrate_module_frontend_result: Callable[..., str | None]
     accumulate_midend_diagnostics: Callable[..., None]
-    fail: Callable[[str, bool, str], dict[str, Any] | None]
+    fail: Callable[..., _CliFailure]
     json_output: bool
     run_serial_frontend_lower: Callable[
         [str, Path],
         tuple[
             dict[str, Any] | None,
             "_FrontendModuleResultTimings | None",
-            dict[str, Any] | None,
+            _CliFailure | None,
         ],
     ]
 
@@ -1167,7 +1170,7 @@ class _SerialFrontendLoweringContext:
 @dataclass(frozen=True)
 class _SerialFrontendLoweringHooks:
     record_frontend_timing: Callable[..., None]
-    fail: Callable[[str, bool, str], dict[str, Any] | None]
+    fail: Callable[..., _CliFailure]
     json_output: bool
 
 
@@ -2058,7 +2061,7 @@ def _sbom_component_hashes(pkg: dict[str, Any]) -> list[dict[str, str]]:
 def _sbom_component_for_lock_pkg(
     pkg: dict[str, Any],
     allow: dict[str, set[str]],
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     name = pkg.get("name")
     if not isinstance(name, str) or not name.strip():
         return None
@@ -3248,7 +3251,7 @@ def _resolve_build_entry(
     json_output: bool,
     command: str = "build",
     lib_paths: list[str] | None = None,
-) -> tuple[_ResolvedBuildEntry | None, dict[str, Any] | None]:
+) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
     module_roots = _resolve_module_roots(
         project_root,
         cwd_root,
@@ -3362,7 +3365,7 @@ def _prepare_build_config(
     capabilities: CapabilityInput | None,
     capability_manifest: str | None = None,
     require_signed_manifest: bool = False,
-) -> tuple[_PreparedBuildConfig | None, dict[str, Any] | None]:
+) -> tuple[_PreparedBuildConfig | None, _CliFailure | None]:
     pgo_profile_summary: PgoProfileSummary | None = None
     pgo_profile_path: Path | None = None
     runtime_feedback_summary: RuntimeFeedbackSummary | None = None
@@ -3526,7 +3529,7 @@ def _prepare_build_preamble(
     diagnostics_verbosity: str | None,
     json_output: bool,
     target: Target,
-) -> tuple[_PreparedBuildPreamble | None, dict[str, Any] | None]:
+) -> tuple[_PreparedBuildPreamble | None, _CliFailure | None]:
     diagnostics_path_spec = (
         diagnostics_file.strip() if isinstance(diagnostics_file, str) else ""
     )
@@ -3638,7 +3641,7 @@ def _prepare_build_roots(
     deterministic: bool,
     deterministic_warn: bool,
     sysroot: str | None,
-) -> tuple[_PreparedBuildRoots | None, dict[str, Any] | None]:
+) -> tuple[_PreparedBuildRoots | None, _CliFailure | None]:
     cwd_root = _find_project_root(Path.cwd())
     project_root = (
         _find_project_root(Path(file_path).resolve()) if file_path else cwd_root
@@ -3702,7 +3705,7 @@ def _prepare_build_inputs(
         _ResolvedBuildEntry,
     ]
     | None,
-    dict[str, Any] | None,
+    _CliFailure | None,
 ]:
     prepared_build_preamble, prepared_build_preamble_error = _prepare_build_preamble(
         diagnostics=diagnostics,
@@ -3779,7 +3782,9 @@ def _resolve_module_roots(
     lib_paths: list[str] | None = None,
 ) -> list[Path]:
     module_roots: list[Path] = []
-    hermetic_module_roots = os.environ.get("MOLT_HERMETIC_MODULE_ROOTS", "").lower() in {
+    hermetic_module_roots = os.environ.get(
+        "MOLT_HERMETIC_MODULE_ROOTS", ""
+    ).lower() in {
         "1",
         "true",
         "yes",
@@ -3861,7 +3866,7 @@ def _resolve_wrapper_build_entry(
     json_output: bool,
     command: str,
     build_args: Sequence[str] = (),
-) -> tuple[_ResolvedBuildEntry | None, dict[str, Any] | None]:
+) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
     config = _load_molt_config(project_root)
     build_cfg = _resolve_build_config(config)
     respect_pythonpath = _build_args_respect_pythonpath(list(build_args))
@@ -6224,7 +6229,7 @@ def _build_midend_diagnostics_payload(
     requested_profile: BuildProfile,
     policy_outcomes_by_function: dict[str, dict[str, Any]],
     pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     if not policy_outcomes_by_function and not pass_stats_by_function:
         return None
 
@@ -7525,22 +7530,44 @@ def _runtime_cargo_features_cached(
     features: list[str] = []
     if target_triple is not None and target_triple.startswith("wasm32"):
         features.append("molt_gpu_primitives")
-        if True if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == "" else _coerce_bool(gpu_webgpu_raw, True):
+        if (
+            True
+            if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == ""
+            else _coerce_bool(gpu_webgpu_raw, True)
+        ):
             pass
         return tuple(features)
-    tk_enabled = True if tk_raw is None or tk_raw.strip() == "" else _coerce_bool(tk_raw, True)
+    tk_enabled = (
+        True if tk_raw is None or tk_raw.strip() == "" else _coerce_bool(tk_raw, True)
+    )
     if tk_enabled:
         features.append("molt_tk_native")
-    metal_enabled = False if gpu_metal_raw is None or gpu_metal_raw.strip() == "" else _coerce_bool(gpu_metal_raw, False)
+    metal_enabled = (
+        False
+        if gpu_metal_raw is None or gpu_metal_raw.strip() == ""
+        else _coerce_bool(gpu_metal_raw, False)
+    )
     if metal_enabled:
         features.append("molt_gpu_metal")
-    webgpu_enabled = False if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == "" else _coerce_bool(gpu_webgpu_raw, False)
+    webgpu_enabled = (
+        False
+        if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == ""
+        else _coerce_bool(gpu_webgpu_raw, False)
+    )
     if webgpu_enabled:
         features.append("molt_gpu_webgpu")
-    cuda_enabled = False if gpu_cuda_raw is None or gpu_cuda_raw.strip() == "" else _coerce_bool(gpu_cuda_raw, False)
+    cuda_enabled = (
+        False
+        if gpu_cuda_raw is None or gpu_cuda_raw.strip() == ""
+        else _coerce_bool(gpu_cuda_raw, False)
+    )
     if cuda_enabled:
         features.append("molt_gpu_cuda")
-    hip_enabled = False if gpu_hip_raw is None or gpu_hip_raw.strip() == "" else _coerce_bool(gpu_hip_raw, False)
+    hip_enabled = (
+        False
+        if gpu_hip_raw is None or gpu_hip_raw.strip() == ""
+        else _coerce_bool(gpu_hip_raw, False)
+    )
     if hip_enabled:
         features.append("molt_gpu_hip")
     return tuple(features)
@@ -7697,6 +7724,7 @@ def _resolved_modules_require_gpu_primitives(
         for prefix in _GPU_PRIMITIVE_IMPLYING_MODULE_PREFIXES
     )
 
+
 _SET_IMPLYING_MODULES = frozenset(
     {
         "email",
@@ -7836,10 +7864,10 @@ def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
     rustc_value = data.get("rustc")
     inputs_digest = data.get("inputs_digest")
     meta_digest = data.get("meta_digest")
-    if (rustc_value is None or isinstance(rustc_value, str)) and (
-        inputs_digest is None or isinstance(inputs_digest, str)
-    ) and (
-        meta_digest is None or isinstance(meta_digest, str)
+    if (
+        (rustc_value is None or isinstance(rustc_value, str))
+        and (inputs_digest is None or isinstance(inputs_digest, str))
+        and (meta_digest is None or isinstance(meta_digest, str))
     ):
         return data
     if rustc_value is not None and not isinstance(rustc_value, str):
@@ -8313,7 +8341,11 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
     nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
     if nm_bin is None:
         return True
-    nm_cmd = [nm_bin, "-gU", str(path)] if sys.platform == "darwin" else [nm_bin, "-g", str(path)]
+    nm_cmd = (
+        [nm_bin, "-gU", str(path)]
+        if sys.platform == "darwin"
+        else [nm_bin, "-g", str(path)]
+    )
     try:
         result = subprocess.run(
             nm_cmd,
@@ -9472,7 +9504,11 @@ def _collect_wasm_active_table_function_slots(data: bytes) -> dict[int, int]:
                 elem_count, offset = _read_wasm_varuint(payload, offset)
                 for elem_index in range(elem_count):
                     offset, func_index = _read_wasm_ref_func_expr(payload, offset)
-                    if table_index == 0 and func_index is not None and base_offset is not None:
+                    if (
+                        table_index == 0
+                        and func_index is not None
+                        and base_offset is not None
+                    ):
                         slots[base_offset + elem_index] = func_index
             elif flags == 7:
                 offset += 1  # reftype
@@ -9776,7 +9812,9 @@ def _effective_split_worker_table_base(
 
 @functools.lru_cache(maxsize=1)
 def _reserved_wasm_runtime_callable_count() -> int:
-    include_path = Path(__file__).resolve().parents[2] / "runtime" / "wasm_runtime_callables.inc"
+    include_path = (
+        Path(__file__).resolve().parents[2] / "runtime" / "wasm_runtime_callables.inc"
+    )
     pattern = re.compile(r"^\s*\((\d+),")
     count = 0
     for line in include_path.read_text().splitlines():
@@ -11793,7 +11831,9 @@ def _try_cached_backend_candidates(
             output_artifact,
             tier=tier,
             source_key=_native_artifact_source_key(
-                cache_key if tier == "module" else (function_cache_key or cache_key or ""),
+                cache_key
+                if tier == "module"
+                else (function_cache_key or cache_key or ""),
                 stdlib_object_cache_key=stdlib_object_cache_key,
                 is_wasm=is_wasm,
             ),
@@ -12163,7 +12203,7 @@ def _backend_daemon_compile_request_bytes(
 
 def _backend_daemon_health_from_response(
     response: dict[str, Any],
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     raw = response.get("health")
     if not isinstance(raw, dict):
         return None
@@ -14459,9 +14499,9 @@ def _lower_entry_module_as_main(
     integration_state: _FrontendIntegrationState,
     diagnostics_state: _MidendDiagnosticsState,
     record_frontend_timing: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    fail: Callable[..., _CliFailure],
     json_output: bool,
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     try:
         source = _read_module_source(lowering_context.entry_path)
     except (SyntaxError, UnicodeDecodeError) as exc:
@@ -15078,9 +15118,7 @@ def _normalize_backend_ir_functions(
         if isinstance(params, list) and params:
             raw_param_types = copied.get("param_types")
             param_types = (
-                list(raw_param_types)
-                if isinstance(raw_param_types, list)
-                else []
+                list(raw_param_types) if isinstance(raw_param_types, list) else []
             )
             if len(param_types) < len(params):
                 param_types.extend(["i64"] * (len(params) - len(param_types)))
@@ -15194,7 +15232,7 @@ def _prepare_backend_ir(
     integration_state: _FrontendIntegrationState,
     diagnostics_state: _MidendDiagnosticsState,
     record_frontend_timing: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    fail: Callable[..., _CliFailure],
     json_output: bool,
     module_order: Sequence[str],
     generated_module_source_paths: Mapping[str, str],
@@ -15203,7 +15241,7 @@ def _prepare_backend_ir(
     runtime_feedback_summary: Any | None,
     emit_ir_path: Path | None,
     stdlib_profile: str | None = "micro",
-) -> tuple[_PreparedBackendIR | None, dict[str, Any] | None]:
+) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
     entry_path: Path | None = None
     if entry_module != "__main__":
         entry_path = module_graph.get(entry_module)
@@ -15435,16 +15473,18 @@ def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:
 def _module_symbol_name(module_name: str) -> str:
     init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
     assert init_symbol.startswith("molt_init_")
-    return init_symbol[len("molt_init_"):]
+    return init_symbol[len("molt_init_") :]
 
 
 def _emitted_name_matches_module_symbol(name: str, module_symbol: str) -> bool:
     if name.startswith("molt_init_"):
-        return name[len("molt_init_"):] == module_symbol
+        return name[len("molt_init_") :] == module_symbol
     return name.startswith(f"{module_symbol}__")
 
 
-def _stdlib_module_symbols(module_graph_metadata: _ModuleGraphMetadata) -> frozenset[str]:
+def _stdlib_module_symbols(
+    module_graph_metadata: _ModuleGraphMetadata,
+) -> frozenset[str]:
     stdlib_like_by_module = module_graph_metadata.stdlib_like_by_module or {}
     return frozenset(
         _module_symbol_name(module_name)
@@ -15487,7 +15527,13 @@ def _is_stdlib_owned_symbol(
     *,
     stdlib_module_symbols: Collection[str],
 ) -> bool:
-    if name in {"molt_main", "molt_host_init", "molt_init___main__", "molt_isolate_import", "molt_isolate_bootstrap"}:
+    if name in {
+        "molt_main",
+        "molt_host_init",
+        "molt_init___main__",
+        "molt_isolate_import",
+        "molt_isolate_bootstrap",
+    }:
         return False
     return any(
         _emitted_name_matches_module_symbol(name, module_symbol)
@@ -15529,7 +15575,9 @@ _DEAD_FUNCTION_ELIM_REFERENCE_KINDS = frozenset(
 
 
 def _is_protected_runtime_entrypoint(name: str) -> bool:
-    return name in {"molt_main", "molt_host_init", "_start"} or name.startswith("molt_isolate_")
+    return name in {"molt_main", "molt_host_init", "_start"} or name.startswith(
+        "molt_isolate_"
+    )
 
 
 def _reachable_function_names_for_stdlib_cache(
@@ -15565,10 +15613,15 @@ def _reachable_function_names_for_stdlib_cache(
                 if not isinstance(kind, str):
                     continue
                 target = op.get("s_value")
-                if kind in _DEAD_FUNCTION_ELIM_REFERENCE_KINDS and isinstance(target, str):
+                if kind in _DEAD_FUNCTION_ELIM_REFERENCE_KINDS and isinstance(
+                    target, str
+                ):
                     if target in defined:
                         refs.add(target)
-                    if kind in {"generator_create", "coro_create"} and not target.endswith("_poll"):
+                    if kind in {
+                        "generator_create",
+                        "coro_create",
+                    } and not target.endswith("_poll"):
                         poll_name = f"{target}_poll"
                         if poll_name in defined:
                             refs.add(poll_name)
@@ -15582,7 +15635,9 @@ def _reachable_function_names_for_stdlib_cache(
             roots.append(first_name)
     if "molt_main" in defined:
         roots.append("molt_main")
-    roots.extend(sorted(name for name in defined if _is_protected_runtime_entrypoint(name)))
+    roots.extend(
+        sorted(name for name in defined if _is_protected_runtime_entrypoint(name))
+    )
 
     reachable: set[str] = set()
     queue: deque[str] = deque()
@@ -16374,7 +16429,7 @@ def _prepare_native_object_artifact(
     link_timeout: float | None,
     target_triple: str | None = None,
     sysroot_path: Path | None = None,
-) -> tuple[Path | None, subprocess.CompletedProcess[str] | None, dict[str, Any] | None]:
+) -> tuple[Path | None, subprocess.CompletedProcess[str] | None, _CliFailure | None]:
     if stdlib_obj_path is None or not stdlib_obj_path.exists():
         return output_artifact, None, None
     if not _shared_stdlib_cache_matches_key(stdlib_obj_path, stdlib_object_cache_key):
@@ -17145,7 +17200,7 @@ def _augment_module_graph_for_entry_and_runtime(
     diagnostics_enabled: bool,
     json_output: bool,
     target: str,
-) -> tuple[_ModuleGraphAugmentation, dict[str, Any] | None]:
+) -> tuple[_ModuleGraphAugmentation, _CliFailure | None]:
     entry_imports = set(entry_imports)
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
@@ -17235,7 +17290,7 @@ def _prepare_entry_module_graph(
     module_reasons: MutableMapping[str, set[str]],
     json_output: bool,
     target: str,
-) -> tuple[_PreparedEntryModuleGraph | None, dict[str, Any] | None]:
+) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
     stdlib_allowlist = _stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _ModuleResolutionCache()
@@ -17456,7 +17511,7 @@ def _prepare_frontend_analysis(
     project_root: Path,
     entry_module: str,
     json_output: bool,
-) -> tuple[_PreparedFrontendAnalysis | None, dict[str, Any] | None]:
+) -> tuple[_PreparedFrontendAnalysis | None, _CliFailure | None]:
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
@@ -17579,7 +17634,7 @@ def _prepare_frontend_lowering_config(
     target_triple: str | None,
     frontend_parallel_details: dict[str, Any],
     frontend_phase_timeout: float | None,
-) -> tuple[_PreparedFrontendLoweringConfig | None, dict[str, Any] | None]:
+) -> tuple[_PreparedFrontendLoweringConfig | None, _CliFailure | None]:
     type_facts: TypeFacts | None = None
     if type_facts_path is None and type_hint_policy in {"trust", "check"}:
         type_facts, ty_ok = _collect_type_facts_for_build(
@@ -17895,7 +17950,7 @@ def _prepare_backend_setup(
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
     resolved_modules: set[str] | frozenset[str] | None = None,
-) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
+) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=is_rust_transpile or is_luau_transpile,
         is_wasm=is_wasm,
@@ -18033,7 +18088,7 @@ def _prepare_backend_dispatch(
     ensure_runtime_wasm_reloc: Callable[[], bool],
     resolved_modules: set[str] | frozenset[str] | None,
     warnings: list[str],
-) -> tuple[_PreparedBackendDispatch | None, dict[str, Any] | None]:
+) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
     backend_env = os.environ.copy() if is_wasm else None
     if backend_env is not None:
         backend_env.pop("MOLT_WASM_DATA_BASE", None)
@@ -18065,7 +18120,7 @@ def _prepare_backend_dispatch(
         if extra_required_imports:
             backend_env["MOLT_WASM_EXTRA_REQUIRED_IMPORTS"] = ",".join(
                 extra_required_imports
-        )
+            )
         layout_probe_path: Path | None = None
         if reloc_requested and linked and runtime_reloc_wasm is not None:
             if not ensure_runtime_wasm_reloc():
@@ -18148,9 +18203,7 @@ def _prepare_backend_dispatch(
                 raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
                 try:
                     current_table_base = (
-                        int(raw_table_base)
-                        if raw_table_base is not None
-                        else None
+                        int(raw_table_base) if raw_table_base is not None else None
                     )
                 except ValueError:
                     current_table_base = None
@@ -18161,7 +18214,10 @@ def _prepare_backend_dispatch(
             and "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN" not in backend_env
         ):
             split_runtime_table_probe = runtime_wasm
-            if split_runtime_table_probe is None or not split_runtime_table_probe.exists():
+            if (
+                split_runtime_table_probe is None
+                or not split_runtime_table_probe.exists()
+            ):
                 split_runtime_table_probe = layout_probe_path
             if (
                 split_runtime_table_probe is None
@@ -18270,7 +18326,7 @@ def _execute_backend_compile(
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
-) -> tuple[_BackendExecutionResult | None, dict[str, Any] | None]:
+) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
     backend_output_ctx: ContextManager[Path]
     # One-shot backend subprocess compilation should always write to a fresh
     # artifact path and stage atomically into cache/output afterward. Writing
@@ -18739,7 +18795,7 @@ def _prepare_backend_compile(
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
-) -> tuple[_PreparedBackendCompile | None, dict[str, Any] | None]:
+) -> tuple[_PreparedBackendCompile | None, _CliFailure | None]:
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
@@ -19426,7 +19482,7 @@ def _prepare_non_native_build_result(
     molt_root: Path,
     split_runtime: bool = False,
     precompile: bool = False,
-) -> tuple[_PreparedNonNativeResult | None, dict[str, Any] | None]:
+) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
             primary_output=output_artifact,
@@ -19828,7 +19884,7 @@ def _prepare_native_link(
     warnings: list[str],
     stdlib_obj_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
-) -> tuple[_PreparedNativeLink | None, dict[str, Any] | None]:
+) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path
     if stdlib_obj_path is not None:
@@ -19852,7 +19908,7 @@ def _prepare_native_link(
                     f"Failed to stage shared stdlib object for native link: {exc}",
                     json_output,
                     command="build",
-            )
+                )
             link_stdlib_obj = staged_stdlib_obj
     main_c_content = _render_native_main_stub(
         trusted=trusted,
@@ -20229,7 +20285,7 @@ def _prepare_frontend_stage_state(
         Path,
     ]
     | None,
-    dict[str, Any] | None,
+    _CliFailure | None,
 ]:
     source_path = resolved_build_entry.source_path
     entry_module = resolved_build_entry.entry_module
@@ -20453,7 +20509,7 @@ def _prepare_frontend_pipeline(
         Path,
     ]
     | None,
-    dict[str, Any] | None,
+    _CliFailure | None,
 ]:
     prepared_frontend_stage_bundle, prepared_frontend_stage_state_error = (
         _prepare_frontend_stage_state(
@@ -20896,7 +20952,11 @@ def _maybe_start_native_runtime_lib_ready_async(
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None or runtime_state.runtime_lib_ready_future is not None:
         return
-    if diagnostics_enabled and phase_starts is not None and "runtime_setup" not in phase_starts:
+    if (
+        diagnostics_enabled
+        and phase_starts is not None
+        and "runtime_setup" not in phase_starts
+    ):
         phase_starts["runtime_setup"] = time.perf_counter()
     runtime_state.runtime_lib_ready_future = _native_runtime_ready_executor().submit(
         _ensure_runtime_lib_ready,
@@ -21365,7 +21425,7 @@ def _consume_frontend_module_result(
     record_frontend_timing: Callable[..., None] | None,
     integrate_module_frontend_result: Callable[..., str | None],
     accumulate_midend_diagnostics: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    fail: Callable[..., _CliFailure],
     json_output: bool,
 ) -> dict[str, Any] | None:
     timings = result_timings or _frontend_result_timings(result)
@@ -21407,7 +21467,7 @@ def _consume_frontend_parallel_layer_result(
     record_frontend_timing: Callable[..., None],
     integrate_module_frontend_result: Callable[..., str | None],
     accumulate_midend_diagnostics: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    fail: Callable[..., _CliFailure],
     json_output: bool,
     project_root: Path | None,
     layer_index: int,
@@ -21454,7 +21514,7 @@ def _consume_frontend_serial_layer_result(
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
     integrate_module_frontend_result: Callable[..., str | None],
     accumulate_midend_diagnostics: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    fail: Callable[..., _CliFailure],
     json_output: bool,
     layer_state: _FrontendParallelLayerState,
     layer_index: int,
@@ -21495,18 +21555,18 @@ def _run_frontend_serial_layer_modules(
         tuple[
             dict[str, Any] | None,
             _FrontendModuleResultTimings | None,
-            dict[str, Any] | None,
+            _CliFailure | None,
         ],
     ],
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
     integrate_module_frontend_result: Callable[..., str | None],
     accumulate_midend_diagnostics: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    fail: Callable[..., _CliFailure],
     json_output: bool,
     layer_state: _FrontendParallelLayerState,
     layer_index: int,
     serial_mode: str,
-) -> dict[str, Any] | None:
+) -> _CliFailure | None:
     for module_name in module_names:
         module_path = module_graph[module_name]
         result, result_timings, lower_error = run_serial_frontend_lower(
@@ -21545,7 +21605,7 @@ def _run_frontend_layer(
     runtime_hooks: _FrontendLayerRuntimeHooks,
     frontend_parallel_config: _FrontendParallelConfig,
     parallel_pool_usable: bool,
-) -> tuple[_FrontendLayerRunResult | None, dict[str, Any] | None]:
+) -> tuple[_FrontendLayerRunResult | None, _CliFailure | None]:
     layer_state = _fresh_frontend_parallel_layer_state()
     layer_plan = _frontend_layer_plan(
         layer,
@@ -22388,6 +22448,7 @@ def _ensure_backend_binary(
     features_tag = "_".join(sorted(backend_features)) if backend_features else "default"
     lock_name = f"backend.{cargo_profile}.{features_tag}"
     with _build_lock(project_root, lock_name):
+
         def _canonical_cargo_backend_output() -> Path:
             exe_suffix = ".exe" if os.name == "nt" else ""
             return backend_bin.parent / f"molt-backend{exe_suffix}"
@@ -22950,7 +23011,9 @@ def _wasm_runtime_staticlib_path(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
 
 
-def _resolve_built_runtime_staticlib_artifact(target_root: Path, profile_dir: str) -> Path:
+def _resolve_built_runtime_staticlib_artifact(
+    target_root: Path, profile_dir: str
+) -> Path:
     primary = _wasm_runtime_staticlib_path(target_root, profile_dir)
     if primary.exists():
         return primary
@@ -23070,7 +23133,9 @@ def _run_runtime_wasm_cargo_build(
             build_raw.stderr.decode("utf-8", errors="replace"),
         )
     if artifact_kind == "staticlib":
-        return build, _resolve_built_runtime_staticlib_artifact(target_root, profile_dir)
+        return build, _resolve_built_runtime_staticlib_artifact(
+            target_root, profile_dir
+        )
     return build, _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
 
 
@@ -23187,7 +23252,9 @@ def _ensure_runtime_wasm(
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table -C link-arg=--export-dynamic"
         )
-        flags = shared_flags if use_legacy_wasm_flags else shared_flags + runtime_exports
+        flags = (
+            shared_flags if use_legacy_wasm_flags else shared_flags + runtime_exports
+        )
     rustflags = env.get("RUSTFLAGS", "").strip()
     if flags:
         rustflags = f"{rustflags} {flags}".strip()
@@ -23255,12 +23322,14 @@ def _ensure_runtime_wasm(
             target_root,
             profile_dir,
         )
-        target_runtime_wasm_fingerprint_path = _artifact_state_path_for_build_state_root(
-            target_build_state_root,
-            target_runtime_wasm,
-            subdir="runtime_fingerprints",
-            stem_suffix=f"{cargo_profile}.{target_label}",
-            extension="fingerprint",
+        target_runtime_wasm_fingerprint_path = (
+            _artifact_state_path_for_build_state_root(
+                target_build_state_root,
+                target_runtime_wasm,
+                subdir="runtime_fingerprints",
+                stem_suffix=f"{cargo_profile}.{target_label}",
+                extension="fingerprint",
+            )
         )
         if not reloc and _maybe_hydrate_artifact_from_canonical_target(
             artifact=runtime_wasm,
@@ -23348,7 +23417,9 @@ def _ensure_runtime_wasm(
             and _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
         ):
             if not reloc:
-                current_src = _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
+                current_src = _resolve_built_runtime_wasm_artifact(
+                    target_root, profile_dir
+                )
                 if (
                     current_src != runtime_wasm
                     and _inspect_wasm_binary(current_src) == "valid"
@@ -23433,9 +23504,9 @@ def _ensure_runtime_wasm(
             ]
         if stdlib_profile == "micro":
             cmd.append("--no-default-features")
-            micro_features = list(runtime_features) + sorted(builtin_features) + [
-                "stdlib_micro"
-            ]
+            micro_features = (
+                list(runtime_features) + sorted(builtin_features) + ["stdlib_micro"]
+            )
             if micro_features:
                 cmd.extend(["--features", ",".join(micro_features)])
         else:
@@ -25222,7 +25293,10 @@ def _run_subprocess_captured_to_tempfiles(
             return 20.0
         return value if value > 0 else None
 
-    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+    with (
+        tempfile.TemporaryFile() as stdout_file,
+        tempfile.TemporaryFile() as stderr_file,
+    ):
         proc = subprocess.Popen(
             list(cmd),
             stdout=stdout_file,
@@ -31780,7 +31854,11 @@ def _emit_debug_payload(
     if format_name == "json":
         summary = render_debug_json_summary(payload)
     else:
-        summary = rendered_text if rendered_text is not None else render_debug_text_summary(payload)
+        summary = (
+            rendered_text
+            if rendered_text is not None
+            else render_debug_text_summary(payload)
+        )
     if retained_output is not None:
         retained_output.parent.mkdir(parents=True, exist_ok=True)
         retained_output.write_text(summary, encoding="utf-8")
@@ -31853,7 +31931,9 @@ def _debug_eval_base_env(cwd: Path) -> dict[str, str]:
             base_env[name] = value
 
     ext_root = os.environ.get("MOLT_EXT_ROOT", str(cwd))
-    cargo_target_dir = os.environ.get("CARGO_TARGET_DIR", str(Path(ext_root) / "target"))
+    cargo_target_dir = os.environ.get(
+        "CARGO_TARGET_DIR", str(Path(ext_root) / "target")
+    )
     base_env.update(
         {
             "MOLT_EXT_ROOT": ext_root,
@@ -31862,7 +31942,9 @@ def _debug_eval_base_env(cwd: Path) -> dict[str, str]:
                 "MOLT_DIFF_CARGO_TARGET_DIR",
                 cargo_target_dir,
             ),
-            "MOLT_CACHE": os.environ.get("MOLT_CACHE", str(Path(ext_root) / ".molt_cache")),
+            "MOLT_CACHE": os.environ.get(
+                "MOLT_CACHE", str(Path(ext_root) / ".molt_cache")
+            ),
             "MOLT_DIFF_ROOT": os.environ.get(
                 "MOLT_DIFF_ROOT",
                 str(Path(ext_root) / "tmp" / "diff"),
@@ -32110,7 +32192,9 @@ def _handle_debug_diff(
             format_name=args.format,
             retained_output=paths.retained_output,
         )
-    failure_queue = load_failure_queue(Path(args.failure_queue)) if args.failure_queue else []
+    failure_queue = (
+        load_failure_queue(Path(args.failure_queue)) if args.failure_queue else []
+    )
     summary = build_diff_summary_payload(
         load_diff_summary(summary_path),
         failures=failure_queue,
@@ -32285,7 +32369,9 @@ def _handle_debug_repro(
         manifest_path=paths.manifest_path,
         selectors=selectors,
         retained_output=paths.retained_output,
-        failure_class=None if inner_status == "ok" else DebugFailureClass.INTERNAL_ERROR,
+        failure_class=None
+        if inner_status == "ok"
+        else DebugFailureClass.INTERNAL_ERROR,
         message=None if inner_status == "ok" else f"debug repro {mode} failed",
         data={
             "mode": mode,
@@ -32401,7 +32487,9 @@ def _handle_debug_trace(
         manifest_path=paths.manifest_path,
         selectors=selectors,
         retained_output=paths.retained_output,
-        failure_class=None if inner_status == "ok" else DebugFailureClass.INTERNAL_ERROR,
+        failure_class=None
+        if inner_status == "ok"
+        else DebugFailureClass.INTERNAL_ERROR,
         message=None if inner_status == "ok" else "debug trace execution failed",
         data={
             "mode": "run",
@@ -32535,7 +32623,9 @@ def _handle_debug_reduce(
             retained_output=paths.retained_output,
         )
 
-    reduction_payload = build_reduction_payload(result, artifact_root=paths.artifact_root)
+    reduction_payload = build_reduction_payload(
+        result, artifact_root=paths.artifact_root
+    )
     reduced_source_path = Path(reduction_payload["artifacts"]["reduced_source"])
     reduced_source_path.parent.mkdir(parents=True, exist_ok=True)
     reduced_source_path.write_text(result.reduced_source + "\n", encoding="utf-8")
@@ -32788,21 +32878,37 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
         if value is not None
     }
     if subcommand == DebugSubcommand.IR:
-        return _handle_debug_ir(args, subcommand=subcommand, paths=paths, selectors=selectors)
+        return _handle_debug_ir(
+            args, subcommand=subcommand, paths=paths, selectors=selectors
+        )
     if subcommand == DebugSubcommand.REPRO:
-        return _handle_debug_repro(args, subcommand=subcommand, paths=paths, selectors=selectors)
+        return _handle_debug_repro(
+            args, subcommand=subcommand, paths=paths, selectors=selectors
+        )
     if subcommand == DebugSubcommand.VERIFY:
-        return _handle_debug_verify(args, subcommand=subcommand, paths=paths, selectors=selectors)
+        return _handle_debug_verify(
+            args, subcommand=subcommand, paths=paths, selectors=selectors
+        )
     if subcommand == DebugSubcommand.TRACE:
-        return _handle_debug_trace(args, subcommand=subcommand, paths=paths, selectors=selectors)
+        return _handle_debug_trace(
+            args, subcommand=subcommand, paths=paths, selectors=selectors
+        )
     if subcommand == DebugSubcommand.DIFF:
-        return _handle_debug_diff(args, subcommand=subcommand, paths=paths, selectors=selectors)
+        return _handle_debug_diff(
+            args, subcommand=subcommand, paths=paths, selectors=selectors
+        )
     if subcommand == DebugSubcommand.PERF:
-        return _handle_debug_perf(args, subcommand=subcommand, paths=paths, selectors=selectors)
+        return _handle_debug_perf(
+            args, subcommand=subcommand, paths=paths, selectors=selectors
+        )
     if subcommand == DebugSubcommand.REDUCE:
-        return _handle_debug_reduce(args, subcommand=subcommand, paths=paths, selectors=selectors)
+        return _handle_debug_reduce(
+            args, subcommand=subcommand, paths=paths, selectors=selectors
+        )
     if subcommand == DebugSubcommand.BISECT:
-        return _handle_debug_bisect(args, subcommand=subcommand, paths=paths, selectors=selectors)
+        return _handle_debug_bisect(
+            args, subcommand=subcommand, paths=paths, selectors=selectors
+        )
     pending_data: dict[str, Any] | None = None
     if hasattr(args, "source"):
         pending_data = {"source": str(Path(args.source))}
@@ -33330,7 +33436,9 @@ def main() -> int:
                 help="Which compilation stage(s) to dump.",
             )
         if debug_subcommand == DebugSubcommand.REPRO:
-            subparser.add_argument("source", help="Python source file to execute as a repro.")
+            subparser.add_argument(
+                "source", help="Python source file to execute as a repro."
+            )
         if debug_subcommand == DebugSubcommand.TRACE:
             subparser.add_argument("source", help="Python source file to trace.")
         if debug_subcommand == DebugSubcommand.TRACE:

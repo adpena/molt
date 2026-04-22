@@ -123,7 +123,9 @@ def normalize_failure_oracle(oracle: str | dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"unsupported oracle kind: {kind}")
 
 
-def _source_payload_from_manifest(payload: dict[str, Any], manifest_path: Path) -> tuple[Path, str]:
+def _source_payload_from_manifest(
+    payload: dict[str, Any], manifest_path: Path
+) -> tuple[Path, str]:
     data = payload.get("data", {})
     if not isinstance(data, dict):
         raise ValueError(f"{manifest_path} is missing a debug data payload")
@@ -157,7 +159,9 @@ def _source_payload_from_manifest(payload: dict[str, Any], manifest_path: Path) 
                     reduced_path.read_text(encoding="utf-8"),
                 )
 
-    raise ValueError(f"{manifest_path} does not retain source_path/source_text for replay")
+    raise ValueError(
+        f"{manifest_path} does not retain source_path/source_text for replay"
+    )
 
 
 def load_reduction_input(path: Path) -> ReductionInput:
@@ -307,10 +311,16 @@ def build_reduction_payload(
     source_path = result.reduction_input.source_path
     reduced_name = f"{source_path.stem}_reduced{source_path.suffix or '.py'}"
     reduced_path = (
-        artifact_root / reduced_name if artifact_root is not None else source_path.with_name(reduced_name)
+        artifact_root / reduced_name
+        if artifact_root is not None
+        else source_path.with_name(reduced_name)
     )
-    original_lines = len(result.original_source.split("\n")) if result.original_source else 0
-    reduced_lines = len(result.reduced_source.split("\n")) if result.reduced_source else 0
+    original_lines = (
+        len(result.original_source.split("\n")) if result.original_source else 0
+    )
+    reduced_lines = (
+        len(result.reduced_source.split("\n")) if result.reduced_source else 0
+    )
     return {
         "source_path": str(result.reduction_input.source_path),
         "source_text": result.reduced_source,

@@ -867,7 +867,9 @@ def cmd_refresh_local_artifacts(args: argparse.Namespace) -> int:
             {
                 "path": str(seed_output),
                 "kind": "seed_backlog",
-                "current_count": len(current_seed) if isinstance(current_seed, list) else 0,
+                "current_count": len(current_seed)
+                if isinstance(current_seed, list)
+                else 0,
                 "expected_count": len(seed_items),
             }
         )
@@ -927,7 +929,11 @@ def cmd_refresh_local_artifacts(args: argparse.Namespace) -> int:
                 "changed_file_count": len(changed_files),
                 "changed_files": changed_files,
                 "manifest_counts": [
-                    {"path": row["path"], "project": row["project"], "count": row["count"]}
+                    {
+                        "path": row["path"],
+                        "project": row["project"],
+                        "count": row["count"],
+                    }
                     for row in updated_index
                 ],
             },

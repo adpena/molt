@@ -16,9 +16,7 @@ _MOLT_DIFFLIB_IS_JUNK = _require_intrinsic("molt_difflib_is_junk")
 _MOLT_DIFFLIB_NDIFF = _require_intrinsic("molt_difflib_ndiff")
 _MOLT_DIFFLIB_UNIFIED_DIFF = _require_intrinsic("molt_difflib_unified_diff")
 _MOLT_DIFFLIB_CONTEXT_DIFF = _require_intrinsic("molt_difflib_context_diff")
-_MOLT_DIFFLIB_GET_CLOSE_MATCHES = _require_intrinsic(
-    "molt_difflib_get_close_matches"
-)
+_MOLT_DIFFLIB_GET_CLOSE_MATCHES = _require_intrinsic("molt_difflib_get_close_matches")
 
 
 class SequenceMatcher:

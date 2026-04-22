@@ -231,7 +231,10 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     runtime_wasm.write_bytes(b"\x00asm\x01\x00\x00\x00old")
 
     monkeypatch.setattr(
-        cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new-shape"}, raising=True
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {"hash": "new-shape"},
+        raising=True,
     )
     monkeypatch.setattr(
         cli,
@@ -246,7 +249,10 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
         cli, "_artifact_newer_than_sources", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(
-        cli, "_is_valid_runtime_wasm_artifact", lambda *args, **kwargs: True, raising=True
+        cli,
+        "_is_valid_runtime_wasm_artifact",
+        lambda *args, **kwargs: True,
+        raising=True,
     )
     monkeypatch.setattr(
         cli,
@@ -418,7 +424,9 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     assert second["hash"] != first["hash"]
 
 
-def test_ensure_runtime_wasm_reloc_requests_staticlib_build(tmp_path: Path, monkeypatch) -> None:
+def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "repo"
     project_root.mkdir()
     runtime_wasm = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
@@ -538,9 +546,13 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/wasm-ld")
-    monkeypatch.setattr(cli, "_wasm_wasi_libc_archive", lambda: libc_archive, raising=True)
+    monkeypatch.setattr(
+        cli, "_wasm_wasi_libc_archive", lambda: libc_archive, raising=True
+    )
     monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
-    monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True, raising=True)
+    monkeypatch.setattr(
+        cli, "_is_valid_runtime_wasm_artifact", lambda path: True, raising=True
+    )
 
     assert cli._link_runtime_staticlib_to_reloc_wasm(
         staticlib_path=staticlib,

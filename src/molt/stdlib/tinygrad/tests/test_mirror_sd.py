@@ -23,6 +23,7 @@ from tinygrad.mirror_sd import (
 # Utility tests
 # ---------------------------------------------------------------------------
 
+
 def test_softmax_1d_valid_distribution():
     """_softmax_1d produces valid probability distribution."""
     probs = _softmax_1d([1.0, 2.0, 3.0])
@@ -93,6 +94,7 @@ def test_sample_from_logits_stochastic():
 # EarlyExitProxy tests
 # ---------------------------------------------------------------------------
 
+
 def test_early_exit_proxy_forward_shape():
     """EarlyExitProxy.forward produces logits of correct size."""
     proxy = EarlyExitProxy(hidden_dim=16, vocab_size=32, kappa=4)
@@ -111,8 +113,11 @@ def test_early_exit_proxy_custom_weights():
     bias = [0.0] * v
 
     proxy = EarlyExitProxy(
-        hidden_dim=h, vocab_size=v, kappa=2,
-        lm_head_weights=weights, lm_head_bias=bias,
+        hidden_dim=h,
+        vocab_size=v,
+        kappa=2,
+        lm_head_weights=weights,
+        lm_head_bias=bias,
     )
     hidden = [1.0, 0.0, 0.0, 0.0]
     logits = proxy.forward(hidden)
@@ -142,7 +147,8 @@ def test_early_exit_proxy_rejects_wrong_weights_size():
     """EarlyExitProxy rejects wrong weight matrix size."""
     try:
         EarlyExitProxy(
-            hidden_dim=4, vocab_size=8,
+            hidden_dim=4,
+            vocab_size=8,
             lm_head_weights=[0.0] * 10,  # Wrong: should be 4*8=32
         )
         assert False, "Should have raised ValueError"
@@ -154,7 +160,8 @@ def test_early_exit_proxy_rejects_wrong_bias_size():
     """EarlyExitProxy rejects wrong bias size."""
     try:
         EarlyExitProxy(
-            hidden_dim=4, vocab_size=8,
+            hidden_dim=4,
+            vocab_size=8,
             lm_head_bias=[0.0] * 3,  # Wrong: should be 8
         )
         assert False, "Should have raised ValueError"
@@ -165,6 +172,7 @@ def test_early_exit_proxy_rejects_wrong_bias_size():
 # ---------------------------------------------------------------------------
 # HypothesisTree tests
 # ---------------------------------------------------------------------------
+
 
 def test_hypothesis_tree_add_and_get():
     """HypothesisTree stores and retrieves branches."""
@@ -214,6 +222,7 @@ def test_hypothesis_tree_no_reusable_branch():
 # branch_complete_rollout tests
 # ---------------------------------------------------------------------------
 
+
 def test_branch_complete_rollout_structure():
     """branch_complete_rollout produces tree with correct structure."""
     random.seed(42)
@@ -223,7 +232,9 @@ def test_branch_complete_rollout_structure():
 
     channel = [(0, -0.5), (1, -1.0), (2, -1.5)]
     tree = branch_complete_rollout(
-        token_channel=channel, draft_fn=dummy_draft_fn, gamma=4,
+        token_channel=channel,
+        draft_fn=dummy_draft_fn,
+        gamma=4,
     )
 
     assert len(tree.roots) == 3
@@ -237,21 +248,29 @@ def test_branch_complete_rollout_structure():
 # speculative_streaming_draft tests
 # ---------------------------------------------------------------------------
 
+
 def test_speculative_streaming_produces_gamma_tokens():
     """speculative_streaming_draft produces exactly gamma tokens."""
+
     def dummy_draft_fn(token_ids):
         return [[0.0, 1.0, 2.0, 0.5] for _ in range(len(token_ids) + 1)]
 
     result = speculative_streaming_draft(
-        draft_fn=dummy_draft_fn, root_token=0, gamma=6, n_streams=2,
+        draft_fn=dummy_draft_fn,
+        root_token=0,
+        gamma=6,
+        n_streams=2,
     )
     assert len(result) == 6
-    assert all(isinstance(t, int) and isinstance(l, list) for t, l in result)
+    assert all(
+        isinstance(token, int) and isinstance(logits, list) for token, logits in result
+    )
 
 
 # ---------------------------------------------------------------------------
 # mirror_verify tests
 # ---------------------------------------------------------------------------
+
 
 def test_mirror_verify_accepts_identical():
     """mirror_verify accepts all tokens when distributions are identical."""
@@ -272,7 +291,10 @@ def test_mirror_verify_rejects_divergent():
     tokens = [0] * 5  # Draft sampled token 0
 
     n_acc, correction = mirror_verify(
-        tokens, draft_logits, target_logits, temperature=1.0,
+        tokens,
+        draft_logits,
+        target_logits,
+        temperature=1.0,
     )
     assert n_acc < 5, f"Divergent distributions should reject, but accepted {n_acc}"
     assert correction is not None
@@ -311,6 +333,7 @@ def test_mirror_verify_greedy():
 # ---------------------------------------------------------------------------
 # MirrorSpeculativeDecoder tests
 # ---------------------------------------------------------------------------
+
 
 def _make_decoder(hidden_dim=8, vocab_size=16, gamma=5, kappa=4):
     """Create a MirrorSpeculativeDecoder with deterministic mock models."""
@@ -426,7 +449,9 @@ def test_decoder_decode_respects_eos():
     )
 
     tokens = decoder.decode(
-        initial_hidden=[1.0] * 4, max_tokens=100, eos_token=eos,
+        initial_hidden=[1.0] * 4,
+        max_tokens=100,
+        eos_token=eos,
     )
     # Sequence should end with or contain eos
     if tokens:
@@ -436,6 +461,7 @@ def test_decoder_decode_respects_eos():
 # ---------------------------------------------------------------------------
 # mirror_speculative_decode convenience function tests
 # ---------------------------------------------------------------------------
+
 
 def test_mirror_speculative_decode_convenience():
     """mirror_speculative_decode produces tokens and acceptance rate."""
@@ -464,6 +490,7 @@ def test_mirror_speculative_decode_convenience():
 # ---------------------------------------------------------------------------
 # Latency model tests
 # ---------------------------------------------------------------------------
+
 
 def test_compute_overlap_budget():
     """compute_overlap_budget returns target suffix time."""

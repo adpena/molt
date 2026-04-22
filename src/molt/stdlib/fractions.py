@@ -26,10 +26,8 @@ _MOLT_FRACTION_DENOMINATOR = _require_intrinsic("molt_fraction_denominator")
 _MOLT_FRACTION_TO_FLOAT = _require_intrinsic("molt_fraction_to_float")
 _MOLT_FRACTION_TO_STR = _require_intrinsic("molt_fraction_to_str")
 _MOLT_FRACTION_HASH = _require_intrinsic("molt_fraction_hash")
-_MOLT_FRACTION_LIMIT_DENOMINATOR = _require_intrinsic(
-    "molt_fraction_limit_denominator")
-_MOLT_FRACTION_AS_INTEGER_RATIO = _require_intrinsic(
-    "molt_fraction_as_integer_ratio")
+_MOLT_FRACTION_LIMIT_DENOMINATOR = _require_intrinsic("molt_fraction_limit_denominator")
+_MOLT_FRACTION_AS_INTEGER_RATIO = _require_intrinsic("molt_fraction_as_integer_ratio")
 _MOLT_FRACTION_DROP = _require_intrinsic("molt_fraction_drop")
 
 

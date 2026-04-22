@@ -19,11 +19,6 @@ import math
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
 from tinygrad.lazy import LazyOp, LazyBuffer
-from tinygrad.turbo_quant import (
-    block_quantize,
-    dequantize_symmetric,
-    qjl_error_correction,
-)
 
 
 class _TierEntry:
@@ -36,8 +31,13 @@ class _TierEntry:
     """
 
     __slots__ = (
-        "token_pos", "k_data", "v_data", "k_scales", "v_scales",
-        "n_bits", "block_size",
+        "token_pos",
+        "k_data",
+        "v_data",
+        "k_scales",
+        "v_scales",
+        "n_bits",
+        "block_size",
     )
 
     def __init__(
@@ -153,7 +153,7 @@ class TieredKVCache:
         self._qjl_projections = qjl_projections
 
         # Storage: position -> _TierEntry
-        self._hot: dict = {}   # token_pos -> _TierEntry (full precision)
+        self._hot: dict = {}  # token_pos -> _TierEntry (full precision)
         self._warm: dict = {}  # token_pos -> _TierEntry (quantized)
         self._cold: dict = {}  # token_pos -> _TierEntry (quantized + QJL)
 
@@ -216,7 +216,11 @@ class TieredKVCache:
         full_precision_bytes = self.total_tokens * self._d_k * 2 * 4
         if full_precision_bytes == 0:
             return 1.0
-        actual = self.memory_bytes_hot() + self.memory_bytes_warm() + self.memory_bytes_cold()
+        actual = (
+            self.memory_bytes_hot()
+            + self.memory_bytes_warm()
+            + self.memory_bytes_cold()
+        )
         return actual / full_precision_bytes
 
     def append(self, k_vec: list, v_vec: list) -> int:
@@ -526,8 +530,11 @@ class TieredKVCache:
         for _, pos in to_demote:
             entry = self._hot[pos]
             q_entry = _quantize_entry(
-                entry.k_data, entry.v_data, pos,
-                self._warm_n_bits, self._quant_block_size,
+                entry.k_data,
+                entry.v_data,
+                pos,
+                self._warm_n_bits,
+                self._quant_block_size,
             )
             self._warm[pos] = q_entry
             del self._hot[pos]
@@ -546,14 +553,21 @@ class TieredKVCache:
             warm_entry = self._warm[pos]
             # Dequantize warm, then requantize at cold bit-width
             k_deq = _dequantize_entry(
-                warm_entry.k_data, warm_entry.k_scales, warm_entry.block_size,
+                warm_entry.k_data,
+                warm_entry.k_scales,
+                warm_entry.block_size,
             )
             v_deq = _dequantize_entry(
-                warm_entry.v_data, warm_entry.v_scales, warm_entry.block_size,
+                warm_entry.v_data,
+                warm_entry.v_scales,
+                warm_entry.block_size,
             )
             cold_entry = _quantize_entry(
-                k_deq, v_deq, pos,
-                self._cold_n_bits, self._quant_block_size,
+                k_deq,
+                v_deq,
+                pos,
+                self._cold_n_bits,
+                self._quant_block_size,
             )
             self._cold[pos] = cold_entry
             del self._warm[pos]
@@ -575,8 +589,11 @@ class TieredKVCache:
 
             entry = self._hot[victim_pos]
             q_entry = _quantize_entry(
-                entry.k_data, entry.v_data, victim_pos,
-                self._warm_n_bits, self._quant_block_size,
+                entry.k_data,
+                entry.v_data,
+                victim_pos,
+                self._warm_n_bits,
+                self._quant_block_size,
             )
             self._warm[victim_pos] = q_entry
             del self._hot[victim_pos]
@@ -584,9 +601,7 @@ class TieredKVCache:
     def _enforce_warm_capacity(self) -> None:
         """Evict lowest-scored warm tokens if over capacity."""
         while len(self._warm) > self._max_warm:
-            candidates = [
-                (self._scores.get(pos, 0.0), pos) for pos in self._warm
-            ]
+            candidates = [(self._scores.get(pos, 0.0), pos) for pos in self._warm]
             if not candidates:
                 break
 
@@ -595,14 +610,21 @@ class TieredKVCache:
 
             warm_entry = self._warm[victim_pos]
             k_deq = _dequantize_entry(
-                warm_entry.k_data, warm_entry.k_scales, warm_entry.block_size,
+                warm_entry.k_data,
+                warm_entry.k_scales,
+                warm_entry.block_size,
             )
             v_deq = _dequantize_entry(
-                warm_entry.v_data, warm_entry.v_scales, warm_entry.block_size,
+                warm_entry.v_data,
+                warm_entry.v_scales,
+                warm_entry.block_size,
             )
             cold_entry = _quantize_entry(
-                k_deq, v_deq, victim_pos,
-                self._cold_n_bits, self._quant_block_size,
+                k_deq,
+                v_deq,
+                victim_pos,
+                self._cold_n_bits,
+                self._quant_block_size,
             )
             self._cold[victim_pos] = cold_entry
             del self._warm[victim_pos]
@@ -610,9 +632,7 @@ class TieredKVCache:
     def _enforce_cold_capacity(self) -> None:
         """Permanently evict lowest-scored cold tokens if over capacity."""
         while len(self._cold) > self._max_cold:
-            candidates = [
-                (self._scores.get(pos, 0.0), pos) for pos in self._cold
-            ]
+            candidates = [(self._scores.get(pos, 0.0), pos) for pos in self._cold]
             if not candidates:
                 break
 
@@ -921,7 +941,9 @@ class PrefixCache:
         if d_k <= 0:
             raise ValueError(f"d_k must be positive, got {d_k}")
         if max_cached_blocks <= 0:
-            raise ValueError(f"max_cached_blocks must be positive, got {max_cached_blocks}")
+            raise ValueError(
+                f"max_cached_blocks must be positive, got {max_cached_blocks}"
+            )
         self._d_k = d_k
         self._max_cached_blocks = max_cached_blocks
         self._root = _RadixNode(depth=0)

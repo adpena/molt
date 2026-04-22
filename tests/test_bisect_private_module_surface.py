@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import bisect as _host_bisect
 import subprocess
 import sys
 from pathlib import Path

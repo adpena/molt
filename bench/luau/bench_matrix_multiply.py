@@ -12,6 +12,7 @@ def matrix_multiply(n: int, a: list[float], b: list[float], c: list[float]) -> N
             j = j + 1
         i = i + 1
 
+
 def main() -> None:
     n: int = 100
     a: list[float] = []
@@ -33,5 +34,6 @@ def main() -> None:
         total = total + c[i]
         i = i + 1
     print(total)
+
 
 main()
