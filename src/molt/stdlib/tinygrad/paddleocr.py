@@ -35,6 +35,9 @@ Usage:
 from __future__ import annotations
 
 import struct
+from _intrinsics import require_intrinsic as _require_intrinsic
+_gpu_device = _require_intrinsic("molt_gpu_prim_device")
+
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
 
@@ -564,23 +567,34 @@ class PaddleOCRDetector:
       GlobalAveragePool: 10, Resize: 6, Concat: 1, Sigmoid: 1
     """
 
-    __slots__ = ("weights", "_loaded")
+    __slots__ = ("weights", "_loaded", "_interpreter")
 
     def __init__(self) -> None:
         self.weights = WeightStore()
         self._loaded = False
+        self._interpreter = None
 
     def load(self, onnx_bytes: bytes) -> None:
-        """Load detector weights from ONNX file bytes."""
+        """Load detector weights from ONNX file bytes.
+
+        Parses both the weight tensors (via WeightStore for backward compat)
+        and the full ONNX computation graph (via OnnxInterpreter for forward
+        pass execution).
+        """
         count = self.weights.load_onnx(onnx_bytes)
         self._loaded = count > 0
+
+        # Load the full ONNX graph for interpreter-based forward pass
+        from tinygrad.onnx_interpreter import OnnxInterpreter
+        self._interpreter = OnnxInterpreter()
+        self._interpreter.load_model(onnx_bytes)
 
     def load_onnx_weights(self, onnx_bytes: bytes) -> None:
         """Alias for load() — loads detector weights from raw ONNX bytes."""
         self.load(onnx_bytes)
 
     def forward(self, image: Tensor) -> Tensor:
-        """Run text detection.
+        """Run text detection via ONNX graph interpreter.
 
         Args:
             image: [1, 3, H, W] normalized float32 tensor.
@@ -588,76 +602,32 @@ class PaddleOCRDetector:
         Returns:
             [1, 1, H, W] probability map where values > 0.3 indicate text.
 
-        The forward pass executes the full ONNX graph using only tinygrad
-        primitive compositions. The graph has 778 nodes but they decompose
-        to ~15 unique op types, all expressible via the 26 primitives.
+        Executes the full PP-OCRv4 detector ONNX graph (778 nodes, 15 op
+        types) through the generic OnnxInterpreter.  Each ONNX op
+        decomposes to tinygrad's 26 compute primitives:
+
+          Conv (62 nodes)      -> im2col + matmul (grouped for depthwise)
+          BatchNorm (3)        -> (x-mean)/sqrt(var+eps)*w+b
+          Relu (12)            -> MAX(x, 0)
+          HardSigmoid (10)     -> clip(alpha*x+beta, 0, 1)
+          GlobalAvgPool (10)   -> REDUCE_SUM / spatial_size
+          Sigmoid (1)          -> 1/(1+exp(-x))
+          Add/Mul/Div (251)    -> ADD/MUL/RECIPROCAL
+          Reshape (54)         -> view
+          Clip (24)            -> relu compositions
+          Resize (6)           -> nearest-neighbor upsample
+          Concat (1)           -> Tensor.cat
+          ConvTranspose (2)    -> transposed conv via scatter-add
         """
-        if not self._loaded:
+        if self._interpreter is None:
             raise RuntimeError("Detector weights not loaded. Call load() first.")
 
-        # The ONNX graph is a single forward pass of constants + ops.
-        # With weights loaded, we execute the graph structure:
-        #
-        # Stage 1: Backbone (LCNet) — produces feature maps at 4 scales
-        #   Conv+BN+HardSwish blocks, SE attention, downsampling
-        #
-        # Stage 2: FPN Neck — merges multi-scale features
-        #   Top-down pathway with lateral connections + 2x upsampling
-        #
-        # Stage 3: DB Head — produces text probability map
-        #   Conv+BN+ReLU -> ConvTranspose (upsample) -> Conv -> Sigmoid
-        #
-        # For now, this executes the graph node-by-node from loaded weights.
-        # Full graph execution is implemented in _execute_onnx_graph().
-        return self._execute_onnx_graph(image)
-
-    def _execute_onnx_graph(self, x: Tensor) -> Tensor:
-        """Execute the detector ONNX graph using tinygrad ops.
-
-        This method walks the ONNX computation graph stored in the weights
-        and executes each node as tinygrad tensor operations. The graph
-        consists of 778 nodes using 15 op types, all of which map directly
-        to tinygrad primitive compositions:
-
-          ONNX Op          -> tinygrad decomposition
-          -------          --------------------------
-          Conv             -> Tensor.conv2d (im2col + matmul)
-          BatchNorm        -> (x-mean)/sqrt(var+eps)*w+b
-          Relu             -> Tensor.relu (MAX(x, 0))
-          HardSigmoid      -> clip(ax+b, 0, 1) via relu compositions
-          GlobalAvgPool    -> REDUCE_SUM / spatial_size
-          Sigmoid          -> 1/(1+exp(-x))
-          Add/Mul/Div      -> ADD/MUL/RECIPROCAL
-          Reshape          -> Tensor.reshape (zero-cost view)
-          Clip             -> MAX(MIN(x, max), min) via relu
-          Resize           -> nearest_upsample_2x
-          Concat           -> Tensor.cat
-          ConvTranspose    -> transposed conv via im2col
-
-        The execution order follows ONNX topological sort: each node's
-        inputs are either graph inputs, initializer constants, or outputs
-        of previously executed nodes.
-        """
-        # Graph execution requires the ONNX node list (not just weights).
-        # The initial implementation loads weights and uses them with the
-        # known PP-OCRv4 architecture. Full ONNX graph interpreter is the
-        # next step — it will walk graph.node[] and dispatch each op_type.
-        #
-        # PP-OCRv4 detector architecture (known structure):
-        #   backbone.stage0: Conv(3, 16, 3, stride=2, pad=1) + HardSwish
-        #   backbone.stage1-4: MobileNetV3 inverted residuals + SE
-        #   neck: FPN with 4 lateral convs + top-down merging
-        #   head: DB head (conv + deconv + conv + sigmoid)
-        #
-        # Weight names follow PaddlePaddle convention:
-        #   p2o.Conv.N, p2o.BatchNormalization.N, etc.
-        #
-        # Until the full ONNX graph interpreter is complete, we return the
-        # identity map (sigmoid of zeros) as a type-safe placeholder.
-        # The shapes are correct and the pipeline exercises all downstream
-        # box extraction and cropping logic.
-        n, c, h, w = x.shape
-        return Tensor.zeros(n, 1, h, w)
+        # The detector ONNX graph input is named "x"
+        outputs = self._interpreter.run({"x": image})
+        # Return the first (and only) output — sigmoid probability map
+        for name, tensor in outputs.items():
+            return tensor
+        raise RuntimeError("Detector ONNX graph produced no outputs")
 
     def detect(self, image: Tensor, threshold: float = 0.3,
                min_area: int = 100) -> list[tuple[int, int, int, int]]:
@@ -731,18 +701,23 @@ class PaddleOCRClassifier:
               GlobalAvgPool(10), MaxPool(1), Reshape, Add, Mul, Clip.
     """
 
-    __slots__ = ("weights", "_loaded")
+    __slots__ = ("weights", "_loaded", "_interpreter")
 
     def __init__(self) -> None:
         self.weights = WeightStore()
         self._loaded = False
+        self._interpreter = None
 
     def load(self, onnx_bytes: bytes) -> None:
         count = self.weights.load_onnx(onnx_bytes)
         self._loaded = count > 0
 
+        from tinygrad.onnx_interpreter import OnnxInterpreter
+        self._interpreter = OnnxInterpreter()
+        self._interpreter.load_model(onnx_bytes)
+
     def forward(self, crops: Tensor) -> Tensor:
-        """Classify text direction.
+        """Classify text direction via ONNX graph interpreter.
 
         Args:
             crops: [N, 3, 48, 192] batch of text line images.
@@ -750,11 +725,13 @@ class PaddleOCRClassifier:
         Returns:
             [N, 2] softmax output — column 0 = 0°, column 1 = 180°.
         """
-        if not self._loaded:
+        if self._interpreter is None:
             raise RuntimeError("Classifier weights not loaded. Call load() first.")
-        # Placeholder: return all-0° classification (column 0 = 1.0)
-        n = crops.shape[0]
-        return Tensor([[1.0, 0.0]] * n)
+
+        outputs = self._interpreter.run({"x": crops})
+        for name, tensor in outputs.items():
+            return tensor
+        raise RuntimeError("Classifier ONNX graph produced no outputs")
 
     def needs_rotation(self, crops: Tensor, threshold: float = 0.9) -> list[bool]:
         """Returns per-crop boolean: True if crop needs 180° rotation."""
@@ -790,12 +767,13 @@ class PaddleOCRRecognizer:
               Add(141), Mul(100), Div(33), ReduceMean(10), Softmax(1).
     """
 
-    __slots__ = ("weights", "charset", "_loaded")
+    __slots__ = ("weights", "charset", "_loaded", "_interpreter")
 
     def __init__(self) -> None:
         self.weights = WeightStore()
         self.charset: list[str] = []
         self._loaded = False
+        self._interpreter = None
 
     def load(self, onnx_bytes: bytes, charset_text: str = "") -> None:
         """Load recognizer weights and character set.
@@ -807,6 +785,10 @@ class PaddleOCRRecognizer:
         """
         count = self.weights.load_onnx(onnx_bytes)
         self._loaded = count > 0
+
+        from tinygrad.onnx_interpreter import OnnxInterpreter
+        self._interpreter = OnnxInterpreter()
+        self._interpreter.load_model(onnx_bytes)
 
     def load_onnx_weights(self, onnx_bytes: bytes, charset_text: str = "") -> None:
         """Alias for load() — loads recognizer weights from raw ONNX bytes."""
@@ -823,7 +805,7 @@ class PaddleOCRRecognizer:
             self.charset.append(" ")
 
     def forward(self, crop: Tensor) -> Tensor:
-        """Run text recognition on a single cropped text line.
+        """Run text recognition via ONNX graph interpreter.
 
         Args:
             crop: [1, 3, 48, W] preprocessed text line image.
@@ -831,14 +813,26 @@ class PaddleOCRRecognizer:
         Returns:
             [1, T, vocab_size] character probability distribution.
             T = W/4 (due to stride-4 in backbone).
+
+        Executes the full PP-OCRv4 recognizer ONNX graph (934 nodes, 26 op
+        types) through the generic OnnxInterpreter. The graph includes:
+          Conv (38)         -> im2col + matmul (grouped for depthwise)
+          MatMul (13)       -> dot product (SVTR attention)
+          Add/Mul/Div (274) -> elementwise arithmetic
+          ReduceMean (10)   -> LayerNorm mean computation
+          Reshape (48)      -> view
+          Transpose (9)     -> permute (attention head reshaping)
+          Sigmoid (7)       -> gate activations
+          Softmax (3)       -> attention + CTC output
+          BatchNorm (6)     -> backbone normalization
         """
-        if not self._loaded:
+        if self._interpreter is None:
             raise RuntimeError("Recognizer weights not loaded. Call load() first.")
-        # Placeholder: return uniform distribution
-        _, _, _, w = crop.shape
-        t = max(1, w // 4)
-        vocab = len(self.charset) if self.charset else 6625
-        return Tensor.zeros(1, t, vocab)
+
+        outputs = self._interpreter.run({"x": crop})
+        for name, tensor in outputs.items():
+            return tensor
+        raise RuntimeError("Recognizer ONNX graph produced no outputs")
 
     def decode_ctc(self, logits: Tensor) -> tuple[str, float]:
         """CTC greedy decode: argmax -> remove blanks and duplicates.

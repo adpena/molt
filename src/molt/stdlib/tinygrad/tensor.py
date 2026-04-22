@@ -37,8 +37,6 @@ _LN_2 = math.log(2)
 class Tensor:
     """Tinygrad-compatible tensor with lazy evaluation."""
 
-    __slots__ = ("lazydata",)
-
     def __init__(self, data=None, dtype: DType = None) -> None:
         if isinstance(data, LazyBuffer):
             self.lazydata = data
@@ -103,14 +101,14 @@ class Tensor:
         for s in resolved_shape:
             numel *= s
         op = LazyOp("CONST", (), arg=0.0, dtype=dt, shape=resolved_shape)
-        return Tensor(LazyBuffer(op, dt, resolved_shape))
+        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape))
 
     @staticmethod
     def ones(*shape, dtype: DType = None) -> "Tensor":
         resolved_shape = _resolve_shape(shape)
         dt = dtype or dtypes.float32
         op = LazyOp("CONST", (), arg=1.0, dtype=dt, shape=resolved_shape)
-        return Tensor(LazyBuffer(op, dt, resolved_shape))
+        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape))
 
     @staticmethod
     def rand(*shape, dtype: DType = None) -> "Tensor":
@@ -121,14 +119,14 @@ class Tensor:
             numel *= s
         data = [_random.random() for _ in range(numel)]
         op = LazyOp("LOAD", (), arg=None, dtype=dt, shape=resolved_shape)
-        return Tensor(LazyBuffer(op, dt, resolved_shape, data=data))
+        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape, data=data))
 
     @staticmethod
     def eye(n: int, dtype: DType = None) -> "Tensor":
         dt = dtype or dtypes.float32
         data = [1.0 if i == j else 0.0 for i in range(n) for j in range(n)]
         op = LazyOp("LOAD", (), arg=None, dtype=dt, shape=(n, n))
-        return Tensor(LazyBuffer(op, dt, (n, n), data=data))
+        return tensor_from_lazy(LazyBuffer(op, dt, (n, n), data=data))
 
     @staticmethod
     def empty(*shape, dtype: DType = None) -> "Tensor":
@@ -138,7 +136,7 @@ class Tensor:
         for s in resolved_shape:
             numel *= s
         op = LazyOp("CONST", (), arg=0.0, dtype=dt, shape=resolved_shape)
-        return Tensor(LazyBuffer(op, dt, resolved_shape))
+        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape))
 
     @staticmethod
     def full(*shape, fill_value: float, dtype: DType = None) -> "Tensor":
@@ -146,7 +144,7 @@ class Tensor:
         resolved_shape = _resolve_shape(shape)
         dt = dtype or dtypes.float32
         op = LazyOp("CONST", (), arg=float(fill_value), dtype=dt, shape=resolved_shape)
-        return Tensor(LazyBuffer(op, dt, resolved_shape))
+        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape))
 
     # --- Unary Ops (compositions of 26 primitives) ---
 
@@ -336,7 +334,7 @@ class Tensor:
 
         result_shape = tuple(out_shape)
         op = LazyOp("LOAD", (), dtype=dtypes.int32, shape=result_shape)
-        return Tensor(LazyBuffer(op, dtypes.int32, result_shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, dtypes.int32, result_shape, data=result))
 
     def softmax(self, axis: int = -1) -> "Tensor":
         """softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))"""
@@ -369,7 +367,7 @@ class Tensor:
 
         flat = tinygrad.realize.realize(self.lazydata)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=resolved)
-        return Tensor(LazyBuffer(op, self.dtype, resolved, data=list(flat)))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, resolved, data=list(flat)))
 
     def permute(self, *order) -> "Tensor":
         if len(order) == 1 and isinstance(order[0], (list, tuple)):
@@ -379,14 +377,14 @@ class Tensor:
         # Perform actual permutation on data
         result = _permute_data(flat, self.shape, order)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
-        return Tensor(LazyBuffer(op, self.dtype, new_shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, data=result))
 
     def expand(self, *new_shape) -> "Tensor":
         resolved = _resolve_shape(new_shape)
         flat = tinygrad.realize.realize(self.lazydata)
         result = _expand_data(flat, self.shape, resolved)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=resolved)
-        return Tensor(LazyBuffer(op, self.dtype, resolved, data=result))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, resolved, data=result))
 
     def pad(self, padding, value: float = 0.0) -> "Tensor":
         """Pad tensor. padding is list of (before, after) pairs per dim."""
@@ -400,7 +398,7 @@ class Tensor:
         result = [value] * numel
         _copy_with_padding(flat, self.shape, result, new_shape, padding)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
-        return Tensor(LazyBuffer(op, self.dtype, new_shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, data=result))
 
     def shrink(self, bounds) -> "Tensor":
         """Extract sub-region. bounds is list of (start, end) per dim."""
@@ -408,13 +406,13 @@ class Tensor:
         new_shape = tuple(e - s for s, e in bounds)
         result = _shrink_data(flat, self.shape, bounds)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
-        return Tensor(LazyBuffer(op, self.dtype, new_shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, data=result))
 
     def flip(self, axis: int = 0) -> "Tensor":
         flat = tinygrad.realize.realize(self.lazydata)
         result = _flip_data(flat, self.shape, axis)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=self.shape)
-        return Tensor(LazyBuffer(op, self.dtype, self.shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape, data=result))
 
     def contiguous(self) -> "Tensor":
         """Force materialization."""
@@ -509,7 +507,7 @@ class Tensor:
 
         out_shape = tuple(new_shape)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=out_shape)
-        return Tensor(LazyBuffer(op, self.dtype, out_shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, out_shape, data=result))
 
     def split_last_dim(self, sizes: tuple) -> tuple:
         """Split the last dimension into multiple tensors of given sizes.
@@ -544,7 +542,7 @@ class Tensor:
                 for i in range(sz):
                     out_data[dst_base + i] = flat[src_base + i]
             op = LazyOp("LOAD", (), dtype=self.dtype, shape=out_shape)
-            results.append(Tensor(LazyBuffer(op, self.dtype, out_shape, data=out_data)))
+            results.append(tensor_from_lazy(LazyBuffer(op, self.dtype, out_shape, data=out_data)))
             offset += sz
 
         return tuple(results)
@@ -582,7 +580,7 @@ class Tensor:
                 out_data[dst_base + i] = gate * gate * up  # squared ReLU * up
 
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=out_shape)
-        return Tensor(LazyBuffer(op, self.dtype, out_shape, data=out_data))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, out_shape, data=out_data))
 
     # --- Matrix Ops ---
 
@@ -593,7 +591,7 @@ class Tensor:
     def matmul(self, other: "Tensor") -> "Tensor":
         """Matrix multiplication. Supports 2D @ 2D."""
         a_data = tinygrad.realize.realize(self.lazydata)
-        b_data = _realize(other.lazydata)
+        b_data = tinygrad.realize.realize(other.lazydata)
         if self.ndim == 2 and other.ndim == 2:
             m, k = self.shape
             k2, n = other.shape
@@ -618,7 +616,7 @@ class Tensor:
         else:
             raise ValueError(f"matmul not supported for ndim {self.ndim} @ {other.ndim}")
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=shape)
-        return Tensor(LazyBuffer(op, self.dtype, shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, shape, data=result))
 
     def __matmul__(self, other: "Tensor") -> "Tensor":
         return self.matmul(other)
@@ -631,7 +629,7 @@ class Tensor:
         if not tensors:
             raise ValueError("cat requires at least one tensor")
 
-        all_data = [_realize(t.lazydata) for t in tensors]
+        all_data = [tinygrad.realize.realize(t.lazydata) for t in tensors]
         shapes = [t.shape for t in tensors]
         ndim = len(shapes[0])
 
@@ -644,7 +642,7 @@ class Tensor:
         result = _cat_data(all_data, shapes, dim)
         dt = tensors[0].dtype
         op = LazyOp("LOAD", (), dtype=dt, shape=out_shape)
-        return Tensor(LazyBuffer(op, dt, out_shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, dt, out_shape, data=result))
 
     @staticmethod
     def stack(*tensors, dim: int = 0) -> "Tensor":
@@ -658,27 +656,57 @@ class Tensor:
 
     def gather(self, dim: int, index: "Tensor") -> "Tensor":
         """Gather elements along a dimension using index tensor."""
+        if dim < 0:
+            dim += self.ndim
+        if dim == 0 and self.ndim >= 2 and len(index.shape) == 1:
+            rows = self.tolist()
+            idx_data = index.tolist()
+            result = []
+            for raw_idx in idx_data:
+                row = int(raw_idx)
+                if row < 0 or row >= len(rows):
+                    raise IndexError(f"gather index {row} out of range for axis 0")
+                result.append(rows[row])
+            return self.__class__(result, dtype=self.dtype)
+
         src_data = tinygrad.realize.realize(self.lazydata)
-        idx_data = _realize(index.lazydata)
+        idx_data = tinygrad.realize.realize(index.lazydata)
         result = _gather_data(src_data, self.shape, idx_data, index.shape, dim)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=index.shape)
-        return Tensor(LazyBuffer(op, self.dtype, index.shape, data=result))
+        return self.__class__(LazyBuffer(op, self.dtype, index.shape, data=result))
 
     def scatter(self, dim: int, index: "Tensor", src: "Tensor") -> "Tensor":
         """Scatter src elements into self along a dimension using index tensor."""
+        if dim < 0:
+            dim += self.ndim
+        if dim == 0 and self.ndim >= 2 and len(index.shape) == 1:
+            rows = self.tolist()
+            src_rows = src.tolist()
+            idx_data = index.tolist()
+            if len(src_rows) != len(idx_data):
+                raise ValueError(
+                    f"scatter source has {len(src_rows)} rows for {len(idx_data)} axis-0 indices"
+                )
+            for pos, raw_idx in enumerate(idx_data):
+                row = int(raw_idx)
+                if row < 0 or row >= len(rows):
+                    raise IndexError(f"scatter index {row} out of range for axis 0")
+                rows[row] = src_rows[pos]
+            return self.__class__(rows, dtype=self.dtype)
+
         self_data = list(tinygrad.realize.realize(self.lazydata))
-        src_data = _realize(src.lazydata)
-        idx_data = _realize(index.lazydata)
+        src_data = tinygrad.realize.realize(src.lazydata)
+        idx_data = tinygrad.realize.realize(index.lazydata)
         _scatter_data(self_data, self.shape, src_data, idx_data, index.shape, dim)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=self.shape)
-        return Tensor(LazyBuffer(op, self.dtype, self.shape, data=self_data))
+        return self.__class__(LazyBuffer(op, self.dtype, self.shape, data=self_data))
 
     def __getitem__(self, idx) -> "Tensor":
         """Basic integer/slice indexing."""
         flat = tinygrad.realize.realize(self.lazydata)
         if isinstance(idx, int):
             if self.ndim == 1:
-                return Tensor([flat[idx]])
+                return tensor_from_data([flat[idx]], dtype=self.dtype)
             # Select along first dimension
             inner = 1
             for s in self.shape[1:]:
@@ -687,7 +715,7 @@ class Tensor:
             new_data = flat[start:start + inner]
             new_shape = self.shape[1:]
             op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
-            return Tensor(LazyBuffer(op, self.dtype, new_shape, data=new_data))
+            return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, data=new_data))
         raise TypeError(f"Unsupported index type: {type(idx)}")
 
     # --- Specialized Compositions ---
@@ -716,7 +744,7 @@ class Tensor:
             for i in range(n):
                 for j in range(n):
                     mask_data.append(0.0 if j <= i else float("-inf"))
-            cmask = Tensor(LazyBuffer(
+            cmask = tensor_from_lazy(LazyBuffer(
                 LazyOp("LOAD", (), dtype=scores.dtype, shape=(n, n)),
                 scores.dtype, (n, n), data=mask_data
             ))
@@ -752,8 +780,8 @@ class Tensor:
         stride: int stride
         padding: int zero-padding
         """
-        x_data = _realize(x.lazydata)
-        w_data = _realize(weight.lazydata)
+        x_data = tinygrad.realize.realize(x.lazydata)
+        w_data = tinygrad.realize.realize(weight.lazydata)
 
         n, c_in, h, w = x.shape
         c_out, c_in_w, kh, kw = weight.shape
@@ -796,7 +824,7 @@ class Tensor:
 
         # Add bias
         if bias is not None:
-            b_data = _realize(bias.lazydata)
+            b_data = tinygrad.realize.realize(bias.lazydata)
             for i in range(c_out):
                 for j in range(col_w):
                     result[i * col_w + j] += b_data[i]
@@ -813,13 +841,13 @@ class Tensor:
         out_shape = (n, c_out, h_out, w_out)
         from tinygrad.lazy import LazyOp, LazyBuffer as LB
         op = LazyOp("LOAD", (), dtype=x.dtype, shape=out_shape)
-        return Tensor(LB(op, x.dtype, out_shape, data=out_data))
+        return tensor_from_lazy(LB(op, x.dtype, out_shape, data=out_data))
 
     # --- Internal Helpers ---
 
     def _unary(self, op_name: str) -> "Tensor":
         op = LazyOp(op_name, (self.lazydata,), dtype=self.dtype, shape=self.shape)
-        return Tensor(LazyBuffer(op, self.dtype, self.shape))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape))
 
     def _unary_compose(self, op_name: str, pre_mul: float = None, post_mul: float = None) -> "Tensor":
         src = self
@@ -842,7 +870,7 @@ class Tensor:
             dtype=out_dtype,
             shape=out_shape,
         )
-        return Tensor(LazyBuffer(op, out_dtype, out_shape))
+        return tensor_from_lazy(LazyBuffer(op, out_dtype, out_shape))
 
     def _reduce(self, op_name: str, axis) -> "Tensor":
         if axis is not None:
@@ -859,7 +887,7 @@ class Tensor:
             dtype=self.dtype,
             shape=out_shape,
         )
-        return Tensor(LazyBuffer(op, self.dtype, out_shape))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, out_shape))
 
     def _broadcast_to(self, target_shape: tuple) -> "Tensor":
         """Broadcast this tensor to target_shape by repeating data."""
@@ -868,12 +896,12 @@ class Tensor:
         flat = tinygrad.realize.realize(self.lazydata)
         result = _expand_data(flat, self.shape, target_shape)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=target_shape)
-        return Tensor(LazyBuffer(op, self.dtype, target_shape, data=result))
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, target_shape, data=result))
 
     @staticmethod
     def _const(val: float, shape: tuple, dtype: DType) -> "Tensor":
         op = LazyOp("CONST", (), arg=val, dtype=dtype, shape=shape)
-        return Tensor(LazyBuffer(op, dtype, shape))
+        return tensor_from_lazy(LazyBuffer(op, dtype, shape))
 
     @staticmethod
     def _ensure_tensor(x, shape: tuple, dtype: DType) -> "Tensor":
@@ -881,10 +909,18 @@ class Tensor:
             return x
         if isinstance(x, (int, float)):
             return Tensor._const(float(x), (1,), dtype)
-        return Tensor(x, dtype=dtype)
+        return tensor_from_data(x, dtype=dtype)
 
     def __repr__(self) -> str:
         return f"<Tensor shape={self.shape} dtype={self.dtype}>"
+
+
+def tensor_from_lazy(lazydata):
+    return Tensor(lazydata)
+
+
+def tensor_from_data(data, dtype=None):
+    return Tensor(data, dtype=dtype)
 
 
 # --- Utility Functions ---
