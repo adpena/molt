@@ -6,16 +6,34 @@ Uses numpy directly (no tinygrad dependency) for testing outside molt.
 import onnx
 import onnxruntime as ort
 import numpy as np
-import glob
 import time
+
+from tests.helpers.paddleocr_paths import (
+    hf_snapshot_artifact_candidate,
+    require_paddleocr_artifact,
+)
+
+
+DETECTOR_CANDIDATES = (
+    "ch_PP-OCRv4_det.onnx",
+    hf_snapshot_artifact_candidate(
+        "models--OleehyO--paddleocrv4.onnx", "ch_PP-OCRv4_det.onnx"
+    ),
+)
+ENGLISH_RECOGNIZER_CANDIDATES = (
+    "rec/english/model.onnx",
+    hf_snapshot_artifact_candidate(
+        "models--Kreuzberg--paddleocr-onnx-models", "rec/english/model.onnx"
+    ),
+)
 
 def test_detector_correctness():
     """Compare detector output: ONNX Runtime vs our interpreter structure."""
-    det_path = glob.glob('/tmp/paddleocr-onnx/**/ch_PP-OCRv4_det.onnx', recursive=True)[0]
+    det_path = require_paddleocr_artifact(*DETECTOR_CANDIDATES)
     model = onnx.load(det_path)
 
     # ONNX Runtime reference
-    sess = ort.InferenceSession(det_path)
+    sess = ort.InferenceSession(str(det_path))
     inp = np.random.randn(1, 3, 256, 320).astype(np.float32)
     ref_out = sess.run(None, {sess.get_inputs()[0].name: inp})[0]
 
@@ -49,16 +67,13 @@ def test_detector_correctness():
 
 def test_recognizer_correctness():
     """Compare recognizer output."""
-    rec_paths = glob.glob('/tmp/paddleocr-onnx/**/english/**/model.onnx', recursive=True)
-    if not rec_paths:
-        print("SKIP: English recognizer not found")
-        return
+    rec_path = require_paddleocr_artifact(*ENGLISH_RECOGNIZER_CANDIDATES)
 
-    sess = ort.InferenceSession(rec_paths[0])
+    sess = ort.InferenceSession(str(rec_path))
     inp = np.random.randn(1, 3, 48, 200).astype(np.float32)
     ref_out = sess.run(None, {sess.get_inputs()[0].name: inp})[0]
 
-    model = onnx.load(rec_paths[0])
+    model = onnx.load(rec_path)
     ops = {}
     for node in model.graph.node:
         ops[node.op_type] = ops.get(node.op_type, 0) + 1
