@@ -109,6 +109,65 @@ def _rule_type_covers_suffix(
     )
 
 
+def _worker_json_const(worker_source: str, name: str) -> dict[str, Any]:
+    match = re.search(rf"^\s*const {re.escape(name)} = (.+);$", worker_source, re.M)
+    if match is None:
+        raise RuntimeError(f"Cloudflare worker missing {name} ABI map")
+    try:
+        value = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Cloudflare worker {name} ABI map is not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Cloudflare worker {name} ABI map must be a JSON object")
+    return value
+
+
+def _validate_split_runtime_abi_manifest(
+    *,
+    manifest_data: dict[str, Any],
+    worker_js: Path,
+) -> None:
+    abi = manifest_data.get("abi")
+    if not isinstance(abi, dict):
+        raise RuntimeError("Cloudflare manifest missing split-runtime ABI")
+
+    runtime_imports = abi.get("runtime_imports")
+    if not isinstance(runtime_imports, dict):
+        raise RuntimeError("Cloudflare manifest missing runtime_imports ABI")
+    if runtime_imports.get("module") != "molt_runtime":
+        raise RuntimeError("Cloudflare manifest runtime_imports module must be molt_runtime")
+
+    names = runtime_imports.get("names")
+    signatures = runtime_imports.get("signatures")
+    result_kinds = runtime_imports.get("result_kinds")
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        raise RuntimeError("Cloudflare manifest runtime_imports names must be strings")
+    if not isinstance(signatures, dict):
+        raise RuntimeError("Cloudflare manifest runtime_imports signatures must be an object")
+    if not isinstance(result_kinds, dict):
+        raise RuntimeError("Cloudflare manifest runtime_imports result_kinds must be an object")
+    if names != sorted(signatures):
+        raise RuntimeError("Cloudflare manifest runtime_imports names drifted from signatures")
+
+    table_refs = abi.get("table_refs")
+    if not isinstance(table_refs, dict):
+        raise RuntimeError("Cloudflare manifest missing table_refs ABI")
+    app_table_refs = table_refs.get("app")
+    runtime_table_refs = table_refs.get("runtime")
+    if not isinstance(app_table_refs, dict) or not isinstance(runtime_table_refs, dict):
+        raise RuntimeError("Cloudflare manifest table_refs app/runtime entries must be objects")
+
+    worker_source = worker_js.read_text(encoding="utf-8")
+    if _worker_json_const(worker_source, "runtimeImportSignatures") != signatures:
+        raise RuntimeError("Cloudflare worker runtime import signatures drifted from manifest")
+    if _worker_json_const(worker_source, "runtimeImportResultKinds") != result_kinds:
+        raise RuntimeError("Cloudflare worker runtime import result kinds drifted from manifest")
+    if _worker_json_const(worker_source, "appTableRefSignatures") != app_table_refs:
+        raise RuntimeError("Cloudflare worker app table ref signatures drifted from manifest")
+    if _worker_json_const(worker_source, "runtimeTableRefSignatures") != runtime_table_refs:
+        raise RuntimeError("Cloudflare worker runtime table ref signatures drifted from manifest")
+
+
 def validate_bundle_contract(
     bundle_root: Path, wrangler_config: Path
 ) -> CloudflareBundleContract:
@@ -200,6 +259,10 @@ def validate_bundle_contract(
                 f"Cloudflare manifest {module_name} path drifted: "
                 f"{module_entry.get('path')!r} != {expected_path!r}"
             )
+    _validate_split_runtime_abi_manifest(
+        manifest_data=manifest_data,
+        worker_js=worker_js,
+    )
 
     return CloudflareBundleContract(
         bundle_root=bundle_root,
