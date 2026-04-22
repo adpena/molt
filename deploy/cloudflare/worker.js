@@ -23,7 +23,7 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleTokensRequest, handleBatchOcr, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill, normalizeOcrResultPayload } from "./ocr_api.js";
+import { handleOcrRequest, handleTokensRequest, handleBatchOcr, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill, normalizeOcrResultPayload, handlePaddleMoltInference } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, categorizeError } from "./monitoring.js";
 import { getAnalyticsSummary } from "./analytics.js";
@@ -1583,6 +1583,21 @@ export default {
       });
     }
 
+    if (request.method === "GET" && path === "/test/bench-onnxrt") {
+      // Serve onnxruntime-web comparison benchmark page from R2
+      if (env.WEIGHTS) {
+        const obj = await env.WEIGHTS.get("browser/bench-onnxrt.html");
+        if (obj) {
+          return new Response(obj.body, {
+            headers: { "Content-Type": "text/html; charset=utf-8", ...cors }
+          });
+        }
+      }
+      return new Response("bench-onnxrt.html not found in R2. Upload deploy/browser/bench-onnxrt.html to R2 key 'browser/bench-onnxrt.html'.", {
+        status: 404, headers: { "Content-Type": "text/plain", ...cors }
+      });
+    }
+
     if (request.method === "GET" && path === "/dashboard") {
       return new Response(DASHBOARD_HTML, {
         headers: { "Content-Type": "text/html; charset=utf-8", ...cors }
@@ -1728,7 +1743,21 @@ export default {
     // Models: detector (4.7 MB) + recognizer (10.8 MB) + dict (74 KB) = 15.5 MB total
     // Fits comfortably in Workers 256 MB memory.
     if (path === "/ocr/paddle-molt" && request.method === "POST") {
-      // Load models from R2 (cached in global scope after first load)
+      // Check Content-Type: if it has an image body, run inference.
+      // Otherwise, return model status for health-check probes.
+      const ct = request.headers.get("Content-Type") || "";
+      const hasImageBody = ct.includes("multipart/form-data") ||
+        ct.includes("application/json") ||
+        ct.includes("image/");
+
+      if (hasImageBody) {
+        const response = await handlePaddleMoltInference(request, env, cors, rid);
+        const headers = new Headers(response.headers);
+        headers.set("X-Request-ID", rid);
+        return new Response(response.body, { status: response.status, headers });
+      }
+
+      // No image body — return model status (health check / discovery)
       let modelsReady = false;
       let modelError = null;
       if (env.WEIGHTS) {
@@ -1802,12 +1831,12 @@ export default {
         total_size: "15.5 MB",
         languages: ["en", "ch", "ja", "ko", "latin", "cyrillic", "devanagari", "arabic"],
         pipeline: [
-          "ONNX Constant nodes -> OnnxWeightParser -> tinygrad Tensor graph",
-          "tinygrad 26 primitives -> molt compiler -> WebGPU/WASM/native",
-          "DBNet detector -> direction classifier -> SVTRv2 recognizer -> CTC decode",
+          "ONNX protobuf -> JS graph interpreter -> node-by-node execution",
+          "DBNet detector -> connected-component contours -> SVTRv2 recognizer -> CTC decode",
+          "All inference server-side in Workers via pure JS ONNX execution engine",
         ],
         note: modelsReady
-          ? "Server-side PaddleOCR inference via ONNX interpreter — models loaded from R2"
+          ? "Server-side PaddleOCR inference via ONNX JS interpreter — models loaded from R2"
           : "PaddleOCR compiled through molt tinygrad — i18n-ready with 10 language dicts",
         request_id: rid,
       }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });

@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PaddleOCR — ONNX Runtime Web Benchmark</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 24px;
+            background: #0a0a0a;
+            color: #e0e0e0;
+        }
+        h1 { margin-bottom: 8px; font-size: 1.4em; }
+        h2 { margin: 20px 0 8px; font-size: 1.1em; color: #aaa; }
+        #status {
+            padding: 12px;
+            background: #1a1a2e;
+            border-left: 3px solid #4a9eff;
+            margin-bottom: 16px;
+            font-size: 0.9em;
+        }
+        .error { border-left-color: #ff4a4a !important; }
+        .ready { border-left-color: #4aff4a !important; }
+        .controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        input[type="file"] {
+            background: #222;
+            color: #e0e0e0;
+            padding: 8px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        select {
+            background: #222;
+            color: #e0e0e0;
+            padding: 8px;
+            border: 1px solid #444;
+            border-radius: 4px;
+        }
+        button {
+            background: #2a4a8e;
+            color: #e0e0e0;
+            padding: 8px 16px;
+            border: 1px solid #4a6aae;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover { background: #3a5a9e; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        canvas {
+            border: 1px solid #333;
+            background: #111;
+            display: block;
+            margin-bottom: 16px;
+            max-width: 100%;
+        }
+        #output {
+            background: #111;
+            border: 1px solid #333;
+            padding: 16px;
+            min-height: 60px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.9em;
+            line-height: 1.5;
+            margin-bottom: 16px;
+        }
+        #output:empty::before {
+            content: 'OCR output will appear here...';
+            color: #555;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 16px;
+        }
+        th, td {
+            text-align: left;
+            padding: 6px 12px;
+            border-bottom: 1px solid #333;
+            font-size: 0.85em;
+        }
+        th { color: #888; }
+        .timing-val { font-variant-numeric: tabular-nums; color: #4aff9e; }
+        #comparison-note {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 16px;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <h1>PaddleOCR — ONNX Runtime Web Benchmark</h1>
+    <p style="color: #888; font-size: 0.85em; margin-bottom: 16px;">
+        Baseline comparison for molt/tinygrad WebGPU pipeline.
+        Open <a href="test.html" style="color: #4a9eff;">test.html</a> side-by-side.
+    </p>
+
+    <div id="status">Loading onnxruntime-web 1.17.0...</div>
+
+    <div class="controls">
+        <input type="file" id="image-input" accept="image/*" disabled>
+        <select id="ep-select" disabled>
+            <option value="webgpu">WebGPU</option>
+            <option value="wasm" selected>WASM (CPU)</option>
+        </select>
+        <button id="run-btn" disabled>Run Inference</button>
+    </div>
+
+    <canvas id="preview" width="640" height="480"></canvas>
+
+    <h2>Detected Text</h2>
+    <pre id="output"></pre>
+
+    <h2>Timing</h2>
+    <table id="timing-table">
+        <thead>
+            <tr>
+                <th>Phase</th>
+                <th>Time (ms)</th>
+            </tr>
+        </thead>
+        <tbody id="timing-body">
+            <tr><td colspan="2" style="color: #555;">No results yet</td></tr>
+        </tbody>
+    </table>
+
+    <h2>Run History</h2>
+    <table id="history-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>EP</th>
+                <th>Detection (ms)</th>
+                <th>Recognition (ms)</th>
+                <th>Total (ms)</th>
+            </tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+    </table>
+
+    <div id="comparison-note">
+        Compare these results with test.html (molt/tinygrad WebGPU) using the same image.<br>
+        Discard the first run (cold start). Average 4+ runs for reliable comparison.
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
+    <script>
+        const R2_BASE = 'https://falcon-ocr.adpena.workers.dev';
+        const DET_MODEL_URL = `${R2_BASE}/models/paddleocr/ch_PP-OCRv4_det.onnx`;
+        const REC_MODEL_URL = `${R2_BASE}/models/paddleocr/ch_PP-OCRv4_rec.onnx`;
+        const DICT_URL = `${R2_BASE}/models/paddleocr/dicts/ppocr_keys_v1.txt`;
+
+        const status = document.getElementById('status');
+        const output = document.getElementById('output');
+        const imageInput = document.getElementById('image-input');
+        const epSelect = document.getElementById('ep-select');
+        const runBtn = document.getElementById('run-btn');
+        const timingBody = document.getElementById('timing-body');
+        const historyBody = document.getElementById('history-body');
+        const canvas = document.getElementById('preview');
+        const ctx = canvas.getContext('2d');
+
+        let detSession = null;
+        let recSession = null;
+        let dictChars = [];
+        let currentImageData = null;
+        let runCount = 0;
+
+        // ---------------------------------------------------------------
+        // Image preprocessing (matches PaddleOCR pipeline)
+        // ---------------------------------------------------------------
+
+        function preprocessDetector(imageData, maxSideLen = 960) {
+            const { width, height, data } = imageData;
+            let scale = 1.0;
+            const maxSide = Math.max(width, height);
+            if (maxSide > maxSideLen) scale = maxSideLen / maxSide;
+
+            let newW = Math.max(Math.round(width * scale), 32);
+            let newH = Math.max(Math.round(height * scale), 32);
+            const padW = Math.ceil(newW / 32) * 32;
+            const padH = Math.ceil(newH / 32) * 32;
+
+            const mean = [0.485, 0.456, 0.406];
+            const std_ = [0.229, 0.224, 0.225];
+            const tensor = new Float32Array(1 * 3 * padH * padW);
+
+            for (let c = 0; c < 3; c++) {
+                for (let h = 0; h < padH; h++) {
+                    for (let w = 0; w < padW; w++) {
+                        if (h < newH && w < newW) {
+                            const srcH = Math.min(Math.floor(h / scale), height - 1);
+                            const srcW = Math.min(Math.floor(w / scale), width - 1);
+                            const pixIdx = (srcH * width + srcW) * 4;
+                            const val = data[pixIdx + c] / 255.0;
+                            tensor[(c * padH + h) * padW + w] = (val - mean[c]) / std_[c];
+                        }
+                    }
+                }
+            }
+
+            return {
+                tensor: new ort.Tensor('float32', tensor, [1, 3, padH, padW]),
+                scale, padW, padH
+            };
+        }
+
+        function postprocessDetector(probMap, H, W, scale, origW, origH, threshold = 0.3) {
+            const binary = new Uint8Array(H * W);
+            for (let i = 0; i < H * W; i++) {
+                binary[i] = probMap[i] > threshold ? 1 : 0;
+            }
+
+            const labels = new Int32Array(H * W);
+            let labelCount = 0;
+            const boxes = [];
+
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    const idx = y * W + x;
+                    if (binary[idx] === 1 && labels[idx] === 0) {
+                        labelCount++;
+                        const queue = [idx];
+                        labels[idx] = labelCount;
+                        let minX = x, maxX = x, minY = y, maxY = y;
+                        let scoreSum = 0, pixelCount = 0;
+
+                        while (queue.length > 0) {
+                            const cur = queue.shift();
+                            const cy = Math.floor(cur / W);
+                            const cx = cur % W;
+                            scoreSum += probMap[cur];
+                            pixelCount++;
+                            minX = Math.min(minX, cx);
+                            maxX = Math.max(maxX, cx);
+                            minY = Math.min(minY, cy);
+                            maxY = Math.max(maxY, cy);
+
+                            const neighbors = [
+                                cy > 0 ? cur - W : -1,
+                                cy < H - 1 ? cur + W : -1,
+                                cx > 0 ? cur - 1 : -1,
+                                cx < W - 1 ? cur + 1 : -1,
+                            ];
+                            for (const n of neighbors) {
+                                if (n >= 0 && binary[n] === 1 && labels[n] === 0) {
+                                    labels[n] = labelCount;
+                                    queue.push(n);
+                                }
+                            }
+                        }
+
+                        if (pixelCount >= 10) {
+                            boxes.push({
+                                x: Math.round(minX / scale),
+                                y: Math.round(minY / scale),
+                                w: Math.round((maxX - minX + 1) / scale),
+                                h: Math.round((maxY - minY + 1) / scale),
+                                score: scoreSum / pixelCount,
+                            });
+                        }
+                    }
+                }
+            }
+
+            for (const box of boxes) {
+                box.x = Math.max(0, Math.min(box.x, origW - 1));
+                box.y = Math.max(0, Math.min(box.y, origH - 1));
+                box.w = Math.min(box.w, origW - box.x);
+                box.h = Math.min(box.h, origH - box.y);
+            }
+
+            boxes.sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x);
+            return boxes;
+        }
+
+        function preprocessRecognizer(imageData, box, targetH = 48, maxW = 320) {
+            const { width, data } = imageData;
+            const { x, y, w, h } = box;
+            const aspect = w / Math.max(h, 1);
+            let recW = Math.min(Math.max(Math.round(targetH * aspect), 1), maxW);
+
+            const mean = [0.5, 0.5, 0.5];
+            const std_ = [0.5, 0.5, 0.5];
+            const tensor = new Float32Array(1 * 3 * targetH * recW);
+
+            for (let c = 0; c < 3; c++) {
+                for (let rh = 0; rh < targetH; rh++) {
+                    for (let rw = 0; rw < recW; rw++) {
+                        const srcY = y + Math.min(Math.floor(rh * h / targetH), h - 1);
+                        const srcX = x + Math.min(Math.floor(rw * w / recW), w - 1);
+                        const pixIdx = (srcY * width + srcX) * 4;
+                        const val = (data[pixIdx + c] || 0) / 255.0;
+                        tensor[(c * targetH + rh) * recW + rw] = (val - mean[c]) / std_[c];
+                    }
+                }
+            }
+
+            return new ort.Tensor('float32', tensor, [1, 3, targetH, recW]);
+        }
+
+        function ctcDecode(logits, T, vocabSize) {
+            let text = '';
+            let prevIdx = -1;
+            for (let t = 0; t < T; t++) {
+                let maxIdx = 0, maxVal = logits[t * vocabSize];
+                for (let v = 1; v < vocabSize; v++) {
+                    if (logits[t * vocabSize + v] > maxVal) {
+                        maxVal = logits[t * vocabSize + v];
+                        maxIdx = v;
+                    }
+                }
+                if (maxIdx !== 0 && maxIdx !== prevIdx) {
+                    const charIdx = maxIdx - 1;
+                    if (charIdx >= 0 && charIdx < dictChars.length) {
+                        text += dictChars[charIdx];
+                    }
+                }
+                prevIdx = maxIdx;
+            }
+            return text;
+        }
+
+        // ---------------------------------------------------------------
+        // Model loading and inference
+        // ---------------------------------------------------------------
+
+        async function loadModels(ep) {
+            status.textContent = `Loading detector model (4.7 MB)...`;
+            status.className = '';
+
+            const sessionOptions = { executionProviders: [ep] };
+
+            try {
+                const [detBytes, recBytes, dictText] = await Promise.all([
+                    fetch(DET_MODEL_URL).then(r => {
+                        if (!r.ok) throw new Error(`Detector fetch failed: ${r.status}`);
+                        return r.arrayBuffer();
+                    }),
+                    fetch(REC_MODEL_URL).then(r => {
+                        if (!r.ok) throw new Error(`Recognizer fetch failed: ${r.status}`);
+                        return r.arrayBuffer();
+                    }),
+                    fetch(DICT_URL).then(r => {
+                        if (!r.ok) throw new Error(`Dictionary fetch failed: ${r.status}`);
+                        return r.text();
+                    }),
+                ]);
+
+                status.textContent = 'Creating ONNX Runtime sessions...';
+                detSession = await ort.InferenceSession.create(detBytes, sessionOptions);
+                status.textContent = 'Detector loaded. Loading recognizer...';
+                recSession = await ort.InferenceSession.create(recBytes, sessionOptions);
+                dictChars = dictText.split('\n').filter(c => c.length > 0);
+
+                status.textContent = `Ready (${ep.toUpperCase()}) — select an image`;
+                status.className = 'ready';
+                return true;
+            } catch (e) {
+                // WebGPU not available: fall back to WASM
+                if (ep === 'webgpu') {
+                    status.textContent = `WebGPU unavailable (${e.message}). Falling back to WASM...`;
+                    epSelect.value = 'wasm';
+                    return loadModels('wasm');
+                }
+                status.textContent = `Failed to load models: ${e.message}`;
+                status.className = 'error';
+                return false;
+            }
+        }
+
+        async function runInference() {
+            if (!detSession || !recSession || !currentImageData) return;
+
+            output.textContent = '';
+            status.textContent = 'Running detection...';
+            status.className = '';
+            runBtn.disabled = true;
+
+            const timings = {};
+
+            try {
+                const t0 = performance.now();
+
+                // Detection
+                const { tensor: detTensor, scale, padW, padH } = preprocessDetector(currentImageData);
+                const detInputName = detSession.inputNames[0];
+                const detResult = await detSession.run({ [detInputName]: detTensor });
+                const detOutputName = detSession.outputNames[0];
+                const probMap = detResult[detOutputName].data;
+                timings.detection = performance.now() - t0;
+
+                // Postprocess
+                const t1 = performance.now();
+                const boxes = postprocessDetector(probMap, padH, padW, scale,
+                    currentImageData.width, currentImageData.height);
+                timings.postprocess = performance.now() - t1;
+
+                // Draw bounding boxes on canvas
+                ctx.strokeStyle = '#4aff4a';
+                ctx.lineWidth = 2;
+                const scaleX = canvas.width / currentImageData.width;
+                const scaleY = canvas.height / currentImageData.height;
+                for (const box of boxes) {
+                    ctx.strokeRect(
+                        box.x * scaleX, box.y * scaleY,
+                        box.w * scaleX, box.h * scaleY
+                    );
+                }
+
+                // Recognition
+                const t2 = performance.now();
+                const results = [];
+                const recInputName = recSession.inputNames[0];
+
+                for (const box of boxes) {
+                    const recTensor = preprocessRecognizer(currentImageData, box);
+                    const recResult = await recSession.run({ [recInputName]: recTensor });
+                    const recOutputName = recSession.outputNames[0];
+                    const logits = recResult[recOutputName].data;
+                    const dims = recResult[recOutputName].dims;
+                    const T = dims[1];
+                    const vocabSize = dims[2];
+                    const text = ctcDecode(logits, T, vocabSize);
+                    if (text.length > 0) {
+                        results.push({ text, bbox: box });
+                    }
+                }
+                timings.recognition = performance.now() - t2;
+                timings.total = performance.now() - t0;
+                timings.boxes = boxes.length;
+                timings.texts = results.length;
+
+                // Display results
+                output.textContent = results.map(r => r.text).join('\n') || '(no text detected)';
+
+                // Update timing table
+                timingBody.innerHTML = [
+                    ['Detection', timings.detection.toFixed(1)],
+                    ['Postprocess', timings.postprocess.toFixed(1)],
+                    ['Recognition', timings.recognition.toFixed(1)],
+                    ['Total', timings.total.toFixed(1)],
+                    ['Boxes found', timings.boxes],
+                    ['Text regions', timings.texts],
+                ].map(([k, v]) =>
+                    `<tr><td>${k}</td><td class="timing-val">${v}</td></tr>`
+                ).join('');
+
+                // Add to history
+                runCount++;
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${runCount}</td>
+                    <td>${epSelect.value.toUpperCase()}</td>
+                    <td class="timing-val">${timings.detection.toFixed(1)}</td>
+                    <td class="timing-val">${timings.recognition.toFixed(1)}</td>
+                    <td class="timing-val">${timings.total.toFixed(1)}</td>
+                `;
+                historyBody.prepend(row);
+
+                status.textContent = `Done in ${timings.total.toFixed(0)} ms`;
+                status.className = 'ready';
+            } catch (e) {
+                output.textContent = `Error: ${e.message}`;
+                status.textContent = 'Inference failed';
+                status.className = 'error';
+                console.error('onnxruntime-web inference failed:', e);
+            } finally {
+                runBtn.disabled = false;
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Event handlers
+        // ---------------------------------------------------------------
+
+        imageInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const bitmap = await createImageBitmap(file);
+            const scale = Math.min(640 / bitmap.width, 480 / bitmap.height, 1);
+            const w = Math.round(bitmap.width * scale);
+            const h = Math.round(bitmap.height * scale);
+            canvas.width = w;
+            canvas.height = h;
+            ctx.drawImage(bitmap, 0, 0, w, h);
+
+            // Store full-res image data for inference
+            const fullCanvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+            const fullCtx = fullCanvas.getContext('2d');
+            fullCtx.drawImage(bitmap, 0, 0);
+            currentImageData = fullCtx.getImageData(0, 0, bitmap.width, bitmap.height);
+            bitmap.close();
+
+            runBtn.disabled = false;
+            status.textContent = 'Image loaded. Click "Run Inference" or select a different EP.';
+            status.className = 'ready';
+        });
+
+        runBtn.addEventListener('click', () => runInference());
+
+        epSelect.addEventListener('change', async () => {
+            detSession = null;
+            recSession = null;
+            runBtn.disabled = true;
+            imageInput.disabled = true;
+            const ok = await loadModels(epSelect.value);
+            if (ok) {
+                imageInput.disabled = false;
+                if (currentImageData) runBtn.disabled = false;
+            }
+        });
+
+        // ---------------------------------------------------------------
+        // Init
+        // ---------------------------------------------------------------
+
+        (async () => {
+            // Check WebGPU availability
+            if (typeof navigator !== 'undefined' && navigator.gpu) {
+                try {
+                    const adapter = await navigator.gpu.requestAdapter();
+                    if (adapter) {
+                        epSelect.value = 'webgpu';
+                    }
+                } catch (_) {
+                    // WebGPU not available
+                }
+            }
+
+            const ok = await loadModels(epSelect.value);
+            if (ok) {
+                imageInput.disabled = false;
+                epSelect.disabled = false;
+            }
+        })();
+    </script>
+</body>
+</html>
