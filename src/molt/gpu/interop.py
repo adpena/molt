@@ -10,7 +10,6 @@ import math
 import struct
 import _intrinsics as _molt_intrinsics
 from . import Buffer
-from .tensor import Tensor
 
 
 # SafeTensors dtype mapping: name -> (struct format char, byte size)
@@ -173,6 +172,8 @@ def _decode_safetensor_values(raw: bytes, dtype_str: str) -> list:
 
 
 def _load_safetensor_entry(data: bytes, data_start: int, meta: dict):
+    from .tensor import Tensor
+
     dtype_str = meta["dtype"]
     shape = tuple(meta["shape"])
     start, end = meta["data_offsets"]
@@ -224,6 +225,8 @@ def load_safetensors(path: str) -> dict:
 
 def load_json_weights(path: str) -> dict:
     """Load weights from a JSON file."""
+    from .tensor import Tensor
+
     with open(path, "r") as f:
         data = json.load(f)
 

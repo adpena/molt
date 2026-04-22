@@ -790,10 +790,6 @@ class PaddleOCRRecognizer:
         self._interpreter = OnnxInterpreter()
         self._interpreter.load_model(onnx_bytes)
 
-    def load_onnx_weights(self, onnx_bytes: bytes, charset_text: str = "") -> None:
-        """Alias for load() — loads recognizer weights from raw ONNX bytes."""
-        self.load(onnx_bytes, charset_text)
-
         # Parse charset: one character per line, blank token (index 0) is implicit
         self.charset = [""]  # index 0 = CTC blank
         for line in charset_text.strip().split("\n"):
@@ -803,6 +799,10 @@ class PaddleOCRRecognizer:
         # Append space if not present
         if " " not in self.charset:
             self.charset.append(" ")
+
+    def load_onnx_weights(self, onnx_bytes: bytes, charset_text: str = "") -> None:
+        """Alias for load() — loads recognizer weights from raw ONNX bytes."""
+        self.load(onnx_bytes, charset_text)
 
     def forward(self, crop: Tensor) -> Tensor:
         """Run text recognition via ONNX graph interpreter.
@@ -979,10 +979,33 @@ class PaddleOCR:
             return Tensor.zeros(1, 3, 48, 48)
 
         new_w = max(1, int(48.0 * crop_w / crop_h))
-        # For now, return the crop padded/resized to (1, 3, 48, new_w)
-        # Full bilinear resize is a future optimization; nearest-neighbor
-        # is sufficient for OCR text lines.
-        return crop
+        from tinygrad.onnx_interpreter import _nearest_resize
+        return _nearest_resize(crop, (1, 3, 48, new_w))
+
+    def _resize_for_classifier(self, crop: Tensor) -> Tensor:
+        """Resize a text crop to the direction classifier's fixed input."""
+        from tinygrad.onnx_interpreter import _nearest_resize
+        return _nearest_resize(crop, (1, 3, 48, 192))
+
+    def _rotate_crop_180(self, crop: Tensor) -> Tensor:
+        """Rotate a [1, C, H, W] crop by 180 degrees."""
+        import tinygrad.realize
+        from tinygrad.lazy import LazyOp, LazyBuffer
+
+        flat = tinygrad.realize.realize(crop.lazydata)
+        n, c, h, w = crop.shape
+        out = [0.0] * len(flat)
+        for bn in range(n):
+            for ch in range(c):
+                for y in range(h):
+                    for x in range(w):
+                        src_idx = bn * c * h * w + ch * h * w + y * w + x
+                        dst_y = h - 1 - y
+                        dst_x = w - 1 - x
+                        dst_idx = bn * c * h * w + ch * h * w + dst_y * w + dst_x
+                        out[dst_idx] = flat[src_idx]
+        op = LazyOp("LOAD", (), dtype=crop.dtype, shape=crop.shape)
+        return Tensor(LazyBuffer(op, crop.dtype, crop.shape, data=out))
 
     def recognize(self, image: Tensor) -> list[dict]:
         """Full OCR pipeline: detect -> classify -> recognize.
@@ -1008,8 +1031,14 @@ class PaddleOCR:
         # 3. Crop each region
         crops = [self._crop_region(normalized, box) for box in boxes]
 
-        # 4. Classify direction and rotate if needed
-        # (skipped for now — most documents are 0°)
+        # 4. Classify direction and rotate when the classifier is loaded.
+        if self.classifier._interpreter is not None:
+            oriented_crops = []
+            for crop in crops:
+                cls_crop = self._resize_for_classifier(crop)
+                rotate = self.classifier.needs_rotation(cls_crop)[0]
+                oriented_crops.append(self._rotate_crop_180(crop) if rotate else crop)
+            crops = oriented_crops
 
         # 5. Recognize text in each crop
         results: list[dict] = []
