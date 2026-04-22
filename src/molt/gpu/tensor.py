@@ -842,6 +842,26 @@ def tensor_data_list(x: "Tensor") -> list:
     return _buffer_to_list(x._buf, x.size)
 
 
+def _normalize_axis0_row_index(
+    raw_idx,
+    axis0_size: int,
+    *,
+    allow_negative: bool,
+    op_name: str,
+) -> int:
+    idx = int(raw_idx)
+    if idx != raw_idx:
+        raise TypeError(f"{op_name} indices must be integers, got {raw_idx!r}")
+    display_idx = idx
+    if idx < 0 and allow_negative:
+        idx += axis0_size
+    if idx < 0 or idx >= axis0_size:
+        raise IndexError(
+            f"Index {display_idx} out of range for axis 0 with size {axis0_size}"
+        )
+    return idx
+
+
 def tensor_take_rows(
     x: "Tensor", indices, *, allow_negative: bool = True
 ) -> "Tensor":
@@ -860,15 +880,12 @@ def tensor_take_rows(
     out = bytearray(len(rows) * width)
 
     for out_row, raw_idx in enumerate(rows):
-        idx = int(raw_idx)
-        if idx != raw_idx:
-            raise TypeError(f"take_rows indices must be integers, got {raw_idx!r}")
-        if idx < 0 and allow_negative:
-            idx += x._shape[0]
-        if idx < 0 or idx >= x._shape[0]:
-            raise IndexError(
-                f"Index {raw_idx} out of range for axis 0 with size {x._shape[0]}"
-            )
+        idx = _normalize_axis0_row_index(
+            raw_idx,
+            x._shape[0],
+            allow_negative=allow_negative,
+            op_name="take_rows",
+        )
         src_start = idx * width
         dst_start = out_row * width
         out[dst_start:dst_start + width] = x._buf._data[src_start:src_start + width]
@@ -963,15 +980,12 @@ def tensor_scatter_rows(
     width = row_size * base._buf.itemsize
     out = bytearray(base._buf._data[: base.size * base._buf.itemsize])
     for src_row, raw_idx in enumerate(rows):
-        idx = int(raw_idx)
-        if idx != raw_idx:
-            raise TypeError(f"scatter_rows indices must be integers, got {raw_idx!r}")
-        if idx < 0 and allow_negative:
-            idx += base._shape[0]
-        if idx < 0 or idx >= base._shape[0]:
-            raise IndexError(
-                f"Index {raw_idx} out of range for axis 0 with size {base._shape[0]}"
-            )
+        idx = _normalize_axis0_row_index(
+            raw_idx,
+            base._shape[0],
+            allow_negative=allow_negative,
+            op_name="scatter_rows",
+        )
         dst_start = idx * width
         src_start = src_row * width
         out[dst_start:dst_start + width] = updates._buf._data[src_start:src_start + width]
