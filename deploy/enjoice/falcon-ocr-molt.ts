@@ -104,7 +104,7 @@ function decodeTokens(tokenIds: number[], vocab: TokenizerVocab): string {
       parts.push(`[UNK:${id}]`);
     }
   }
-  return parts.join("").trim();
+  return parts.join("");
 }
 
 // --------------------------------------------------------------------------
