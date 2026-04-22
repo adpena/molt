@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from secrets import token_hex
+from typing import Any, cast
 
 from .contracts import DebugSubcommand
 
@@ -89,7 +90,7 @@ def render_debug_text_summary(payload: dict[str, object]) -> str:
     retained_output = None
     artifacts = payload.get("artifacts")
     if isinstance(artifacts, dict):
-        retained_output = artifacts.get("retained_output")
+        retained_output = cast(dict[str, Any], artifacts).get("retained_output")
     if isinstance(retained_output, str) and retained_output:
         lines.append(f"Retained Output: {retained_output}")
     return "\n".join(lines) + "\n"

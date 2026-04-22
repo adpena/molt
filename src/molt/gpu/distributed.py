@@ -104,6 +104,8 @@ class Worker:
 
     def _recv_exact(self, n):
         """Receive exactly n bytes from the socket."""
+        if self._socket is None:
+            raise RuntimeError("distributed peer socket is not connected")
         data = bytearray()
         while len(data) < n:
             chunk = self._socket.recv(n - len(data))
@@ -521,10 +523,13 @@ class WorkerServer:
 
     def _accept_loop(self):
         """Accept incoming connections."""
+        if self._server_socket is None:
+            raise RuntimeError("distributed server socket is not initialized")
+        server_socket = self._server_socket
         while self._running:
             try:
-                self._server_socket.settimeout(1.0)
-                conn, addr = self._server_socket.accept()
+                server_socket.settimeout(1.0)
+                conn, addr = server_socket.accept()
                 handler = threading.Thread(
                     target=self._handle_client, args=(conn,), daemon=True
                 )

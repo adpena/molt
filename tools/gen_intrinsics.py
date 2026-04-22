@@ -85,6 +85,8 @@ _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = [
     ("molt_signal_", "stdlib_signal"),
     # select
     ("molt_select_", "stdlib_select"),
+    # low-level tinygrad GPU primitive bridge
+    ("molt_gpu_prim_", "molt_gpu_primitives"),
 ]
 
 

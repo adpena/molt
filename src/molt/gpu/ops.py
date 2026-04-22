@@ -20,7 +20,7 @@ import struct
 import math
 
 
-def map(func, buf: Buffer, dtype: type = None) -> Buffer:
+def map(func, buf: Buffer, dtype: type | None = None) -> Buffer:
     """Apply func to each element of buf, returning a new Buffer.
 
     Like numpy.vectorize but runs on GPU when compiled.

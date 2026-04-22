@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import _intrinsics as _loader
+from typing import cast
 
 TYPE_CHECKING = False
 
@@ -14,7 +15,7 @@ else:
 
 
 def runtime_active() -> bool:
-    return bool(_loader.runtime_active())
+    return bool(cast(Any, _loader).runtime_active())
 
 
 def register(_name: str, _value: Any) -> None:

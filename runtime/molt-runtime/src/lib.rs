@@ -241,6 +241,11 @@ pub use crate::builtins::gpu::molt_gpu_tensor__zeros;
 pub use crate::builtins::gpu::molt_gpu_tensor_from_buffer;
 pub use crate::builtins::gpu::molt_gpu_tensor_from_parts;
 pub use crate::builtins::gpu::molt_gpu_turboquant_attention_packed;
+#[cfg(feature = "molt_gpu_primitives")]
+pub use crate::builtins::gpu_primitives::{
+    molt_gpu_prim_binary, molt_gpu_prim_create_tensor, molt_gpu_prim_device, molt_gpu_prim_realize,
+    molt_gpu_prim_reduce, molt_gpu_prim_unary, molt_gpu_prim_zeros,
+};
 pub use crate::builtins::strings::molt_string_from_bytes;
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{

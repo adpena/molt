@@ -19,8 +19,10 @@ from typing import (
     Literal,
     NoReturn,
     Sequence,
+    SupportsIndex,
     TypedDict,
     cast,
+    overload,
 )
 
 from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolicy
@@ -1115,11 +1117,11 @@ class _TrackedOpsList(list[MoltOp]):
         super().extend(items_list)
         self._owner._adjust_module_pressure_counts(ops_delta=len(items_list))
 
-    def insert(self, index: int, item: MoltOp) -> None:
+    def insert(self, index: SupportsIndex, item: MoltOp) -> None:
         super().insert(index, item)
         self._owner._adjust_module_pressure_counts(ops_delta=1)
 
-    def pop(self, index: int = -1) -> MoltOp:
+    def pop(self, index: SupportsIndex = -1) -> MoltOp:
         item = super().pop(index)
         self._owner._adjust_module_pressure_counts(ops_delta=-1)
         return item
@@ -1133,9 +1135,15 @@ class _TrackedOpsList(list[MoltOp]):
         super().clear()
         self._owner._adjust_module_pressure_counts(ops_delta=-old_len)
 
+    @overload
+    def __setitem__(self, index: SupportsIndex, value: MoltOp) -> None: ...
+
+    @overload
+    def __setitem__(self, index: slice, value: Iterable[MoltOp]) -> None: ...
+
     def __setitem__(
         self,
-        index: int | slice,
+        index: SupportsIndex | slice,
         value: MoltOp | Iterable[MoltOp],
     ) -> None:
         if isinstance(index, slice):
@@ -1146,9 +1154,9 @@ class _TrackedOpsList(list[MoltOp]):
                 ops_delta=len(replacement) - len(current)
             )
             return
-        super().__setitem__(index, value)
+        super().__setitem__(index, cast(MoltOp, value))
 
-    def __delitem__(self, index: int | slice) -> None:
+    def __delitem__(self, index: SupportsIndex | slice) -> None:
         if isinstance(index, slice):
             removed = list(self[index])
         else:
@@ -1694,6 +1702,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if func_name is None:
             return False
         if func_name == "molt_main" or func_name.startswith("molt_init_"):
+            return False
+        if name is not None and func_name not in self.funcs_map:
             return False
         return True
 
@@ -7576,19 +7586,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             def visit_Name(self, node: ast.Name) -> Any:
                 if isinstance(node.ctx, ast.Load):
                     used.add(node.id)
-
-            def visit_Call(self, node_: ast.Call) -> None:
-                # Detect super() calls — they implicitly reference the
-                # enclosing method's first parameter (self/cls).
-                if (
-                    isinstance(node_.func, ast.Name)
-                    and node_.func.id == "super"
-                    and not node_.args
-                    and _method_first_param is not None
-                    and _current_class is not None
-                ):
-                    used.add(_method_first_param)
-                self.generic_visit(node_)
+                    if (
+                        node.id == "super"
+                        and _method_first_param is not None
+                        and _current_class is not None
+                    ):
+                        used.add(_method_first_param)
 
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 return
@@ -11222,13 +11225,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # For module-level code, also sync to the module namespace so
         # that module_get_attr reads inside the loop body see the current
         # counter value (not the initial value from before the loop).
-        if self.current_func_name == "molt_main" and self.module_var is not None:
+        if self.current_func_name == "molt_main" and self.module_obj is not None:
             key = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[index_name], result=key))
             self.emit(
                 MoltOp(
                     kind="MODULE_SET_ATTR",
-                    args=[self.module_var, key, idx],
+                    args=[self.module_obj, key, idx],
                     result=MoltValue("none"),
                 )
             )
@@ -11240,13 +11243,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         self._store_local_value(index_name, idx)
-        if self.current_func_name == "molt_main" and self.module_var is not None:
+        if self.current_func_name == "molt_main" and self.module_obj is not None:
             key2 = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[index_name], result=key2))
             self.emit(
                 MoltOp(
                     kind="MODULE_SET_ATTR",
-                    args=[self.module_var, key2, idx],
+                    args=[self.module_obj, key2, idx],
                     result=MoltValue("none"),
                 )
             )
@@ -11301,7 +11304,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ):
                 list_node, count_node = node.right, node.left
             if list_node is not None and count_node is not None:
-                fill_val = list_node.elts[0].value
+                fill_const = cast(ast.Constant, list_node.elts[0])
+                fill_val = cast(int, fill_const.value)
                 fill_int = int(fill_val)
                 fill_res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[fill_int], result=fill_res))
@@ -11615,7 +11619,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for literal_text, field_name, format_spec, conversion in parsed:
             if literal_text:
                 if tokens and isinstance(tokens[-1], FormatLiteral):
-                    prior = cast(FormatLiteral, tokens[-1])
+                    prior = tokens[-1]
                     tokens[-1] = FormatLiteral(prior.text + literal_text)
                 else:
                     tokens.append(FormatLiteral(literal_text))
@@ -11992,22 +11996,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         generators: list[ast.comprehension],
         inner: list[ast.stmt],
     ) -> list[ast.stmt]:
-        body = inner
+        body: list[ast.stmt] = list(inner)
         for comp in reversed(generators):
             for test in reversed(comp.ifs):
-                body = [ast.If(test=test, body=body, orelse=[])]
+                body = [ast.If(test=test, body=list(body), orelse=[])]
             if comp.is_async:
                 body = [
                     ast.AsyncFor(
                         target=comp.target,
                         iter=comp.iter,
-                        body=body,
+                        body=list(body),
                         orelse=[],
                     )
                 ]
             else:
                 body = [
-                    ast.For(target=comp.target, iter=comp.iter, body=body, orelse=[])
+                    ast.For(
+                        target=comp.target,
+                        iter=comp.iter,
+                        body=list(body),
+                        orelse=[],
+                    )
                 ]
         return body
 
@@ -12063,7 +12072,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         non-trivial element expressions produce corrupted state machines.
         """
         comp = node.generators[0]
-        target_name = comp.target.id  # type: ignore[union-attr]
+        if not isinstance(comp.target, ast.Name):
+            raise NotImplementedError(
+                "Only simple list comprehension targets supported"
+            )
+        target_name = comp.target.id
         # Collect walrus (:=) targets in the element expression and
         # filters. These must leak to the enclosing scope per PEP 572.
         walrus_names: set[str] = set()
@@ -15083,6 +15096,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         # __static_attributes__ (CPython 3.13+) — always emitted after class
         # body, even when empty.  Appears after methods in namespace event order.
+        classdictcell_key: MoltValue | None = None
         if dynamic_namespace is not None:
             static_attrs = self._collect_static_attributes(node)
             attr_vals: list[MoltValue] = []
@@ -15113,6 +15127,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if has_methods:
                 # The value is the namespace dict itself (class body dict cell)
                 cdc_key = MoltValue(self.next_var(), type_hint="str")
+                classdictcell_key = cdc_key
                 self.emit(
                     MoltOp(kind="CONST_STR", args=["__classdictcell__"], result=cdc_key)
                 )
@@ -15187,6 +15202,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 or dynamic_namespace is None
             ):
                 raise NotImplementedError("Unsupported dynamic class build")
+            if classdictcell_key is not None:
+                self.emit(
+                    MoltOp(
+                        kind="DEL_INDEX",
+                        args=[dynamic_namespace, classdictcell_key],
+                        result=MoltValue("none"),
+                    )
+                )
             callargs = MoltValue(self.next_var(), type_hint="callargs")
             self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
             self.emit(
@@ -19785,7 +19808,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         and isinstance(genexpr.generators[0].target, ast.Name)
                     ):
                         comp = genexpr.generators[0]
-                        target_name = comp.target.id  # type: ignore[union-attr]
+                        target = cast(ast.Name, comp.target)
+                        target_name = target.id
                         iterable_val = self.visit(comp.iter)
                         iter_obj = self._emit_iter_new(iterable_val)
                         # Initial result: False for any(), True for all()
@@ -29501,7 +29525,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     json_ops.append(entry)
             elif op.kind in ("INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL"):
                 kind_lower = op.kind.lower()
-                entry = {
+                entry: dict[str, Any] = {
                     "kind": kind_lower,
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
@@ -29562,7 +29586,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     bit_or_entry["fast_int"] = True
                 json_ops.append(bit_or_entry)
             elif op.kind == "INPLACE_BIT_OR":
-                bit_or_entry = {
+                bit_or_entry: dict[str, Any] = {
                     "kind": "inplace_bit_or",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
@@ -29580,7 +29604,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     bit_and_entry["fast_int"] = True
                 json_ops.append(bit_and_entry)
             elif op.kind == "INPLACE_BIT_AND":
-                bit_and_entry = {
+                bit_and_entry: dict[str, Any] = {
                     "kind": "inplace_bit_and",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
@@ -29598,7 +29622,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     bit_xor_entry["fast_int"] = True
                 json_ops.append(bit_xor_entry)
             elif op.kind == "INPLACE_BIT_XOR":
-                bit_xor_entry = {
+                bit_xor_entry: dict[str, Any] = {
                     "kind": "inplace_bit_xor",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
@@ -31761,11 +31785,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(index_entry)
             elif op.kind == "UNPACK_SEQUENCE":
                 # args[0] is the sequence, args[1:] are output variable names
+                metadata = op.metadata or {}
                 json_ops.append(
                     {
                         "kind": "unpack_sequence",
                         "args": [arg.name for arg in op.args],
-                        "value": op.metadata["expected_count"],
+                        "value": metadata["expected_count"],
                     }
                 )
             elif op.kind == "STORE_INDEX":
@@ -32832,7 +32857,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             code_id = self.func_code_ids.get(function_name or "")
             if code_id is None:
                 code_id = self._register_code_symbol(function_name or "")
-            json_ops.insert(0, {"kind": "trace_enter_slot", "value": int(code_id)})
+            json_ops.insert(
+                0, {"kind": "trace_enter_slot", "value": int(cast(int, code_id))}
+            )
 
         # Post-pass: inject expression-level col_offset/end_col_offset into
         # JSON dicts emitted by raising ops.  This is done after serialization
@@ -33101,7 +33128,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 continue
             if name != "molt_main" and "ops" in info:
                 function_count += 1
-            total_ops += len(cast(list[MoltOp], info.get("ops", [])))
+            total_ops += len(info.get("ops", []))
         self._module_pressure_function_count = function_count
         self._module_pressure_total_ops = total_ops
         self._module_pressure_funcs_map_ref = self.funcs_map

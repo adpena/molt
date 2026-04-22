@@ -25,6 +25,15 @@ import struct
 import array
 import _intrinsics as _molt_intrinsics
 
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Any, cast
+else:
+    Any = object()
+
+    def cast(_tp, value):
+        return value
+
 
 def _default_format_char(element_type: type) -> str:
     return "d" if element_type is float else "q"
@@ -70,7 +79,7 @@ class Buffer:
 
     def __init__(
         self,
-        data: bytes,
+        data: bytes | bytearray,
         element_type: type,
         size: int,
         *,
@@ -261,7 +270,7 @@ class _KernelLauncher:
         try:
             for tid in range(total_threads):
                 # Monkey-patch thread_id to return current tid
-                gpu_module.thread_id = lambda _tid=tid: _tid
+                gpu_module.thread_id = cast(Any, lambda _tid=tid: _tid)
                 try:
                     self._func(*args)
                 except IndexError:
