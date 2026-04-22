@@ -22,7 +22,6 @@ All ops decompose to tinygrad's 26 compute primitives.
 
 from __future__ import annotations
 
-import struct
 from _intrinsics import require_intrinsic as _require_intrinsic
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
@@ -89,13 +88,17 @@ class OnnxInterpreter:
         """Parse ONNX model and prepare for execution.
 
         Extracts the computation graph (nodes, constants, I/O names).
-        Uses the onnx library for reliability; falls back to raw protobuf
-        parsing for environments without onnx installed.
+        Uses the onnx library for reliability. The raw protobuf weight parser
+        is intentionally not used as a graph-execution fallback because ONNX
+        graph decoding requires node, edge, attribute, and I/O metadata.
         """
         try:
             self._load_with_onnx(onnx_bytes)
-        except Exception:
-            self._load_raw(onnx_bytes)
+        except ImportError as exc:
+            raise RuntimeError(
+                "ONNX graph execution requires the 'onnx' package. "
+                "The built-in raw parser is weight-only and cannot execute graphs."
+            ) from exc
 
     def run(self, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
         """Execute the ONNX graph with the given input tensors.
@@ -204,11 +207,12 @@ class OnnxInterpreter:
             })
 
     def _load_raw(self, data: bytes) -> None:
-        """Fallback: parse ONNX protobuf without the onnx library.
+        """Weight-only raw protobuf parser.
 
         Uses the existing OnnxWeightParser for weight extraction and
-        builds a minimal node list. This path is used in the molt
-        runtime where onnx may not be available.
+        deliberately raises before graph execution. This path exists only
+        to provide a clear error when the full ``onnx`` graph parser is
+        unavailable.
         """
         from tinygrad.paddleocr import OnnxWeightParser
         parsed = OnnxWeightParser.parse(data)
