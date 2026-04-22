@@ -1241,6 +1241,8 @@ def _op_resize(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     """
     x = inputs[0]
     mode = _get_attr_string(attrs, "mode", "nearest")
+    coordinate_mode = _get_attr_string(attrs, "coordinate_transformation_mode", "asymmetric")
+    nearest_mode = _get_attr_string(attrs, "nearest_mode", "round_prefer_floor")
 
     # Determine output size from scales or sizes input
     scales = None
@@ -1266,10 +1268,15 @@ def _op_resize(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     if len(x.shape) != 4 or mode != "nearest":
         return [x]
 
-    return [_nearest_resize(x, target_shape)]
+    return [_nearest_resize(x, target_shape, coordinate_mode, nearest_mode)]
 
 
-def _nearest_resize(x: Tensor, target_shape: tuple[int, ...]) -> Tensor:
+def _nearest_resize(
+    x: Tensor,
+    target_shape: tuple[int, ...],
+    coordinate_mode: str = "asymmetric",
+    nearest_mode: str = "round_prefer_floor",
+) -> Tensor:
     """Nearest-neighbor resize for 4D tensors."""
     import tinygrad.realize
 
@@ -1284,14 +1291,59 @@ def _nearest_resize(x: Tensor, target_shape: tuple[int, ...]) -> Tensor:
         for ch in range(c):
             for oy in range(th):
                 for ox in range(tw):
-                    # Nearest neighbor: floor(oy * h / th)
-                    src_y = min(oy * h // th, h - 1)
-                    src_x = min(ox * w // tw, w - 1)
+                    src_y = _nearest_resize_index(
+                        oy, h, th, coordinate_mode, nearest_mode
+                    )
+                    src_x = _nearest_resize_index(
+                        ox, w, tw, coordinate_mode, nearest_mode
+                    )
                     src_idx = bn * (c * h * w) + ch * (h * w) + src_y * w + src_x
                     dst_idx = bn * (c * th * tw) + ch * (th * tw) + oy * tw + ox
                     result[dst_idx] = flat[src_idx]
 
     return _make_tensor(result, target_shape)
+
+
+def _nearest_resize_index(
+    resized_index: int,
+    input_len: int,
+    output_len: int,
+    coordinate_mode: str,
+    nearest_mode: str,
+) -> int:
+    import math
+
+    if output_len <= 0 or input_len <= 0:
+        return 0
+    scale = output_len / input_len
+    if coordinate_mode == "align_corners":
+        original = (
+            0.0
+            if output_len == 1
+            else resized_index * (input_len - 1) / (output_len - 1)
+        )
+    elif coordinate_mode == "asymmetric":
+        original = resized_index / scale
+    elif coordinate_mode == "half_pixel":
+        original = (resized_index + 0.5) / scale - 0.5
+    else:
+        raise ValueError(
+            f"Unsupported Resize coordinate_transformation_mode={coordinate_mode!r}"
+        )
+
+    if nearest_mode == "floor":
+        idx = math.floor(original)
+    elif nearest_mode == "ceil":
+        idx = math.ceil(original)
+    elif nearest_mode == "round_prefer_ceil":
+        idx = math.floor(original + 0.5)
+    elif nearest_mode == "round_prefer_floor":
+        lower = math.floor(original)
+        upper = math.ceil(original)
+        idx = lower if original - lower <= upper - original else upper
+    else:
+        raise ValueError(f"Unsupported Resize nearest_mode={nearest_mode!r}")
+    return min(max(int(idx), 0), input_len - 1)
 
 
 # ---------------------------------------------------------------------------
