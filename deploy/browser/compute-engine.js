@@ -372,6 +372,16 @@ class WasmSimdEngine {
         this.#simdAvailable = simdAvailable;
     }
 
+    static requiredExports() {
+        return Object.freeze([
+            'matmul_f32',
+            'softmax_f32',
+            'rms_norm_f32',
+            'add_f32',
+            'mul_f32',
+        ]);
+    }
+
     static async probe() {
         if (typeof WebAssembly === 'undefined') return false;
         // Feature-detect WASM SIMD by attempting to compile a minimal SIMD module.
@@ -426,6 +436,12 @@ class WasmSimdEngine {
                     const module = await WebAssembly.compile(await response.arrayBuffer());
                     const instance = await WebAssembly.instantiate(module, {});
                     const wasmMemory = instance.exports.memory || memory;
+                    const missing = WasmSimdEngine.requiredExports().filter(
+                        (name) => typeof instance.exports[name] !== 'function',
+                    );
+                    if (missing.length) {
+                        throw new Error(`WASM SIMD module missing exports: ${missing.join(', ')}`);
+                    }
                     return new WasmSimdEngine(instance, wasmMemory, true);
                 } catch {
                     // This binary failed — try the next one
@@ -503,8 +519,11 @@ class WasmSimdEngine {
      * @returns {Promise<Float32Array>}
      */
     async softmax(input, n, rows = 1) {
-        if (!this.#instance || !this.#instance.exports.softmax_f32) {
+        if (!this.#instance) {
             return _cpuSoftmax(input, n, rows);
+        }
+        if (typeof this.#instance.exports.softmax_f32 !== 'function') {
+            throw new Error('WASM SIMD backend missing required export: softmax_f32');
         }
 
         const out = new Float32Array(rows * n);
@@ -534,8 +553,11 @@ class WasmSimdEngine {
      * @returns {Promise<Float32Array>}
      */
     async rmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
-        if (!this.#instance || !this.#instance.exports.rms_norm_f32) {
+        if (!this.#instance) {
             return _cpuRmsNorm(input, weight, n, rows, eps);
+        }
+        if (typeof this.#instance.exports.rms_norm_f32 !== 'function') {
+            throw new Error('WASM SIMD backend missing required export: rms_norm_f32');
         }
 
         const out = new Float32Array(rows * n);
@@ -565,10 +587,13 @@ class WasmSimdEngine {
      * @returns {Promise<Float32Array>}
      */
     async add(a, b, size) {
-        if (!this.#instance || !this.#instance.exports.add_f32) {
+        if (!this.#instance) {
             const out = new Float32Array(size);
             for (let i = 0; i < size; i++) out[i] = a[i] + b[i];
             return out;
+        }
+        if (typeof this.#instance.exports.add_f32 !== 'function') {
+            throw new Error('WASM SIMD backend missing required export: add_f32');
         }
 
         this.#resetAlloc();
@@ -591,10 +616,13 @@ class WasmSimdEngine {
      * @returns {Promise<Float32Array>}
      */
     async mul(a, b, size) {
-        if (!this.#instance || !this.#instance.exports.mul_f32) {
+        if (!this.#instance) {
             const out = new Float32Array(size);
             for (let i = 0; i < size; i++) out[i] = a[i] * b[i];
             return out;
+        }
+        if (typeof this.#instance.exports.mul_f32 !== 'function') {
+            throw new Error('WASM SIMD backend missing required export: mul_f32');
         }
 
         this.#resetAlloc();
@@ -611,7 +639,7 @@ class WasmSimdEngine {
 
     get backendName() {
         if (this.#instance) return 'wasm-simd';
-        return this.#simdAvailable ? 'wasm-simd' : 'scalar';
+        return 'scalar';
     }
 
     destroy() {
@@ -716,8 +744,6 @@ export class ComputeEngine {
             try {
                 const engine = await WasmSimdEngine.create(wasmUrl);
                 if (engine && engine.backendName === 'wasm-simd') return engine;
-                // If WASM loaded but no SIMD, fall through to scalar unless forced
-                if (engine && forceBackend === 'wasm-simd') return engine;
             } catch {
                 // WASM not available
             }
