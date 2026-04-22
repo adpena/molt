@@ -1160,36 +1160,45 @@ def _op_slice(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     steps = _realize_ints(inputs[4]) if len(inputs) > 4 and inputs[4] is not None else [1] * len(starts)
 
     ndim = len(x.shape)
-    bounds = [(0, d) for d in x.shape]
+    axis_indices = [list(range(dim)) for dim in x.shape]
 
     for i, ax in enumerate(axes):
         if ax < 0:
             ax = ndim + ax
+        if ax < 0 or ax >= ndim:
+            raise ValueError(f"Slice axis {ax} out of range for rank {ndim}")
         s = starts[i]
         e = ends[i]
         step = steps[i] if i < len(steps) else 1
+        if step == 0:
+            raise ValueError("Slice step cannot be 0")
+        axis_indices[ax] = list(range(*slice(s, e, step).indices(x.shape[ax])))
 
-        dim_size = x.shape[ax]
+    return [_slice_tensor_by_indices(x, axis_indices)]
 
-        # Clamp start
-        if s < 0:
-            s = max(0, s + dim_size)
-        s = min(s, dim_size)
 
-        # Clamp end
-        if e < 0:
-            e = max(0, e + dim_size)
-        # Handle very large end values (INT64_MAX sentinel)
-        e = min(e, dim_size)
+def _slice_tensor_by_indices(x: Tensor, axis_indices: list[list[int]]) -> Tensor:
+    import itertools
+    import tinygrad.realize
+    from tinygrad.lazy import LazyBuffer, LazyOp
 
-        if step != 1:
-            # Step != 1 requires more complex extraction.
-            # For PaddleOCR, step is always 1 in practice.
-            pass
+    flat = tinygrad.realize.realize(x.lazydata)
+    out_shape = tuple(len(indices) for indices in axis_indices)
+    strides: list[int] = []
+    stride = 1
+    for dim in reversed(x.shape):
+        strides.insert(0, stride)
+        stride *= dim
 
-        bounds[ax] = (s, e)
+    result: list[float] = []
+    for coords in itertools.product(*axis_indices):
+        flat_idx = 0
+        for axis, coord in enumerate(coords):
+            flat_idx += coord * strides[axis]
+        result.append(flat[flat_idx])
 
-    return [x.shrink(bounds)]
+    op = LazyOp("LOAD", (), dtype=x.dtype, shape=out_shape)
+    return Tensor(LazyBuffer(op, x.dtype, out_shape, data=result))
 
 
 def _op_shape(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
