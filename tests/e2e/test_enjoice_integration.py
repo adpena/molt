@@ -5,11 +5,8 @@ valid, the integration PR document is complete, and the Worker API contract
 matches what the TypeScript code expects.
 """
 
-import json
 import os
 import re
-import subprocess
-import sys
 
 DEPLOY_ENJOICE = os.path.join(
     os.path.dirname(__file__), "../../deploy/enjoice"
@@ -17,6 +14,16 @@ DEPLOY_ENJOICE = os.path.join(
 DEPLOY_CLOUDFLARE = os.path.join(
     os.path.dirname(__file__), "../../deploy/cloudflare"
 )
+
+
+def _strip_ts_comments_and_strings(content: str) -> str:
+    """Remove comments and string/template literals for coarse structure checks."""
+    stripped = re.sub(r"/\*[\s\S]*?\*/", "", content)
+    stripped = re.sub(r"`(?:\\.|[^`\\])*`", "``", stripped)
+    stripped = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', '""', stripped)
+    stripped = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "''", stripped)
+    stripped = re.sub(r"//[^\n]*", "", stripped)
+    return stripped
 
 
 # -------------------------------------------------------------------------
@@ -48,10 +55,7 @@ def test_typescript_files_syntactically_valid():
         # template literals with interpolation make exact counting
         # unreliable without a full parser.  Allow a tolerance of 1
         # to account for template literal edge cases.
-        stripped = re.sub(r"//[^\n]*", "", content)
-        stripped = re.sub(r"/\*[\s\S]*?\*/", "", stripped)
-        stripped = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', '""', stripped)
-        stripped = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "''", stripped)
+        stripped = _strip_ts_comments_and_strings(content)
 
         open_braces = stripped.count("{")
         close_braces = stripped.count("}")
@@ -77,6 +81,34 @@ def test_typescript_files_syntactically_valid():
         assert content.count("console.error") == 0, (
             f"{ts_file}: uses console.error (use structured error handling)"
         )
+
+
+def test_falcon_ocr_molt_has_no_duplicate_const_declarations_in_same_scope():
+    """The bridge file must not contain duplicate const declarations."""
+    path = os.path.join(DEPLOY_ENJOICE, "falcon-ocr-molt.ts")
+    with open(path, "r") as f:
+        content = f.read()
+
+    assert content.count("const padded = new Uint8Array") == 1
+
+
+def test_falcon_ocr_molt_decoder_preserves_unknown_token_ids():
+    """Unknown token IDs are signal and must not disappear during decode."""
+    path = os.path.join(DEPLOY_ENJOICE, "falcon-ocr-molt.ts")
+    with open(path, "r") as f:
+        content = f.read()
+
+    assert "parts.push(`[UNK:${id}]`)" in content
+
+
+def test_ocr_backend_molt_does_not_default_nemotron_endpoint():
+    path = os.path.join(DEPLOY_ENJOICE, "ocr-backend-molt.ts")
+    with open(path, "r") as f:
+        content = f.read()
+
+    assert "adpena--nemotron-ocr-ocr-endpoint.modal.run" not in content
+    assert "endpoint: string" in content
+    assert "configured endpoint only" in content
 
 
 def test_typescript_files_have_jsdoc():
@@ -150,11 +182,6 @@ def test_worker_api_contract_matches_typescript():
     Parses the TypeScript files to extract expected endpoints and verifies
     they exist in the Worker source.
     """
-    # Read the TypeScript files to find expected endpoints.
-    ts_path = os.path.join(DEPLOY_ENJOICE, "falcon-ocr-molt.ts")
-    with open(ts_path, "r") as f:
-        ts_content = f.read()
-
     # Read the Worker source to verify endpoints exist.
     worker_path = os.path.join(DEPLOY_CLOUDFLARE, "worker.js")
     with open(worker_path, "r") as f:

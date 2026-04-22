@@ -100,6 +100,8 @@ function decodeTokens(tokenIds: number[], vocab: TokenizerVocab): string {
     if (token !== undefined) {
       // Handle sentencepiece-style tokens: leading \u2581 -> space
       parts.push(token.replace(/\u2581/g, " "));
+    } else {
+      parts.push(`[UNK:${id}]`);
     }
   }
   return parts.join("").trim();
