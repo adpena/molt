@@ -5,13 +5,14 @@
 //! Iterates to a fixpoint (at most 10 rounds) to handle cascading removals.
 //! Also removes blocks that are unreachable (no predecessors, excluding entry).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
+use super::reachability::metadata_preserving_reachable_blocks;
 use super::PassStats;
 
 // ---------------------------------------------------------------------------
@@ -185,80 +186,6 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Reachability
-// ---------------------------------------------------------------------------
-
-/// Collect the set of BlockIds that must survive DCE.
-///
-/// Starts from the entry block and also seeds traversal with loop-structural
-/// blocks recorded in `loop_roles`. Lowering back to SimpleIR still depends on
-/// the full structural loop region, not just the loop-end/header markers
-/// themselves, so descendants reachable from preserved loop-role blocks must
-/// survive as well.
-///
-/// Also includes exception handler blocks that are reachable via implicit
-/// `check_exception` edges (their target label ID maps back to a BlockId
-/// through the function's `label_id_map`).
-fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    let mut stack: Vec<BlockId> = vec![func.entry_block];
-    for bid in func.loop_roles.keys().copied() {
-        if bid != func.entry_block {
-            stack.push(bid);
-        }
-    }
-
-    // Build reverse label map: original_label_id → BlockId
-    // so we can follow check_exception target references.
-    let reverse_label: HashMap<i64, BlockId> = func
-        .label_id_map
-        .iter()
-        .map(|(&bid, &label_id)| (label_id, BlockId(bid)))
-        .collect();
-
-    while let Some(id) = stack.pop() {
-        if !visited.insert(id) {
-            continue;
-        }
-        if let Some(block) = func.blocks.get(&id) {
-            // Follow normal terminator edges.
-            match &block.terminator {
-                Terminator::Branch { target, .. } => {
-                    stack.push(*target);
-                }
-                Terminator::CondBranch {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    stack.push(*then_block);
-                    stack.push(*else_block);
-                }
-                Terminator::Switch { cases, default, .. } => {
-                    stack.push(*default);
-                    for (_, target, _) in cases {
-                        stack.push(*target);
-                    }
-                }
-                Terminator::Return { .. } | Terminator::Unreachable => {}
-            }
-
-            // Follow implicit exception edges from CheckException ops.
-            for op in &block.ops {
-                if op.opcode == super::super::ops::OpCode::CheckException
-                    && let Some(super::super::ops::AttrValue::Int(target_label)) =
-                        op.attrs.get("value")
-                    && let Some(&target_bid) = reverse_label.get(target_label)
-                {
-                    stack.push(target_bid);
-                }
-            }
-        }
-    }
-    visited
-}
-
-// ---------------------------------------------------------------------------
 // Main pass
 // ---------------------------------------------------------------------------
 
@@ -282,7 +209,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let has_eh = func.has_exception_handling;
 
     // --- Phase 1: remove unreachable blocks ---
-    let reachable = reachable_blocks(func);
+    let reachable = metadata_preserving_reachable_blocks(func);
     let unreachable: Vec<BlockId> = func
         .blocks
         .keys()

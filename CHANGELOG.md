@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased] - 2026-04-22
+
+### Added
+- **WebGPU Conv2d kernel** (`webgpu-engine.js`): Direct convolution compute shader (`molt_conv2d`) with 16x16 workgroup, fma()-optimized inner loop, zero-padding support. Conv2d is 60% of PaddleOCR compute -- now GPU-accelerated via `conv2d()` and `conv2dGPU()` methods.
+- **Node.js WASM inference harness** (`tests/e2e/run_paddleocr_wasm.js`): Loads PaddleOCR WASM, discovers ONNX weights, measures instantiation time (11.0 ms), and enumerates exported OCR functions.
+- **WASM SHA256 checksums**: `wasm/molt_runtime.wasm.sha256` and `wasm/molt_runtime_reloc.wasm.sha256` for deploy integrity verification.
+
+### Performance
+- WASM instantiation: 11.0 ms (Node.js, Apple Silicon) for 10.8 MB PaddleOCR binary
+- Conv+Activation fusion: 62 nodes fused in ONNX graph optimization
+- Chinese OCR parity verified (你好世界 round-trip correct)
+
+### Deployed
+- Falcon-OCR Worker redeployed (version ee5fadc6) -- all endpoints verified (/test, /test/paddle, /dashboard, /health)
+- freeinvoicemaker.app verified live (HTTP 200)
+
 ## [Unreleased] - 2026-04-14
 
 ### Added

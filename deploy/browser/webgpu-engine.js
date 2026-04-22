@@ -338,6 +338,72 @@ fn molt_mul(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+/**
+ * Conv2d via direct convolution on GPU.
+ *
+ * Input: [N, C_in, H, W], Weight: [C_out, C_in, KH, KW]
+ * Output: [N, C_out, OH, OW]
+ *
+ * Each thread computes one output element (output_channel, spatial_position).
+ * Uses 16x16 workgroup: x = output channel, y = spatial position (oh * OW + ow).
+ *
+ * This is the #1 compute bottleneck in PaddleOCR (~60% of inference time).
+ * The direct convolution avoids im2col memory expansion and is profitable for
+ * small-to-medium kernel sizes (3x3, 5x5) typical in OCR detection networks.
+ *
+ * Buffer layout:
+ *   binding 0: input  [N * C_in * H * W], read
+ *   binding 1: weight [C_out * C_in * KH * KW], read
+ *   binding 2: bias   [C_out], read
+ *   binding 3: output [N * C_out * OH * OW], read_write
+ *   binding 4: params uniform ConvParams
+ */
+const CONV2D_WGSL = /* wgsl */ `
+struct ConvParams {
+    N: u32, C_in: u32, H: u32, W: u32,
+    C_out: u32, KH: u32, KW: u32,
+    stride: u32, padding: u32,
+    OH: u32, OW: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read> bias: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+@group(0) @binding(4) var<uniform> params: ConvParams;
+
+@compute @workgroup_size(16, 16)
+fn molt_conv2d(@builtin(global_invocation_id) gid: vec3u) {
+    let oc = gid.x;
+    let pos = gid.y;
+
+    if (oc >= params.C_out || pos >= params.OH * params.OW) { return; }
+
+    let oh = pos / params.OW;
+    let ow = pos % params.OW;
+
+    var sum = bias[oc];
+
+    for (var ic: u32 = 0; ic < params.C_in; ic++) {
+        for (var kh: u32 = 0; kh < params.KH; kh++) {
+            for (var kw: u32 = 0; kw < params.KW; kw++) {
+                let ih = oh * params.stride + kh - params.padding;
+                let iw = ow * params.stride + kw - params.padding;
+
+                if (ih < params.H && iw < params.W) {
+                    let in_idx = ic * params.H * params.W + ih * params.W + iw;
+                    let w_idx = oc * params.C_in * params.KH * params.KW +
+                                ic * params.KH * params.KW + kh * params.KW + kw;
+                    sum = fma(input[in_idx], weight[w_idx], sum);
+                }
+            }
+        }
+    }
+
+    output[oc * params.OH * params.OW + pos] = sum;
+}
+`;
+
 // ---------------------------------------------------------------------------
 // Buffer pool — reuse GPU buffers to avoid allocation churn during inference.
 // ---------------------------------------------------------------------------
@@ -538,6 +604,12 @@ export class WebGPUEngine {
         this.pipelines.mul = compilePipeline(
             dev, MUL_WGSL, 'molt_mul',
             [storageRW(0), storageRO(1), storageRO(2), uniform(3)]
+        );
+
+        // Conv2d: input(ro), weight(ro), bias(ro), output(rw), params(uniform)
+        this.pipelines.conv2d = compilePipeline(
+            dev, CONV2D_WGSL, 'molt_conv2d',
+            [storageRO(0), storageRO(1), storageRO(2), storageRW(3), uniform(4)]
         );
     }
 
@@ -1153,6 +1225,130 @@ export class WebGPUEngine {
      */
     mulGPU(a, b, size) {
         return this._elementwiseGPU('mul', a, b, size);
+    }
+
+    // -----------------------------------------------------------------------
+    // Conv2d — direct convolution (60% of PaddleOCR compute)
+    // -----------------------------------------------------------------------
+
+    /**
+     * GPU Conv2d with CPU readback.
+     *
+     * Input: [C_in, H, W] (single batch), Weight: [C_out, C_in, KH, KW]
+     * Bias: [C_out], Output: [C_out, OH, OW]
+     *
+     * OH = (H + 2*padding - KH) / stride + 1
+     * OW = (W + 2*padding - KW) / stride + 1
+     *
+     * @param {Float32Array|GPUBuffer} input  - [C_in * H * W]
+     * @param {Float32Array|GPUBuffer} weight - [C_out * C_in * KH * KW]
+     * @param {Float32Array|GPUBuffer} bias   - [C_out]
+     * @param {number} cIn  - Input channels.
+     * @param {number} h    - Input height.
+     * @param {number} w    - Input width.
+     * @param {number} cOut - Output channels.
+     * @param {number} kh   - Kernel height.
+     * @param {number} kw   - Kernel width.
+     * @param {number} stride  - Convolution stride (default 1).
+     * @param {number} padding - Zero-padding (default 0).
+     * @returns {Promise<Float32Array>} Output [C_out * OH * OW].
+     */
+    async conv2d(input, weight, bias, cIn, h, w, cOut, kh, kw, stride = 1, padding = 0) {
+        const oh = Math.floor((h + 2 * padding - kh) / stride) + 1;
+        const ow = Math.floor((w + 2 * padding - kw) / stride) + 1;
+        const outputSize = cOut * oh * ow;
+        const totalBytes = outputSize * 4;
+
+        const bufOut = this.conv2dGPU(input, weight, bias, cIn, h, w, cOut, kh, kw, stride, padding);
+
+        const staging = this.device.createBuffer({
+            size: totalBytes,
+            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+        });
+
+        const encoder = this.device.createCommandEncoder();
+        encoder.copyBufferToBuffer(bufOut, 0, staging, 0, totalBytes);
+        this.device.queue.submit([encoder.finish()]);
+
+        await staging.mapAsync(GPUMapMode.READ);
+        const result = new Float32Array(staging.getMappedRange().slice(0));
+        staging.unmap();
+        staging.destroy();
+        this.bufferPool.release(bufOut);
+
+        return result;
+    }
+
+    /**
+     * GPU Conv2d returning GPUBuffer (no readback).
+     *
+     * @param {Float32Array|GPUBuffer} input  - [C_in * H * W]
+     * @param {Float32Array|GPUBuffer} weight - [C_out * C_in * KH * KW]
+     * @param {Float32Array|GPUBuffer} bias   - [C_out]
+     * @param {number} cIn  - Input channels.
+     * @param {number} h    - Input height.
+     * @param {number} w    - Input width.
+     * @param {number} cOut - Output channels.
+     * @param {number} kh   - Kernel height.
+     * @param {number} kw   - Kernel width.
+     * @param {number} stride  - Convolution stride (default 1).
+     * @param {number} padding - Zero-padding (default 0).
+     * @returns {GPUBuffer} Output [C_out * OH * OW].
+     */
+    conv2dGPU(input, weight, bias, cIn, h, w, cOut, kh, kw, stride = 1, padding = 0) {
+        const { pipeline, bindGroupLayout } = this.pipelines.conv2d;
+
+        const oh = Math.floor((h + 2 * padding - kh) / stride) + 1;
+        const ow = Math.floor((w + 2 * padding - kw) / stride) + 1;
+        const outputSize = cOut * oh * ow;
+
+        const bufIn = input instanceof GPUBuffer
+            ? input
+            : this.createBuffer(input, GPUBufferUsage.STORAGE);
+        const bufW = weight instanceof GPUBuffer
+            ? weight
+            : this.createBuffer(weight, GPUBufferUsage.STORAGE);
+        const bufB = bias instanceof GPUBuffer
+            ? bias
+            : this.createBuffer(bias, GPUBufferUsage.STORAGE);
+        const bufOut = this.createOutputBuffer(
+            outputSize * 4,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        );
+
+        // ConvParams: N, C_in, H, W, C_out, KH, KW, stride, padding, OH, OW
+        // 11 u32 fields = 44 bytes, padded to 48 for 16-byte alignment.
+        const paramsBuf = this.bufferPool.acquire(48, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+        this.device.queue.writeBuffer(paramsBuf, 0, new Uint32Array([
+            1, cIn, h, w, cOut, kh, kw, stride, padding, oh, ow, 0,
+        ]));
+
+        const bindGroup = this.device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [
+                { binding: 0, resource: { buffer: bufIn } },
+                { binding: 1, resource: { buffer: bufW } },
+                { binding: 2, resource: { buffer: bufB } },
+                { binding: 3, resource: { buffer: bufOut } },
+                { binding: 4, resource: { buffer: paramsBuf } },
+            ],
+        });
+
+        const encoder = this.device.createCommandEncoder();
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(Math.ceil(cOut / 16), Math.ceil(oh * ow / 16), 1);
+        pass.end();
+
+        this.device.queue.submit([encoder.finish()]);
+
+        if (!(input instanceof GPUBuffer)) this.bufferPool.release(bufIn);
+        if (!(weight instanceof GPUBuffer)) this.bufferPool.release(bufW);
+        if (!(bias instanceof GPUBuffer)) this.bufferPool.release(bufB);
+        this.bufferPool.release(paramsBuf);
+
+        return bufOut;
     }
 
     /**
