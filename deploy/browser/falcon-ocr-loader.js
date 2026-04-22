@@ -273,6 +273,8 @@ export class FalconOCR {
     this._tokenizer = null;
     /** @type {string} */
     this._computeBackend = 'none';
+    /** @type {string} */
+    this._computeBackendFallbackReason = '';
   }
 
   /**
@@ -299,19 +301,34 @@ export class FalconOCR {
     if (!options.forceWasm) {
       try {
         const { ComputeEngine } = await import('./compute-engine.js');
-        this._compute = await ComputeEngine.create();
-        this._computeBackend = this._compute.backendName;
-      } catch {
-        // compute-engine import failed -- fall through to WASM-only
-        this._computeBackend = 'wasm';
+        const engine = await ComputeEngine.create();
+        if (engine.backendName === 'scalar') {
+          engine.destroy?.();
+          this._compute = null;
+          this._computeBackend = 'wasm';
+          this._computeBackendFallbackReason = 'no accelerated compute backend available';
+        } else {
+          this._compute = engine;
+          this._computeBackend = engine.backendName;
+          this._computeBackendFallbackReason = '';
+        }
+      } catch (computeErr) {
+        this._computeBackend = 'none';
+        this._computeBackendFallbackReason = '';
+        throw new Error(
+          `FalconOCR compute backend initialization failed: ${computeErr.message}`,
+        );
       }
     } else {
       this._computeBackend = 'wasm';
+      this._computeBackendFallbackReason = 'forced wasm inference path';
     }
 
     this.onProgress('detecting', 100, {
       backend: this._computeBackend,
-      message: `Using ${this._computeBackend} for inference`,
+      message: this._computeBackendFallbackReason
+        ? `Using ${this._computeBackend} for inference (${this._computeBackendFallbackReason})`
+        : `Using ${this._computeBackend} for inference`,
     });
 
     // 1. Download and compile WASM module (streaming compilation)
@@ -760,6 +777,7 @@ export class FalconOCR {
     this._instance = null;
     this._ready = false;
     this._computeBackend = 'none';
+    this._computeBackendFallbackReason = '';
   }
 
   /**

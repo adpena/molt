@@ -113,6 +113,18 @@ def test_browser_loader_matches_wasm_driver_init_and_decode_contract() -> None:
     assert "this.weightsVariant = config.weightsVariant || 'falcon-ocr-int8-sharded'" in source
 
 
+def test_browser_loader_fails_closed_on_compute_engine_exceptions() -> None:
+    source = (ROOT / "deploy" / "browser" / "falcon-ocr-loader.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "compute-engine import failed -- fall through to WASM-only" not in source
+    assert "catch (computeErr)" in source
+    assert "FalconOCR compute backend initialization failed" in source
+    assert "this._computeBackendFallbackReason" in source
+    assert "no accelerated compute backend available" in source
+
+
 def test_browser_loader_defaults_point_at_worker_artifacts() -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for Falcon-OCR JS loader tests")
