@@ -67,6 +67,25 @@ def test_onnx_average_pool_can_include_padding() -> None:
         assert onnx._realize_floats(out) == [0.25, 0.75, 1.0, 2.5]
 
 
+def test_onnx_average_pool_honors_ceil_mode() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([float(i) for i in range(1, 10)], (1, 1, 3, 3))
+
+        out = onnx._op_average_pool(
+            [x],
+            {
+                "kernel_shape": [2, 2],
+                "strides": [2, 2],
+                "pads": [0, 0, 0, 0],
+                "ceil_mode": 1,
+            },
+        )[0]
+
+        assert out.shape == (1, 1, 2, 2)
+        assert onnx._realize_floats(out) == [3.0, 4.5, 7.5, 9.0]
+
+
 def test_onnx_interpreter_rejects_unimplemented_declared_outputs() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]
