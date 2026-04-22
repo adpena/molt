@@ -7,7 +7,6 @@ temperature-controlled generation, and lossless block-speculative decoding.
 
 import math
 import os
-import random
 from .tensor import Tensor
 from .dflash import (
     DFlashSelectionContext,
@@ -19,7 +18,6 @@ from .dflash import (
     SpeculativeVerifyResult,
     speculative_decode_greedy,
     speculative_decode_greedy_conditioned,
-    has_dflash_backend,
     resolve_dflash_runtime,
 )
 
@@ -30,6 +28,10 @@ def _requested_gpu_backend() -> str | None:
         return None
     backend = backend.strip().lower()
     return backend or None
+
+
+def _has_dflash_backend(backend: str | None) -> bool:
+    return backend is not None and backend.strip() != ""
 
 
 def _dflash_missing_message(adapter_name: str | None = None) -> str:
@@ -67,7 +69,7 @@ def _resolve_default_dflash_runtime(
         context,
         preferred_name=preferred_name,
     )
-    if runtime is None and preferred_name is not None and has_dflash_backend(context.backend):
+    if runtime is None and preferred_name is not None and _has_dflash_backend(context.backend):
         raise LookupError(_dflash_missing_message(preferred_name))
     return runtime
 
@@ -123,7 +125,7 @@ def greedy_decode(
                 eos_token_id=eos_token_id,
             )
             return speculative.tokens
-        if has_dflash_backend(backend):
+        if _has_dflash_backend(backend):
             raise LookupError(_dflash_missing_message())
 
     tokens = list(prompt_tokens)
@@ -232,6 +234,8 @@ def softmax_list(values):
 
 
 def sample_from_probs(probs):
+    import random
+
     r = random.random()
     cumsum = 0.0
     for i, p in enumerate(probs):

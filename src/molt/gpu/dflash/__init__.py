@@ -12,6 +12,7 @@ from .adapters import (
     resolve_dflash_runtime,
 )
 from .contracts import (
+    DFlashConditioning,
     DFlashRuntime,
     DFlashSelectionContext,
     SpeculativeConditioning,
@@ -19,6 +20,7 @@ from .contracts import (
     SpeculativeDraftResult,
     SpeculativeVerifyRequest,
     SpeculativeVerifyResult,
+    require_dflash_conditioning,
 )
 from .runtime import (
     SpeculativeDecodeResult,
@@ -28,6 +30,7 @@ from .runtime import (
 
 __all__ = [
     "SpeculativeConditioning",
+    "DFlashConditioning",
     "DFlashRuntime",
     "DFlashSelectionContext",
     "DFlashAdapterSpec",
@@ -36,6 +39,7 @@ __all__ = [
     "SpeculativeDraftResult",
     "SpeculativeVerifyRequest",
     "SpeculativeVerifyResult",
+    "require_dflash_conditioning",
     "speculative_decode_greedy",
     "speculative_decode_greedy_conditioned",
     "register_dflash_adapter",

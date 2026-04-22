@@ -22,6 +22,18 @@ def _native_molt_env(root: Path) -> dict[str, str]:
     return env
 
 
+def _dflash_conditioning(tag="prefill", token=0):
+    from molt.gpu.dflash import DFlashConditioning
+
+    return DFlashConditioning(
+        target_features=f"features-{tag}",
+        target_kv=f"kv-{tag}",
+        position_ids=[0, 1],
+        last_verified_token=token,
+        aux={"tag": tag},
+    )
+
+
 def test_speculative_decode_greedy_accepts_full_block_and_commits_extra_token():
     from molt.gpu.generate import speculative_decode_greedy
 
@@ -353,6 +365,125 @@ def test_conditioned_speculative_decode_propagates_target_conditioning():
     ]
 
 
+def test_dflash_conditioning_requires_target_payloads():
+    from molt.gpu.dflash import DFlashConditioning
+
+    try:
+        DFlashConditioning(
+            target_features=None,
+            target_kv="kv",
+            position_ids=[0],
+            last_verified_token=0,
+        )
+        raise AssertionError("expected missing target_features failure")
+    except ValueError as exc:
+        assert "target_features" in str(exc)
+
+    try:
+        DFlashConditioning(
+            target_features="features",
+            target_kv=None,
+            position_ids=[0],
+            last_verified_token=0,
+        )
+        raise AssertionError("expected missing target_kv failure")
+    except ValueError as exc:
+        assert "target_kv" in str(exc)
+
+    try:
+        DFlashConditioning(
+            target_features="features",
+            target_kv="kv",
+            position_ids=None,
+            last_verified_token=0,
+        )
+        raise AssertionError("expected missing position_ids failure")
+    except ValueError as exc:
+        assert "position_ids" in str(exc)
+
+
+def test_dflash_runtime_requires_target_conditioned_initial_payload():
+    from molt.gpu.dflash import DFlashRuntime, SpeculativeConditioning
+
+    try:
+        DFlashRuntime(
+            draft_step=lambda _request: None,
+            verify_step=lambda _request: None,
+            initial_conditioning=SpeculativeConditioning(
+                target_features="features",
+                target_kv="kv",
+                position_ids=[0],
+            ),
+        )
+        raise AssertionError("expected DFlashConditioning failure")
+    except TypeError as exc:
+        assert "DFlashConditioning" in str(exc)
+
+
+def test_conditioned_decode_rejects_invalid_dflash_conditioning_refresh():
+    from molt.gpu.dflash import (
+        SpeculativeConditioning,
+        SpeculativeDraftResult,
+        SpeculativeVerifyResult,
+    )
+    from molt.gpu.generate import speculative_decode_greedy_conditioned
+
+    def draft_step(_request):
+        return SpeculativeDraftResult([1])
+
+    def verify_step(_request):
+        return SpeculativeVerifyResult(
+            [1, 2],
+            conditioning=SpeculativeConditioning(
+                target_features="features",
+                target_kv="kv",
+                position_ids=[0],
+            ),
+        )
+
+    try:
+        speculative_decode_greedy_conditioned(
+            verify_step,
+            draft_step,
+            [0],
+            initial_conditioning=_dflash_conditioning("prefill", token=0),
+            max_new_tokens=1,
+            block_size=1,
+        )
+        raise AssertionError("expected invalid refreshed DFlash conditioning failure")
+    except TypeError as exc:
+        assert "DFlashConditioning" in str(exc)
+
+
+def test_tinygrad_dflash_import_fails_closed_with_provenance(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_dflash_import_probe.py"
+    probe.write_text(
+        "import importlib.util\n"
+        "try:\n"
+        f"    spec = importlib.util.spec_from_file_location('tinygrad.dflash', {str(root / 'src' / 'molt' / 'stdlib' / 'tinygrad' / 'dflash.py')!r})\n"
+        "    module = importlib.util.module_from_spec(spec)\n"
+        "    spec.loader.exec_module(module)\n"
+        "    raise AssertionError('tinygrad.dflash import should fail closed')\n"
+        "except ImportError as exc:\n"
+        "    print(str(exc))\n",
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        [sys.executable, str(probe)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "target-conditioned block-diffusion" in run.stdout
+    assert "molt.gpu.dflash" in run.stdout
+    assert "tinygrad.speculative" in run.stdout
+
+
 def test_conditioned_speculative_decode_compiles_in_native_molt(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "gpu_speculative_conditioned_native.py"
@@ -426,6 +557,7 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
     from molt.gpu.dflash import (
         DFlashRuntime,
         DFlashAdapterSpec,
+        DFlashConditioning,
         SpeculativeConditioning,
         SpeculativeDraftResult,
         SpeculativeVerifyResult,
@@ -451,13 +583,13 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
         def verify_step(request):
             return SpeculativeVerifyResult(
                 [1, 2],
-                conditioning=SpeculativeConditioning(target_features="next"),
+                conditioning=_dflash_conditioning("next", token=1),
             )
 
         return DFlashRuntime(
             draft_step=draft_step,
             verify_step=verify_step,
-            initial_conditioning=SpeculativeConditioning(target_features="prefill"),
+            initial_conditioning=_dflash_conditioning("prefill", token=0),
             block_size=1,
         )
 
@@ -517,6 +649,7 @@ def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypa
             draft_step=draft_step,
             verify_step=verify_step,
             block_size=1,
+            initial_conditioning=_dflash_conditioning("priority", token=0),
         )
 
     class FakeModel:
@@ -677,6 +810,7 @@ def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
     from molt.gpu.dflash import (
         DFlashAdapterSpec,
         DFlashRuntime,
+        DFlashConditioning,
         SpeculativeConditioning,
         SpeculativeDraftResult,
         SpeculativeVerifyResult,
@@ -694,13 +828,13 @@ def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
         def verify_step(request):
             return SpeculativeVerifyResult(
                 [1, 2],
-                conditioning=SpeculativeConditioning(target_features="next"),
+                conditioning=_dflash_conditioning("next", token=1),
             )
 
         return DFlashRuntime(
             draft_step=draft_step,
             verify_step=verify_step,
-            initial_conditioning=SpeculativeConditioning(target_features="prefill"),
+            initial_conditioning=_dflash_conditioning("prefill", token=0),
             block_size=1,
         )
 
@@ -852,6 +986,7 @@ def test_build_dflash_runtime_constructs_runtime_from_explicit_adapter():
             draft_step=lambda _request: None,
             verify_step=lambda _request: None,
             block_size=4,
+            initial_conditioning=_dflash_conditioning("builder", token=0),
         )
 
     class FakeModel:
@@ -916,6 +1051,7 @@ def test_build_dflash_runtime_passes_adapter_payload_into_context():
             draft_step=lambda _request: None,
             verify_step=lambda _request: None,
             block_size=2,
+            initial_conditioning=_dflash_conditioning("payload", token=0),
         )
 
     class FakeModel:

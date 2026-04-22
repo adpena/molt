@@ -303,7 +303,7 @@ For MoE models with DDTree routing:
    - Sliding window guarantee for recent context
    - Deterministic scoring and tier transitions
 
-2. **MODIFY** `src/molt/stdlib/tinygrad/dflash.py` -- Wire KV cache into speculative decoding
+2. **MODIFY** `src/molt/stdlib/tinygrad/speculative.py` -- Wire KV cache into generic speculative decoding helpers
    - After `speculative_decode` verification, compact and tier-assign KV cache
    - Add `speculative_decode_with_kv_cache` that manages tiers post-verification
 
