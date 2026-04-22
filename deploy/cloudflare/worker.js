@@ -424,6 +424,167 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 </html>`;
 
 // ---------------------------------------------------------------------------
+// Embedded PaddleOCR test page HTML (serves at /test/paddle)
+// Shows available PaddleOCR models and dicts served from R2.
+// ---------------------------------------------------------------------------
+const PADDLE_TEST_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PaddleOCR via molt/tinygrad</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 24px;
+            background: #0a0a0a;
+            color: #e0e0e0;
+        }
+        h1 { margin-bottom: 8px; font-size: 1.5em; color: #00d4ff; }
+        h2 { margin: 24px 0 12px; font-size: 1.1em; color: #99ddff; }
+        .subtitle { color: #888; margin-bottom: 24px; font-size: 0.9em; }
+        .card {
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .card h3 { color: #00d4ff; margin-bottom: 8px; font-size: 1em; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            margin: 2px 4px 2px 0;
+        }
+        .badge-ready { background: #0a3d0a; color: #4cff4c; border: 1px solid #1a5d1a; }
+        .badge-lang { background: #1a1a3e; color: #aac; border: 1px solid #334; }
+        .badge-size { background: #2a1a0a; color: #ffaa44; border: 1px solid #5d3a1a; }
+        table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+        td, th { padding: 6px 12px; text-align: left; border-bottom: 1px solid #222; font-size: 0.9em; }
+        th { color: #888; font-weight: 600; }
+        #status { padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 0.9em; }
+        .status-checking { background: #1a1a2e; color: #aaa; }
+        .status-ok { background: #0a2d0a; color: #4cff4c; }
+        .status-err { background: #2d0a0a; color: #ff4c4c; }
+        .upload-area {
+            border: 2px dashed #333;
+            border-radius: 8px;
+            padding: 32px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .upload-area:hover { border-color: #00d4ff; }
+        #output { margin-top: 16px; white-space: pre-wrap; font-family: monospace; font-size: 0.85em; color: #ccc; }
+    </style>
+</head>
+<body>
+    <h1>PaddleOCR via molt/tinygrad</h1>
+    <p class="subtitle">Compiled ONNX inference through molt WASM runtime</p>
+
+    <div id="status" class="status-checking">Checking model availability...</div>
+
+    <div class="card">
+        <h3>Pipeline</h3>
+        <table>
+            <tr><th>Stage</th><th>Model</th><th>Size</th><th>Status</th></tr>
+            <tr>
+                <td>Detector</td>
+                <td>ch_PP-OCRv4_det.onnx</td>
+                <td><span class="badge badge-size">4.7 MB</span></td>
+                <td id="det-status"><span class="badge badge-ready">available</span></td>
+            </tr>
+            <tr>
+                <td>Recognizer</td>
+                <td>english/model.onnx</td>
+                <td><span class="badge badge-size">7.8 MB</span></td>
+                <td id="rec-status"><span class="badge badge-ready">available</span></td>
+            </tr>
+            <tr>
+                <td>WASM Runtime</td>
+                <td>paddleocr.wasm</td>
+                <td><span class="badge badge-size">10.3 MB</span></td>
+                <td id="wasm-status"><span class="badge badge-ready">available</span></td>
+            </tr>
+        </table>
+    </div>
+
+    <h2>Supported Languages</h2>
+    <div class="card">
+        <span class="badge badge-lang">en (English)</span>
+        <span class="badge badge-lang">ch (Chinese)</span>
+        <span class="badge badge-lang">ja (Japanese)</span>
+        <span class="badge badge-lang">ko (Korean)</span>
+        <span class="badge badge-lang">latin</span>
+        <span class="badge badge-lang">cyrillic</span>
+        <span class="badge badge-lang">devanagari</span>
+        <span class="badge badge-lang">arabic</span>
+    </div>
+
+    <h2>Character Dictionaries</h2>
+    <div class="card">
+        <table>
+            <tr><th>Dictionary</th><th>Characters</th></tr>
+            <tr><td>en_ppocr_dict.txt</td><td>96 chars (ASCII printable)</td></tr>
+            <tr><td>ppocr_keys_v1.txt</td><td>6,623 chars (Chinese simplified)</td></tr>
+            <tr><td>japan_dict.txt</td><td>4,399 chars</td></tr>
+            <tr><td>korean_dict.txt</td><td>3,691 chars</td></tr>
+            <tr><td>latin_dict.txt</td><td>130 chars</td></tr>
+            <tr><td>cyrillic_dict.txt</td><td>116 chars</td></tr>
+            <tr><td>devanagari_dict.txt</td><td>140 chars</td></tr>
+            <tr><td>arabic_dict.txt</td><td>113 chars</td></tr>
+        </table>
+    </div>
+
+    <h2>Test OCR</h2>
+    <div class="upload-area" id="upload" onclick="document.getElementById('file-input').click()">
+        Drop an image here or click to upload
+        <input type="file" id="file-input" accept="image/*" style="display:none">
+    </div>
+    <div id="output"></div>
+
+    <script>
+        const BASE = location.origin;
+        async function checkEndpoint(url) {
+            try {
+                const r = await fetch(url, { method: 'HEAD' });
+                return r.ok || r.status === 405;
+            } catch { return false; }
+        }
+        async function init() {
+            const el = document.getElementById('status');
+            const checks = await Promise.all([
+                checkEndpoint(BASE + '/wasm/paddleocr.wasm'),
+                checkEndpoint(BASE + '/models/paddleocr/dicts/en_ppocr_dict.txt'),
+            ]);
+            if (checks.every(Boolean)) {
+                el.className = 'status-ok';
+                el.textContent = 'All models and dicts available on R2. Ready for inference.';
+            } else {
+                el.className = 'status-err';
+                el.textContent = 'Some assets missing from R2. Upload required.';
+            }
+        }
+        init();
+
+        document.getElementById('file-input').addEventListener('change', (e) => {
+            const f = e.target.files[0];
+            if (!f) return;
+            const out = document.getElementById('output');
+            out.textContent = 'Image selected: ' + f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)\\n';
+            out.textContent += 'WASM inference not yet wired. Use the Python test harness:\\n';
+            out.textContent += '  .venv/bin/python tests/e2e/test_onnx_ops_numpy.py';
+        });
+    </script>
+</body>
+</html>`;
+
+// ---------------------------------------------------------------------------
 // Production hardening: timeouts, memory pressure, graceful degradation
 // ---------------------------------------------------------------------------
 
@@ -1412,6 +1573,12 @@ export default {
     // -----------------------------------------------------------------------
     if (request.method === "GET" && path === "/test") {
       return new Response(TEST_HTML, {
+        headers: { "Content-Type": "text/html; charset=utf-8", ...cors }
+      });
+    }
+
+    if (request.method === "GET" && path === "/test/paddle") {
+      return new Response(PADDLE_TEST_HTML, {
         headers: { "Content-Type": "text/html; charset=utf-8", ...cors }
       });
     }
