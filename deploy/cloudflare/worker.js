@@ -23,7 +23,7 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleTokensRequest, handleBatchOcr, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill } from "./ocr_api.js";
+import { handleOcrRequest, handleTokensRequest, handleBatchOcr, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill, normalizeOcrResultPayload } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, categorizeError } from "./monitoring.js";
 import { getAnalyticsSummary } from "./analytics.js";
@@ -450,8 +450,30 @@ async function fetchR2WithTimeout(bucket, key, timeoutMs = R2_FETCH_TIMEOUT_MS) 
   return result;
 }
 
+export class OperationTimeoutError extends Error {
+  /**
+   * @param {string} label
+   * @param {number} timeoutMs
+   */
+  constructor(label, timeoutMs) {
+    super(`${label} timed out after ${timeoutMs}ms`);
+    this.name = "OperationTimeoutError";
+    this.label = label;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 /**
- * Run an async function with a timeout.  Rejects with a descriptive error
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isOperationTimeoutError(err) {
+  return err instanceof OperationTimeoutError
+    || (err && typeof err === "object" && err.name === "OperationTimeoutError");
+}
+
+/**
+ * Run an async function with a timeout.  Rejects with OperationTimeoutError
  * if the function does not resolve within `timeoutMs`.
  *
  * @template T
@@ -460,16 +482,54 @@ async function fetchR2WithTimeout(bucket, key, timeoutMs = R2_FETCH_TIMEOUT_MS) 
  * @param {string} label - Human-readable label for timeout error messages
  * @returns {Promise<T>}
  */
-function withTimeout(fn, timeoutMs, label = "operation") {
+export function withTimeout(fn, timeoutMs, label = "operation") {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      reject(new OperationTimeoutError(label, timeoutMs));
     }, timeoutMs);
-    Promise.resolve(fn()).then(
+    let result;
+    try {
+      result = fn();
+    } catch (err) {
+      clearTimeout(timer);
+      reject(err);
+      return;
+    }
+    Promise.resolve(result).then(
       (val) => { clearTimeout(timer); resolve(val); },
       (err) => { clearTimeout(timer); reject(err); },
     );
   });
+}
+
+/**
+ * Remove fields that belong to one request before sharing/caching a JSON body.
+ *
+ * @param {Record<string, unknown>} payload
+ * @returns {Record<string, unknown>}
+ */
+export function stripRequestScopedJsonFields(payload) {
+  const { request_id: _requestId, ...shared } = payload;
+  return shared;
+}
+
+/**
+ * Attach the current request ID to a JSON object response body.
+ *
+ * @param {string} bodyText
+ * @param {string} rid
+ * @returns {string}
+ */
+export function attachRequestIdToJsonBody(bodyText, rid) {
+  try {
+    const parsed = JSON.parse(bodyText);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return JSON.stringify({ ...parsed, request_id: rid });
+    }
+  } catch (_err) {
+    // Non-JSON bodies are returned unchanged.
+  }
+  return bodyText;
 }
 
 /**
@@ -551,7 +611,7 @@ const EDGE_CACHE_TTL_S = 3600;
  * the first's promise and shares its result.  The entry is removed once
  * the inference promise settles.
  *
- * @type {Map<string, Promise<Response>>}
+ * @type {Map<string, Promise<{ bodyText: string, status: number, headers: Record<string, string> }>>}
  */
 const inflightRequests = new Map();
 
@@ -589,7 +649,7 @@ async function getCachedResult(env, imageHash) {
     const cached = await env.CACHE.get(`ocr:${imageHash}`, "json");
     if (cached && typeof cached.timestamp === "number" &&
         Date.now() - cached.timestamp < CACHE_TTL_MS) {
-      return cached;
+      return stripRequestScopedJsonFields(normalizeOcrResultPayload(cached, "cached OCR result"));
     }
   } catch (_err) {
     // KV read failure is non-fatal — proceed with inference
@@ -607,8 +667,11 @@ async function getCachedResult(env, imageHash) {
  */
 function setCachedResult(env, imageHash, result, ctx) {
   if (!env.CACHE) return;
+  const normalized = stripRequestScopedJsonFields(
+    normalizeOcrResultPayload(result, "OCR result"),
+  );
   const entry = {
-    ...result,
+    ...normalized,
     timestamp: Date.now(),
     cached: true,
   };
@@ -1971,15 +2034,30 @@ export default {
           if (imageHash) {
             const edgeCached = await getEdgeCachedResponse(request, imageHash);
             if (edgeCached) {
-              const headers = new Headers(edgeCached.headers);
-              Object.entries(cors).forEach(([k, v]) => headers.set(k, v));
-              headers.set("X-Cache-Status", "HIT-EDGE");
-              headers.set("X-Request-ID", rid);
-              if (payment.receipt) headers.set("X-Payment-Receipt", payment.receipt);
-              return new Response(edgeCached.body, {
-                status: edgeCached.status,
-                headers,
-              });
+              let edgeBodyText = null;
+              try {
+                const rawEdgeBody = await edgeCached.clone().text();
+                const edgePayload = stripRequestScopedJsonFields(
+                  normalizeOcrResultPayload(JSON.parse(rawEdgeBody), "edge cached OCR result"),
+                );
+                edgeBodyText = JSON.stringify(edgePayload);
+              } catch (_err) {
+                edgeBodyText = null;
+              }
+              if (!edgeBodyText) {
+                // Treat malformed edge cache entries as misses. Fresh inference
+                // will repopulate both edge and KV cache with validated output.
+              } else {
+                const headers = new Headers(edgeCached.headers);
+                Object.entries(cors).forEach(([k, v]) => headers.set(k, v));
+                headers.set("X-Cache-Status", "HIT-EDGE");
+                headers.set("X-Request-ID", rid);
+                if (payment.receipt) headers.set("X-Payment-Receipt", payment.receipt);
+                return new Response(attachRequestIdToJsonBody(edgeBodyText, rid), {
+                  status: edgeCached.status,
+                  headers,
+                });
+              }
             }
           }
 
@@ -2021,8 +2099,9 @@ export default {
           let response;
 
           /**
-           * Run inference, cache the result, and return a { body, status } pair
-           * that can be shared across concurrent waiters without body-consumed issues.
+           * Run inference, cache the result, and return a JSON body/status pair
+           * that can be shared across concurrent waiters without body-consumed
+           * or request_id leakage.
            */
           const doInference = async () => {
             const inferResult = await withTimeout(
@@ -2036,22 +2115,28 @@ export default {
             const status = inferResult.status;
             const headers = Object.fromEntries(inferResult.headers.entries());
 
-            // Cache the result for future requests
-            if (imageHash && status === 200) {
+            let sharedBodyText = bodyText;
+            if (status === 200) {
               try {
                 const resultBody = JSON.parse(bodyText);
-                setCachedResult(env, imageHash, resultBody, ctx);
-                setEdgeCachedResponse(
-                  request,
-                  imageHash,
-                  new Response(bodyText, { status, headers: { ...headers } }),
-                  ctx,
+                const normalized = stripRequestScopedJsonFields(
+                  normalizeOcrResultPayload(resultBody, "OCR result"),
                 );
-              } catch (_err) {
-                // Cache write failure is non-fatal
+                sharedBodyText = JSON.stringify(normalized);
+                if (imageHash) {
+                  setCachedResult(env, imageHash, normalized, ctx);
+                  setEdgeCachedResponse(
+                    request,
+                    imageHash,
+                    new Response(sharedBodyText, { status, headers: { ...headers } }),
+                    ctx,
+                  );
+                }
+              } catch (err) {
+                throw new Error(`Invalid OCR inference response: ${err.message}`);
               }
             }
-            return { bodyText, status, headers };
+            return { bodyText: sharedBodyText, status, headers };
           };
 
           try {
@@ -2070,13 +2155,29 @@ export default {
                 if (imageHash) inflightRequests.delete(imageHash);
               }
             }
-            response = new Response(shared.bodyText, {
+            response = new Response(attachRequestIdToJsonBody(shared.bodyText, rid), {
               status: shared.status,
               headers: { ...shared.headers },
             });
-          } catch (timeoutErr) {
+          } catch (err) {
             if (imageHash) inflightRequests.delete(imageHash);
-            console.error(`Inference timeout: ${timeoutErr.message} [rid=${rid}]`);
+            if (!isOperationTimeoutError(err)) {
+              console.error(`Inference failed: ${err.message} [rid=${rid}]`);
+              return new Response(
+                JSON.stringify({
+                  error: "OCR inference failed",
+                  detail: err.message,
+                  request_id: rid,
+                  fallback_available: true,
+                  fallback_url: "/api/ocr/paddle",
+                }),
+                {
+                  status: 502,
+                  headers: { ...cors, "Content-Type": "application/json", "X-Request-ID": rid },
+                },
+              );
+            }
+            console.error(`Inference timeout: ${err.message} [rid=${rid}]`);
             return new Response(
               JSON.stringify({
                 error: "OCR inference timed out",
@@ -2118,8 +2219,22 @@ export default {
               INFERENCE_TIMEOUT_MS,
               "Token inference",
             );
-          } catch (timeoutErr) {
-            console.error(`Token inference timeout: ${timeoutErr.message} [rid=${rid}]`);
+          } catch (err) {
+            if (!isOperationTimeoutError(err)) {
+              console.error(`Token inference failed: ${err.message} [rid=${rid}]`);
+              return new Response(
+                JSON.stringify({
+                  error: "Token inference failed",
+                  detail: err.message,
+                  request_id: rid,
+                }),
+                {
+                  status: 502,
+                  headers: { ...cors, "Content-Type": "application/json" },
+                },
+              );
+            }
+            console.error(`Token inference timeout: ${err.message} [rid=${rid}]`);
             return new Response(
               JSON.stringify({
                 error: "Token inference timed out",

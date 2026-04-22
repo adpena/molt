@@ -438,18 +438,7 @@ export async function runStructuredOcr(env, imageBytes) {
 
   const parsed = parseStructuredResponse(result.text);
   if (!parsed) {
-    return {
-      invoice: validateStructuredInvoice({}),
-      raw_text: result.text,
-      confidence: 0.0,
-      model: result.model,
-      model_used: result.model_used,
-      auto_filled: true,
-      auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
-      auto_fill_dismissable: true,
-      time_ms: result.time_ms,
-      parse_error: "Failed to extract JSON from model response",
-    };
+    throw new Error("Structured OCR model output did not contain valid invoice JSON");
   }
 
   const invoice = validateStructuredInvoice(parsed);
