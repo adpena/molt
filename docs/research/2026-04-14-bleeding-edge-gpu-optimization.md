@@ -53,10 +53,11 @@
 - **Difficulty:** Moderate — Blackwell-specific
 - **Action:** Add NVFP4 to DType, CudaRenderer FP4 Tensor Core ops
 
-### 9. EAGLE-3 Speculative Decoding
+### 9. Target-Conditioned Speculative Decoding
 - **Impact:** 3-6.5x speedup, lossless
 - **Difficulty:** Hard — prediction head training
-- **Action:** Extend `dflash.py` with EAGLE-style self-speculation
+- **Action:** Implement trained adapters under `src/molt/gpu/dflash/`. Do not
+  extend generic helper modules and call them DFlash.
 
 ### 10. ThunderKittens Integration
 - **Impact:** 2-2.6x for custom fused ops, <50 lines per new op

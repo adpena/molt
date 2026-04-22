@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from .contracts import (
+    DFlashConditioning,
     SpeculativeConditioning,
     SpeculativeDraftRequest,
     SpeculativeVerifyRequest,
+    require_dflash_conditioning,
 )
 
 
@@ -163,6 +165,9 @@ def speculative_decode_greedy_conditioned(
     verify_calls = 0
     step_index = 0
     conditioning = initial_conditioning or SpeculativeConditioning()
+    enforce_dflash_conditioning = isinstance(conditioning, DFlashConditioning)
+    if enforce_dflash_conditioning:
+        require_dflash_conditioning(conditioning, "initial_conditioning")
 
     while len(emitted) < max_new_tokens:
         remaining = max_new_tokens - len(emitted)
@@ -202,6 +207,11 @@ def speculative_decode_greedy_conditioned(
                 "verify_step must return len(draft_tokens) + 1 target tokens"
             )
         if verify_result.conditioning is not None:
+            if enforce_dflash_conditioning:
+                require_dflash_conditioning(
+                    verify_result.conditioning,
+                    "verify_result.conditioning",
+                )
             conditioning = verify_result.conditioning
 
         mismatch = False

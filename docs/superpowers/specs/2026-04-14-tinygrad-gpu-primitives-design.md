@@ -533,6 +533,14 @@ out = attn.dot(values)                                     # composed
 
 ### 4.1 DFlash (Block Diffusion Drafter)
 
+Provenance and contract: Molt's DFlash semantics are tied to Chen, Liang, and
+Liu, "DFlash: Block Diffusion for Flash Speculative Decoding"
+(`arXiv:2602.06036`, https://arxiv.org/abs/2602.06036) and the official Z Lab
+project page (https://z-lab.ai/projects/dflash/). DFlash is target-conditioned
+block-diffusion drafting: target hidden features are fused and injected into
+draft-layer KV cache, and drafting is conditioned on that target context plus
+the last verified token. Generic speculative decoding is not DFlash.
+
 The drafter is a standard transformer that produces per-position token distributions in one forward pass. Its forward pass is entirely composed from the 26 primitives:
 - Linear layers: `dot` (composed)
 - Attention: `scaled_dot_product_attention` (composed)
@@ -703,7 +711,8 @@ stdlib/molt/gpu/tensor.py             # Tensor class (lazy ops, calls molt-gpu f
 stdlib/molt/gpu/nn.py                 # layernorm, conv2d, sdpa (compositions)
 # In falcon-ocr / enjoice / application
 turbo_quant.py                        # PolarQuant + QJL (pure Tensor API)
-dflash.py                             # block diffusion drafter (pure Tensor API)
+gpu/dflash/                           # target-conditioned DFlash adapter contract
+tinygrad/speculative.py               # generic speculative helpers, not DFlash
 ddtree.py                             # draft tree construction (CPU heap + Tensor.topk)
 ```
 

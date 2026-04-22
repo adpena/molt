@@ -1,6 +1,6 @@
 # Tinygrad GPU Primitives — Plan 4: TurboQuant + DFlash + DDTree
 
-**Goal:** Implement the three advanced ML primitives as pure compositions of the 26-op stack: TurboQuant (quantization), DFlash (flash attention with speculative decoding), and DDTree (dynamic decision tree for routing).
+**Goal:** Implement the advanced ML primitives as pure compositions of the 26-op stack: TurboQuant (quantization), DFlash (target-conditioned block-diffusion drafting), and DDTree (dynamic decision tree for routing).
 
 **Depends on:** Plan 3 (complete)
 
@@ -11,7 +11,8 @@
 | Path | Responsibility |
 | --- | --- |
 | `stdlib/tinygrad/turbo_quant.py` | TurboQuant — int4/int8 quantization via primitives |
-| `stdlib/tinygrad/dflash.py` | DFlash — flash attention + speculative decoding |
+| `src/molt/gpu/dflash/` | DFlash — target-conditioned drafter/verifier adapter contract |
+| `stdlib/tinygrad/speculative.py` | Generic speculative helper code; not DFlash |
 | `stdlib/tinygrad/ddtree.py` | DDTree — dynamic decision tree for MoE routing |
 | `tests/gpu/test_turbo_quant.py` | TurboQuant accuracy and performance tests |
 | `tests/gpu/test_dflash.py` | DFlash correctness and fusion count tests |
@@ -32,19 +33,18 @@
 - Fuses: dequant + reshape + expand + mul + reduce_sum into minimal kernels
 - Target: 2 kernels for a quantized matmul (dequant+mul fused, then reduce)
 
-### Task 3: DFlash — Flash Attention v2
+### Task 3: Flash Attention
 - Tiled attention: process Q/K/V in blocks to stay in SRAM
 - Online softmax: running max + running sum normalization
 - Composed from: MATMUL(Q, K^T) -> MUL(_, 1/sqrt(d_k)) -> SOFTMAX -> MATMUL(_, V)
 - Causal mask: via PAD with -inf in upper triangle
 - Expected fusion: 3-4 kernels total (not 10+ unfused ops)
 
-### Task 4: DFlash — Speculative Decoding
-- Draft model generates k candidate tokens
-- Verification: parallel evaluation of all k candidates in one batched forward pass
-- Acceptance: compare draft probs vs target probs using WHERE/CMPLT
-- Rejection sampling: composed from RAND + CMPLT + WHERE
-- All expressed as Tensor method compositions
+### Task 4: DFlash — Target-Conditioned Block Diffusion
+- Provenance: Chen, Liang, and Liu, "DFlash: Block Diffusion for Flash Speculative Decoding" (`arXiv:2602.06036`, https://arxiv.org/abs/2602.06036) and the official project page (https://z-lab.ai/projects/dflash/).
+- DFlash support must use a trained target-specific block-diffusion drafter.
+- The drafter must receive target hidden features, target KV conditioning, position IDs, and the last verified token.
+- Missing trained adapters must raise; generic speculative decoding must not be labeled DFlash.
 
 ### Task 5: DDTree — Dynamic Decision Tree
 - Binary decision tree for MoE expert routing
