@@ -386,35 +386,93 @@ function parseStructuredResponse(text) {
  * @returns {object} Validated and coerced invoice data
  */
 function validateStructuredInvoice(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Structured invoice JSON root is not an object");
+  }
+
+  function requiredString(field) {
+    const value = data[field];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(`Structured invoice is missing required string field: ${field}`);
+    }
+    return value;
+  }
+
+  function optionalString(field) {
+    const value = data[field];
+    if (value == null) return "";
+    if (typeof value !== "string") {
+      throw new Error(`Structured invoice field must be a string: ${field}`);
+    }
+    return value;
+  }
+
+  function requiredNumber(field) {
+    const raw = data[field];
+    if (raw == null || (typeof raw === "string" && raw.trim().length === 0)) {
+      throw new Error(`Structured invoice is missing required numeric field: ${field}`);
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value)) {
+      throw new Error(`Structured invoice is missing required numeric field: ${field}`);
+    }
+    return value;
+  }
+
+  function optionalNumber(field) {
+    if (data[field] == null) return 0;
+    const raw = data[field];
+    if (typeof raw === "string" && raw.trim().length === 0) {
+      throw new Error(`Structured invoice field must be numeric: ${field}`);
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value)) {
+      throw new Error(`Structured invoice field must be numeric: ${field}`);
+    }
+    return value;
+  }
+
   const result = {
-    vendor: String(data.vendor || ""),
-    invoice_number: String(data.invoice_number || ""),
-    issue_date: String(data.issue_date || ""),
-    due_date: String(data.due_date || ""),
+    vendor: requiredString("vendor"),
+    invoice_number: requiredString("invoice_number"),
+    issue_date: optionalString("issue_date"),
+    due_date: optionalString("due_date"),
     items: [],
-    subtotal: 0,
-    tax: 0,
-    total: 0,
-    currency: String(data.currency || "USD"),
+    subtotal: optionalNumber("subtotal"),
+    tax: optionalNumber("tax"),
+    total: requiredNumber("total"),
+    currency: requiredString("currency"),
   };
 
-  // Coerce numeric fields
-  if (data.subtotal != null) result.subtotal = Number(data.subtotal) || 0;
-  if (data.tax != null) result.tax = Number(data.tax) || 0;
-  if (data.total != null) result.total = Number(data.total) || 0;
-
   // Validate items array
-  if (Array.isArray(data.items)) {
+  if (data.items == null) {
+    result.items = [];
+  } else if (Array.isArray(data.items)) {
     for (const item of data.items) {
-      if (typeof item === "object" && item !== null) {
-        result.items.push({
-          description: String(item.description || ""),
-          qty: Number(item.qty) || 0,
-          rate: Number(item.rate) || 0,
-          amount: Number(item.amount) || 0,
-        });
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error("Structured invoice item is not an object");
       }
+      if (typeof item.description !== "string" || item.description.trim().length === 0) {
+        throw new Error("Structured invoice item is missing description");
+      }
+      const amount = Number(item.amount);
+      if (!Number.isFinite(amount)) {
+        throw new Error("Structured invoice item is missing numeric amount");
+      }
+      const qty = item.qty == null ? 0 : Number(item.qty);
+      const rate = item.rate == null ? 0 : Number(item.rate);
+      if (!Number.isFinite(qty) || !Number.isFinite(rate)) {
+        throw new Error("Structured invoice item qty/rate must be numeric");
+      }
+      result.items.push({
+        description: item.description,
+        qty,
+        rate,
+        amount,
+      });
     }
+  } else {
+    throw new Error("Structured invoice items field must be an array");
   }
 
   return result;

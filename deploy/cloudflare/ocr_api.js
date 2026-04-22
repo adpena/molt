@@ -965,6 +965,10 @@ const SECTION_TYPES = [
   "totals", "notes", "terms", "footer",
 ];
 
+const DETAILED_BLOCK_TYPES = new Set([
+  "heading", "field_label", "field_value", "paragraph", "table_cell", "footer",
+]);
+
 
 /**
  * Convert Uint8Array to base64 (Worker-compatible).
@@ -1237,6 +1241,124 @@ function parseModelJsonObject(responseText, source) {
 }
 
 /**
+ * Normalize a table payload and reject shape inconsistencies.
+ *
+ * @param {unknown} table
+ * @param {number} idx
+ * @param {string} source
+ * @returns {{rows: number, cols: number, headers: string[], data: string[][]}}
+ */
+function normalizeTablePayload(table, idx, source) {
+  if (!table || typeof table !== "object" || Array.isArray(table)) {
+    throw new Error(`${source} ${idx} is not an object`);
+  }
+  const record = /** @type {Record<string, unknown>} */ (table);
+  if (!Array.isArray(record.headers)) {
+    throw new Error(`${source} ${idx} is missing headers array`);
+  }
+  if (!Array.isArray(record.data)) {
+    throw new Error(`${source} ${idx} is missing data array`);
+  }
+  const rows = Number(record.rows);
+  const cols = Number(record.cols);
+  if (!Number.isInteger(rows) || rows < 0) {
+    throw new Error(`${source} ${idx} has invalid row count`);
+  }
+  if (!Number.isInteger(cols) || cols < 0) {
+    throw new Error(`${source} ${idx} has invalid column count`);
+  }
+  const headers = record.headers.map(String);
+  const data = record.data.map((row, rowIdx) => {
+    if (!Array.isArray(row)) {
+      throw new Error(`${source} ${idx} row ${rowIdx} is not an array`);
+    }
+    if (row.length !== cols) {
+      throw new Error(`${source} ${idx} row ${rowIdx} width does not match cols`);
+    }
+    return row.map(String);
+  });
+  if (rows !== data.length) {
+    throw new Error(`${source} ${idx} row count does not match data length`);
+  }
+  if (cols !== headers.length) {
+    throw new Error(`${source} ${idx} column count does not match headers length`);
+  }
+  return { rows, cols, headers, data };
+}
+
+/**
+ * @param {unknown} block
+ * @param {number} idx
+ * @param {string} source
+ * @returns {{ text: string, confidence: number, bbox: {x: number, y: number, width: number, height: number}, type: string }}
+ */
+function normalizeDetailedBlockPayload(block, idx, source) {
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    throw new Error(`${source} block ${idx} is not an object`);
+  }
+  const record = /** @type {Record<string, unknown>} */ (block);
+  if (typeof record.text !== "string" || record.text.trim().length === 0) {
+    throw new Error(`${source} block ${idx} contains empty text`);
+  }
+  const confidence = Number(record.confidence);
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw new Error(`${source} block ${idx} has invalid confidence`);
+  }
+  const bbox = record.bbox;
+  if (!bbox || typeof bbox !== "object" || Array.isArray(bbox)) {
+    throw new Error(`${source} block ${idx} is missing bbox object`);
+  }
+  const bboxRecord = /** @type {Record<string, unknown>} */ (bbox);
+  const normalizedBbox = {
+    x: Number(bboxRecord.x),
+    y: Number(bboxRecord.y),
+    width: Number(bboxRecord.width),
+    height: Number(bboxRecord.height),
+  };
+  for (const [key, value] of Object.entries(normalizedBbox)) {
+    if (!Number.isFinite(value) || ((key === "width" || key === "height") && value < 0)) {
+      throw new Error(`${source} block ${idx} has invalid bbox.${key}`);
+    }
+  }
+  if (typeof record.type !== "string" || !DETAILED_BLOCK_TYPES.has(record.type)) {
+    throw new Error(`${source} block ${idx} has invalid type`);
+  }
+  return {
+    text: record.text,
+    confidence,
+    bbox: normalizedBbox,
+    type: record.type,
+  };
+}
+
+/**
+ * @param {unknown} metadata
+ * @param {string} source
+ * @returns {{language: string, orientation: number, has_handwriting: boolean}}
+ */
+function normalizeDetailedMetadataPayload(metadata, source) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw new Error(`${source} is missing metadata object`);
+  }
+  const record = /** @type {Record<string, unknown>} */ (metadata);
+  if (typeof record.language !== "string" || record.language.trim().length === 0) {
+    throw new Error(`${source} metadata is missing language`);
+  }
+  const orientation = Number(record.orientation);
+  if (![0, 90, 180, 270].includes(orientation)) {
+    throw new Error(`${source} metadata has invalid orientation`);
+  }
+  if (typeof record.has_handwriting !== "boolean") {
+    throw new Error(`${source} metadata has invalid has_handwriting`);
+  }
+  return {
+    language: record.language,
+    orientation,
+    has_handwriting: record.has_handwriting,
+  };
+}
+
+/**
  * Validate and normalize a detailed OCR page payload before serving/caching.
  *
  * @param {unknown} payload
@@ -1262,9 +1384,9 @@ export function normalizeDetailedOcrPagePayload(payload, source = "detailed OCR 
   }
   return {
     text: record.text,
-    blocks: record.blocks,
-    tables: record.tables,
-    metadata: record.metadata,
+    blocks: record.blocks.map((block, idx) => normalizeDetailedBlockPayload(block, idx, source)),
+    tables: record.tables.map((table, idx) => normalizeTablePayload(table, idx, `${source} table`)),
+    metadata: normalizeDetailedMetadataPayload(record.metadata, source),
   };
 }
 
@@ -1309,34 +1431,13 @@ Output ONLY valid JSON, no markdown fences, no explanation.
   }
 
   // Normalize blocks
-  const blocks = Array.isArray(parsed.blocks) ? parsed.blocks.map((b) => ({
-    text: String(b.text || ""),
-    confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.5)),
-    bbox: {
-      x: Number(b.bbox?.x) || 0,
-      y: Number(b.bbox?.y) || 0,
-      width: Number(b.bbox?.width) || 0,
-      height: Number(b.bbox?.height) || 0,
-    },
-    type: b.type || "paragraph",
-  })) : [];
+  const blocks = parsed.blocks.map((b, idx) => normalizeDetailedBlockPayload(b, idx, "detailed OCR model output"));
 
   // Normalize tables
-  const tables = Array.isArray(parsed.tables) ? parsed.tables.map((t) => ({
-    rows: Number(t.rows) || 0,
-    cols: Number(t.cols) || 0,
-    headers: Array.isArray(t.headers) ? t.headers.map(String) : [],
-    data: Array.isArray(t.data) ? t.data.map((row) => Array.isArray(row) ? row.map(String) : []) : [],
-  })) : [];
+  const tables = parsed.tables.map((t, idx) => normalizeTablePayload(t, idx, "detailed OCR model table"));
 
   // Normalize metadata
-  const metadata = {
-    language: String(parsed.metadata?.language || "en").slice(0, 5),
-    orientation: [0, 90, 180, 270].includes(Number(parsed.metadata?.orientation))
-      ? Number(parsed.metadata.orientation)
-      : 0,
-    has_handwriting: Boolean(parsed.metadata?.has_handwriting),
-  };
+  const metadata = normalizeDetailedMetadataPayload(parsed.metadata, "detailed OCR model output");
 
   const text = typeof parsed.text === "string" ? parsed.text
     : blocks.map((b) => b.text).join("\n");
@@ -1620,37 +1721,7 @@ export function parseTableOcrResponse(responseText) {
     throw new Error("Table OCR JSON is missing tables array");
   }
 
-  return parsed.tables.map((t, idx) => {
-    if (!t || typeof t !== "object" || Array.isArray(t)) {
-      throw new Error(`Table OCR table ${idx} is not an object`);
-    }
-    if (!Array.isArray(t.headers)) {
-      throw new Error(`Table OCR table ${idx} is missing headers array`);
-    }
-    if (!Array.isArray(t.data)) {
-      throw new Error(`Table OCR table ${idx} is missing data array`);
-    }
-    const data = t.data.map((row, rowIdx) => {
-      if (!Array.isArray(row)) {
-        throw new Error(`Table OCR table ${idx} row ${rowIdx} is not an array`);
-      }
-      return row.map(String);
-    });
-    const rows = t.rows == null ? data.length : Number(t.rows);
-    const cols = t.cols == null ? t.headers.length : Number(t.cols);
-    if (!Number.isInteger(rows) || rows < 0) {
-      throw new Error(`Table OCR table ${idx} has invalid row count`);
-    }
-    if (!Number.isInteger(cols) || cols < 0) {
-      throw new Error(`Table OCR table ${idx} has invalid column count`);
-    }
-    return {
-      rows,
-      cols,
-      headers: t.headers.map(String),
-      data,
-    };
-  });
+  return parsed.tables.map((t, idx) => normalizeTablePayload(t, idx, "Table OCR table"));
 }
 
 /**
@@ -1671,6 +1742,37 @@ export function normalizeTemplateExtractionPayload(payload, source = "template e
   const record = /** @type {Record<string, unknown>} */ (payload);
   if (!record.template || typeof record.template !== "object" || Array.isArray(record.template)) {
     throw new Error(`${source} is missing template object`);
+  }
+  const template = /** @type {Record<string, unknown>} */ (record.template);
+  for (const field of ["id", "name", "type"]) {
+    if (typeof template[field] !== "string" || String(template[field]).trim().length === 0) {
+      throw new Error(`${source} template is missing ${field}`);
+    }
+  }
+  if (!template.layout || typeof template.layout !== "object" || Array.isArray(template.layout)) {
+    throw new Error(`${source} template is missing layout object`);
+  }
+  const layout = /** @type {Record<string, unknown>} */ (template.layout);
+  if (!Array.isArray(layout.sections) || layout.sections.length === 0) {
+    throw new Error(`${source} template layout is missing sections array`);
+  }
+  for (const [idx, section] of layout.sections.entries()) {
+    if (!section || typeof section !== "object" || Array.isArray(section)) {
+      throw new Error(`${source} template layout section ${idx} is not an object`);
+    }
+    const sectionRecord = /** @type {Record<string, unknown>} */ (section);
+    if (typeof sectionRecord.type !== "string" || !SECTION_TYPES.includes(sectionRecord.type)) {
+      throw new Error(`${source} template layout section ${idx} has invalid type`);
+    }
+    if (typeof sectionRecord.visible !== "boolean") {
+      throw new Error(`${source} template layout section ${idx} has invalid visibility`);
+    }
+    if (!Number.isInteger(sectionRecord.order) || sectionRecord.order < 0) {
+      throw new Error(`${source} template layout section ${idx} has invalid order`);
+    }
+  }
+  if (!template.styles || typeof template.styles !== "object" || Array.isArray(template.styles)) {
+    throw new Error(`${source} template is missing styles object`);
   }
   if (!Array.isArray(record.detected_sections)) {
     throw new Error(`${source} is missing detected_sections array`);
