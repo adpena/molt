@@ -82,7 +82,7 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
         try:
             intrinsic = loader(intrinsic_name)
         except RuntimeError as exc:
-            if _runtime_intrinsics_active():
+            if _requested_gpu_backend() is not None:
                 raise RuntimeError(
                     f"intrinsic unavailable: {intrinsic_name}"
                 ) from exc
@@ -96,7 +96,7 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
         try:
             intrinsic = require(intrinsic_name)
         except RuntimeError as exc:
-            if _runtime_intrinsics_active():
+            if _requested_gpu_backend() is not None:
                 raise RuntimeError(
                     f"intrinsic unavailable: {intrinsic_name}"
                 ) from exc
@@ -105,7 +105,7 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
                 globals()[cache_name] = intrinsic
                 return intrinsic
 
-    if _runtime_intrinsics_active():
+    if _requested_gpu_backend() is not None:
         raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}")
     return None
 
@@ -328,8 +328,6 @@ def _tensor_from_parts(
             shape,
             dtype,
         )
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor_from_parts")
     return Tensor(
         Buffer(data, element_type, size, format_char=format_char),
         shape=shape,
@@ -338,20 +336,10 @@ def _tensor_from_parts(
 
 
 def _tensor_from_buffer(buf: Buffer, shape, dtype: type) -> "Tensor":
-    intrinsic = _resolve_optional_intrinsic(
-        "_MOLT_GPU_TENSOR_FROM_BUFFER", "molt_gpu_tensor_from_buffer"
-    )
-    if intrinsic is not None:
-        return intrinsic(Tensor, buf, shape, dtype)
     return Tensor(buf, shape=shape, dtype=dtype)
 
 
 def _buffer_to_list(buf: Buffer, size: int) -> list:
-    intrinsic = _resolve_optional_intrinsic(
-        "_MOLT_GPU_BUFFER_TO_LIST", "molt_gpu_buffer_to_list"
-    )
-    if intrinsic is not None:
-        return intrinsic(buf, size)
     return from_device(buf)[:size]
 
 
@@ -415,9 +403,6 @@ def tensor_linear(x: "Tensor", weight: "Tensor") -> "Tensor":
             out_shape,
             result_dtype,
         )
-
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_linear_contiguous")
 
     x_data = tensor_data_list(x)
     out_buf = alloc(
@@ -597,11 +582,6 @@ def tensor_linear_squared_relu_gate_interleaved(
             result_format,
             out_shape,
             result_dtype,
-        )
-
-    if _runtime_intrinsics_active():
-        raise RuntimeError(
-            "intrinsic unavailable: molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
         )
 
     projected = tensor_linear(x, weight)
@@ -809,9 +789,6 @@ def tensor_softmax_last_axis(x: "Tensor") -> "Tensor":
             x._dtype,
         )
 
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_softmax_last_axis_contiguous")
-
     data = tensor_data_list(x)
     outer = _product(x._shape[:-1]) if x.ndim > 1 else 1
     axis_len = x._shape[-1]
@@ -875,12 +852,6 @@ def tensor_take_rows(
 
     if not isinstance(indices, Tensor):
         indices = Tensor(indices)
-
-    intrinsic = _resolve_optional_intrinsic(
-        "_MOLT_GPU_TENSOR_TAKE_ROWS", "molt_gpu_tensor__tensor_take_rows"
-    )
-    if intrinsic is not None:
-        return intrinsic(x, indices, allow_negative)
 
     rows = tensor_data_list(indices)
     row_shape = x._shape[1:]
@@ -1681,9 +1652,6 @@ class Tensor:
             )
             return Tensor(out_buf, shape=out_shape, dtype=a._dtype)
 
-        if _runtime_intrinsics_active():
-            raise RuntimeError("intrinsic unavailable: molt_gpu_matmul_contiguous")
-
         a_data = a._data_list()
         b_data = b._data_list()
 
@@ -1855,9 +1823,6 @@ class Tensor:
                 out_shape,
                 self._dtype,
             )
-
-        if _runtime_intrinsics_active():
-            raise RuntimeError("intrinsic unavailable: molt_gpu_repeat_axis_contiguous")
 
         outer = _product(self._shape[:axis]) if axis > 0 else 1
         axis_len = self._shape[axis]
@@ -2033,9 +1998,6 @@ class Tensor:
         if axis == self.ndim - 1 and intrinsic is not None:
             return tensor_softmax_last_axis(self)
 
-        if axis == self.ndim - 1 and _runtime_intrinsics_active():
-            raise RuntimeError("intrinsic unavailable: molt_gpu_softmax_last_axis_contiguous")
-
         data = self._data_list()
 
         # Compute outer/inner strides
@@ -2155,9 +2117,6 @@ class Tensor:
             )
             return Tensor(out_buf, shape=self._shape, dtype=result_dtype)
 
-        if _runtime_intrinsics_active():
-            raise RuntimeError("intrinsic unavailable: molt_gpu_rms_norm_last_axis_contiguous")
-
         data = self._data_list()
         axis_len = self._shape[-1]
         outer = self.size // axis_len
@@ -2211,11 +2170,6 @@ class Tensor:
                 format_char=result_format,
             )
             return Tensor(out_buf, shape=out_shape, dtype=result_dtype)
-
-        if _runtime_intrinsics_active():
-            raise RuntimeError(
-                "intrinsic unavailable: molt_gpu_squared_relu_gate_interleaved_contiguous"
-            )
 
         data = self._data_list()
         axis_len = self._shape[-1]

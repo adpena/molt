@@ -11,6 +11,7 @@ import struct
 import _intrinsics as _molt_intrinsics
 from . import Buffer
 
+Tensor = None
 
 # SafeTensors dtype mapping: name -> (struct format char, byte size)
 _SAFETENSOR_DTYPES = {
@@ -172,7 +173,10 @@ def _decode_safetensor_values(raw: bytes, dtype_str: str) -> list:
 
 
 def _load_safetensor_entry(data: bytes, data_start: int, meta: dict):
-    from .tensor import Tensor
+    global Tensor
+    if Tensor is None:
+        from .tensor import Tensor as _Tensor
+        Tensor = _Tensor
 
     dtype_str = meta["dtype"]
     shape = tuple(meta["shape"])
