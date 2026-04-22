@@ -91,6 +91,26 @@ fn gpu_runtime_call_symbol(kind: &str) -> Option<&'static str> {
     }
 }
 
+const DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[
+    "molt_gpu_broadcast_binary_contiguous",
+    "molt_gpu_linear_contiguous",
+    "molt_gpu_linear_split_last_dim_contiguous",
+    "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
+    "molt_gpu_matmul_contiguous",
+    "molt_gpu_permute_contiguous",
+    "molt_gpu_repeat_axis_contiguous",
+    "molt_gpu_rms_norm_last_axis_contiguous",
+    "molt_gpu_rope_apply_contiguous",
+    "molt_gpu_softmax_last_axis_contiguous",
+    "molt_gpu_squared_relu_gate_interleaved_contiguous",
+    "molt_gpu_tensor_from_buffer",
+    "molt_gpu_tensor_from_parts",
+    "molt_gpu_tensor__tensor_concat_first_dim",
+    "molt_gpu_tensor__tensor_scatter_rows",
+    "molt_gpu_tensor__tensor_take_rows",
+    "molt_gpu_tensor__zeros",
+];
+
 fn prepare_lir_wasm_fast_output(
     tir_func: &crate::tir::function::TirFunction,
 ) -> Option<crate::tir::lower_to_wasm::WasmFunctionOutput> {
@@ -2681,6 +2701,11 @@ impl WasmBackend {
 
         // Per-app intrinsic manifest: serialize used intrinsic names as a
         // NUL-separated data segment so the runtime only registers these.
+        manifest_intrinsic_names.extend(
+            DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
         let manifest_bytes: Vec<u8> = {
             let mut buf = Vec::new();
             for (i, name) in manifest_intrinsic_names.iter().enumerate() {
@@ -5304,8 +5329,10 @@ impl WasmBackend {
         } else {
             Vec::new()
         };
-        let seeded_runtime_const_op_indices: BTreeSet<usize> =
-            seeded_runtime_const_ops.iter().map(|(idx, _)| *idx).collect();
+        let seeded_runtime_const_op_indices: BTreeSet<usize> = seeded_runtime_const_ops
+            .iter()
+            .map(|(idx, _)| *idx)
+            .collect();
         if std::env::var("MOLT_DEBUG_WASM_SEEDS_FUNC").ok().as_deref()
             == Some(func_ir.name.as_str())
         {
@@ -11022,9 +11049,8 @@ impl WasmBackend {
                     | "gpu_barrier" => {
                         let runtime_name =
                             gpu_runtime_call_symbol(op.kind.as_str()).expect("gpu runtime symbol");
-                        let import_name = runtime_name
-                            .strip_prefix("molt_")
-                            .unwrap_or(runtime_name);
+                        let import_name =
+                            runtime_name.strip_prefix("molt_").unwrap_or(runtime_name);
                         let out = locals[op.out.as_ref().expect("gpu op result missing")];
                         emit_call(func, reloc_enabled, import_ids[import_name]);
                         func.instruction(&Instruction::LocalSet(out));

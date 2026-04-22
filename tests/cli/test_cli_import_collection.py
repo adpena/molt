@@ -7194,6 +7194,67 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
     assert sidecar.read_text(encoding="utf-8").strip() == cli._sha256_file(runtime_wasm)
 
 
+def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    built_src = (
+        tmp_path
+        / "target"
+        / "wasm32-wasip1"
+        / "dev-fast"
+        / "deps"
+        / "molt_runtime-test.wasm"
+    )
+    built_src.parent.mkdir(parents=True, exist_ok=True)
+    built_src.write_bytes(b"\0asm\x01\0\0\0runtime")
+    captured_env: dict[str, str] = {}
+
+    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"})
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
+
+    def fake_runtime_build(**kwargs):
+        captured_env.update(kwargs["env"])
+        return subprocess.CompletedProcess(kwargs["cmd"], 0, "", ""), built_src
+
+    captured_link: dict[str, str] = {}
+
+    def fake_reloc_link(staticlib_path, output_path, **kwargs):
+        captured_link.update(kwargs)
+        output_path.write_bytes(staticlib_path.read_bytes())
+        return True
+
+    monkeypatch.setattr(cli, "_run_runtime_wasm_cargo_build", fake_runtime_build)
+    monkeypatch.setattr(cli, "_link_runtime_staticlib_to_reloc_wasm", fake_reloc_link)
+    monkeypatch.setattr(cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None)
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=True,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules={"molt.gpu.tensor"},
+        required_exports=None,
+    )
+
+    rustflags = captured_env["RUSTFLAGS"]
+    assert "--import-memory" not in rustflags
+    assert "--import-table" not in rustflags
+    assert "--export-if-defined=molt_gpu_matmul_contiguous" in rustflags
+    assert (
+        "--export-if-defined=molt_gpu_matmul_contiguous"
+        in captured_link["export_link_args"]
+    )
+
+
 def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
