@@ -58,11 +58,13 @@ impl WeightGen {
 
     /// Generate n f32 weights in [-scale, scale] range.
     fn weights(&mut self, n: usize, scale: f32) -> Vec<f32> {
-        (0..n).map(|_| {
-            let bits = self.next_u64();
-            let frac = (bits & 0x00FFFFFF) as f32 / 0x00FFFFFF as f32;
-            (frac * 2.0 - 1.0) * scale
-        }).collect()
+        (0..n)
+            .map(|_| {
+                let bits = self.next_u64();
+                let frac = (bits & 0x00FFFFFF) as f32 / 0x00FFFFFF as f32;
+                (frac * 2.0 - 1.0) * scale
+            })
+            .collect()
     }
 }
 
@@ -99,10 +101,12 @@ fn rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
 
 /// CPU squared ReLU.
 fn squared_relu(x: &[f32]) -> Vec<f32> {
-    x.iter().map(|&v| {
-        let relu = v.max(0.0);
-        relu * relu
-    }).collect()
+    x.iter()
+        .map(|&v| {
+            let relu = v.max(0.0);
+            relu * relu
+        })
+        .collect()
 }
 
 /// Compute RMSNorm via molt-gpu kernel interpreter (validates interpreter).
@@ -118,12 +122,23 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let sq = run_kernel(&k_sq, vec![x_bytes.clone()]);
 
@@ -135,12 +150,23 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let sum = run_kernel(&k_sum, vec![f32_to_bytes(&sq)]);
     let inv_rms = 1.0 / (sum[0] / n as f32 + eps).sqrt();
@@ -149,16 +175,33 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
     let k_scale = FusedKernel {
         ops: vec![FusedOp {
             op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: inv_rms as f64, dtype: DType::Float32 }],
+            srcs: vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: inv_rms as f64,
+                    dtype: DType::Float32,
+                },
+            ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     run_kernel(&k_scale, vec![x_bytes])
 }
@@ -189,18 +232,20 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
 
     // Per-layer weights
     struct LayerWeights {
-        qkv_w: Vec<f32>,    // [dim, 3*dim]
+        qkv_w: Vec<f32>,     // [dim, 3*dim]
         out_w: Vec<f32>,     // [dim, dim]
         ff_up_w: Vec<f32>,   // [dim, ffn_dim]
         ff_down_w: Vec<f32>, // [ffn_dim, dim]
     }
 
-    let layers: Vec<LayerWeights> = (0..n_layers).map(|_| LayerWeights {
-        qkv_w: wg.weights(dim * 3 * dim, init_scale),
-        out_w: wg.weights(dim * dim, init_scale),
-        ff_up_w: wg.weights(dim * ffn_dim, init_scale / 2.0),
-        ff_down_w: wg.weights(ffn_dim * dim, init_scale / 2.0),
-    }).collect();
+    let layers: Vec<LayerWeights> = (0..n_layers)
+        .map(|_| LayerWeights {
+            qkv_w: wg.weights(dim * 3 * dim, init_scale),
+            out_w: wg.weights(dim * dim, init_scale),
+            ff_up_w: wg.weights(dim * ffn_dim, init_scale / 2.0),
+            ff_down_w: wg.weights(ffn_dim * dim, init_scale / 2.0),
+        })
+        .collect();
 
     // LM head [dim, vocab]
     let lm_head_w = wg.weights(dim * vocab, init_scale);
@@ -209,7 +254,7 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
     // Generate a deterministic 64x64 grayscale test image.
     let patch_size = 16;
     let n_patches = (64 / patch_size) * (64 / patch_size); // 16 patches
-    // Project patches to dim via learned projection.
+                                                           // Project patches to dim via learned projection.
     let patch_proj_w = wg.weights(patch_size * patch_size * dim, init_scale);
 
     // Generate test image pixels (diagonal gradient).
@@ -262,14 +307,11 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
     for (i, &tok_id) in initial_text_ids.iter().take(text_tokens).enumerate() {
         let pos = image_tokens + i;
         let start = tok_id * dim;
-        hidden[pos * dim..(pos + 1) * dim]
-            .copy_from_slice(&embed_w[start..start + dim]);
+        hidden[pos * dim..(pos + 1) * dim].copy_from_slice(&embed_w[start..start + dim]);
     }
 
     // --- Transformer forward pass ---
-    for layer_idx in 0..n_layers {
-        let layer = &layers[layer_idx];
-
+    for layer in layers.iter().take(n_layers) {
         // RMSNorm
         let mut normed = vec![0.0f32; seq_len * dim];
         for pos in 0..seq_len {
@@ -286,8 +328,7 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
         let mut k = vec![0.0f32; seq_len * dim];
         let mut v = vec![0.0f32; seq_len * dim];
         for pos in 0..seq_len {
-            q[pos * dim..(pos + 1) * dim]
-                .copy_from_slice(&qkv[pos * 3 * dim..pos * 3 * dim + dim]);
+            q[pos * dim..(pos + 1) * dim].copy_from_slice(&qkv[pos * 3 * dim..pos * 3 * dim + dim]);
             k[pos * dim..(pos + 1) * dim]
                 .copy_from_slice(&qkv[pos * 3 * dim + dim..pos * 3 * dim + 2 * dim]);
             v[pos * dim..(pos + 1) * dim]
@@ -356,8 +397,16 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
     // Logits in reasonable range
     let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let min_logit = logits.iter().copied().fold(f32::INFINITY, f32::min);
-    assert!(max_logit.abs() < 1000.0, "Logits exploding: max={}", max_logit);
-    assert!(min_logit.abs() < 1000.0, "Logits exploding: min={}", min_logit);
+    assert!(
+        max_logit.abs() < 1000.0,
+        "Logits exploding: max={}",
+        max_logit
+    );
+    assert!(
+        min_logit.abs() < 1000.0,
+        "Logits exploding: min={}",
+        min_logit
+    );
 
     // Softmax of last position sums to 1.0
     let last_logits = &logits[(seq_len - 1) * vocab..seq_len * vocab];
@@ -378,7 +427,9 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
             assert!(
                 val.is_finite(),
                 "Step {} logit[{}] = {} is not finite",
-                step, i, val
+                step,
+                i,
+                val
             );
         }
 
@@ -418,7 +469,9 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
     let ref_norm = rms_norm(test_x, eps);
     let gpu_norm = gpu_rms_norm(test_x, eps);
 
-    let max_diff: f32 = ref_norm.iter().zip(gpu_norm.iter())
+    let max_diff: f32 = ref_norm
+        .iter()
+        .zip(gpu_norm.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     assert!(
@@ -443,12 +496,23 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let max_result = run_kernel(&k_max, vec![x_bytes.clone()]);
     let max_val = max_result[0];
@@ -459,12 +523,24 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
         ops: vec![
             FusedOp {
                 op: PrimitiveOp::Sub,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: max_val as f64, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: max_val as f64,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             FusedOp {
                 op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Const { val: log2_e, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Op(0),
+                    FusedSrc::Const {
+                        val: log2_e,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             FusedOp {
@@ -474,12 +550,23 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let exp_result = run_kernel(&k_exp, vec![x_bytes]);
     let exp_bytes = f32_to_bytes(&exp_result);
@@ -492,12 +579,23 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let sum_result = run_kernel(&k_sum, vec![exp_bytes.clone()]);
     let inv_sum = 1.0 / sum_result[0];
@@ -506,25 +604,48 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
     let k_div = FusedKernel {
         ops: vec![FusedOp {
             op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: inv_sum as f64, dtype: DType::Float32 }],
+            srcs: vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: inv_sum as f64,
+                    dtype: DType::Float32,
+                },
+            ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let gpu_sm = run_kernel(&k_div, vec![exp_bytes]);
 
     // Verify softmax sum
     let gpu_sm_sum: f32 = gpu_sm.iter().sum();
-    assert!((gpu_sm_sum - 1.0).abs() < 1e-5, "GPU softmax sum = {}", gpu_sm_sum);
+    assert!(
+        (gpu_sm_sum - 1.0).abs() < 1e-5,
+        "GPU softmax sum = {}",
+        gpu_sm_sum
+    );
 
     // Verify against reference
-    let sm_diff: f32 = ref_sm.iter().zip(gpu_sm.iter())
+    let sm_diff: f32 = ref_sm
+        .iter()
+        .zip(gpu_sm.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     assert!(

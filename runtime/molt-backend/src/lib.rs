@@ -723,51 +723,6 @@ fn switch_to_block_tracking(
 }
 
 #[cfg(feature = "native-backend")]
-fn rebind_named_vars_in_block(builder: &mut FunctionBuilder, vars: &BTreeMap<String, Variable>) {
-    for var in vars.values() {
-        let val = builder.use_var(*var);
-        builder.def_var(*var, val);
-    }
-}
-
-#[cfg(feature = "native-backend")]
-fn rebind_shadow_vars_in_block(
-    builder: &mut FunctionBuilder,
-    shadow_vars: &BTreeMap<String, Variable>,
-    shadow_names: &BTreeSet<String>,
-) {
-    for name in shadow_names {
-        if let Some(var) = shadow_vars.get(name) {
-            let val = builder.use_var(*var);
-            builder.def_var(*var, val);
-        }
-    }
-}
-
-#[cfg(feature = "native-backend")]
-fn switch_to_block_with_rebind(
-    builder: &mut FunctionBuilder,
-    block: Block,
-    is_block_filled: &mut bool,
-    has_exception_labels: bool,
-    vars: &BTreeMap<String, Variable>,
-    shadow_vars: &BTreeMap<String, Variable>,
-    shadow_names: &BTreeSet<String>,
-) {
-    switch_to_block_tracking(builder, block, is_block_filled);
-    if !*is_block_filled && (has_exception_labels || !builder.block_params(block).is_empty()) {
-        // Rebind only where the backend genuinely crosses SSA regions:
-        // - exception-aware fallthrough blocks after `check_exception`
-        // - merge/header blocks that carry real block params
-        //
-        // Rebinding every fresh block is too broad and can introduce
-        // non-dominating `use_var` reads in unrelated control-flow shapes.
-        rebind_named_vars_in_block(builder, vars);
-        rebind_shadow_vars_in_block(builder, shadow_vars, shadow_names);
-    }
-}
-
-#[cfg(feature = "native-backend")]
 fn resolve_cleanup_value(
     builder: &mut FunctionBuilder,
     vars: &BTreeMap<String, Variable>,
@@ -3882,12 +3837,12 @@ impl SimpleBackend {
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
-        FunctionIR, NativeBackendModuleContext, OpIR, SimpleBackend, SimpleIR,
-        TrampolineKind, analyze_native_backend_ir, compute_function_has_ret,
-        merge_function_arities, merge_function_has_ret,
+        FunctionIR, NativeBackendModuleContext, OpIR, SimpleBackend, SimpleIR, TrampolineKind,
+        analyze_native_backend_ir, compute_function_has_ret, merge_function_arities,
+        merge_function_has_ret,
     };
-    use crate::passes::ReturnAliasSummary;
     use crate::drain_cleanup_entry_tracked;
+    use crate::passes::ReturnAliasSummary;
     use crate::rewrite_phi_to_store_load;
     use cranelift_codegen::ir::Value;
     use cranelift_codegen::ir::types;
@@ -4421,26 +4376,30 @@ mod tests {
     #[test]
     fn local_function_metadata_overrides_stale_module_context_after_split() {
         let context = NativeBackendModuleContext {
-            function_arities: BTreeMap::from([
-                ("__molt_chunk_builtins__molt_module_chunk_3_0".to_string(), 1usize),
-            ]),
-            function_has_ret: BTreeMap::from([
-                ("__molt_chunk_builtins__molt_module_chunk_3_0".to_string(), false),
-            ]),
+            function_arities: BTreeMap::from([(
+                "__molt_chunk_builtins__molt_module_chunk_3_0".to_string(),
+                1usize,
+            )]),
+            function_has_ret: BTreeMap::from([(
+                "__molt_chunk_builtins__molt_module_chunk_3_0".to_string(),
+                false,
+            )]),
             ..NativeBackendModuleContext::default()
         };
 
         let merged_arities = merge_function_arities(
             Some(&context),
-            BTreeMap::from([
-                ("__molt_chunk_builtins__molt_module_chunk_3_0".to_string(), 1usize),
-            ]),
+            BTreeMap::from([(
+                "__molt_chunk_builtins__molt_module_chunk_3_0".to_string(),
+                1usize,
+            )]),
         );
         let merged_has_ret = merge_function_has_ret(
             Some(&context),
-            BTreeMap::from([
-                ("__molt_chunk_builtins__molt_module_chunk_3_0".to_string(), true),
-            ]),
+            BTreeMap::from([(
+                "__molt_chunk_builtins__molt_module_chunk_3_0".to_string(),
+                true,
+            )]),
         );
 
         assert_eq!(

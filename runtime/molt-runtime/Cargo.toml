@@ -6,10 +6,10 @@ license = "Apache-2.0"
 build = "build.rs"
 
 [lib]
-crate-type = ["staticlib", "rlib"]
+crate-type = ["staticlib", "rlib", "cdylib"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(feature, values("audit", "refcount_verify"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(miri)', 'cfg(feature, values("audit", "refcount_verify"))'] }
 
 [features]
 default = ["stdlib_full", "wasi_host"]

@@ -13,9 +13,7 @@ mod metal_e2e {
     use molt_gpu::fuse::fuse;
     use molt_gpu::ops::PrimitiveOp;
     use molt_gpu::render::msl::MslRenderer;
-    use molt_gpu::render::{
-        BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-    };
+    use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
     use molt_gpu::shapetracker::ShapeTracker;
 
     fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
@@ -65,7 +63,8 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // CPU reference
@@ -125,7 +124,8 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // CPU reference
@@ -190,28 +190,41 @@ mod metal_e2e {
 
     #[test]
     fn test_metal_e2e_add() {
-        let (metal, cpu) =
-            run_binary_metal_vs_cpu(PrimitiveOp::Add, &[1.0, 2.0, 3.0, 4.0], &[5.0, 6.0, 7.0, 8.0], DType::Float32);
+        let (metal, cpu) = run_binary_metal_vs_cpu(
+            PrimitiveOp::Add,
+            &[1.0, 2.0, 3.0, 4.0],
+            &[5.0, 6.0, 7.0, 8.0],
+            DType::Float32,
+        );
         assert_f32_close(&metal, &cpu, "Add", 0.0);
     }
 
     #[test]
     fn test_metal_e2e_sub() {
-        let (metal, cpu) =
-            run_binary_metal_vs_cpu(PrimitiveOp::Sub, &[5.0, 3.0, 1.0, -1.0], &[1.0, 2.0, 3.0, 4.0], DType::Float32);
+        let (metal, cpu) = run_binary_metal_vs_cpu(
+            PrimitiveOp::Sub,
+            &[5.0, 3.0, 1.0, -1.0],
+            &[1.0, 2.0, 3.0, 4.0],
+            DType::Float32,
+        );
         assert_f32_close(&metal, &cpu, "Sub", 0.0);
     }
 
     #[test]
     fn test_metal_e2e_mul() {
-        let (metal, cpu) =
-            run_binary_metal_vs_cpu(PrimitiveOp::Mul, &[2.0, 3.0, 4.0, 5.0], &[5.0, 6.0, 7.0, 8.0], DType::Float32);
+        let (metal, cpu) = run_binary_metal_vs_cpu(
+            PrimitiveOp::Mul,
+            &[2.0, 3.0, 4.0, 5.0],
+            &[5.0, 6.0, 7.0, 8.0],
+            DType::Float32,
+        );
         assert_f32_close(&metal, &cpu, "Mul", 0.0);
     }
 
     #[test]
     fn test_metal_e2e_neg() {
-        let (metal, cpu) = run_unary_metal_vs_cpu(PrimitiveOp::Neg, &[1.0, -2.0, 0.0, 3.14]);
+        let (metal, cpu) =
+            run_unary_metal_vs_cpu(PrimitiveOp::Neg, &[1.0, -2.0, 0.0, std::f32::consts::PI]);
         assert_f32_close(&metal, &cpu, "Neg", 0.0);
     }
 
@@ -256,29 +269,45 @@ mod metal_e2e {
 
     #[test]
     fn test_metal_e2e_max() {
-        let (metal, cpu) =
-            run_binary_metal_vs_cpu(PrimitiveOp::Max, &[1.0, 5.0, -3.0, 0.0], &[3.0, 2.0, -1.0, 0.0], DType::Float32);
+        let (metal, cpu) = run_binary_metal_vs_cpu(
+            PrimitiveOp::Max,
+            &[1.0, 5.0, -3.0, 0.0],
+            &[3.0, 2.0, -1.0, 0.0],
+            DType::Float32,
+        );
         assert_f32_close(&metal, &cpu, "Max", 0.0);
     }
 
     #[test]
     fn test_metal_e2e_cmplt() {
-        let (metal, cpu) =
-            run_binary_metal_vs_cpu(PrimitiveOp::Cmplt, &[1.0, 5.0, -3.0, 0.0], &[3.0, 2.0, -1.0, 0.0], DType::Float32);
+        let (metal, cpu) = run_binary_metal_vs_cpu(
+            PrimitiveOp::Cmplt,
+            &[1.0, 5.0, -3.0, 0.0],
+            &[3.0, 2.0, -1.0, 0.0],
+            DType::Float32,
+        );
         assert_f32_close(&metal, &cpu, "Cmplt", 0.0);
     }
 
     #[test]
     fn test_metal_e2e_cmpeq() {
-        let (metal, cpu) =
-            run_binary_metal_vs_cpu(PrimitiveOp::Cmpeq, &[1.0, 2.0, 3.0, 0.0], &[1.0, 3.0, 3.0, 0.0], DType::Float32);
+        let (metal, cpu) = run_binary_metal_vs_cpu(
+            PrimitiveOp::Cmpeq,
+            &[1.0, 2.0, 3.0, 0.0],
+            &[1.0, 3.0, 3.0, 0.0],
+            DType::Float32,
+        );
         assert_f32_close(&metal, &cpu, "Cmpeq", 0.0);
     }
 
     #[test]
     fn test_metal_e2e_cmpne() {
-        let (metal, cpu) =
-            run_binary_metal_vs_cpu(PrimitiveOp::Cmpne, &[1.0, 2.0, 3.0, 0.0], &[1.0, 3.0, 3.0, 0.0], DType::Float32);
+        let (metal, cpu) = run_binary_metal_vs_cpu(
+            PrimitiveOp::Cmpne,
+            &[1.0, 2.0, 3.0, 0.0],
+            &[1.0, 3.0, 3.0, 0.0],
+            DType::Float32,
+        );
         assert_f32_close(&metal, &cpu, "Cmpne", 0.0);
     }
 
@@ -303,7 +332,10 @@ mod metal_e2e {
     fn test_metal_e2e_neg_zero() {
         let (metal, cpu) = run_unary_metal_vs_cpu(PrimitiveOp::Neg, &[0.0]);
         // Both should produce -0.0
-        assert!(metal[0].is_sign_negative(), "Neg(0.0) should be -0.0 on Metal");
+        assert!(
+            metal[0].is_sign_negative(),
+            "Neg(0.0) should be -0.0 on Metal"
+        );
         assert!(cpu[0].is_sign_negative(), "Neg(0.0) should be -0.0 on CPU");
     }
 
@@ -362,7 +394,8 @@ mod metal_e2e {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // Kernel 2: Sub (x - max) -> Exp2(* LOG2_E) = exp
@@ -413,7 +446,8 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // Kernel 3: ReduceSum of exp values
@@ -439,7 +473,8 @@ mod metal_e2e {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // Fuse: k1 is one kernel, k2 fuses elementwise, k3 is another
@@ -490,7 +525,8 @@ mod metal_e2e {
             ],
             grid: [n_out as u32, 1, 1],
             local: [n_out as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // CPU reference
@@ -563,7 +599,8 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         let cond = [1.0f32, 0.0, 1.0, 0.0];
@@ -659,7 +696,8 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         let input = [-3.0f32, -1.0, 1.0, 3.0];

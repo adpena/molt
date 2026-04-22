@@ -27,9 +27,7 @@ mod metal_bench {
     use molt_gpu::dtype::DType;
     use molt_gpu::ops::PrimitiveOp;
     use molt_gpu::render::msl::MslRenderer;
-    use molt_gpu::render::{
-        BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-    };
+    use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
     use molt_gpu::shapetracker::ShapeTracker;
 
     const WARMUP: usize = 5;
@@ -72,13 +70,29 @@ mod metal_bench {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-                BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
-            grid: [(n as u32 + 255) / 256, 1, 1],
+            grid: [(n as u32).div_ceil(256), 1, 1],
             local: [256, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // CPU reference
@@ -103,7 +117,9 @@ mod metal_bench {
         // Metal
         let renderer = MslRenderer;
         let source = renderer.render(&kernel);
-        let prog = metal.compile(&source, "molt_kernel").expect("compile failed");
+        let prog = metal
+            .compile(&source, "molt_kernel")
+            .expect("compile failed");
 
         let buf_a = metal.alloc(n * 4).expect("alloc A");
         let buf_b = metal.alloc(n * 4).expect("alloc B");
@@ -113,7 +129,14 @@ mod metal_bench {
 
         // Warmup
         for _ in 0..WARMUP {
-            metal.exec(&prog, &[&buf_out, &buf_a, &buf_b], kernel.grid, kernel.local).expect("exec");
+            metal
+                .exec(
+                    &prog,
+                    &[&buf_out, &buf_a, &buf_b],
+                    kernel.grid,
+                    kernel.local,
+                )
+                .expect("exec");
             metal.synchronize().expect("sync");
         }
 
@@ -121,7 +144,14 @@ mod metal_bench {
         let mut gpu_total = std::time::Duration::ZERO;
         for _ in 0..MEASURE {
             let start = Instant::now();
-            metal.exec(&prog, &[&buf_out, &buf_a, &buf_b], kernel.grid, kernel.local).expect("exec");
+            metal
+                .exec(
+                    &prog,
+                    &[&buf_out, &buf_a, &buf_b],
+                    kernel.grid,
+                    kernel.local,
+                )
+                .expect("exec");
             metal.synchronize().expect("sync");
             gpu_total += start.elapsed();
         }
@@ -131,7 +161,9 @@ mod metal_bench {
         let mut gpu_out = vec![0u8; n * 4];
         metal.copy_out(&buf_out, &mut gpu_out).expect("copy out");
         let gpu_result = bytes_to_f32(&gpu_out);
-        let max_diff = cpu_result.iter().zip(gpu_result.iter())
+        let max_diff = cpu_result
+            .iter()
+            .zip(gpu_result.iter())
             .map(|(a, b)| (a - b).abs() as f64)
             .fold(0.0f64, f64::max);
 
@@ -141,7 +173,8 @@ mod metal_bench {
 
         BenchResult {
             name: "Vector Add (1M)".to_string(),
-            cpu_us, gpu_us,
+            cpu_us,
+            gpu_us,
             speedup: cpu_us / gpu_us,
             max_diff,
         }
@@ -187,12 +220,23 @@ mod metal_bench {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[out_n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[out_n * k]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[out_n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[out_n * k]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [out_n as u32, 1, 1],
             local: [1, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // Pre-compute product tensor for Metal (this is what the unfused path does)
@@ -216,7 +260,14 @@ mod metal_bench {
 
         // Warmup
         for _ in 0..WARMUP {
-            metal.exec(&prog, &[&buf_out, &buf_in], reduce_kernel.grid, reduce_kernel.local).expect("exec");
+            metal
+                .exec(
+                    &prog,
+                    &[&buf_out, &buf_in],
+                    reduce_kernel.grid,
+                    reduce_kernel.local,
+                )
+                .expect("exec");
             metal.synchronize().expect("sync");
         }
 
@@ -224,7 +275,14 @@ mod metal_bench {
         let mut gpu_total = std::time::Duration::ZERO;
         for _ in 0..MEASURE {
             let start = Instant::now();
-            metal.exec(&prog, &[&buf_out, &buf_in], reduce_kernel.grid, reduce_kernel.local).expect("exec");
+            metal
+                .exec(
+                    &prog,
+                    &[&buf_out, &buf_in],
+                    reduce_kernel.grid,
+                    reduce_kernel.local,
+                )
+                .expect("exec");
             metal.synchronize().expect("sync");
             gpu_total += start.elapsed();
         }
@@ -232,9 +290,13 @@ mod metal_bench {
 
         // Verify
         let mut gpu_out_bytes = vec![0u8; out_n * 4];
-        metal.copy_out(&buf_out, &mut gpu_out_bytes).expect("copy out");
+        metal
+            .copy_out(&buf_out, &mut gpu_out_bytes)
+            .expect("copy out");
         let gpu_result = bytes_to_f32(&gpu_out_bytes);
-        let max_diff = cpu_result.iter().zip(gpu_result.iter())
+        let max_diff = cpu_result
+            .iter()
+            .zip(gpu_result.iter())
             .map(|(a, b)| (a - b).abs() as f64)
             .fold(0.0f64, f64::max);
 
@@ -243,7 +305,8 @@ mod metal_bench {
 
         BenchResult {
             name: format!("Matmul ({}x{}x{})", m, k, n),
-            cpu_us, gpu_us,
+            cpu_us,
+            gpu_us,
             speedup: cpu_us / gpu_us,
             max_diff,
         }
@@ -265,25 +328,74 @@ mod metal_bench {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
-            grid: [1, 1, 1], local: [1, 1, 1], spec: None, vectorize_width: 1,
+            grid: [1, 1, 1],
+            local: [1, 1, 1],
+            spec: None,
+            vectorize_width: 1,
         };
 
         let log2_e = std::f64::consts::LOG2_E;
         let k_exp = FusedKernel {
             ops: vec![
-                FusedOp { op: PrimitiveOp::Sub, srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)], dst_dtype: DType::Float32 },
-                FusedOp { op: PrimitiveOp::Mul, srcs: vec![FusedSrc::Op(0), FusedSrc::Const { val: log2_e, dtype: DType::Float32 }], dst_dtype: DType::Float32 },
-                FusedOp { op: PrimitiveOp::Exp2, srcs: vec![FusedSrc::Op(1)], dst_dtype: DType::Float32 },
+                FusedOp {
+                    op: PrimitiveOp::Sub,
+                    srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                    dst_dtype: DType::Float32,
+                },
+                FusedOp {
+                    op: PrimitiveOp::Mul,
+                    srcs: vec![
+                        FusedSrc::Op(0),
+                        FusedSrc::Const {
+                            val: log2_e,
+                            dtype: DType::Float32,
+                        },
+                    ],
+                    dst_dtype: DType::Float32,
+                },
+                FusedOp {
+                    op: PrimitiveOp::Exp2,
+                    srcs: vec![FusedSrc::Op(1)],
+                    dst_dtype: DType::Float32,
+                },
             ],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-                BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
-            grid: [n as u32, 1, 1], local: [1, 1, 1], spec: None, vectorize_width: 1,
+            grid: [n as u32, 1, 1],
+            local: [1, 1, 1],
+            spec: None,
+            vectorize_width: 1,
         };
 
         let k_reduce_sum = FusedKernel {
@@ -293,10 +405,23 @@ mod metal_bench {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
-            grid: [1, 1, 1], local: [1, 1, 1], spec: None, vectorize_width: 1,
+            grid: [1, 1, 1],
+            local: [1, 1, 1],
+            spec: None,
+            vectorize_width: 1,
         };
 
         // CPU timing (full softmax pipeline)
@@ -324,7 +449,9 @@ mod metal_bench {
         };
 
         // Warmup CPU
-        for _ in 0..WARMUP { cpu_softmax(); }
+        for _ in 0..WARMUP {
+            cpu_softmax();
+        }
         let mut cpu_total = std::time::Duration::ZERO;
         for _ in 0..MEASURE {
             let start = Instant::now();
@@ -361,22 +488,63 @@ mod metal_bench {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-                BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
-            grid: [n as u32, 1, 1], local: [1, 1, 1], spec: None, vectorize_width: 1,
+            grid: [n as u32, 1, 1],
+            local: [1, 1, 1],
+            spec: None,
+            vectorize_width: 1,
         };
         let src_norm = renderer.render(&k_norm);
-        let prog_norm = metal.compile(&src_norm, "molt_kernel").expect("compile norm");
+        let prog_norm = metal
+            .compile(&src_norm, "molt_kernel")
+            .expect("compile norm");
 
         // Warmup GPU
         for _ in 0..WARMUP {
-            metal.exec(&prog_max, &[&mbuf_max, &mbuf_x], k_reduce_max.grid, k_reduce_max.local).expect("exec max");
+            metal
+                .exec(
+                    &prog_max,
+                    &[&mbuf_max, &mbuf_x],
+                    k_reduce_max.grid,
+                    k_reduce_max.local,
+                )
+                .expect("exec max");
             metal.synchronize().expect("sync");
-            metal.exec(&prog_exp, &[&mbuf_exp, &mbuf_x, &mbuf_max], k_exp.grid, k_exp.local).expect("exec exp");
+            metal
+                .exec(
+                    &prog_exp,
+                    &[&mbuf_exp, &mbuf_x, &mbuf_max],
+                    k_exp.grid,
+                    k_exp.local,
+                )
+                .expect("exec exp");
             metal.synchronize().expect("sync");
-            metal.exec(&prog_sum, &[&mbuf_sum, &mbuf_exp], k_reduce_sum.grid, k_reduce_sum.local).expect("exec sum");
+            metal
+                .exec(
+                    &prog_sum,
+                    &[&mbuf_sum, &mbuf_exp],
+                    k_reduce_sum.grid,
+                    k_reduce_sum.local,
+                )
+                .expect("exec sum");
             metal.synchronize().expect("sync");
 
             // Compute inv_sum on CPU, write to sum buffer for normalize
@@ -384,8 +552,17 @@ mod metal_bench {
             metal.copy_out(&mbuf_sum, &mut sum_bytes).expect("copy sum");
             let sum_val = f32::from_le_bytes(sum_bytes[0..4].try_into().unwrap());
             let inv_sum = 1.0 / sum_val;
-            metal.copy_in(&mbuf_sum, &inv_sum.to_le_bytes()).expect("copy inv_sum");
-            metal.exec(&prog_norm, &[&mbuf_out, &mbuf_exp, &mbuf_sum], k_norm.grid, k_norm.local).expect("exec norm");
+            metal
+                .copy_in(&mbuf_sum, &inv_sum.to_le_bytes())
+                .expect("copy inv_sum");
+            metal
+                .exec(
+                    &prog_norm,
+                    &[&mbuf_out, &mbuf_exp, &mbuf_sum],
+                    k_norm.grid,
+                    k_norm.local,
+                )
+                .expect("exec norm");
             metal.synchronize().expect("sync");
         }
 
@@ -394,19 +571,49 @@ mod metal_bench {
         for _ in 0..MEASURE {
             let start = Instant::now();
 
-            metal.exec(&prog_max, &[&mbuf_max, &mbuf_x], k_reduce_max.grid, k_reduce_max.local).expect("exec max");
+            metal
+                .exec(
+                    &prog_max,
+                    &[&mbuf_max, &mbuf_x],
+                    k_reduce_max.grid,
+                    k_reduce_max.local,
+                )
+                .expect("exec max");
             metal.synchronize().expect("sync");
-            metal.exec(&prog_exp, &[&mbuf_exp, &mbuf_x, &mbuf_max], k_exp.grid, k_exp.local).expect("exec exp");
+            metal
+                .exec(
+                    &prog_exp,
+                    &[&mbuf_exp, &mbuf_x, &mbuf_max],
+                    k_exp.grid,
+                    k_exp.local,
+                )
+                .expect("exec exp");
             metal.synchronize().expect("sync");
-            metal.exec(&prog_sum, &[&mbuf_sum, &mbuf_exp], k_reduce_sum.grid, k_reduce_sum.local).expect("exec sum");
+            metal
+                .exec(
+                    &prog_sum,
+                    &[&mbuf_sum, &mbuf_exp],
+                    k_reduce_sum.grid,
+                    k_reduce_sum.local,
+                )
+                .expect("exec sum");
             metal.synchronize().expect("sync");
 
             let mut sum_bytes = vec![0u8; 4];
             metal.copy_out(&mbuf_sum, &mut sum_bytes).expect("copy sum");
             let sum_val = f32::from_le_bytes(sum_bytes[0..4].try_into().unwrap());
             let inv_sum = 1.0 / sum_val;
-            metal.copy_in(&mbuf_sum, &inv_sum.to_le_bytes()).expect("copy inv_sum");
-            metal.exec(&prog_norm, &[&mbuf_out, &mbuf_exp, &mbuf_sum], k_norm.grid, k_norm.local).expect("exec norm");
+            metal
+                .copy_in(&mbuf_sum, &inv_sum.to_le_bytes())
+                .expect("copy inv_sum");
+            metal
+                .exec(
+                    &prog_norm,
+                    &[&mbuf_out, &mbuf_exp, &mbuf_sum],
+                    k_norm.grid,
+                    k_norm.local,
+                )
+                .expect("exec norm");
             metal.synchronize().expect("sync");
 
             gpu_total += start.elapsed();
@@ -417,7 +624,9 @@ mod metal_bench {
         let mut gpu_out = vec![0u8; n * 4];
         metal.copy_out(&mbuf_out, &mut gpu_out).expect("copy out");
         let gpu_result = bytes_to_f32(&gpu_out);
-        let max_diff = cpu_result.iter().zip(gpu_result.iter())
+        let max_diff = cpu_result
+            .iter()
+            .zip(gpu_result.iter())
             .map(|(a, b)| (a - b).abs() as f64)
             .fold(0.0f64, f64::max);
 
@@ -429,7 +638,8 @@ mod metal_bench {
 
         BenchResult {
             name: format!("Softmax (N={})", n),
-            cpu_us, gpu_us,
+            cpu_us,
+            gpu_us,
             speedup: cpu_us / gpu_us,
             max_diff,
         }
@@ -449,18 +659,30 @@ mod metal_bench {
             bench_softmax(&metal, 65536),
         ];
 
-        println!("| {:<25} | {:>12} | {:>12} | {:>8} | {:>12} |", "Operation", "CPU (us)", "Metal (us)", "Speedup", "Max Diff");
-        println!("|{:-<27}|{:-<14}|{:-<14}|{:-<10}|{:-<14}|", "", "", "", "", "");
+        println!(
+            "| {:<25} | {:>12} | {:>12} | {:>8} | {:>12} |",
+            "Operation", "CPU (us)", "Metal (us)", "Speedup", "Max Diff"
+        );
+        println!(
+            "|{:-<27}|{:-<14}|{:-<14}|{:-<10}|{:-<14}|",
+            "", "", "", "", ""
+        );
 
         for r in &results {
-            println!("| {:<25} | {:>12.2} | {:>12.2} | {:>7.2}x | {:>12.2e} |",
-                r.name, r.cpu_us, r.gpu_us, r.speedup, r.max_diff);
+            println!(
+                "| {:<25} | {:>12.2} | {:>12.2} | {:>7.2}x | {:>12.2e} |",
+                r.name, r.cpu_us, r.gpu_us, r.speedup, r.max_diff
+            );
         }
 
         // Summary
         let total_cpu: f64 = results.iter().map(|r| r.cpu_us).sum();
         let total_gpu: f64 = results.iter().map(|r| r.gpu_us).sum();
-        println!("\n**Aggregate**: CPU {:.2} us, Metal {:.2} us, Speedup {:.2}x",
-            total_cpu, total_gpu, total_cpu / total_gpu);
+        println!(
+            "\n**Aggregate**: CPU {:.2} us, Metal {:.2} us, Speedup {:.2}x",
+            total_cpu,
+            total_gpu,
+            total_cpu / total_gpu
+        );
     }
 }

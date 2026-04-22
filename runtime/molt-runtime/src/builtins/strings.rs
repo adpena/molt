@@ -1964,7 +1964,7 @@ fn with_const_str_cache<R>(f: impl FnOnce(&mut ConstStrCache) -> R) -> R {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return CONST_STR_TLS.with(|cell| f(&mut cell.borrow_mut()));
+        CONST_STR_TLS.with(|cell| f(&mut cell.borrow_mut()))
     }
 }
 

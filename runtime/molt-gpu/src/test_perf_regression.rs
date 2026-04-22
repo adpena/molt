@@ -82,7 +82,8 @@ mod tests {
         assert!(
             (c00 - expected).abs() < 1e-2,
             "matmul C[0,0] = {}, expected {}",
-            c00, expected,
+            c00,
+            expected,
         );
     }
 
@@ -130,7 +131,8 @@ mod tests {
             assert!(
                 (row_sum - 1.0).abs() < 1e-5,
                 "softmax row {} sums to {}, expected 1.0",
-                row, row_sum,
+                row,
+                row_sum,
             );
         }
 
@@ -181,7 +183,8 @@ mod tests {
                 assert!(
                     val.is_finite(),
                     "rms_norm produced non-finite value at row={} j={}",
-                    row, j,
+                    row,
+                    j,
                 );
                 sum_sq += val * val;
             }
@@ -190,7 +193,8 @@ mod tests {
             assert!(
                 (rms - 1.0).abs() < 0.1,
                 "rms_norm row {} has RMS {:.4}, expected ~1.0",
-                row, rms,
+                row,
+                rms,
             );
         }
     }
@@ -232,21 +236,24 @@ mod tests {
             // Compute exp2 and sum
             let mut sum = 0.0f64;
             let mut exp_vals = vec![0.0f64; reduce_size];
-            for j in 0..reduce_size {
+            for (j, exp_slot) in exp_vals.iter_mut().enumerate().take(reduce_size) {
                 let val = read_f32(&input, start + j) as f64;
                 let e = (val - max_val).exp2();
-                exp_vals[j] = e;
+                *exp_slot = e;
                 sum += e;
             }
 
             // Compare
-            for j in 0..reduce_size {
-                let expected = (exp_vals[j] / sum) as f32;
+            for (j, exp_val) in exp_vals.iter().enumerate().take(reduce_size) {
+                let expected = (*exp_val / sum) as f32;
                 let actual = read_f32(&output, start + j);
                 assert!(
                     (actual - expected).abs() < 1e-5,
                     "softmax mismatch at row={} j={}: got {} expected {}",
-                    row, j, actual, expected,
+                    row,
+                    j,
+                    actual,
+                    expected,
                 );
             }
         }
@@ -293,7 +300,10 @@ mod tests {
                 assert!(
                     (actual - expected).abs() < 1e-4,
                     "rms_norm mismatch at row={} j={}: got {} expected {}",
-                    row, j, actual, expected,
+                    row,
+                    j,
+                    actual,
+                    expected,
                 );
             }
         }

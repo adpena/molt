@@ -34,6 +34,7 @@ use molt_lang_obj_model::MoltObject;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Once;
 
 /// A MoltHandle cast to u64, used as bridge map key.
 pub type AbiHandle = u64;
@@ -328,8 +329,11 @@ impl Default for ObjectBridge {
 /// loading any C extensions.  Idempotent — safe to call multiple times.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cpython_abi_init() {
-    unsafe { crate::abi_types::init_static_types() };
-    init_tag_table();
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        unsafe { crate::abi_types::init_static_types() };
+        init_tag_table();
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

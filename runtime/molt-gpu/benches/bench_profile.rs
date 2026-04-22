@@ -7,7 +7,7 @@
 //!
 //! Reports a percentage breakdown table and identifies the top 3 hotspots.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
@@ -120,29 +120,74 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let log2_e = std::f64::consts::LOG2_E;
     let k_exp = FusedKernel {
         ops: vec![
-            FusedOp { op: PrimitiveOp::Sub, srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)], dst_dtype: DType::Float32 },
-            FusedOp { op: PrimitiveOp::Mul, srcs: vec![FusedSrc::Op(0), FusedSrc::Const { val: log2_e, dtype: DType::Float32 }], dst_dtype: DType::Float32 },
-            FusedOp { op: PrimitiveOp::Exp2, srcs: vec![FusedSrc::Op(1)], dst_dtype: DType::Float32 },
+            FusedOp {
+                op: PrimitiveOp::Sub,
+                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                dst_dtype: DType::Float32,
+            },
+            FusedOp {
+                op: PrimitiveOp::Mul,
+                srcs: vec![
+                    FusedSrc::Op(0),
+                    FusedSrc::Const {
+                        val: log2_e,
+                        dtype: DType::Float32,
+                    },
+                ],
+                dst_dtype: DType::Float32,
+            },
+            FusedOp {
+                op: PrimitiveOp::Exp2,
+                srcs: vec![FusedSrc::Op(1)],
+                dst_dtype: DType::Float32,
+            },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let k_reduce_sum = FusedKernel {
@@ -152,12 +197,23 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let k_normalize = FusedKernel {
@@ -167,13 +223,29 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let kernels = vec![k_reduce_max, k_exp, k_reduce_sum, k_normalize];
@@ -195,7 +267,7 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
     let mut max_buf = vec![0u8; 4];
     let mut exp_buf = vec![0u8; n * 4];
     let mut sum_buf = vec![0u8; 4];
-    let mut out_buf = vec![0u8; n * 4];
+    let out_buf = vec![0u8; n * 4];
     let mem_us = mem_start.elapsed().as_secs_f64() * 1e6;
 
     // Stage 5: Kernel interpretation
@@ -222,16 +294,33 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
     let k_final = FusedKernel {
         ops: vec![FusedOp {
             op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: inv_sum as f64, dtype: DType::Float32 }],
+            srcs: vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: inv_sum as f64,
+                    dtype: DType::Float32,
+                },
+            ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs4 = vec![out_buf, exp_buf];
     interpret::execute_kernel(&k_final, &mut bufs4);
@@ -273,7 +362,13 @@ fn profile_matmul(m: usize, k: usize, n: usize) -> StageTimings {
     avg
 }
 
-fn run_matmul_pipeline(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: usize) -> StageTimings {
+fn run_matmul_pipeline(
+    a_data: &[f32],
+    b_data: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> StageTimings {
     let out_n = m * n;
     let total_start = Instant::now();
 
@@ -313,7 +408,7 @@ fn run_matmul_pipeline(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: us
 // ============================================================================
 
 fn profile_rmsnorm(n: usize) -> StageTimings {
-    let x_data: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.01 - 5.0)).collect();
+    let x_data: Vec<f32> = (0..n).map(|i| (i as f32) * 0.01 - 5.0).collect();
 
     let mut avg = StageTimings::zero();
 
@@ -346,12 +441,23 @@ fn run_rmsnorm_pipeline(x_data: &[f32]) -> StageTimings {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let k_reduce = FusedKernel {
@@ -361,12 +467,23 @@ fn run_rmsnorm_pipeline(x_data: &[f32]) -> StageTimings {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let kernels = vec![k_sq.clone(), k_reduce.clone()];
@@ -404,16 +521,33 @@ fn run_rmsnorm_pipeline(x_data: &[f32]) -> StageTimings {
     let k_scale = FusedKernel {
         ops: vec![FusedOp {
             op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: rsqrt_val as f64, dtype: DType::Float32 }],
+            srcs: vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: rsqrt_val as f64,
+                    dtype: DType::Float32,
+                },
+            ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs3 = vec![out_buf, x_bytes];
     interpret::execute_kernel(&k_scale, &mut bufs3);
@@ -437,36 +571,76 @@ fn run_rmsnorm_pipeline(x_data: &[f32]) -> StageTimings {
 
 fn print_breakdown(_name: &str, t: &StageTimings) {
     let total = t.total_us.max(0.001); // prevent division by zero
-    println!("| {:<25} | {:>10.2} | {:>6.1}% |", "DAG construction", t.dag_construction_us, t.dag_construction_us / total * 100.0);
-    println!("| {:<25} | {:>10.2} | {:>6.1}% |", "Scheduling", t.scheduling_us, t.scheduling_us / total * 100.0);
-    println!("| {:<25} | {:>10.2} | {:>6.1}% |", "Fusion", t.fusion_us, t.fusion_us / total * 100.0);
-    println!("| {:<25} | {:>10.2} | {:>6.1}% |", "Kernel interpretation", t.interpretation_us, t.interpretation_us / total * 100.0);
-    println!("| {:<25} | {:>10.2} | {:>6.1}% |", "Memory alloc/copy", t.memory_alloc_copy_us, t.memory_alloc_copy_us / total * 100.0);
-    println!("| {:<25} | {:>10.2} | {:>6.1}% |", "TOTAL", t.total_us, 100.0);
+    println!(
+        "| {:<25} | {:>10.2} | {:>6.1}% |",
+        "DAG construction",
+        t.dag_construction_us,
+        t.dag_construction_us / total * 100.0
+    );
+    println!(
+        "| {:<25} | {:>10.2} | {:>6.1}% |",
+        "Scheduling",
+        t.scheduling_us,
+        t.scheduling_us / total * 100.0
+    );
+    println!(
+        "| {:<25} | {:>10.2} | {:>6.1}% |",
+        "Fusion",
+        t.fusion_us,
+        t.fusion_us / total * 100.0
+    );
+    println!(
+        "| {:<25} | {:>10.2} | {:>6.1}% |",
+        "Kernel interpretation",
+        t.interpretation_us,
+        t.interpretation_us / total * 100.0
+    );
+    println!(
+        "| {:<25} | {:>10.2} | {:>6.1}% |",
+        "Memory alloc/copy",
+        t.memory_alloc_copy_us,
+        t.memory_alloc_copy_us / total * 100.0
+    );
+    println!(
+        "| {:<25} | {:>10.2} | {:>6.1}% |",
+        "TOTAL", t.total_us, 100.0
+    );
 }
 
 fn main() {
     println!("# molt-gpu Pipeline Profiler\n");
-    println!("Warmup: {} iters, Measurement: {} iters\n", WARMUP_ITERS, MEASURE_ITERS);
+    println!(
+        "Warmup: {} iters, Measurement: {} iters\n",
+        WARMUP_ITERS, MEASURE_ITERS
+    );
 
     // Softmax N=1024
     let softmax_t = profile_softmax(1024);
     println!("## Softmax (N=1024)\n");
-    println!("| {:<25} | {:>10} | {:>7} |", "Stage", "Avg (us)", "% Total");
+    println!(
+        "| {:<25} | {:>10} | {:>7} |",
+        "Stage", "Avg (us)", "% Total"
+    );
     println!("|{:-<27}|{:-<12}|{:-<9}|", "", "", "");
     print_breakdown("Softmax", &softmax_t);
 
     // Matmul 64x64
     let matmul_t = profile_matmul(64, 64, 64);
     println!("\n## Matmul (64x64x64)\n");
-    println!("| {:<25} | {:>10} | {:>7} |", "Stage", "Avg (us)", "% Total");
+    println!(
+        "| {:<25} | {:>10} | {:>7} |",
+        "Stage", "Avg (us)", "% Total"
+    );
     println!("|{:-<27}|{:-<12}|{:-<9}|", "", "", "");
     print_breakdown("Matmul", &matmul_t);
 
     // RMSNorm N=1024
     let rmsnorm_t = profile_rmsnorm(1024);
     println!("\n## RMSNorm (N=1024)\n");
-    println!("| {:<25} | {:>10} | {:>7} |", "Stage", "Avg (us)", "% Total");
+    println!(
+        "| {:<25} | {:>10} | {:>7} |",
+        "Stage", "Avg (us)", "% Total"
+    );
     println!("|{:-<27}|{:-<12}|{:-<9}|", "", "", "");
     print_breakdown("RMSNorm", &rmsnorm_t);
 

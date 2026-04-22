@@ -89,10 +89,12 @@ fn cpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
 
 /// Compute squared ReLU: max(0, x)^2
 fn cpu_squared_relu(x: &[f32]) -> Vec<f32> {
-    x.iter().map(|&v| {
-        let relu = v.max(0.0);
-        relu * relu
-    }).collect()
+    x.iter()
+        .map(|&v| {
+            let relu = v.max(0.0);
+            relu * relu
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -106,7 +108,10 @@ fn test_lazy_op_dag_construction() {
     let bytes = f32_to_bytes(&data);
 
     let buf = Arc::new(LazyOp::Buffer {
-        buf: DeviceBufferRef { id: 0, size_bytes: bytes.len() },
+        buf: DeviceBufferRef {
+            id: 0,
+            size_bytes: bytes.len(),
+        },
         st: ShapeTracker::contiguous(&[dim]),
         dtype: DType::Float32,
     });
@@ -136,7 +141,10 @@ fn test_scheduler_produces_kernels() {
     let dim = 32;
 
     let buf = Arc::new(LazyOp::Buffer {
-        buf: DeviceBufferRef { id: 0, size_bytes: dim * 4 },
+        buf: DeviceBufferRef {
+            id: 0,
+            size_bytes: dim * 4,
+        },
         st: ShapeTracker::contiguous(&[dim]),
         dtype: DType::Float32,
     });
@@ -155,7 +163,12 @@ fn test_scheduler_produces_kernels() {
     let kernels = schedule::schedule(&neg, &[dim]);
 
     // Should produce 2 kernels: MUL and SQRT
-    assert_eq!(kernels.len(), 2, "Expected 2 kernels (MUL + SQRT), got {}", kernels.len());
+    assert_eq!(
+        kernels.len(),
+        2,
+        "Expected 2 kernels (MUL + SQRT), got {}",
+        kernels.len()
+    );
     assert_eq!(kernels[0].ops[0].op, PrimitiveOp::Mul);
     assert_eq!(kernels[1].ops[0].op, PrimitiveOp::Sqrt);
 }
@@ -169,7 +182,10 @@ fn test_fusion_reduces_kernel_count() {
     let dim = 32;
 
     let buf = Arc::new(LazyOp::Buffer {
-        buf: DeviceBufferRef { id: 0, size_bytes: dim * 4 },
+        buf: DeviceBufferRef {
+            id: 0,
+            size_bytes: dim * 4,
+        },
         st: ShapeTracker::contiguous(&[dim]),
         dtype: DType::Float32,
     });
@@ -197,11 +213,23 @@ fn test_fusion_reduces_kernel_count() {
     });
 
     let kernels = schedule::schedule(&exp, &[dim]);
-    assert!(kernels.len() >= 4, "Scheduler should produce at least 4 kernels, got {}", kernels.len());
+    assert!(
+        kernels.len() >= 4,
+        "Scheduler should produce at least 4 kernels, got {}",
+        kernels.len()
+    );
 
     let fused = fuse::fuse(kernels);
-    assert_eq!(fused.len(), 1, "Fusion should merge all elementwise ops into 1 kernel, got {}", fused.len());
-    assert!(fused[0].ops.len() >= 4, "Fused kernel should have at least 4 ops");
+    assert_eq!(
+        fused.len(),
+        1,
+        "Fusion should merge all elementwise ops into 1 kernel, got {}",
+        fused.len()
+    );
+    assert!(
+        fused[0].ops.len() >= 4,
+        "Fused kernel should have at least 4 ops"
+    );
 }
 
 // ============================================================================
@@ -240,7 +268,8 @@ fn test_cpu_softmax_execution() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let max_result = run_kernel(&k_max, vec![x_bytes.clone()]);
     let max_val = max_result[0];
@@ -251,12 +280,24 @@ fn test_cpu_softmax_execution() {
         ops: vec![
             FusedOp {
                 op: PrimitiveOp::Sub,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: max_val as f64, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: max_val as f64,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             FusedOp {
                 op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Const { val: log2_e, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Op(0),
+                    FusedSrc::Const {
+                        val: log2_e,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             FusedOp {
@@ -281,7 +322,8 @@ fn test_cpu_softmax_execution() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let exp_result = run_kernel(&k_exp, vec![x_bytes]);
     let exp_bytes = f32_to_bytes(&exp_result);
@@ -309,7 +351,8 @@ fn test_cpu_softmax_execution() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let sum_result = run_kernel(&k_sum, vec![exp_bytes.clone()]);
     let sum_val = sum_result[0];
@@ -318,7 +361,13 @@ fn test_cpu_softmax_execution() {
     let k_div = FusedKernel {
         ops: vec![FusedOp {
             op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: (1.0 / sum_val) as f64, dtype: DType::Float32 }],
+            srcs: vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: (1.0 / sum_val) as f64,
+                    dtype: DType::Float32,
+                },
+            ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
@@ -337,7 +386,8 @@ fn test_cpu_softmax_execution() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let softmax_result = run_kernel(&k_div, vec![exp_bytes]);
 
@@ -350,7 +400,9 @@ fn test_cpu_softmax_execution() {
     );
 
     // Verify against reference
-    let max_diff: f32 = reference.iter().zip(softmax_result.iter())
+    let max_diff: f32 = reference
+        .iter()
+        .zip(softmax_result.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     assert!(
@@ -367,8 +419,6 @@ fn test_cpu_softmax_execution() {
 #[test]
 fn test_full_transformer_forward_pass() {
     let dim = 32;
-    let heads = 2;
-    let head_dim = dim / heads;
     let ffn_dim = dim * 4;
     let seq_len = 4;
     let vocab = 64;
@@ -488,7 +538,8 @@ fn test_full_transformer_forward_pass() {
         assert!(
             val.is_finite(),
             "Logit at index {} is not finite: {}",
-            i, val
+            i,
+            val
         );
     }
 
@@ -556,7 +607,8 @@ fn test_full_transformer_forward_pass() {
         ],
         grid: [dim as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let sq_result = run_kernel(&k_sq, vec![x_bytes.clone()]);
 
@@ -583,7 +635,8 @@ fn test_full_transformer_forward_pass() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let sum_result = run_kernel(&k_sum, vec![f32_to_bytes(&sq_result)]);
     let sum_sq = sum_result[0];
@@ -594,7 +647,13 @@ fn test_full_transformer_forward_pass() {
     let k_scale = FusedKernel {
         ops: vec![FusedOp {
             op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: inv_rms as f64, dtype: DType::Float32 }],
+            srcs: vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: inv_rms as f64,
+                    dtype: DType::Float32,
+                },
+            ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
@@ -613,12 +672,15 @@ fn test_full_transformer_forward_pass() {
         ],
         grid: [dim as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let norm_result = run_kernel(&k_scale, vec![x_bytes]);
 
     // Verify kernel result matches reference
-    let max_diff: f32 = ref_norm.iter().zip(norm_result.iter())
+    let max_diff: f32 = ref_norm
+        .iter()
+        .zip(norm_result.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     assert!(
@@ -656,7 +718,10 @@ fn test_softmax_fuses_to_two_kernels() {
     let n = 64;
 
     let buf = Arc::new(LazyOp::Buffer {
-        buf: DeviceBufferRef { id: 0, size_bytes: n * 4 },
+        buf: DeviceBufferRef {
+            id: 0,
+            size_bytes: n * 4,
+        },
         st: ShapeTracker::contiguous(&[n]),
         dtype: DType::Float32,
     });
@@ -716,7 +781,10 @@ fn test_shape_specialization() {
     let n = 256; // Power of 2 — should get optimal local size = 256
 
     let buf = Arc::new(LazyOp::Buffer {
-        buf: DeviceBufferRef { id: 0, size_bytes: n * 4 },
+        buf: DeviceBufferRef {
+            id: 0,
+            size_bytes: n * 4,
+        },
         st: ShapeTracker::contiguous(&[n]),
         dtype: DType::Float32,
     });
@@ -730,10 +798,16 @@ fn test_shape_specialization() {
     schedule::specialize_shapes(&mut kernels);
 
     assert_eq!(kernels.len(), 1);
-    let spec = kernels[0].spec.as_ref().expect("Specialization should be set");
+    let spec = kernels[0]
+        .spec
+        .as_ref()
+        .expect("Specialization should be set");
     assert!(spec.all_static, "Shape should be fully static");
     assert_eq!(spec.total_elements, n as u64);
-    assert!(spec.bounds_check_elim, "Bounds check should be eliminable for N=256");
+    assert!(
+        spec.bounds_check_elim,
+        "Bounds check should be eliminable for N=256"
+    );
     // Optimal local size should be 256 (largest preferred size that divides 256)
     assert_eq!(spec.optimal_local[0], 256);
 }
@@ -769,7 +843,8 @@ fn test_kernel_deduplication() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let k2 = FusedKernel {
@@ -794,7 +869,8 @@ fn test_kernel_deduplication() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let (deduped, count) = schedule::deduplicate_kernels(&[k1, k2]);

@@ -410,6 +410,7 @@ pub(crate) unsafe fn function_set_trampoline_ptr(ptr: *mut u8, bits: u64) {
 }
 
 /// Read the captured globals dict bits from function slot 9.
+#[allow(dead_code)]
 pub(crate) unsafe fn function_globals_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(9 * std::mem::size_of::<u64>()) as *const u64) }
 }
