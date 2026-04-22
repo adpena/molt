@@ -23068,6 +23068,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
     output_path: Path,
     json_output: bool,
     link_timeout: float | None,
+    export_link_args: str = "",
 ) -> bool:
     wasm_ld = shutil.which("wasm-ld")
     if wasm_ld is None:
@@ -23086,10 +23087,16 @@ def _link_runtime_staticlib_to_reloc_wasm(
             )
         return False
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    export_args = [
+        arg
+        for chunk in export_link_args.split(" -C link-arg=")
+        if (arg := chunk.strip()) and not arg.startswith("-C ")
+    ]
     process = subprocess.run(
         [
             wasm_ld,
             "-r",
+            *export_args,
             "--whole-archive",
             str(staticlib_path),
             "--no-whole-archive",
@@ -23157,13 +23164,13 @@ def _ensure_runtime_wasm(
     profile_dir = _cargo_profile_dir(cargo_profile)
     env = os.environ.copy()
     use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
+    runtime_exports = wasm_runtime_export_link_args(
+        required_runtime_imports=required_exports,
+        resolved_modules=resolved_modules,
+    )
     if reloc:
-        flags = ""
+        flags = "" if use_legacy_wasm_flags else runtime_exports
     else:
-        runtime_exports = wasm_runtime_export_link_args(
-            required_runtime_imports=required_exports,
-            resolved_modules=resolved_modules,
-        )
         shared_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table -C link-arg=--export-dynamic"
@@ -23297,6 +23304,7 @@ def _ensure_runtime_wasm(
                 output_path=runtime_wasm,
                 json_output=json_output,
                 link_timeout=cargo_timeout,
+                export_link_args=runtime_exports,
             ):
                 return False
             try:
@@ -23484,6 +23492,7 @@ def _ensure_runtime_wasm(
                 output_path=runtime_wasm,
                 json_output=json_output,
                 link_timeout=cargo_timeout,
+                export_link_args=runtime_exports,
             ):
                 return False
             try:

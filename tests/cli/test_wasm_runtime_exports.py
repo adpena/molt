@@ -16,6 +16,7 @@ def test_wasm_runtime_import_names_include_ssl_and_set_surface() -> None:
 def test_wasm_runtime_export_link_args_prefixes_import_registry() -> None:
     flags = wasm_runtime_export_link_args()
     assert " -C link-arg=--export-if-defined=molt_set_update" in flags
+    assert " -C link-arg=--export-if-defined=molt_gpu_matmul_contiguous" in flags
 
 
 def test_wasm_runtime_export_link_args_adds_stdlib_intrinsics() -> None:
