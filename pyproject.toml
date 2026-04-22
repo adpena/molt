@@ -59,7 +59,7 @@ addopts = [
     "--ignore=tests/molt_only",
     "--ignore=tests/compliance",
 ]
-norecursedirs = ["third_party", ".git", ".venv", ".molt-venv", "dist", "build", "logs"]
+norecursedirs = ["third_party", ".git", ".venv", ".molt-venv", ".hypothesis", "dist", "build", "logs"]
 markers = [
     "molt_compile: tests that require a working Molt compiler (use --run-molt)",
     "slow: tests that exercise longer end-to-end toolchain paths",
