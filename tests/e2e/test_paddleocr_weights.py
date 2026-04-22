@@ -7,8 +7,35 @@ integration requires the molt runtime and is covered by runtime tests.
 """
 import os
 import sys
-import glob
 import types
+
+import pytest
+
+from tests.helpers.paddleocr_paths import (
+    hf_snapshot_artifact_candidate,
+    require_paddleocr_artifact,
+)
+
+
+DETECTOR_CANDIDATES = (
+    "ch_PP-OCRv4_det.onnx",
+    hf_snapshot_artifact_candidate(
+        "models--OleehyO--paddleocrv4.onnx", "ch_PP-OCRv4_det.onnx"
+    ),
+)
+RECOGNIZER_CANDIDATES = (
+    "ch_PP-OCRv4_rec.onnx",
+    hf_snapshot_artifact_candidate(
+        "models--OleehyO--paddleocrv4.onnx", "ch_PP-OCRv4_rec.onnx"
+    ),
+)
+CLASSIFIER_CANDIDATES = (
+    "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+    hf_snapshot_artifact_candidate(
+        "models--Kreuzberg--paddleocr-onnx-models",
+        "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+    ),
+)
 
 
 def _import_paddleocr_module():
@@ -83,32 +110,14 @@ def _import_paddleocr_module():
     return module
 
 
-def find_onnx_file(name: str) -> str | None:
-    """Find ONNX file in common locations (HuggingFace cache, /tmp)."""
-    for p in glob.glob(f"/tmp/paddleocr-onnx/**/{name}", recursive=True):
-        return p
-    for p in glob.glob(
-        os.path.expanduser(f"~/.cache/huggingface/hub/models--*paddleocr*/**/{name}"),
-        recursive=True,
-    ):
-        return p
-    direct = f"/tmp/paddleocr-onnx/{name}"
-    if os.path.exists(direct):
-        return direct
-    return None
-
-
 def test_detector_weights_load() -> None:
     """Load PaddleOCR detector ONNX weights and verify tensor extraction."""
-    onnx_path = find_onnx_file("ch_PP-OCRv4_det.onnx")
-    if not onnx_path:
-        print("SKIP: detector ONNX not found at /tmp/paddleocr-onnx/")
-        return
+    onnx_path = require_paddleocr_artifact(*DETECTOR_CANDIDATES)
 
     mod = _import_paddleocr_module()
     OnnxWeightParser = mod.OnnxWeightParser
 
-    data = open(onnx_path, "rb").read()
+    data = onnx_path.read_bytes()
     parsed = OnnxWeightParser.parse(data)
 
     n_weights = len(parsed)
@@ -146,15 +155,12 @@ def test_detector_weights_load() -> None:
 
 def test_recognizer_weights_load() -> None:
     """Load PaddleOCR recognizer ONNX weights and verify tensor extraction."""
-    onnx_path = find_onnx_file("ch_PP-OCRv4_rec.onnx")
-    if not onnx_path:
-        print("SKIP: recognizer ONNX not found at /tmp/paddleocr-onnx/")
-        return
+    onnx_path = require_paddleocr_artifact(*RECOGNIZER_CANDIDATES)
 
     mod = _import_paddleocr_module()
     OnnxWeightParser = mod.OnnxWeightParser
 
-    data = open(onnx_path, "rb").read()
+    data = onnx_path.read_bytes()
     parsed = OnnxWeightParser.parse(data)
 
     n_weights = len(parsed)
@@ -173,15 +179,12 @@ def test_recognizer_weights_load() -> None:
 
 def test_classifier_weights_load() -> None:
     """Load PaddleOCR classifier ONNX weights."""
-    onnx_path = find_onnx_file("ch_ppocr_mobile_v2.0_cls_infer.onnx")
-    if not onnx_path:
-        print("SKIP: classifier ONNX not found")
-        return
+    onnx_path = require_paddleocr_artifact(*CLASSIFIER_CANDIDATES)
 
     mod = _import_paddleocr_module()
     OnnxWeightParser = mod.OnnxWeightParser
 
-    data = open(onnx_path, "rb").read()
+    data = onnx_path.read_bytes()
     parsed = OnnxWeightParser.parse(data)
 
     n_weights = len(parsed)
@@ -221,15 +224,12 @@ def test_recognizer_load_populates_charset_on_normal_load_path() -> None:
 
 def test_weight_parser_dtype_coverage() -> None:
     """Verify the parser handles all ONNX dtypes present in PaddleOCR models."""
-    onnx_path = find_onnx_file("ch_PP-OCRv4_rec.onnx")
-    if not onnx_path:
-        print("SKIP: recognizer ONNX not found")
-        return
+    onnx_path = require_paddleocr_artifact(*RECOGNIZER_CANDIDATES)
 
     mod = _import_paddleocr_module()
     OnnxWeightParser = mod.OnnxWeightParser
 
-    data = open(onnx_path, "rb").read()
+    data = onnx_path.read_bytes()
     parsed = OnnxWeightParser.parse(data)
 
     dtype_counts: dict[int, int] = {}
@@ -245,21 +245,17 @@ def test_weight_parser_dtype_coverage() -> None:
 
 def test_weight_data_integrity() -> None:
     """Verify extracted weight data matches what onnx library reports."""
-    onnx_path = find_onnx_file("ch_PP-OCRv4_det.onnx")
-    if not onnx_path:
-        print("SKIP: detector ONNX not found")
-        return
+    onnx_path = require_paddleocr_artifact(*DETECTOR_CANDIDATES)
 
     try:
         import onnx
     except ImportError:
-        print("SKIP: onnx library not available for cross-validation")
-        return
+        pytest.skip("onnx library not available for cross-validation")
 
     mod = _import_paddleocr_module()
     OnnxWeightParser = mod.OnnxWeightParser
 
-    data = open(onnx_path, "rb").read()
+    data = onnx_path.read_bytes()
     parsed = OnnxWeightParser.parse(data)
 
     # Cross-validate against onnx library
@@ -293,14 +289,11 @@ def test_weight_data_integrity() -> None:
 
 def test_weight_store_integration() -> None:
     """Test WeightStore.load_onnx with real model data."""
-    onnx_path = find_onnx_file("ch_PP-OCRv4_det.onnx")
-    if not onnx_path:
-        print("SKIP: detector ONNX not found")
-        return
+    onnx_path = require_paddleocr_artifact(*DETECTOR_CANDIDATES)
 
     mod = _import_paddleocr_module()
     ws = mod.WeightStore()
-    data = open(onnx_path, "rb").read()
+    data = onnx_path.read_bytes()
     count = ws.load_onnx(data)
 
     assert count > 0, "WeightStore loaded 0 tensors"
