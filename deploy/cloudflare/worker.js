@@ -1522,7 +1522,7 @@ export default {
               return new Response(
                 JSON.stringify({
                   error: "GPU inference not configured",
-                  detail: "Set GPU_INFERENCE_URL, GPU_INFERENCE_KEY, and GPU_INFERENCE_PROVIDER secrets",
+                  detail: gpuStatus.error || "Set GPU_INFERENCE_URL, GPU_INFERENCE_KEY, and GPU_INFERENCE_PROVIDER secrets",
                   request_id: rid,
                   fallback_hint: "Use X-Use-Backend: falcon-ocr for edge CPU, or PaddleOCR client-side",
                 }),

@@ -22,7 +22,33 @@
  *   - bfloat16 requires: CUDA compute capability >= 8.0 (A100, H100, L40S)
  */
 
+const SUPPORTED_GPU_PROVIDERS = new Set(["huggingface", "replicate", "runpod", "modal", "flyio"]);
+
+function normalizeProvider(provider) {
+    const normalized = String(provider || "").trim().toLowerCase();
+    if (!SUPPORTED_GPU_PROVIDERS.has(normalized)) {
+        throw new Error(
+            `Unsupported GPU_INFERENCE_PROVIDER '${provider}'. Expected one of: ${Array.from(SUPPORTED_GPU_PROVIDERS).join(", ")}`
+        );
+    }
+    return normalized;
+}
+
+function normalizeEndpoint(endpoint) {
+    try {
+        const url = new URL(String(endpoint || ""));
+        if (url.protocol !== "https:") {
+            throw new Error("GPU_INFERENCE_URL must use https");
+        }
+        return url.href;
+    } catch (err) {
+        throw new Error(`Invalid GPU_INFERENCE_URL: ${err.message}`);
+    }
+}
+
 function buildProviderRequest(provider, gpuEndpoint, gpuKey, imageBase64, options = {}) {
+    provider = normalizeProvider(provider);
+    gpuEndpoint = normalizeEndpoint(gpuEndpoint);
     const maxTokens = options.maxTokens || 512;
     const category = options.category || "plain";
 
@@ -69,7 +95,6 @@ function buildProviderRequest(provider, gpuEndpoint, gpuKey, imageBase64, option
             };
         case "modal":
         case "flyio":
-        default:
             return {
                 url: gpuEndpoint,
                 headers: {
@@ -87,6 +112,7 @@ function buildProviderRequest(provider, gpuEndpoint, gpuKey, imageBase64, option
 }
 
 function parseProviderResponse(provider, responseData) {
+    provider = normalizeProvider(provider);
     switch (provider) {
         case "huggingface":
             if (Array.isArray(responseData) && responseData.length > 0) {
@@ -113,7 +139,6 @@ function parseProviderResponse(provider, responseData) {
             };
         case "modal":
         case "flyio":
-        default:
             return {
                 text: responseData.text || "",
                 confidence: responseData.confidence || 0.95,
@@ -126,9 +151,10 @@ function parseProviderResponse(provider, responseData) {
 export async function proxyToGPU(env, imageBase64, options = {}) {
     const gpuEndpoint = env.GPU_INFERENCE_URL;
     const gpuKey = env.GPU_INFERENCE_KEY;
-    const provider = (env.GPU_INFERENCE_PROVIDER || "generic").toLowerCase();
+    const status = gpuInferenceStatus(env);
+    const provider = status.provider;
 
-    if (!gpuEndpoint || !gpuKey) return null;
+    if (!status.configured) return null;
 
     const timeoutMs = options.timeout || 30_000;
     const startMs = Date.now();
@@ -164,9 +190,32 @@ export async function proxyToGPU(env, imageBase64, options = {}) {
 }
 
 export function gpuInferenceStatus(env) {
-    return {
-        configured: !!(env.GPU_INFERENCE_URL && env.GPU_INFERENCE_KEY),
-        provider: env.GPU_INFERENCE_PROVIDER || "none",
-        endpoint: env.GPU_INFERENCE_URL ? new URL(env.GPU_INFERENCE_URL).hostname : "none",
-    };
+    const providerRaw = env.GPU_INFERENCE_PROVIDER;
+    const endpointRaw = env.GPU_INFERENCE_URL;
+    if (!endpointRaw || !env.GPU_INFERENCE_KEY || !providerRaw) {
+        return {
+            configured: false,
+            provider: providerRaw || "none",
+            endpoint: "none",
+            error: "GPU_INFERENCE_URL, GPU_INFERENCE_KEY, and GPU_INFERENCE_PROVIDER are required",
+        };
+    }
+    try {
+        const provider = normalizeProvider(providerRaw);
+        const endpoint = new URL(normalizeEndpoint(endpointRaw));
+        return {
+            configured: true,
+            provider,
+            endpoint: endpoint.hostname,
+        };
+    } catch (err) {
+        return {
+            configured: false,
+            provider: providerRaw || "none",
+            endpoint: "none",
+            error: err.message,
+        };
+    }
 }
+
+export { buildProviderRequest, parseProviderResponse, normalizeProvider };
