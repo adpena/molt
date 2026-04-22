@@ -8,6 +8,30 @@ from pathlib import Path
 import pytest
 
 
+WORKER_ABI_JS = """
+const runtimeImportResultKinds = {"molt_module_import": "i64"};
+const runtimeImportSignatures = {"molt_module_import": {"params": ["i32"], "result": "i64"}};
+const appTableRefSignatures = {"__molt_table_ref_4096": {"params": [], "result": "nil"}};
+const runtimeTableRefSignatures = {};
+export default {};
+"""
+
+MANIFEST_ABI = {
+    "runtime_imports": {
+        "module": "molt_runtime",
+        "names": ["molt_module_import"],
+        "signatures": {
+            "molt_module_import": {"params": ["i32"], "result": "i64"},
+        },
+        "result_kinds": {"molt_module_import": "i64"},
+    },
+    "table_refs": {
+        "app": {"__molt_table_ref_4096": {"params": [], "result": "nil"}},
+        "runtime": {},
+    },
+}
+
+
 def test_extract_live_url_prefers_workers_dev_url() -> None:
     from tools import cloudflare_demo_verify as verify
 
@@ -30,7 +54,7 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
 
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
-    (bundle_root / "worker.js").write_text("export default {};\n")
+    (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
     (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
     (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
     (bundle_root / "manifest.json").write_text(
@@ -38,6 +62,7 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
             {
                 "version": 2,
                 "mode": "split-runtime",
+                "abi": MANIFEST_ABI,
                 "modules": {
                     "app": {"path": "app.wasm", "size": 1},
                     "runtime": {"path": "molt_runtime.wasm", "size": 1},
@@ -82,7 +107,7 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
 
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
-    (bundle_root / "worker.js").write_text("export default {};\n")
+    (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
     (bundle_root / "molt_vfs_browser.js").write_text("export class MoltVfs {}\n")
     (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
     (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
@@ -91,6 +116,7 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
             {
                 "version": 2,
                 "mode": "split-runtime",
+                "abi": MANIFEST_ABI,
                 "modules": {
                     "app": {"path": "app.wasm", "size": 1},
                     "runtime": {"path": "molt_runtime.wasm", "size": 1},
@@ -129,6 +155,99 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
 
     assert contract.bundle_root == bundle_root
     assert contract.wrangler_config == wrangler_config
+
+
+def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
+    tmp_path: Path,
+) -> None:
+    from tools import cloudflare_demo_verify as verify
+
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
+    (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "mode": "split-runtime",
+                "modules": {
+                    "app": {"path": "app.wasm", "size": 1},
+                    "runtime": {"path": "molt_runtime.wasm", "size": 1},
+                },
+            }
+        )
+        + "\n"
+    )
+    wrangler_config = bundle_root / "wrangler.jsonc"
+    wrangler_config.write_text(
+        json.dumps(
+            {
+                "name": "molt-python-demo",
+                "main": "worker.js",
+                "compatibility_date": "2026-03-28",
+                "no_bundle": True,
+                "find_additional_modules": True,
+                "rules": [
+                    {"type": "ESModule", "globs": ["**/*.js"], "fallthrough": False},
+                    {"type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": False},
+                ],
+            }
+        )
+        + "\n"
+    )
+
+    with pytest.raises(RuntimeError, match="manifest missing split-runtime ABI"):
+        verify.validate_bundle_contract(bundle_root, wrangler_config)
+
+
+def test_validate_bundle_contract_rejects_worker_runtime_abi_drift(
+    tmp_path: Path,
+) -> None:
+    from tools import cloudflare_demo_verify as verify
+
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    (bundle_root / "worker.js").write_text(
+        WORKER_ABI_JS.replace('"result": "i64"', '"result": "i32"')
+    )
+    (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "mode": "split-runtime",
+                "abi": MANIFEST_ABI,
+                "modules": {
+                    "app": {"path": "app.wasm", "size": 1},
+                    "runtime": {"path": "molt_runtime.wasm", "size": 1},
+                },
+            }
+        )
+        + "\n"
+    )
+    wrangler_config = bundle_root / "wrangler.jsonc"
+    wrangler_config.write_text(
+        json.dumps(
+            {
+                "name": "molt-python-demo",
+                "main": "worker.js",
+                "compatibility_date": "2026-03-28",
+                "no_bundle": True,
+                "find_additional_modules": True,
+                "rules": [
+                    {"type": "ESModule", "globs": ["**/*.js"], "fallthrough": False},
+                    {"type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": False},
+                ],
+            }
+        )
+        + "\n"
+    )
+
+    with pytest.raises(RuntimeError, match="worker runtime import signatures drifted"):
+        verify.validate_bundle_contract(bundle_root, wrangler_config)
 
 
 def test_run_wrangler_dry_run_uses_no_bundle_and_outdir(
