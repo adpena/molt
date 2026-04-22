@@ -5191,8 +5191,11 @@ mod tests {
     use std::fs;
     use std::io::Cursor;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
     use tokio_postgres::types::Type;
+
+    static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temp_manifest(contents: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -5211,7 +5214,13 @@ mod tests {
 
     fn temp_db_path() -> PathBuf {
         let mut path = std::env::temp_dir();
-        let name = format!("molt_demo_db_{}_{}.sqlite", std::process::id(), rand_id());
+        let unique = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let name = format!(
+            "molt_demo_db_{}_{}_{}.sqlite",
+            std::process::id(),
+            rand_id(),
+            unique
+        );
         path.push(name);
         path
     }

@@ -3250,6 +3250,9 @@ mod tests {
 
     #[test]
     fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp_dir = std::env::temp_dir().join(format!(
             "molt-daemon-batch-chunk-{}-{}",
             std::process::id(),
