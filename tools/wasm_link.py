@@ -4999,11 +4999,10 @@ def _run_wasm_ld(
         if not linked_ok:
             if split_runtime:
                 print(
-                    "Warning: linked wasm validation failed after split-runtime outputs were emitted; "
-                    "continuing because split artifacts do not depend on the linked binary.",
+                    "Linked wasm validation failed after split-runtime outputs were emitted; "
+                    "failing because linked validation is the canonical table/memory/import guard.",
                     file=sys.stderr,
                 )
-                return 0
             return 1
 
         return 0

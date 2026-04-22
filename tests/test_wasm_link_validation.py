@@ -1703,7 +1703,7 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
     )
 
 
-def test_run_wasm_ld_split_runtime_emits_outputs_even_if_linked_validation_fails(
+def test_run_wasm_ld_split_runtime_fails_if_linked_validation_fails_after_outputs(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1750,7 +1750,7 @@ def test_run_wasm_ld_split_runtime_emits_outputs_even_if_linked_validation_fails
         split_output_dir=split_dir,
     )
 
-    assert rc == 0
+    assert rc == 1
     assert (split_dir / "app.wasm").exists()
     assert (split_dir / "molt_runtime.wasm").exists()
 
