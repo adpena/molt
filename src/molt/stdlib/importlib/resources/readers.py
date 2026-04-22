@@ -3,9 +3,7 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe")
-_MOLT_IMPORTLIB_RESOURCES_ONLY = _require_intrinsic(
-    "molt_importlib_resources_only"
-)
+_MOLT_IMPORTLIB_RESOURCES_ONLY = _require_intrinsic("molt_importlib_resources_only")
 
 import collections
 import itertools
@@ -123,5 +121,6 @@ class NamespaceReader(abc.TraversableResources):
 
     def files(self):
         return self.path
+
 
 globals().pop("_require_intrinsic", None)

@@ -15,22 +15,46 @@ _GIL_MINSIZE = 2048
 
 class sha224(_hashlib._Hash):
     def __init__(self, data: Any = b"", *, usedforsecurity: bool = True) -> None:
-        super().__init__("sha224", data, _hashlib._validate_options("sha224", {"usedforsecurity": usedforsecurity}, "sha224"))
+        super().__init__(
+            "sha224",
+            data,
+            _hashlib._validate_options(
+                "sha224", {"usedforsecurity": usedforsecurity}, "sha224"
+            ),
+        )
 
 
 class sha256(_hashlib._Hash):
     def __init__(self, data: Any = b"", *, usedforsecurity: bool = True) -> None:
-        super().__init__("sha256", data, _hashlib._validate_options("sha256", {"usedforsecurity": usedforsecurity}, "sha256"))
+        super().__init__(
+            "sha256",
+            data,
+            _hashlib._validate_options(
+                "sha256", {"usedforsecurity": usedforsecurity}, "sha256"
+            ),
+        )
 
 
 class sha384(_hashlib._Hash):
     def __init__(self, data: Any = b"", *, usedforsecurity: bool = True) -> None:
-        super().__init__("sha384", data, _hashlib._validate_options("sha384", {"usedforsecurity": usedforsecurity}, "sha384"))
+        super().__init__(
+            "sha384",
+            data,
+            _hashlib._validate_options(
+                "sha384", {"usedforsecurity": usedforsecurity}, "sha384"
+            ),
+        )
 
 
 class sha512(_hashlib._Hash):
     def __init__(self, data: Any = b"", *, usedforsecurity: bool = True) -> None:
-        super().__init__("sha512", data, _hashlib._validate_options("sha512", {"usedforsecurity": usedforsecurity}, "sha512"))
+        super().__init__(
+            "sha512",
+            data,
+            _hashlib._validate_options(
+                "sha512", {"usedforsecurity": usedforsecurity}, "sha512"
+            ),
+        )
 
 
 SHA224Type = sha224

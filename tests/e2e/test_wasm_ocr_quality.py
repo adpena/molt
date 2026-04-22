@@ -6,6 +6,7 @@ Verifies:
 3. Tokens decode to text via the tokenizer
 4. The <|OCR_PLAIN|> prompt token is used
 """
+
 import json
 import os
 import subprocess
@@ -19,7 +20,9 @@ from tests.helpers.falcon_ocr_paths import (
 )
 
 
-WASM_OPT_PATH = Path(os.environ.get("MOLT_FALCON_OCR_WASM_OPT", "/tmp/falcon_latest_opt.wasm"))
+WASM_OPT_PATH = Path(
+    os.environ.get("MOLT_FALCON_OCR_WASM_OPT", "/tmp/falcon_latest_opt.wasm")
+)
 WASM_LINKED_PATH = Path(
     os.environ.get("MOLT_FALCON_OCR_WASM_LINKED", "/tmp/falcon_latest_linked.wasm")
 )
@@ -40,7 +43,9 @@ def test_wasm_runs_cleanly():
         pytest.skip(f"Falcon-OCR linked WASM not found at {WASM_LINKED_PATH}")
     result = subprocess.run(
         ["node", "wasm/run_wasm.js", str(WASM_LINKED_PATH)],
-        capture_output=True, text=True, timeout=30
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert "RuntimeError" not in result.stderr, f"WASM crashed: {result.stderr[:200]}"
 

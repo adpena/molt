@@ -120,9 +120,7 @@ def test_ir_determinism_cross_process(program: Path) -> None:
     source = program.read_text()
     ir_a = _compile_source_to_ir_subprocess(source, pythonhashseed="0")
     ir_b = _compile_source_to_ir_subprocess(source, pythonhashseed="0")
-    assert ir_a == ir_b, (
-        f"IR differs for {program.name} between two separate processes"
-    )
+    assert ir_a == ir_b, f"IR differs for {program.name} between two separate processes"
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +177,5 @@ def test_compile_order_independence() -> None:
     ir_b2 = _compile_source_to_ir(src_b)
     ir_a2 = _compile_source_to_ir(src_a)
 
-    assert ir_a1 == ir_a2, (
-        f"IR for {prog_a.name} changed depending on compile order"
-    )
-    assert ir_b1 == ir_b2, (
-        f"IR for {prog_b.name} changed depending on compile order"
-    )
+    assert ir_a1 == ir_a2, f"IR for {prog_a.name} changed depending on compile order"
+    assert ir_b1 == ir_b2, f"IR for {prog_b.name} changed depending on compile order"

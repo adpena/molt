@@ -30,8 +30,10 @@ def curl_ocr(image_b64=TINY_PNG_B64, timeout_s=10, extra_headers=None):
     Returns (0, None, elapsed) on network/parse failure.
     """
     headers = [
-        "-H", f"Origin: {ORIGIN}",
-        "-H", "Content-Type: application/json",
+        "-H",
+        f"Origin: {ORIGIN}",
+        "-H",
+        "Content-Type: application/json",
     ]
     if extra_headers:
         for k, v in extra_headers.items():
@@ -42,12 +44,18 @@ def curl_ocr(image_b64=TINY_PNG_B64, timeout_s=10, extra_headers=None):
 
     result = subprocess.run(
         [
-            "curl", "-s", "-w", "\n%{http_code}",
-            "--max-time", str(timeout_s),
-            "-X", "POST",
+            "curl",
+            "-s",
+            "-w",
+            "\n%{http_code}",
+            "--max-time",
+            str(timeout_s),
+            "-X",
+            "POST",
             f"{ENDPOINT}/ocr",
             *headers,
-            "-d", payload,
+            "-d",
+            payload,
         ],
         capture_output=True,
         text=True,
@@ -80,11 +88,17 @@ def curl_health():
     """Issue a GET /health request and return (status_code, parsed_json)."""
     result = subprocess.run(
         [
-            "curl", "-s", "-w", "\n%{http_code}",
-            "--max-time", "5",
-            "-X", "GET",
+            "curl",
+            "-s",
+            "-w",
+            "\n%{http_code}",
+            "--max-time",
+            "5",
+            "-X",
+            "GET",
             f"{ENDPOINT}/health",
-            "-H", f"Origin: {ORIGIN}",
+            "-H",
+            f"Origin: {ORIGIN}",
         ],
         capture_output=True,
         text=True,
@@ -109,7 +123,9 @@ def test_health_endpoint():
     assert status in (200, 503), f"Unexpected health status: {status}"
     assert body is not None, "Health endpoint returned unparseable body"
     assert "status" in body, f"Missing 'status' in health response: {body}"
-    assert body["status"] in ("ready", "loading", "error"), f"Unexpected status: {body['status']}"
+    assert body["status"] in ("ready", "loading", "error"), (
+        f"Unexpected status: {body['status']}"
+    )
 
 
 def test_ocr_model_used_present():
@@ -118,22 +134,26 @@ def test_ocr_model_used_present():
     Uses X-Use-Backend: workers-ai to bypass local model loading
     (which exceeds CPU time limit on Cloudflare's infrastructure).
     """
-    status, body, elapsed = curl_ocr(
-        extra_headers={"X-Use-Backend": "workers-ai"}
-    )
+    status, body, elapsed = curl_ocr(extra_headers={"X-Use-Backend": "workers-ai"})
     if status == 200:
         assert body is not None, "200 response body is unparseable"
         assert "model_used" in body, f"Missing 'model_used' in 200 response: {body}"
-        assert isinstance(body["model_used"], str), f"model_used must be string, got: {type(body['model_used'])}"
+        assert isinstance(body["model_used"], str), (
+            f"model_used must be string, got: {type(body['model_used'])}"
+        )
         assert len(body["model_used"]) > 0, "model_used must not be empty"
-        print(f"  model_used={body['model_used']}, time_ms={body.get('time_ms', '?')}, retries={body.get('retries', '?')}")
+        print(
+            f"  model_used={body['model_used']}, time_ms={body.get('time_ms', '?')}, retries={body.get('retries', '?')}"
+        )
     elif status == 503:
         if body is not None:
             # Structured 503 from our Worker code
             assert "fallback_url" in body or "fallback_available" in body, (
                 f"503 response missing fallback info: {body}"
             )
-            print(f"  503 response (expected during capacity issues): {body.get('error', '?')}")
+            print(
+                f"  503 response (expected during capacity issues): {body.get('error', '?')}"
+            )
         else:
             # Infrastructure 503 (e.g., error code 1102) -- not JSON
             print("  503 response (infrastructure-level, non-JSON)")
@@ -144,12 +164,12 @@ def test_ocr_model_used_present():
 
 def test_ocr_retries_field_present():
     """Successful OCR responses must include retries count."""
-    status, body, elapsed = curl_ocr(
-        extra_headers={"X-Use-Backend": "workers-ai"}
-    )
+    status, body, elapsed = curl_ocr(extra_headers={"X-Use-Backend": "workers-ai"})
     if status == 200 and body is not None:
         assert "retries" in body, f"Missing 'retries' in 200 response: {body}"
-        assert isinstance(body["retries"], int), f"retries must be int, got: {type(body['retries'])}"
+        assert isinstance(body["retries"], int), (
+            f"retries must be int, got: {type(body['retries'])}"
+        )
         assert body["retries"] >= 0, f"retries must be >= 0, got: {body['retries']}"
 
 
@@ -170,9 +190,7 @@ def test_503_includes_fallback_url():
     Uses X-Use-Backend: workers-ai to get structured 503 responses from
     our Worker code rather than infrastructure-level 503s.
     """
-    status, body, elapsed = curl_ocr(
-        extra_headers={"X-Use-Backend": "workers-ai"}
-    )
+    status, body, elapsed = curl_ocr(extra_headers={"X-Use-Backend": "workers-ai"})
     if status == 503 and body is not None:
         has_fallback = "fallback_url" in body or "fallback_available" in body
         assert has_fallback, f"503 response missing fallback info: {body}"
@@ -189,16 +207,18 @@ def test_503_includes_fallback_url():
 
 def test_ocr_workers_ai_backend():
     """Explicit Workers AI backend selection via X-Use-Backend header."""
-    status, body, elapsed = curl_ocr(
-        extra_headers={"X-Use-Backend": "workers-ai"}
-    )
+    status, body, elapsed = curl_ocr(extra_headers={"X-Use-Backend": "workers-ai"})
     if status == 200:
-        assert "model_used" in body, f"Missing model_used in Workers AI response: {body}"
+        assert "model_used" in body, (
+            f"Missing model_used in Workers AI response: {body}"
+        )
         # Workers AI responses should report workers-ai backend
         assert body.get("backend") == "workers-ai" or "model_used" in body, (
             f"Workers AI response missing backend identification: {body}"
         )
-        print(f"  Workers AI: model={body.get('model_used')}, retries={body.get('retries', 0)}")
+        print(
+            f"  Workers AI: model={body.get('model_used')}, retries={body.get('retries', 0)}"
+        )
     elif status == 503:
         assert "fallback_url" in body or "fallback_available" in body
         print(f"  Workers AI 503: {body.get('error', '?')}")
@@ -208,29 +228,35 @@ def test_multiple_sequential_requests():
     """Run 5 sequential requests via Workers AI and verify consistency."""
     results = []
     for i in range(5):
-        status, body, elapsed = curl_ocr(
-            extra_headers={"X-Use-Backend": "workers-ai"}
+        status, body, elapsed = curl_ocr(extra_headers={"X-Use-Backend": "workers-ai"})
+        results.append(
+            {
+                "request": i + 1,
+                "status": status,
+                "model_used": body.get("model_used") if body else None,
+                "retries": body.get("retries") if body else None,
+                "time_ms": body.get("time_ms") if body else None,
+                "elapsed_s": round(elapsed, 2),
+            }
         )
-        results.append({
-            "request": i + 1,
-            "status": status,
-            "model_used": body.get("model_used") if body else None,
-            "retries": body.get("retries") if body else None,
-            "time_ms": body.get("time_ms") if body else None,
-            "elapsed_s": round(elapsed, 2),
-        })
-        print(f"  Request {i + 1}: status={status}, model={body.get('model_used', '?') if body else '?'}, "
-              f"time={body.get('time_ms', '?') if body else '?'}ms, elapsed={elapsed:.2f}s")
+        print(
+            f"  Request {i + 1}: status={status}, model={body.get('model_used', '?') if body else '?'}, "
+            f"time={body.get('time_ms', '?') if body else '?'}ms, elapsed={elapsed:.2f}s"
+        )
 
     # At least some requests should succeed or return structured 503/402
     valid_statuses = {200, 402, 503}
     for r in results:
-        assert r["status"] in valid_statuses, f"Request {r['request']} got unexpected status {r['status']}"
+        assert r["status"] in valid_statuses, (
+            f"Request {r['request']} got unexpected status {r['status']}"
+        )
 
     # All 200 responses must have model_used
     for r in results:
         if r["status"] == 200:
-            assert r["model_used"] is not None, f"Request {r['request']} missing model_used"
+            assert r["model_used"] is not None, (
+                f"Request {r['request']} missing model_used"
+            )
             assert r["retries"] is not None, f"Request {r['request']} missing retries"
 
 
@@ -239,13 +265,21 @@ def test_batch_endpoint():
     payload = json.dumps({"images": [TINY_PNG_B64, TINY_PNG_B64]})
     result = subprocess.run(
         [
-            "curl", "-s", "-w", "\n%{http_code}",
-            "--max-time", "15",
-            "-X", "POST",
+            "curl",
+            "-s",
+            "-w",
+            "\n%{http_code}",
+            "--max-time",
+            "15",
+            "-X",
+            "POST",
             f"{ENDPOINT}/ocr/batch",
-            "-H", f"Origin: {ORIGIN}",
-            "-H", "Content-Type: application/json",
-            "-d", payload,
+            "-H",
+            f"Origin: {ORIGIN}",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            payload,
         ],
         capture_output=True,
         text=True,
@@ -272,13 +306,21 @@ def test_template_extract_endpoint():
     payload = json.dumps({"image": TINY_PNG_B64})
     result = subprocess.run(
         [
-            "curl", "-s", "-w", "\n%{http_code}",
-            "--max-time", "10",
-            "-X", "POST",
+            "curl",
+            "-s",
+            "-w",
+            "\n%{http_code}",
+            "--max-time",
+            "10",
+            "-X",
+            "POST",
             f"{ENDPOINT}/template/extract",
-            "-H", f"Origin: {ORIGIN}",
-            "-H", "Content-Type: application/json",
-            "-d", payload,
+            "-H",
+            f"Origin: {ORIGIN}",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            payload,
         ],
         capture_output=True,
         text=True,
@@ -298,7 +340,9 @@ def test_template_extract_endpoint():
     # 200 or 503 are both acceptable
     assert status in (200, 402, 503), f"Template extract unexpected status: {status}"
     if status == 200:
-        assert "template" in body or "error" in body, f"Unexpected template response: {body}"
+        assert "template" in body or "error" in body, (
+            f"Unexpected template response: {body}"
+        )
 
 
 if __name__ == "__main__":

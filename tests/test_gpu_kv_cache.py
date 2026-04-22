@@ -61,28 +61,40 @@ def test_dense_kv_cache_supports_grouped_query_attention():
 
     q = Tensor(
         [
-            0.5, -0.1,
-            0.2, 0.3,
-            -0.4, 0.6,
-            0.1, -0.2,
+            0.5,
+            -0.1,
+            0.2,
+            0.3,
+            -0.4,
+            0.6,
+            0.1,
+            -0.2,
         ],
         shape=(1, 4, 1, 2),
     )
     k = Tensor(
         [
-            0.6, -0.2,
-            0.1, 0.4,
-            -0.3, 0.5,
-            0.2, -0.1,
+            0.6,
+            -0.2,
+            0.1,
+            0.4,
+            -0.3,
+            0.5,
+            0.2,
+            -0.1,
         ],
         shape=(1, 2, 2, 2),
     )
     v = Tensor(
         [
-            0.2, 0.1,
-            -0.3, 0.4,
-            -0.5, 0.2,
-            0.4, -0.1,
+            0.2,
+            0.1,
+            -0.3,
+            0.4,
+            -0.5,
+            0.2,
+            0.4,
+            -0.1,
         ],
         shape=(1, 2, 2, 2),
     )
@@ -148,7 +160,9 @@ def test_tensor_sdpa_cache_views_bypass_fused_intrinsic(monkeypatch):
     cache = DenseKVCache()
     cache.append(k, v)
 
-    out = tensor_scaled_dot_product_attention(q, cache.keys(), cache.values(), None, 1.0)
+    out = tensor_scaled_dot_product_attention(
+        q, cache.keys(), cache.values(), None, 1.0
+    )
 
     assert out.shape == (1, 1, 1, 4)
 
@@ -211,7 +225,9 @@ def test_turboquant_attention_kv_cache_uses_intrinsic_when_available(monkeypatch
         seen["scale"] = scale_arg
         return Tensor([1.0, 2.0], shape=(1, 1, 1, 2))
 
-    monkeypatch.setattr(kv_cache_mod, "_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED", fake_intrinsic)
+    monkeypatch.setattr(
+        kv_cache_mod, "_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED", fake_intrinsic
+    )
 
     out = cache.attention(q, scale=1.0)
 
@@ -236,15 +252,43 @@ def test_turboquant_cache_builds_runtime_shadow_metadata():
     cache.append(
         Tensor(
             [
-                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
-                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+                0.6,
+                -0.2,
+                0.1,
+                0.4,
+                -0.5,
+                0.3,
+                0.2,
+                0.1,
+                0.1,
+                0.5,
+                -0.3,
+                -0.2,
+                0.6,
+                -0.1,
+                0.4,
+                -0.4,
             ],
             shape=(1, 1, 2, 8),
         ),
         Tensor(
             [
-                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
-                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+                0.2,
+                0.1,
+                -0.3,
+                0.4,
+                0.5,
+                -0.2,
+                0.6,
+                -0.1,
+                -0.5,
+                0.2,
+                0.4,
+                -0.1,
+                0.3,
+                0.7,
+                -0.2,
+                0.6,
             ],
             shape=(1, 1, 2, 8),
         ),
@@ -277,15 +321,43 @@ def test_turboquant_append_extends_runtime_shadow_metadata():
     cache.append(
         Tensor(
             [
-                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
-                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+                0.6,
+                -0.2,
+                0.1,
+                0.4,
+                -0.5,
+                0.3,
+                0.2,
+                0.1,
+                0.1,
+                0.5,
+                -0.3,
+                -0.2,
+                0.6,
+                -0.1,
+                0.4,
+                -0.4,
             ],
             shape=(1, 1, 2, 8),
         ),
         Tensor(
             [
-                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
-                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+                0.2,
+                0.1,
+                -0.3,
+                0.4,
+                0.5,
+                -0.2,
+                0.6,
+                -0.1,
+                -0.5,
+                0.2,
+                0.4,
+                -0.1,
+                0.3,
+                0.7,
+                -0.2,
+                0.6,
             ],
             shape=(1, 1, 2, 8),
         ),
@@ -322,15 +394,43 @@ def test_turboquant_attention_reference_uses_runtime_shadow_metadata():
     cache.append(
         Tensor(
             [
-                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
-                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+                0.6,
+                -0.2,
+                0.1,
+                0.4,
+                -0.5,
+                0.3,
+                0.2,
+                0.1,
+                0.1,
+                0.5,
+                -0.3,
+                -0.2,
+                0.6,
+                -0.1,
+                0.4,
+                -0.4,
             ],
             shape=(1, 1, 2, 8),
         ),
         Tensor(
             [
-                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
-                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+                0.2,
+                0.1,
+                -0.3,
+                0.4,
+                0.5,
+                -0.2,
+                0.6,
+                -0.1,
+                -0.5,
+                0.2,
+                0.4,
+                -0.1,
+                0.3,
+                0.7,
+                -0.2,
+                0.6,
             ],
             shape=(1, 1, 2, 8),
         ),
@@ -360,17 +460,59 @@ def test_turboquant_truncate_keeps_runtime_shadow_metadata_usable():
     cache.append(
         Tensor(
             [
-                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
-                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
-                0.3, -0.4, 0.2, 0.1, -0.6, 0.5, 0.4, -0.3,
+                0.6,
+                -0.2,
+                0.1,
+                0.4,
+                -0.5,
+                0.3,
+                0.2,
+                0.1,
+                0.1,
+                0.5,
+                -0.3,
+                -0.2,
+                0.6,
+                -0.1,
+                0.4,
+                -0.4,
+                0.3,
+                -0.4,
+                0.2,
+                0.1,
+                -0.6,
+                0.5,
+                0.4,
+                -0.3,
             ],
             shape=(1, 1, 3, 8),
         ),
         Tensor(
             [
-                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
-                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
-                0.7, -0.2, 0.1, -0.4, 0.2, 0.3, -0.5, 0.6,
+                0.2,
+                0.1,
+                -0.3,
+                0.4,
+                0.5,
+                -0.2,
+                0.6,
+                -0.1,
+                -0.5,
+                0.2,
+                0.4,
+                -0.1,
+                0.3,
+                0.7,
+                -0.2,
+                0.6,
+                0.7,
+                -0.2,
+                0.1,
+                -0.4,
+                0.2,
+                0.3,
+                -0.5,
+                0.6,
             ],
             shape=(1, 1, 3, 8),
         ),
@@ -409,15 +551,43 @@ def test_turboquant_attention_intrinsic_does_not_call_python_reference(monkeypat
     cache.append(
         Tensor(
             [
-                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
-                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+                0.6,
+                -0.2,
+                0.1,
+                0.4,
+                -0.5,
+                0.3,
+                0.2,
+                0.1,
+                0.1,
+                0.5,
+                -0.3,
+                -0.2,
+                0.6,
+                -0.1,
+                0.4,
+                -0.4,
             ],
             shape=(1, 1, 2, 8),
         ),
         Tensor(
             [
-                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
-                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+                0.2,
+                0.1,
+                -0.3,
+                0.4,
+                0.5,
+                -0.2,
+                0.6,
+                -0.1,
+                -0.5,
+                0.2,
+                0.4,
+                -0.1,
+                0.3,
+                0.7,
+                -0.2,
+                0.6,
             ],
             shape=(1, 1, 2, 8),
         ),
@@ -428,12 +598,16 @@ def test_turboquant_attention_intrinsic_does_not_call_python_reference(monkeypat
         cache,
         "_attention_reference",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("runtime turboquant intrinsic should not call _attention_reference")
+            AssertionError(
+                "runtime turboquant intrinsic should not call _attention_reference"
+            )
         ),
     )
 
     monkeypatch.setattr(
-        __import__("molt.gpu.kv_cache", fromlist=["_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED"]),
+        __import__(
+            "molt.gpu.kv_cache", fromlist=["_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED"]
+        ),
         "_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED",
         intrinsic,
     )
@@ -443,7 +617,9 @@ def test_turboquant_attention_intrinsic_does_not_call_python_reference(monkeypat
     assert out.shape == (1, 1, 1, 8)
 
 
-def test_native_turboquant_intrinsic_does_not_call_python_reference(tmp_path: Path) -> None:
+def test_native_turboquant_intrinsic_does_not_call_python_reference(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "gpu_turboquant_intrinsic_native.py"
     probe.write_text(
@@ -550,7 +726,9 @@ def test_native_turboquant_intrinsic_uses_runtime_shadow_rows(tmp_path: Path) ->
     assert run.stdout.strip().splitlines() == ["(1, 1, 1, 8)"]
 
 
-def test_native_turboquant_intrinsic_uses_runtime_shadow_metadata(tmp_path: Path) -> None:
+def test_native_turboquant_intrinsic_uses_runtime_shadow_metadata(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "gpu_turboquant_intrinsic_shadow_meta_native.py"
     probe.write_text(
@@ -656,9 +834,9 @@ def test_native_turboquant_attention_uses_metal_backend(tmp_path: Path) -> None:
     )
 
     assert run.returncode == 0, run.stdout + run.stderr
-    assert ast.literal_eval(run.stdout.strip().splitlines()[0])[0][0][0] == pytest.approx(
-        [0.019662419334053993, 0.22147667407989502]
-    )
+    assert ast.literal_eval(run.stdout.strip().splitlines()[0])[0][0][
+        0
+    ] == pytest.approx([0.019662419334053993, 0.22147667407989502])
 
 
 def test_native_turboquant_attention_uses_webgpu_backend(tmp_path: Path) -> None:
@@ -707,9 +885,9 @@ def test_native_turboquant_attention_uses_webgpu_backend(tmp_path: Path) -> None
     )
 
     assert run.returncode == 0, run.stdout + run.stderr
-    assert ast.literal_eval(run.stdout.strip().splitlines()[0])[0][0][0] == pytest.approx(
-        [0.019662419334053993, 0.22147667407989502]
-    )
+    assert ast.literal_eval(run.stdout.strip().splitlines()[0])[0][0][
+        0
+    ] == pytest.approx([0.019662419334053993, 0.22147667407989502])
     assert "[molt gpu backend] webgpu turboquant_attention_packed" in run.stderr
 
 
@@ -907,7 +1085,9 @@ def test_native_turboquant_attention_hip_reports_not_implemented_when_feature_en
     assert "not yet implemented" in run.stderr
 
 
-def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_calls(monkeypatch):
+def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_calls(
+    monkeypatch,
+):
     from molt.gpu.kv_cache import TurboQuantAttentionKVCache
     from molt.gpu.tensor import Tensor
     from molt.gpu.turboquant import TurboQuantCodec
@@ -917,15 +1097,43 @@ def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_ca
     cache.append(
         Tensor(
             [
-                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
-                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+                0.6,
+                -0.2,
+                0.1,
+                0.4,
+                -0.5,
+                0.3,
+                0.2,
+                0.1,
+                0.1,
+                0.5,
+                -0.3,
+                -0.2,
+                0.6,
+                -0.1,
+                0.4,
+                -0.4,
             ],
             shape=(1, 1, 2, 8),
         ),
         Tensor(
             [
-                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
-                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+                0.2,
+                0.1,
+                -0.3,
+                0.4,
+                0.5,
+                -0.2,
+                0.6,
+                -0.1,
+                -0.5,
+                0.2,
+                0.4,
+                -0.1,
+                0.3,
+                0.7,
+                -0.2,
+                0.6,
             ],
             shape=(1, 1, 2, 8),
         ),
@@ -955,28 +1163,40 @@ def test_turboquant_attention_kv_cache_supports_grouped_query_attention():
     codec = TurboQuantCodec(dim=2, bits=3, seed=5, qjl_seed=19)
     k = Tensor(
         [
-            0.6, -0.2,
-            0.1, 0.4,
-            -0.3, 0.5,
-            0.2, -0.1,
+            0.6,
+            -0.2,
+            0.1,
+            0.4,
+            -0.3,
+            0.5,
+            0.2,
+            -0.1,
         ],
         shape=(1, 2, 2, 2),
     )
     v = Tensor(
         [
-            0.2, 0.1,
-            -0.3, 0.4,
-            -0.5, 0.2,
-            0.4, -0.1,
+            0.2,
+            0.1,
+            -0.3,
+            0.4,
+            -0.5,
+            0.2,
+            0.4,
+            -0.1,
         ],
         shape=(1, 2, 2, 2),
     )
     q = Tensor(
         [
-            0.5, -0.1,
-            0.2, 0.3,
-            -0.4, 0.6,
-            0.1, -0.2,
+            0.5,
+            -0.1,
+            0.2,
+            0.3,
+            -0.4,
+            0.6,
+            0.1,
+            -0.2,
         ],
         shape=(1, 4, 1, 2),
     )
@@ -999,7 +1219,9 @@ def test_turboquant_attention_kv_cache_supports_grouped_query_attention():
         manual.append([helper.attention_output(Tensor(q_head[0])).to_list()])
 
     assert out.shape == (1, 4, 1, 2)
-    assert out.reshape(8).to_list() == pytest.approx(Tensor(manual).reshape(8).to_list())
+    assert out.reshape(8).to_list() == pytest.approx(
+        Tensor(manual).reshape(8).to_list()
+    )
 
 
 def test_turboquant_attention_kv_cache_broadcasts_singleton_mask_width():
@@ -1012,15 +1234,43 @@ def test_turboquant_attention_kv_cache_broadcasts_singleton_mask_width():
     cache.append(
         Tensor(
             [
-                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
-                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+                0.6,
+                -0.2,
+                0.1,
+                0.4,
+                -0.5,
+                0.3,
+                0.2,
+                0.1,
+                0.1,
+                0.5,
+                -0.3,
+                -0.2,
+                0.6,
+                -0.1,
+                0.4,
+                -0.4,
             ],
             shape=(1, 1, 2, 8),
         ),
         Tensor(
             [
-                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
-                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+                0.2,
+                0.1,
+                -0.3,
+                0.4,
+                0.5,
+                -0.2,
+                0.6,
+                -0.1,
+                -0.5,
+                0.2,
+                0.4,
+                -0.1,
+                0.3,
+                0.7,
+                -0.2,
+                0.6,
             ],
             shape=(1, 1, 2, 8),
         ),
@@ -1078,29 +1328,41 @@ def test_dense_kv_cache_reuses_grouped_query_expansions(monkeypatch):
     cache.append(
         Tensor(
             [
-                0.6, -0.2,
-                0.1, 0.4,
-                -0.3, 0.5,
-                0.2, -0.1,
+                0.6,
+                -0.2,
+                0.1,
+                0.4,
+                -0.3,
+                0.5,
+                0.2,
+                -0.1,
             ],
             shape=(1, 2, 2, 2),
         ),
         Tensor(
             [
-                0.2, 0.1,
-                -0.3, 0.4,
-                -0.5, 0.2,
-                0.4, -0.1,
+                0.2,
+                0.1,
+                -0.3,
+                0.4,
+                -0.5,
+                0.2,
+                0.4,
+                -0.1,
             ],
             shape=(1, 2, 2, 2),
         ),
     )
     q = Tensor(
         [
-            0.5, -0.1,
-            0.2, 0.3,
-            -0.4, 0.6,
-            0.1, -0.2,
+            0.5,
+            -0.1,
+            0.2,
+            0.3,
+            -0.4,
+            0.6,
+            0.1,
+            -0.2,
         ],
         shape=(1, 4, 1, 2),
     )
@@ -1167,14 +1429,16 @@ def test_transformer_multihead_attention_routes_through_cache(monkeypatch):
             return "values-view"
 
     def fake_sdpa(q, k, v, mask, scale):
-            seen["q_shape"] = q.shape
-            seen["k_view"] = k
-            seen["v_view"] = v
-            seen["scale"] = scale
-            seen["mask"] = mask
-            return q
+        seen["q_shape"] = q.shape
+        seen["k_view"] = k
+        seen["v_view"] = v
+        seen["scale"] = scale
+        seen["mask"] = mask
+        return q
 
-    monkeypatch.setattr(transformer_mod, "tensor_scaled_dot_product_attention", fake_sdpa)
+    monkeypatch.setattr(
+        transformer_mod, "tensor_scaled_dot_product_attention", fake_sdpa
+    )
 
     x = Tensor([[1.0, 2.0, 3.0, 4.0]])
     out = attn(x, kv_cache=FakeCache())

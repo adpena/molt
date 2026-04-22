@@ -9,13 +9,12 @@ sequential requests, and assert that every request completes within a tight
 per-request deadline.  A single stall would cause the test to timeout and
 surface as a clear regression.
 """
+
 from __future__ import annotations
 
 import json
-import os
 import socket
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -121,6 +120,7 @@ def daemon_socket(tmp_path: Path):
         pytest.skip("molt-backend binary not found; run 'cargo build -p molt-backend'")
 
     import hashlib
+
     # Keep the socket path short: /tmp/mbd-<8hex>.sock stays well under SUN_LEN.
     path_hash = hashlib.sha1(str(tmp_path).encode()).hexdigest()[:8]
     socket_path = Path(tempfile.gettempdir()) / f"mbd-{path_hash}.sock"
@@ -146,7 +146,9 @@ def daemon_socket(tmp_path: Path):
     if not ready:
         proc.terminate()
         proc.wait(timeout=5)
-        log_text = log_path.read_text(errors="replace") if log_path.exists() else "(no log)"
+        log_text = (
+            log_path.read_text(errors="replace") if log_path.exists() else "(no log)"
+        )
         pytest.skip(
             f"Daemon did not become ready within {_STARTUP_TIMEOUT_S}s. "
             f"Log tail:\n{log_text[-1000:]}"
@@ -239,9 +241,13 @@ class TestDaemonSequentialRequests:
                     sock.connect(str(daemon_socket))
                     resp = _send_request(sock, payload)
             except OSError as exc:
-                pytest.fail(f"Request {i + 1}/5 raised OSError (daemon stalled?): {exc}")
+                pytest.fail(
+                    f"Request {i + 1}/5 raised OSError (daemon stalled?): {exc}"
+                )
 
-            assert resp is not None, f"Request {i + 1}/5 got no response (daemon stalled?)"
+            assert resp is not None, (
+                f"Request {i + 1}/5 got no response (daemon stalled?)"
+            )
             assert resp.get("ok"), f"Request {i + 1}/5 failed: {resp}"
 
     def test_health_reported_in_ping_response(self, daemon_socket: Path) -> None:
@@ -282,7 +288,9 @@ class TestDaemonSequentialRequests:
         assert not resp.get("ok")
         assert resp.get("error"), "Expected an error message for version mismatch"
 
-    def test_daemon_processes_after_closed_probe_connection(self, daemon_socket: Path) -> None:
+    def test_daemon_processes_after_closed_probe_connection(
+        self, daemon_socket: Path
+    ) -> None:
         """Daemon must be responsive after a client closes a probe connection mid-protocol.
 
         In the probe-then-compile pattern the client opens a connection for the
@@ -312,4 +320,6 @@ class TestDaemonSequentialRequests:
 
         # The daemon must now answer a normal ping promptly.
         ok = _ping_daemon(daemon_socket, timeout=_REQUEST_TIMEOUT_S)
-        assert ok, "Daemon became unresponsive after a probe connection was closed early"
+        assert ok, (
+            "Daemon became unresponsive after a probe connection was closed early"
+        )

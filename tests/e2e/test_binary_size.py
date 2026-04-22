@@ -10,13 +10,9 @@ Run: python -m pytest tests/e2e/test_binary_size.py -v -s
 
 from __future__ import annotations
 
-import json
 import os
-import subprocess
 import sys
-import textwrap
 
-import pytest
 
 # Ensure project root is importable
 _project_root = os.path.dirname(
@@ -126,7 +122,9 @@ def _render_wgsl_elementwise(
     lines = []
     for i in range(buf_count):
         access = "read_write" if i == 0 else "read"
-        lines.append(f"@group(0) @binding({i}) var<storage, {access}> buf{i}: array<f32>;")
+        lines.append(
+            f"@group(0) @binding({i}) var<storage, {access}> buf{i}: array<f32>;"
+        )
     lines.append("")
     local = min(n, 256)
     lines.append(f"@compute @workgroup_size({local}, 1, 1)")
@@ -183,7 +181,12 @@ def _softmax_kernels(n: int, reduce_size: int) -> dict[str, dict[str, str]]:
 
     # Kernel 1: max reduction + elementwise prefix
     k1_msl = _render_msl_reduce(
-        pre_ops=[], reduce_type="max", post_ops=[], buf_count=2, out_n=out_n, reduce_size=reduce_size
+        pre_ops=[],
+        reduce_type="max",
+        post_ops=[],
+        buf_count=2,
+        out_n=out_n,
+        reduce_size=reduce_size,
     )
     k1_wgsl = _render_wgsl_elementwise(
         [("f32", "v0", "buf1[gid]")], buf_count=2, n=out_n
@@ -249,7 +252,11 @@ def _rmsnorm_kernel(n: int, hidden: int) -> dict[str, str]:
         ],
         reduce_type="sum",
         post_ops=[
-            ("float", "v2", "(v1 * float(1.0f / float({hidden})))".format(hidden=hidden)),
+            (
+                "float",
+                "v2",
+                "(v1 * float(1.0f / float({hidden})))".format(hidden=hidden),
+            ),
             ("float", "v3", "(v2 + 1e-6f)"),
             ("float", "v4", "sqrt(v3)"),
             ("float", "v5", "(1.0f / v4)"),
@@ -261,7 +268,9 @@ def _rmsnorm_kernel(n: int, hidden: int) -> dict[str, str]:
     return {"msl": msl}
 
 
-def _attention_kernels(seq_len: int, head_dim: int, num_heads: int) -> dict[str, dict[str, str]]:
+def _attention_kernels(
+    seq_len: int, head_dim: int, num_heads: int
+) -> dict[str, dict[str, str]]:
     """Generate full attention block kernel sources.
 
     Attention(Q, K, V) = softmax(Q @ K^T / sqrt(d)) @ V
@@ -271,18 +280,27 @@ def _attention_kernels(seq_len: int, head_dim: int, num_heads: int) -> dict[str,
     qk_out = seq_len * seq_len * num_heads
     k1 = _render_msl_reduce(
         pre_ops=[("float", "v0", "(buf1[eidx] * buf2[eidx])")],
-        reduce_type="sum", post_ops=[], buf_count=3, out_n=qk_out, reduce_size=head_dim
+        reduce_type="sum",
+        post_ops=[],
+        buf_count=3,
+        out_n=qk_out,
+        reduce_size=head_dim,
     )
     # K2: Scale by 1/sqrt(d)
     k2 = _render_msl_elementwise(
-        [("float", "v0", f"(buf1[gid] * {1.0 / (head_dim ** 0.5):.6f}f)")],
-        buf_count=2, n=qk_out
+        [("float", "v0", f"(buf1[gid] * {1.0 / (head_dim**0.5):.6f}f)")],
+        buf_count=2,
+        n=qk_out,
     )
     # K3: Softmax max reduce
     softmax_out = seq_len * num_heads
     k3 = _render_msl_reduce(
-        pre_ops=[], reduce_type="max", post_ops=[], buf_count=2,
-        out_n=softmax_out, reduce_size=seq_len
+        pre_ops=[],
+        reduce_type="max",
+        post_ops=[],
+        buf_count=2,
+        out_n=softmax_out,
+        reduce_size=seq_len,
     )
     # K4: Softmax exp + sum reduce
     k4 = _render_msl_reduce(
@@ -290,8 +308,11 @@ def _attention_kernels(seq_len: int, head_dim: int, num_heads: int) -> dict[str,
             ("float", "v0", "(buf1[eidx] - buf2[gid])"),
             ("float", "v1", "exp2(v0 * 1.4426950408889634f)"),
         ],
-        reduce_type="sum", post_ops=[("float", "v3", "(1.0f / v2)")],
-        buf_count=3, out_n=softmax_out, reduce_size=seq_len
+        reduce_type="sum",
+        post_ops=[("float", "v3", "(1.0f / v2)")],
+        buf_count=3,
+        out_n=softmax_out,
+        reduce_size=seq_len,
     )
     # K5: Softmax normalize
     k5 = _render_msl_elementwise(
@@ -301,7 +322,11 @@ def _attention_kernels(seq_len: int, head_dim: int, num_heads: int) -> dict[str,
     av_out = seq_len * head_dim * num_heads
     k6 = _render_msl_reduce(
         pre_ops=[("float", "v0", "(buf1[eidx] * buf2[eidx])")],
-        reduce_type="sum", post_ops=[], buf_count=3, out_n=av_out, reduce_size=seq_len
+        reduce_type="sum",
+        post_ops=[],
+        buf_count=3,
+        out_n=av_out,
+        reduce_size=seq_len,
     )
     return {
         "attn_qk": {"msl": k1},

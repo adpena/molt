@@ -3,6 +3,7 @@
 Covers JS injection prevention, path traversal, URL validation,
 and revision string sanitisation.
 """
+
 from __future__ import annotations
 
 import json
@@ -217,7 +218,9 @@ class TestDownloadArtifactURLValidation:
         from molt.cli import _is_private_ip
 
         # This host should not resolve
-        assert _is_private_ip("this-host-definitely-does-not-exist-xyzzy.invalid") is True
+        assert (
+            _is_private_ip("this-host-definitely-does-not-exist-xyzzy.invalid") is True
+        )
 
     def test_ipv6_scope_id_handled(self):
         """IPv6 with scope ID must not bypass the check."""

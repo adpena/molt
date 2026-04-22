@@ -8,9 +8,7 @@ invoice fields.  Tests both raw text and structured JSON endpoints.
 
 import base64
 import io
-import json
 import os
-import time
 import unittest
 
 import requests
@@ -23,6 +21,7 @@ WORKER_URL = os.environ.get(
 # Skip if Pillow is not installed (CI environments may lack it)
 try:
     from PIL import Image, ImageDraw, ImageFont
+
     HAS_PILLOW = True
 except ImportError:
     HAS_PILLOW = False
@@ -120,8 +119,10 @@ class TestRealInvoiceOcr(unittest.TestCase):
 
         # Workers AI path returns text directly
         text = body.get("text", "")
-        self.assertTrue(len(text) > 0 or len(body.get("tokens", [])) > 0,
-                        "Expected non-empty text or tokens from OCR")
+        self.assertTrue(
+            len(text) > 0 or len(body.get("tokens", [])) > 0,
+            "Expected non-empty text or tokens from OCR",
+        )
 
         if text:
             text_lower = text.lower()
@@ -133,8 +134,12 @@ class TestRealInvoiceOcr(unittest.TestCase):
             self.assertIn("april", text_lower, "Should extract issue date month")
             self.assertIn("2026", text, "Should extract year")
             # Line items
-            self.assertIn("website redesign", text_lower, "Should extract line item description")
-            self.assertIn("seo optimization", text_lower, "Should extract second line item")
+            self.assertIn(
+                "website redesign", text_lower, "Should extract line item description"
+            )
+            self.assertIn(
+                "seo optimization", text_lower, "Should extract second line item"
+            )
             # Amounts
             self.assertIn("4,200", text, "Should extract line item amount")
             self.assertIn("7,144", text, "Should extract total amount")
@@ -181,17 +186,27 @@ class TestRealInvoiceOcr(unittest.TestCase):
 
         # Check extracted values (case-insensitive for vendor)
         if invoice.get("vendor"):
-            self.assertIn("acme", invoice["vendor"].lower(),
-                          "Should extract vendor as ACME")
+            self.assertIn(
+                "acme", invoice["vendor"].lower(), "Should extract vendor as ACME"
+            )
         if invoice.get("invoice_number"):
-            self.assertIn("0042", invoice["invoice_number"],
-                          "Should extract invoice number containing 0042")
+            self.assertIn(
+                "0042",
+                invoice["invoice_number"],
+                "Should extract invoice number containing 0042",
+            )
         if invoice.get("total") and invoice["total"] > 0:
             # Allow some tolerance for OCR parsing
-            self.assertAlmostEqual(invoice["total"], 7144.50, delta=100,
-                                   msg="Total should be approximately $7,144.50")
+            self.assertAlmostEqual(
+                invoice["total"],
+                7144.50,
+                delta=100,
+                msg="Total should be approximately $7,144.50",
+            )
         if invoice.get("items"):
-            descriptions = [item.get("description", "").lower() for item in invoice["items"]]
+            descriptions = [
+                item.get("description", "").lower() for item in invoice["items"]
+            ]
             combined = " ".join(descriptions)
             self.assertTrue(
                 "website" in combined or "redesign" in combined or "seo" in combined,

@@ -100,9 +100,9 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
 
     assert key_a != key_b
     assert key_a != key_c
-    assert cli._stdlib_object_cache_path(Path("cache"), key_a) != cli._stdlib_object_cache_path(
-        Path("cache"), key_b
-    )
+    assert cli._stdlib_object_cache_path(
+        Path("cache"), key_a
+    ) != cli._stdlib_object_cache_path(Path("cache"), key_b)
 
 
 def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
@@ -178,8 +178,16 @@ def test_shared_stdlib_cache_key_changes_with_reachable_stdlib_subset() -> None:
             },
             {"name": "molt_init_app", "params": [], "ops": []},
             {"name": "app__module", "params": [], "ops": []},
-            {"name": "molt_init_sys", "params": [], "ops": [{"kind": "code_slot_set", "value": 73}]},
-            {"name": "molt_init_json", "params": [], "ops": [{"kind": "code_slot_set", "value": 843}]},
+            {
+                "name": "molt_init_sys",
+                "params": [],
+                "ops": [{"kind": "code_slot_set", "value": 73}],
+            },
+            {
+                "name": "molt_init_json",
+                "params": [],
+                "ops": [{"kind": "code_slot_set", "value": 843}],
+            },
         ],
     }
     ir_b = {
@@ -192,8 +200,16 @@ def test_shared_stdlib_cache_key_changes_with_reachable_stdlib_subset() -> None:
             },
             {"name": "molt_init_app", "params": [], "ops": []},
             {"name": "app__module", "params": [], "ops": []},
-            {"name": "molt_init_sys", "params": [], "ops": [{"kind": "code_slot_set", "value": 73}]},
-            {"name": "molt_init_json", "params": [], "ops": [{"kind": "code_slot_set", "value": 843}]},
+            {
+                "name": "molt_init_sys",
+                "params": [],
+                "ops": [{"kind": "code_slot_set", "value": 73}],
+            },
+            {
+                "name": "molt_init_json",
+                "params": [],
+                "ops": [{"kind": "code_slot_set", "value": 843}],
+            },
         ],
     }
 
@@ -215,7 +231,9 @@ def test_shared_stdlib_cache_key_changes_with_reachable_stdlib_subset() -> None:
     assert key_a != key_b
 
 
-def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_matches() -> None:
+def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_matches() -> (
+    None
+):
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys", "json")
     shared_stdlib = [
@@ -235,7 +253,11 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
         "entry_metadata": {"driver": "stage5"},
         "functions": [
             {"name": "helper_a", "params": [], "ops": []},
-            {"name": "molt_main", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}]},
+            {
+                "name": "molt_main",
+                "params": [],
+                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+            },
             {"name": "molt_init_app", "params": [], "ops": []},
             {"name": "app__module", "params": [], "ops": []},
             *shared_stdlib,
@@ -248,7 +270,11 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
             {"name": "helper_b", "params": [], "ops": []},
             {"name": "molt_init_app", "params": [], "ops": []},
             {"name": "app__module", "params": [], "ops": []},
-            {"name": "molt_main", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}]},
+            {
+                "name": "molt_main",
+                "params": [],
+                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+            },
             *shared_stdlib,
         ],
     }
@@ -284,8 +310,16 @@ def test_shared_stdlib_cache_key_ignores_unreachable_stdlib_changes() -> None:
             },
             {"name": "molt_init_app", "params": [], "ops": []},
             {"name": "app__module", "params": [], "ops": []},
-            {"name": "molt_init_sys", "params": [], "ops": [{"kind": "code_slot_set", "value": 73}]},
-            {"name": "molt_init_json", "params": [], "ops": [{"kind": "code_slot_set", "value": 843}]},
+            {
+                "name": "molt_init_sys",
+                "params": [],
+                "ops": [{"kind": "code_slot_set", "value": 73}],
+            },
+            {
+                "name": "molt_init_json",
+                "params": [],
+                "ops": [{"kind": "code_slot_set", "value": 843}],
+            },
         ],
     }
     ir_b = {
@@ -298,8 +332,16 @@ def test_shared_stdlib_cache_key_ignores_unreachable_stdlib_changes() -> None:
             },
             {"name": "molt_init_app", "params": [], "ops": []},
             {"name": "app__module", "params": [], "ops": []},
-            {"name": "molt_init_sys", "params": [], "ops": [{"kind": "code_slot_set", "value": 73}]},
-            {"name": "molt_init_json", "params": [], "ops": [{"kind": "code_slot_set", "value": 999999}]},
+            {
+                "name": "molt_init_sys",
+                "params": [],
+                "ops": [{"kind": "code_slot_set", "value": 73}],
+            },
+            {
+                "name": "molt_init_json",
+                "params": [],
+                "ops": [{"kind": "code_slot_set", "value": 999999}],
+            },
         ],
     }
 
@@ -330,7 +372,9 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_importlib_abc"}],
+                "ops": [
+                    {"kind": "call_internal", "s_value": "molt_init_importlib_abc"}
+                ],
             },
             {"name": "molt_init_app", "params": [], "ops": []},
             {"name": "app__module", "params": [], "ops": []},
@@ -347,7 +391,9 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_importlib_abc"}],
+                "ops": [
+                    {"kind": "call_internal", "s_value": "molt_init_importlib_abc"}
+                ],
             },
             {"name": "molt_init_app", "params": [], "ops": []},
             {"name": "app__module", "params": [], "ops": []},
@@ -465,12 +511,16 @@ def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
 
     active = cache_root / "stdlib_shared_active.o"
     active.write_bytes(b"active")
-    cli._stdlib_object_key_sidecar_path(active).write_text("active-key\n", encoding="utf-8")
+    cli._stdlib_object_key_sidecar_path(active).write_text(
+        "active-key\n", encoding="utf-8"
+    )
     cli._stdlib_object_count_sidecar_path(active).write_text("1\n", encoding="utf-8")
 
     sibling = cache_root / "stdlib_shared_sibling.o"
     sibling.write_bytes(b"sibling")
-    cli._stdlib_object_key_sidecar_path(sibling).write_text("sibling-key\n", encoding="utf-8")
+    cli._stdlib_object_key_sidecar_path(sibling).write_text(
+        "sibling-key\n", encoding="utf-8"
+    )
     cli._stdlib_object_count_sidecar_path(sibling).write_text("2\n", encoding="utf-8")
 
     cli._invalidate_stale_stdlib_cache(
@@ -524,7 +574,10 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     )
 
     assert staged.exists()
-    assert cli._stdlib_object_key_sidecar_path(staged).read_text(encoding="utf-8") == "abc123\n"
+    assert (
+        cli._stdlib_object_key_sidecar_path(staged).read_text(encoding="utf-8")
+        == "abc123\n"
+    )
     assert (
         cli._stdlib_object_count_sidecar_path(staged).read_text(encoding="utf-8")
         == "7\n"

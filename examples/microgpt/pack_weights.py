@@ -1,4 +1,5 @@
 """Pack weights into a compact comma-separated string for embedding."""
+
 import json
 
 with open("/Users/adpena/Projects/molt/examples/microgpt/weights.json") as f:
@@ -46,7 +47,7 @@ lines.append("")
 
 # Split CSV into 120-char lines
 chunk = 120
-csv_lines = [csv_str[i:i+chunk] for i in range(0, len(csv_str), chunk)]
+csv_lines = [csv_str[i : i + chunk] for i in range(0, len(csv_str), chunk)]
 lines.append("_W: str = (")
 for cl in csv_lines:
     lines.append(f'    "{cl}"')
@@ -60,7 +61,8 @@ for k, r, c in key_shapes:
 lines.append("]")
 lines.append("")
 
-lines.append("""
+lines.append(
+    """
 def _unpack() -> dict[str, list[list[float]]]:
     parts: list[str] = _W.split(",")
     sd: dict[str, list[list[float]]] = {}
@@ -207,7 +209,8 @@ def main() -> None:
 
 
 main()
-""".rstrip())
+""".rstrip()
+)
 
 with open("/Users/adpena/Projects/molt/examples/microgpt/inference_wasm.py", "w") as f:
     f.write("\n".join(lines) + "\n")

@@ -74,7 +74,9 @@ def count_sorrys_in_text(text: str) -> int:
     cleaned = text
     while prev != cleaned:
         prev = cleaned
-        cleaned = re.sub(r"/\-(?:(?!/\-)(?:(?!\-/).|\n))*?\-/", " ", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(
+            r"/\-(?:(?!/\-)(?:(?!\-/).|\n))*?\-/", " ", cleaned, flags=re.DOTALL
+        )
 
     # 2. Process line by line: strip line comments, then string literals.
     total = 0
@@ -131,7 +133,9 @@ def read_baseline() -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Check Lean sorry count against baseline")
+    parser = argparse.ArgumentParser(
+        description="Check Lean sorry count against baseline"
+    )
     parser.add_argument(
         "--update",
         action="store_true",

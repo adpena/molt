@@ -28,7 +28,9 @@ def _validate_lane_paths(manifest: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Plan a reference-lane bench run.")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--lane", action="append", default=[], help="limit to one or more lanes")
+    parser.add_argument(
+        "--lane", action="append", default=[], help="limit to one or more lanes"
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON summary")
     args = parser.parse_args(argv)
 

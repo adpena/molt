@@ -18,12 +18,12 @@ Usage:
 
 import socket
 import threading
-import json
 import struct
-from .dataframe import DataFrame, Series
+from .dataframe import DataFrame
 
 
 # ── Worker ────────────────────────────────────────────────────────────
+
 
 class Worker:
     """A GPU compute worker (local or remote).
@@ -88,18 +88,18 @@ class Worker:
             return
         # Length-prefixed protocol
         length = len(data_bytes)
-        self._socket.sendall(struct.pack('!Q', length))
+        self._socket.sendall(struct.pack("!Q", length))
         self._socket.sendall(data_bytes)
 
     def recv_bytes(self):
         """Receive raw bytes from a remote worker."""
         if self._socket is None:
-            return b''
+            return b""
         # Read length prefix
         length_data = self._recv_exact(8)
         if not length_data:
-            return b''
-        length = struct.unpack('!Q', length_data)[0]
+            return b""
+        length = struct.unpack("!Q", length_data)[0]
         return self._recv_exact(length)
 
     def _recv_exact(self, n):
@@ -133,6 +133,7 @@ class Worker:
 
 # ── Cluster ──────────────────────────────────────────────────────────
 
+
 class Cluster:
     """A cluster of GPU workers.
 
@@ -155,8 +156,8 @@ class Cluster:
         self.workers = []
         if workers:
             for addr in workers:
-                if ':' in addr:
-                    host, port = addr.rsplit(':', 1)
+                if ":" in addr:
+                    host, port = addr.rsplit(":", 1)
                     self.workers.append(Worker(host, int(port)))
                 else:
                     self.workers.append(Worker(addr, 8001))
@@ -192,6 +193,7 @@ class Cluster:
 
 # ── Partition ────────────────────────────────────────────────────────
 
+
 class Partition:
     """A partition of a distributed DataFrame.
 
@@ -212,6 +214,7 @@ class Partition:
 
 
 # ── DistributedDataFrame ─────────────────────────────────────────────
+
 
 class DistributedDataFrame:
     """DataFrame distributed across multiple GPU workers.
@@ -321,8 +324,10 @@ class DistributedDataFrame:
         Returns:
             new DistributedDataFrame with the added column
         """
+
         def _add_col(p):
             return p.with_column(func(p), name=name)
+
         return self.map_partitions(_add_col)
 
     def sort(self, by, descending=False):
@@ -381,15 +386,15 @@ class DistributedDataFrame:
         # For min/max: min/max of partial min/max. Mean requires special handling.
         re_aggs = {}
         for agg_name, (col, op) in aggregations.items():
-            if op in ('sum', 'count'):
-                re_aggs[agg_name] = (agg_name, 'sum')
-            elif op in ('min',):
-                re_aggs[agg_name] = (agg_name, 'min')
-            elif op in ('max',):
-                re_aggs[agg_name] = (agg_name, 'max')
+            if op in ("sum", "count"):
+                re_aggs[agg_name] = (agg_name, "sum")
+            elif op in ("min",):
+                re_aggs[agg_name] = (agg_name, "min")
+            elif op in ("max",):
+                re_aggs[agg_name] = (agg_name, "max")
             else:
                 # For mean and others, fall back to sum (approximate)
-                re_aggs[agg_name] = (agg_name, 'sum')
+                re_aggs[agg_name] = (agg_name, "sum")
 
         return merged.group_by(by_col).agg(**re_aggs)
 
@@ -446,7 +451,11 @@ class DistributedDataFrame:
 
         Scans partitions in order, taking rows until n are collected.
         """
-        collected = {col: [] for col in self._partitions[0].df.columns} if self._partitions else {}
+        collected = (
+            {col: [] for col in self._partitions[0].df.columns}
+            if self._partitions
+            else {}
+        )
         remaining = n
         for part in self._partitions:
             if remaining <= 0:
@@ -474,10 +483,13 @@ class DistributedDataFrame:
 
     def __repr__(self):
         total_rows = sum(len(p.df) for p in self._partitions)
-        return f"DistributedDataFrame({total_rows} rows, {self.n_partitions} partitions)"
+        return (
+            f"DistributedDataFrame({total_rows} rows, {self.n_partitions} partitions)"
+        )
 
 
 # ── Worker server (for remote execution) ─────────────────────────────
+
 
 class WorkerServer:
     """TCP server that runs on each remote worker machine.
@@ -530,14 +542,14 @@ class WorkerServer:
                 length_data = self._recv_exact(conn, 8)
                 if not length_data:
                     break
-                length = struct.unpack('!Q', length_data)[0]
+                length = struct.unpack("!Q", length_data)[0]
                 payload = self._recv_exact(conn, length)
                 if not payload:
                     break
 
                 # For now, echo back — real implementation would deserialize
                 # the function + data, execute on GPU, and return the result
-                conn.sendall(struct.pack('!Q', len(payload)))
+                conn.sendall(struct.pack("!Q", len(payload)))
                 conn.sendall(payload)
         except OSError:
             pass

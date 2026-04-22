@@ -61,8 +61,7 @@ def discover_falcon_config_json(target_root: Path, *, weights_root: Path) -> Pat
     if weights_config.exists():
         return weights_config
     raise FileNotFoundError(
-        "missing Falcon config json: expected "
-        f"{root_config} or {weights_config}"
+        f"missing Falcon config json: expected {root_config} or {weights_config}"
     )
 
 
@@ -80,7 +79,9 @@ def build_deploy_surface(
     artifact_root = target_root / DEFAULT_ARTIFACT_SUBDIR
     app_wasm = artifact_root / "app.wasm"
     runtime_wasm = artifact_root / "molt_runtime.wasm"
-    weights_dir = (weights_root or (target_root / DEFAULT_WEIGHTS_SUBDIR)).expanduser().resolve()
+    weights_dir = (
+        (weights_root or (target_root / DEFAULT_WEIGHTS_SUBDIR)).expanduser().resolve()
+    )
     config_json = discover_falcon_config_json(target_root, weights_root=weights_dir)
     tokenizer_json = weights_dir / DEFAULT_TOKENIZER_FILENAME
     if not app_wasm.exists():
@@ -278,21 +279,35 @@ def materialize_deploy_bundle(
     )
     bundle_root = (bundle_root or (target_root / DEFAULT_BUNDLE_SUBDIR)).resolve()
     assets_root = bundle_root / "assets"
-    falcon_worker_dst = bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
-    thin_worker_dst = bundle_root / "drivers" / "cloudflare" / "thin_adapter" / "worker.ts"
+    falcon_worker_dst = (
+        bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
+    )
+    thin_worker_dst = (
+        bundle_root / "drivers" / "cloudflare" / "thin_adapter" / "worker.ts"
+    )
     bundle_root.mkdir(parents=True, exist_ok=True)
     assets_root.mkdir(parents=True, exist_ok=True)
 
     _copy_file(Path(surface["artifacts"]["app_wasm"]), assets_root / "app.wasm")
-    _copy_file(Path(surface["artifacts"]["runtime_wasm"]), assets_root / "molt_runtime.wasm")
+    _copy_file(
+        Path(surface["artifacts"]["runtime_wasm"]), assets_root / "molt_runtime.wasm"
+    )
     _copy_file(Path(surface["artifacts"]["config_json"]), assets_root / "config.json")
     if surface["artifacts"]["tokenizer_json"]:
-        _copy_file(Path(surface["artifacts"]["tokenizer_json"]), assets_root / "tokenizer.json")
+        _copy_file(
+            Path(surface["artifacts"]["tokenizer_json"]), assets_root / "tokenizer.json"
+        )
     _copy_file(REPO_ROOT / "wasm" / "browser_host.js", assets_root / "browser_host.js")
-    _copy_file(REPO_ROOT / "wasm" / "molt_vfs_browser.js", assets_root / "molt_vfs_browser.js")
-    browser_loader_text = (DRIVER_DIR / "browser.js").read_text(encoding="utf-8").replace(
-        'import { loadMoltWasm } from "../../../wasm/browser_host.js";',
-        'import { loadMoltWasm } from "./browser_host.js";',
+    _copy_file(
+        REPO_ROOT / "wasm" / "molt_vfs_browser.js", assets_root / "molt_vfs_browser.js"
+    )
+    browser_loader_text = (
+        (DRIVER_DIR / "browser.js")
+        .read_text(encoding="utf-8")
+        .replace(
+            'import { loadMoltWasm } from "../../../wasm/browser_host.js";',
+            'import { loadMoltWasm } from "./browser_host.js";',
+        )
     )
     _write_text(assets_root / "browser.js", browser_loader_text)
     _copy_file(DRIVER_DIR / "worker.ts", falcon_worker_dst)
@@ -303,14 +318,18 @@ def materialize_deploy_bundle(
 
     manifest_base = _base_runtime_manifest(surface, weights_base_url=weights_base_url)
     manifest_path = assets_root / DEFAULT_MANIFEST_ASSET_NAME
-    manifest_path.write_text(json.dumps(manifest_base, indent=2) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest_base, indent=2) + "\n", encoding="utf-8"
+    )
 
     wrangler_config = _materialized_wrangler_config(
         surface,
         weights_base_url=weights_base_url,
     )
     wrangler_path = bundle_root / "wrangler.jsonc"
-    wrangler_path.write_text(json.dumps(wrangler_config, indent=2) + "\n", encoding="utf-8")
+    wrangler_path.write_text(
+        json.dumps(wrangler_config, indent=2) + "\n", encoding="utf-8"
+    )
 
     return {
         "target": surface["target"],

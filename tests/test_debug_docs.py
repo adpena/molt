@@ -9,12 +9,7 @@ PUBLIC_DEBUG_DOCS = (
     ROOT / "docs" / "OPERATIONS.md",
     ROOT / "docs" / "DEVELOPER_GUIDE.md",
     ROOT / "tests" / "translation_validation" / "README.md",
-    ROOT
-    / "docs"
-    / "spec"
-    / "areas"
-    / "testing"
-    / "0008_MINIMUM_MUST_PASS_MATRIX.md",
+    ROOT / "docs" / "spec" / "areas" / "testing" / "0008_MINIMUM_MUST_PASS_MATRIX.md",
     ROOT / "docs" / "spec" / "areas" / "compiler" / "0100_MOLT_IR.md",
     ROOT
     / "docs"
@@ -36,7 +31,9 @@ def test_public_debug_docs_prefer_canonical_cli_surface() -> None:
     for path in PUBLIC_DEBUG_DOCS:
         text = path.read_text(encoding="utf-8")
         for wrapper in LEGACY_WRAPPERS:
-            assert wrapper not in text, f"{path} still documents legacy wrapper {wrapper}"
+            assert wrapper not in text, (
+                f"{path} still documents legacy wrapper {wrapper}"
+            )
 
 
 def test_public_debug_docs_reference_canonical_debug_commands() -> None:

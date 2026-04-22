@@ -1,4 +1,5 @@
 """Tests for wasm_bundle.py."""
+
 from __future__ import annotations
 import json
 import tarfile
@@ -6,6 +7,7 @@ from pathlib import Path
 import importlib.util
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _load_bundle_module():
     path = PROJECT_ROOT / "tools" / "wasm_bundle.py"
@@ -15,7 +17,9 @@ def _load_bundle_module():
     spec.loader.exec_module(mod)
     return mod
 
+
 bundle_mod = _load_bundle_module()
+
 
 def test_create_bundle_basic(tmp_path):
     src = tmp_path / "src"
@@ -36,6 +40,7 @@ def test_create_bundle_basic(tmp_path):
         assert "lib.py" in names
         assert "__manifest__.json" in names
 
+
 def test_bundle_skips_pycache(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
@@ -50,6 +55,7 @@ def test_bundle_skips_pycache(tmp_path):
     assert len(manifest["files"]) == 1
     assert all("__pycache__" not in f["path"] for f in manifest["files"])
 
+
 def test_bundle_includes_subdirectories(tmp_path):
     src = tmp_path / "src"
     (src / "pkg").mkdir(parents=True)
@@ -62,6 +68,7 @@ def test_bundle_includes_subdirectories(tmp_path):
     paths = [f["path"] for f in manifest["files"]]
     assert "pkg/__init__.py" in paths
     assert "pkg/mod.py" in paths
+
 
 def test_bundle_manifest_is_valid_json(tmp_path):
     src = tmp_path / "src"

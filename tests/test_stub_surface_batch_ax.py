@@ -33,9 +33,10 @@ def test_residual_public_shim_batch_hides_raw_capability_intrinsic() -> None:
         source = path.read_text()
         assert '_require_intrinsic("molt_capabilities_has", globals())' not in source
 
-    assert '_MOLT_REPRLIB_CAP_HAS = _require_intrinsic("molt_capabilities_has")' in (
-        ROOT / "src/molt/stdlib/reprlib.py"
-    ).read_text()
+    assert (
+        '_MOLT_REPRLIB_CAP_HAS = _require_intrinsic("molt_capabilities_has")'
+        in (ROOT / "src/molt/stdlib/reprlib.py").read_text()
+    )
 
     for path in [
         ROOT / "src/molt/stdlib/email/__init__.py",
@@ -58,4 +59,7 @@ def test_residual_public_shim_batch_hides_raw_capability_intrinsic() -> None:
         ROOT / "src/molt/stdlib/tkinter/dnd.py",
         ROOT / "src/molt/stdlib/tkinter/ttk.py",
     ]:
-        assert '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")' in path.read_text()
+        assert (
+            '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")'
+            in path.read_text()
+        )

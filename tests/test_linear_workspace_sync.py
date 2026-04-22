@@ -140,7 +140,9 @@ def test_build_sync_plan_matches_grouped_issues_by_group_key_not_title() -> None
     )
 
     assert plan.creates == ()
-    assert [(issue_id, issue.title, issue.priority) for issue_id, issue in plan.updates] == [
+    assert [
+        (issue_id, issue.title, issue.priority) for issue_id, issue in plan.updates
+    ] == [
         (
             "iss_grouped",
             "[P0][Critical Impact] Runtime stdlib intrinsic migration backlog",

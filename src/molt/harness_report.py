@@ -88,7 +88,11 @@ class HarnessReport:
     def save(self, reports_dir: str | Path) -> Path:
         reports_dir = Path(reports_dir)
         reports_dir.mkdir(parents=True, exist_ok=True)
-        ts = self.timestamp.replace(":", "-").replace("+", "_") if self.timestamp else "unknown"
+        ts = (
+            self.timestamp.replace(":", "-").replace("+", "_")
+            if self.timestamp
+            else "unknown"
+        )
         filename = f"harness-{self.profile}-{ts}.json"
         path = reports_dir / filename
         path.write_text(self.to_json(), encoding="utf-8")
@@ -102,6 +106,7 @@ class Baseline:
     Test counts must never decrease. Performance metrics use lower-is-better
     semantics (nanoseconds, bytes) — the ratchet keeps the lowest achieved value.
     """
+
     test_counts: dict[str, int] = field(default_factory=dict)
     metrics: dict[str, float] = field(default_factory=dict)
 
@@ -120,7 +125,9 @@ class Baseline:
             if tc_key in r.metrics:
                 test_counts[r.name] = int(r.metrics[tc_key])
             for k, v in r.metrics.items():
-                if k not in ("test_count", "tests_passed") and isinstance(v, (int, float)):
+                if k not in ("test_count", "tests_passed") and isinstance(
+                    v, (int, float)
+                ):
                     metrics[k] = float(v)
         return cls(test_counts=test_counts, metrics=metrics)
 
@@ -149,10 +156,15 @@ class Baseline:
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "test_counts": self.test_counts,
-            "metrics": self.metrics,
-        }, indent=2))
+        path.write_text(
+            json.dumps(
+                {
+                    "test_counts": self.test_counts,
+                    "metrics": self.metrics,
+                },
+                indent=2,
+            )
+        )
 
     @classmethod
     def load(cls, path: Path) -> Baseline:

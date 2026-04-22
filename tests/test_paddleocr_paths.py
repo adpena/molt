@@ -12,7 +12,9 @@ from tests.helpers.paddleocr_paths import (
 )
 
 
-def test_paddleocr_paths_use_env_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_paddleocr_paths_use_env_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     artifact = tmp_path / "ch_PP-OCRv4_det.onnx"
     artifact.write_bytes(b"onnx")
     monkeypatch.setenv(PADDLEOCR_MODEL_ROOT_ENV, str(tmp_path))

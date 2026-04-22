@@ -45,9 +45,7 @@ _MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_SELECT_PAYLOAD = _require_intrinsic(
 _MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_FILTER_PAYLOAD = _require_intrinsic(
     "molt_importlib_metadata_entry_points_filter_payload"
 )
-_MOLT_IMPORTLIB_METADATA_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_payload"
-)
+_MOLT_IMPORTLIB_METADATA_PAYLOAD = _require_intrinsic("molt_importlib_metadata_payload")
 _MOLT_IMPORTLIB_METADATA_DISTRIBUTIONS_PAYLOAD = _require_intrinsic(
     "molt_importlib_metadata_distributions_payload"
 )
@@ -762,5 +760,6 @@ def entry_points(**params) -> EntryPoints:
     if params and not use_runtime_filter:
         return cast(EntryPoints, entry_points_obj.select(**params))
     return entry_points_obj
+
 
 globals().pop("_require_intrinsic", None)

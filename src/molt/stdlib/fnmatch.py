@@ -41,4 +41,5 @@ def translate(pat: str) -> str:
         raise RuntimeError("fnmatch translate intrinsic returned invalid value")
     return out
 
+
 globals().pop("_require_intrinsic", None)

@@ -22,8 +22,10 @@ def mandelbrot(width: int, height: int, max_iter: int) -> int:
         y = y + 1
     return count
 
+
 def main() -> None:
     result: int = mandelbrot(200, 200, 50)
     print(result)
+
 
 main()

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -95,7 +94,9 @@ console.log(await response.text());
     assert result.stdout.strip() == "asset:/app.wasm"
 
 
-def test_thin_adapter_worker_uses_same_origin_weights_when_binding_present(tmp_path: Path) -> None:
+def test_thin_adapter_worker_uses_same_origin_weights_when_binding_present(
+    tmp_path: Path,
+) -> None:
     result = _run_worker_script(
         f"""
 import {{ createThinAssetWorker }} from {WORKER_TS.as_uri()!r};
@@ -139,12 +140,13 @@ console.log(await response.text());
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert (
-        payload["weights"]["base_url"]
-        == "https://falcon.freeinvoicemaker.app/weights"
+        payload["weights"]["base_url"] == "https://falcon.freeinvoicemaker.app/weights"
     )
 
 
-def test_thin_adapter_worker_serves_weight_assets_from_r2_binding(tmp_path: Path) -> None:
+def test_thin_adapter_worker_serves_weight_assets_from_r2_binding(
+    tmp_path: Path,
+) -> None:
     result = _run_worker_script(
         f"""
 import {{ createThinAssetWorker }} from {WORKER_TS.as_uri()!r};

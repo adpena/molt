@@ -179,7 +179,7 @@ def test_tinygrad_tensor_scalar_power_supports_rope_pattern() -> None:
     from tinygrad import Tensor
 
     exponents = Tensor.arange(0, 4, 2).float() / 4
-    out = 10000.0 ** exponents
+    out = 10000.0**exponents
 
     assert out.shape == (2,)
     assert out.to_list() == [1.0, 100.0]
@@ -581,9 +581,16 @@ def test_tinygrad_tensor_conv2d_matches_upstream_sample() -> None:
     conv = nn.Conv2d(1, 1, 3)
     x = Tensor.arange(16).reshape(1, 1, 4, 4).float()
     assert _flatten_numeric(
-        x.conv2d(conv.weight, conv.bias, 1, conv.stride, conv.dilation, conv.padding).to_list()
+        x.conv2d(
+            conv.weight, conv.bias, 1, conv.stride, conv.dilation, conv.padding
+        ).to_list()
     ) == pytest.approx(
-        [-0.32956963777542114, -0.4648566246032715, -0.8707174062728882, -1.0060044527053833],
+        [
+            -0.32956963777542114,
+            -0.4648566246032715,
+            -0.8707174062728882,
+            -1.0060044527053833,
+        ],
         abs=1e-7,
         rel=0.0,
     )
@@ -630,6 +637,7 @@ def test_tinygrad_tensor_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
         rel=0.0,
     )
 
+
 def _falcon_source_text() -> str:
     root = Path(__file__).resolve().parents[1]
     return (
@@ -659,6 +667,7 @@ def test_tinygrad_falcon_source_requires_named_weight_lookup() -> None:
     assert "Falcon-OCR weights missing required tensor" in source
     assert '_tok_embeddings = _require_weight(state, "tok_embeddings.weight")' in source
 
+
 def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "tinygrad_falcon_helper_probe.py"
@@ -678,9 +687,7 @@ def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -
     env = _native_molt_env(
         root,
         hermetic=True,
-        module_roots=(
-            FALCON_OCR_ARTIFACT_ROOT,
-        ),
+        module_roots=(FALCON_OCR_ARTIFACT_ROOT,),
     )
     run = subprocess.run(
         [
@@ -708,7 +715,9 @@ def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -
     ]
 
 
-def test_tinygrad_tensor_cat_nonzero_dim_compiles_in_native_molt(tmp_path: Path) -> None:
+def test_tinygrad_tensor_cat_nonzero_dim_compiles_in_native_molt(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "tinygrad_cat_nonzero_dim_probe.py"
     probe.write_text(
@@ -740,7 +749,9 @@ def test_tinygrad_tensor_cat_nonzero_dim_compiles_in_native_molt(tmp_path: Path)
     assert run.stdout.strip() == "[[1.0, 2.0, 5.0], [3.0, 4.0, 6.0]]"
 
 
-def test_tinygrad_tensor_stack_nonzero_dim_compiles_in_native_molt(tmp_path: Path) -> None:
+def test_tinygrad_tensor_stack_nonzero_dim_compiles_in_native_molt(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "tinygrad_stack_nonzero_dim_probe.py"
     probe.write_text(
@@ -772,7 +783,9 @@ def test_tinygrad_tensor_stack_nonzero_dim_compiles_in_native_molt(tmp_path: Pat
     assert run.stdout.strip() == "[[[1.0, 5.0], [2.0, 6.0]], [[3.0, 7.0], [4.0, 8.0]]]"
 
 
-def test_tinygrad_tensor_randn_and_linear_compile_in_native_molt(tmp_path: Path) -> None:
+def test_tinygrad_tensor_randn_and_linear_compile_in_native_molt(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "tinygrad_randn_linear_native.py"
     probe.write_text(

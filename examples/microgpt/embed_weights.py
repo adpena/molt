@@ -48,7 +48,8 @@ lines.append("}")
 lines.append("")
 
 # Emit the rest of the inference code
-lines.append("""
+lines.append(
+    """
 def linear(x: list[float], w: list[list[float]]) -> list[float]:
     out: list[float] = []
     for row in w:
@@ -173,7 +174,8 @@ def main() -> None:
 
 
 main()
-""".rstrip())
+""".rstrip()
+)
 
 with open("inference_wasm.py", "w") as f:
     f.write("\n".join(lines) + "\n")

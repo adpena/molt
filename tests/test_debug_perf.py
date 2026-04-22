@@ -13,7 +13,7 @@ from molt.debug.perf import (
 
 def test_extract_profile_from_log_reads_molt_profile_json() -> None:
     profile = extract_profile_from_log(
-        "noise\nmolt_profile_json {\"profile\": {\"call_dispatch\": 1}, \"hot_paths\": {}, \"deopt_reasons\": {}}\n"
+        'noise\nmolt_profile_json {"profile": {"call_dispatch": 1}, "hot_paths": {}, "deopt_reasons": {}}\n'
     )
     assert profile == {
         "profile": {"call_dispatch": 1},

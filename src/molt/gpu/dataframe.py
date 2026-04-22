@@ -40,10 +40,8 @@ Usage (Polars-style):
         .collect())
 """
 
-from . import Buffer, to_device, from_device, alloc
+from . import Buffer, to_device
 from . import ops
-import struct
-import json
 import math
 
 
@@ -64,8 +62,12 @@ class Series:
                 self._dtype = str
                 self._size = len(data)
             else:
-                self._dtype = dtype or (float if any(isinstance(x, float) for x in data) else int)
-                self._buffer = to_device([float(x) if self._dtype == float else x for x in data])
+                self._dtype = dtype or (
+                    float if any(isinstance(x, float) for x in data) else int
+                )
+                self._buffer = to_device(
+                    [float(x) if self._dtype is float else x for x in data]
+                )
                 self._size = len(data)
                 self._str_data = None
         else:
@@ -86,15 +88,17 @@ class Series:
             return self._slice(idx)
         raise TypeError(f"Cannot index Series with {type(idx)}")
 
-    def _filter_by_mask(self, mask: 'Series') -> 'Series':
+    def _filter_by_mask(self, mask: "Series") -> "Series":
         if self._str_data is not None:
-            filtered = [self._str_data[i] for i in range(self._size) if mask._get_bool(i)]
+            filtered = [
+                self._str_data[i] for i in range(self._size) if mask._get_bool(i)
+            ]
             return Series(self.name, filtered)
         else:
             filtered = [self._buffer[i] for i in range(self._size) if mask._get_bool(i)]
             return Series(self.name, filtered, dtype=self._dtype)
 
-    def _slice(self, s: slice) -> 'Series':
+    def _slice(self, s: slice) -> "Series":
         indices = range(*s.indices(self._size))
         if self._str_data is not None:
             return Series(self.name, [self._str_data[i] for i in indices])
@@ -107,12 +111,23 @@ class Series:
         return bool(self._str_data[idx]) if self._str_data else False
 
     # Comparison operators -> return boolean Series
-    def __gt__(self, other): return self._compare(other, lambda a, b: 1.0 if a > b else 0.0)
-    def __lt__(self, other): return self._compare(other, lambda a, b: 1.0 if a < b else 0.0)
-    def __ge__(self, other): return self._compare(other, lambda a, b: 1.0 if a >= b else 0.0)
-    def __le__(self, other): return self._compare(other, lambda a, b: 1.0 if a <= b else 0.0)
-    def __eq__(self, other): return self._compare(other, lambda a, b: 1.0 if a == b else 0.0)
-    def __ne__(self, other): return self._compare(other, lambda a, b: 1.0 if a != b else 0.0)
+    def __gt__(self, other):
+        return self._compare(other, lambda a, b: 1.0 if a > b else 0.0)
+
+    def __lt__(self, other):
+        return self._compare(other, lambda a, b: 1.0 if a < b else 0.0)
+
+    def __ge__(self, other):
+        return self._compare(other, lambda a, b: 1.0 if a >= b else 0.0)
+
+    def __le__(self, other):
+        return self._compare(other, lambda a, b: 1.0 if a <= b else 0.0)
+
+    def __eq__(self, other):
+        return self._compare(other, lambda a, b: 1.0 if a == b else 0.0)
+
+    def __ne__(self, other):
+        return self._compare(other, lambda a, b: 1.0 if a != b else 0.0)
 
     def _compare(self, other, op):
         if isinstance(other, (int, float)):
@@ -126,10 +141,17 @@ class Series:
         return Series(f"{self.name}_cmp", result, dtype=float)
 
     # Arithmetic operators
-    def __add__(self, other): return self._arith(other, lambda a, b: a + b, "add")
-    def __sub__(self, other): return self._arith(other, lambda a, b: a - b, "sub")
-    def __mul__(self, other): return self._arith(other, lambda a, b: a * b, "mul")
-    def __truediv__(self, other): return self._arith(other, lambda a, b: a / b if b != 0 else float('inf'), "div")
+    def __add__(self, other):
+        return self._arith(other, lambda a, b: a + b, "add")
+
+    def __sub__(self, other):
+        return self._arith(other, lambda a, b: a - b, "sub")
+
+    def __mul__(self, other):
+        return self._arith(other, lambda a, b: a * b, "mul")
+
+    def __truediv__(self, other):
+        return self._arith(other, lambda a, b: a / b if b != 0 else float("inf"), "div")
 
     def _arith(self, other, op, name):
         if isinstance(other, (int, float)):
@@ -142,27 +164,33 @@ class Series:
 
     # Aggregations
     def sum(self):
-        if self._buffer is None: raise TypeError("Cannot sum string Series")
-        return ops.reduce(self._buffer, 'sum')
+        if self._buffer is None:
+            raise TypeError("Cannot sum string Series")
+        return ops.reduce(self._buffer, "sum")
 
     def mean(self):
-        if self._buffer is None: raise TypeError("Cannot mean string Series")
-        return ops.reduce(self._buffer, 'mean')
+        if self._buffer is None:
+            raise TypeError("Cannot mean string Series")
+        return ops.reduce(self._buffer, "mean")
 
     def min(self):
-        if self._buffer is None: return min(self._str_data)
-        return ops.reduce(self._buffer, 'min')
+        if self._buffer is None:
+            return min(self._str_data)
+        return ops.reduce(self._buffer, "min")
 
     def max(self):
-        if self._buffer is None: return max(self._str_data)
-        return ops.reduce(self._buffer, 'max')
+        if self._buffer is None:
+            return max(self._str_data)
+        return ops.reduce(self._buffer, "max")
 
     def count(self):
         return self._size
 
     def std(self):
         m = self.mean()
-        variance = sum((self._buffer[i] - m) ** 2 for i in range(self._size)) / max(self._size - 1, 1)
+        variance = sum((self._buffer[i] - m) ** 2 for i in range(self._size)) / max(
+            self._size - 1, 1
+        )
         return math.sqrt(variance)
 
     def unique(self):
@@ -222,7 +250,9 @@ class DataFrame:
 
         if isinstance(data, dict):
             for name, values in data.items():
-                self._columns[name] = Series(name, values) if not isinstance(values, Series) else values
+                self._columns[name] = (
+                    Series(name, values) if not isinstance(values, Series) else values
+                )
                 self._column_order.append(name)
         elif data is None:
             pass
@@ -301,7 +331,9 @@ class DataFrame:
             result._column_order.append(col_name)
         if isinstance(expr, Series):
             col_name = name or expr.name
-            result._columns[col_name] = Series(col_name, expr.to_list(), dtype=expr._dtype)
+            result._columns[col_name] = Series(
+                col_name, expr.to_list(), dtype=expr._dtype
+            )
             if col_name not in result._column_order:
                 result._column_order.append(col_name)
         return result
@@ -310,7 +342,11 @@ class DataFrame:
         result = DataFrame()
         for name in self._column_order:
             new_name = mapping.get(name, name)
-            result._columns[new_name] = Series(new_name, self._columns[name].to_list(), dtype=self._columns[name]._dtype)
+            result._columns[new_name] = Series(
+                new_name,
+                self._columns[name].to_list(),
+                dtype=self._columns[name]._dtype,
+            )
             result._column_order.append(new_name)
         return result
 
@@ -402,7 +438,9 @@ class DataFrame:
         sep = "-" * len(header)
         lines = [header, sep]
         for i in range(rows):
-            row = " | ".join(f"{str(self._columns[name][i]):>12}" for name in self._column_order)
+            row = " | ".join(
+                f"{str(self._columns[name][i]):>12}" for name in self._column_order
+            )
             lines.append(row)
         if len(self) > 5:
             lines.append(f"... ({len(self)} rows total)")
@@ -470,14 +508,20 @@ class GroupBy:
         return DataFrame(result_data)
 
     def sum(self):
-        numeric_cols = [name for name, col in self._df._columns.items()
-                       if name not in self._by_cols and col._dtype != str]
+        numeric_cols = [
+            name
+            for name, col in self._df._columns.items()
+            if name not in self._by_cols and col._dtype is not str
+        ]
         aggs = {col: (col, "sum") for col in numeric_cols}
         return self.agg(**aggs)
 
     def mean(self):
-        numeric_cols = [name for name, col in self._df._columns.items()
-                       if name not in self._by_cols and col._dtype != str]
+        numeric_cols = [
+            name
+            for name, col in self._df._columns.items()
+            if name not in self._by_cols and col._dtype is not str
+        ]
         aggs = {col: (col, "mean") for col in numeric_cols}
         return self.agg(**aggs)
 

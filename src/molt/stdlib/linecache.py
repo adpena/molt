@@ -19,9 +19,7 @@ _MOLT_PATH_JOIN = _require_intrinsic("molt_path_join")
 _MOLT_LINECACHE_LOADER_GET_SOURCE = _require_intrinsic(
     "molt_linecache_loader_get_source"
 )
-_MOLT_LINECACHE_DETECT_ENCODING = _require_intrinsic(
-    "molt_linecache_detect_encoding"
-)
+_MOLT_LINECACHE_DETECT_ENCODING = _require_intrinsic("molt_linecache_detect_encoding")
 
 
 __all__ = ["getline", "clearcache", "checkcache", "lazycache"]
@@ -281,10 +279,7 @@ def _register_code(code: object, string: str, name: str) -> None:
 
 
 def _detect_encoding(readline, filename: str | None) -> tuple[str, list[bytes]]:
-    try:
-        filename = readline.__self__.name
-    except AttributeError:
-        pass
+    _ = filename
 
     def read_or_stop() -> bytes:
         try:
@@ -341,5 +336,6 @@ def _open_source(filename: str):
         True,
         None,
     )
+
 
 globals().pop("_require_intrinsic", None)

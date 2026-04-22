@@ -484,7 +484,7 @@ def generate(temperature: float, num_samples: int) -> list[str]:
         chars: list[str] = []
         for pos in range(BLOCK_SIZE):
             logits: list[float] = gpt(token, pos, keys, values)
-            scaled: list[float] = [l / temperature for l in logits]
+            scaled: list[float] = [logit / temperature for logit in logits]
             probs: list[float] = softmax(scaled)
             token = random.choices(population, weights=probs)[0]
             if token == bos:

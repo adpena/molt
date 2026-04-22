@@ -40,12 +40,7 @@ def test_prescan_compile_warnings_walks_module_once(
 
 def test_prescan_compile_warnings_collects_expected_messages() -> None:
     source = (
-        "~True\n"
-        "while True:\n"
-        "    try:\n"
-        "        break\n"
-        "    finally:\n"
-        "        continue\n"
+        "~True\nwhile True:\n    try:\n        break\n    finally:\n        continue\n"
     )
     module = ast.parse(source)
     gen = SimpleTIRGenerator()

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 from tinygrad.tensor import Tensor
-from tinygrad.dtypes import dtypes
 
 
 class Linear:

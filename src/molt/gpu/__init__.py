@@ -141,12 +141,12 @@ def to_device(data) -> Buffer:
         return Buffer(raw, int, len(data), format_char="q")
     elif isinstance(data, (list, tuple)):
         if not data:
-            return Buffer(b'', float, 0)
+            return Buffer(b"", float, 0)
         if isinstance(data[0], float):
-            raw = struct.pack(f'{len(data)}d', *data)
+            raw = struct.pack(f"{len(data)}d", *data)
             return Buffer(raw, float, len(data), format_char="d")
         else:
-            raw = struct.pack(f'{len(data)}q', *data)
+            raw = struct.pack(f"{len(data)}q", *data)
             return Buffer(raw, int, len(data), format_char="q")
     else:
         raise TypeError(f"Cannot convert {type(data)} to GPU buffer")
@@ -158,7 +158,8 @@ def from_device(buf: Buffer) -> list:
     if count == 0:
         return []
     width = buf.itemsize
-    return list(struct.unpack(f'{count}{buf.format_char}', buf._data[:count * width]))
+    return list(struct.unpack(f"{count}{buf.format_char}", buf._data[: count * width]))
+
 
 def alloc(size: int, dtype: type = float, *, format_char: str | None = None) -> Buffer:
     """Allocate an empty GPU buffer."""
@@ -216,8 +217,8 @@ class _KernelLauncher:
     def __getitem__(self, config):
         """Configure launch: kernel[grid, threads] or kernel[total_threads]"""
         if isinstance(config, dict):
-            self._grid = config.get('grid', 256)
-            self._threads = config.get('threads', 256)
+            self._grid = config.get("grid", 256)
+            self._threads = config.get("threads", 256)
         elif isinstance(config, tuple):
             if len(config) >= 2:
                 self._grid = config[0]
@@ -245,13 +246,16 @@ class _KernelLauncher:
             "molt_gpu_kernel_launch",
             "_MOLT_GPU_KERNEL_LAUNCH",
         )
-        if callable(backend_launch) and getattr(self._func, "__molt_gpu_kernel__", False):
+        if callable(backend_launch) and getattr(
+            self._func, "__molt_gpu_kernel__", False
+        ):
             return backend_launch(self._func, grid, threads, args)
 
         total_threads = grid * threads if isinstance(grid, int) else grid
 
         # Interpreted fallback: simulate GPU execution sequentially
         import molt.gpu as gpu_module
+
         original_thread_id = gpu_module.thread_id
 
         try:

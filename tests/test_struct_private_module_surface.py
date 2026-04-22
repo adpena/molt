@@ -100,7 +100,16 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
 
 def test__struct_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
-    expected_names = ["Struct", "calcsize", "error", "iter_unpack", "pack", "pack_into", "unpack", "unpack_from"]
+    expected_names = [
+        "Struct",
+        "calcsize",
+        "error",
+        "iter_unpack",
+        "pack",
+        "pack_into",
+        "unpack",
+        "unpack_from",
+    ]
     actual_names = [name for name, _, _ in rows]
     assert actual_names == expected_names
     # All non-type entries must be callable

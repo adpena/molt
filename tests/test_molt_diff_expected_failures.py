@@ -673,7 +673,9 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
         "_diff_run_single",
         lambda *args, **kwargs: {"path": args[0], "status": "pass"},
     )
-    monkeypatch.setattr(module, "_order_test_files", lambda test_files, jobs: test_files)
+    monkeypatch.setattr(
+        module, "_order_test_files", lambda test_files, jobs: test_files
+    )
 
     def fake_run_molt_build_only(file_path: str, build_profile: str):
         del file_path, build_profile

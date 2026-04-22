@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Package a directory into a bundle.tar for VFS /bundle mount."""
+
 from __future__ import annotations
 import argparse
 import io
 import json
-import os
 import sys
 import tarfile
 from pathlib import Path
@@ -45,7 +45,9 @@ def create_bundle(source_dir: Path, output: Path) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Package a directory into a VFS bundle")
+    parser = argparse.ArgumentParser(
+        description="Package a directory into a VFS bundle"
+    )
     parser.add_argument("source", type=Path, help="Source directory to bundle")
     parser.add_argument("-o", "--output", type=Path, default=Path("bundle.tar"))
     parser.add_argument("--json", action="store_true", help="Output manifest as JSON")

@@ -31,16 +31,14 @@ _RECORD_DROP = _require_intrinsic("molt_logging_record_drop")
 # Formatter intrinsics
 _FORMATTER_NEW = _require_intrinsic("molt_logging_formatter_new")
 _FORMATTER_FORMAT = _require_intrinsic("molt_logging_formatter_format")
-_FORMATTER_FORMAT_TIME = _require_intrinsic(
-    "molt_logging_formatter_format_time")
+_FORMATTER_FORMAT_TIME = _require_intrinsic("molt_logging_formatter_format_time")
 _FORMATTER_DROP = _require_intrinsic("molt_logging_formatter_drop")
 
 # Handler intrinsics
 _HANDLER_NEW = _require_intrinsic("molt_logging_handler_new")
 _HANDLER_EMIT = _require_intrinsic("molt_logging_handler_emit")
 _HANDLER_SET_LEVEL = _require_intrinsic("molt_logging_handler_set_level")
-_HANDLER_SET_FORMATTER = _require_intrinsic(
-    "molt_logging_handler_set_formatter")
+_HANDLER_SET_FORMATTER = _require_intrinsic("molt_logging_handler_set_formatter")
 _HANDLER_FLUSH = _require_intrinsic("molt_logging_handler_flush")
 _HANDLER_CLOSE = _require_intrinsic("molt_logging_handler_close")
 _HANDLER_DROP = _require_intrinsic("molt_logging_handler_drop")
@@ -53,13 +51,12 @@ _STREAM_HANDLER_EMIT = _require_intrinsic("molt_logging_stream_handler_emit")
 _LOGGER_NEW = _require_intrinsic("molt_logging_logger_new")
 _LOGGER_SET_LEVEL = _require_intrinsic("molt_logging_logger_set_level")
 _LOGGER_ADD_HANDLER = _require_intrinsic("molt_logging_logger_add_handler")
-_LOGGER_REMOVE_HANDLER = _require_intrinsic(
-    "molt_logging_logger_remove_handler")
+_LOGGER_REMOVE_HANDLER = _require_intrinsic("molt_logging_logger_remove_handler")
 _LOGGER_LOG = _require_intrinsic("molt_logging_logger_log")
-_LOGGER_IS_ENABLED_FOR = _require_intrinsic(
-    "molt_logging_logger_is_enabled_for")
+_LOGGER_IS_ENABLED_FOR = _require_intrinsic("molt_logging_logger_is_enabled_for")
 _LOGGER_GET_EFFECTIVE_LEVEL = _require_intrinsic(
-    "molt_logging_logger_get_effective_level")
+    "molt_logging_logger_get_effective_level"
+)
 _LOGGER_DROP = _require_intrinsic("molt_logging_logger_drop")
 
 # Manager / root intrinsics

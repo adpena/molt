@@ -6,12 +6,11 @@
 #
 # No metaclasses, no exec/eval, no monkey-patching.
 
-import json
-import os
-import sys
 
 from edgebox.types import (
-    Tool, IngressHandler, EventListener, Middleware, PluginConfig, Event,
+    Tool,
+    IngressHandler,
+    PluginConfig,
 )
 from edgebox.events import EventBus
 from edgebox.settings import Settings
@@ -20,6 +19,7 @@ from edgebox.settings import Settings
 # ---------------------------------------------------------------------------
 # EdgeboxPlugin -- the Blueprint
 # ---------------------------------------------------------------------------
+
 
 class EdgeboxPlugin:
     """A plugin that groups tools, handlers, events, and middleware.
@@ -51,11 +51,11 @@ class EdgeboxPlugin:
         else:
             self.config = PluginConfig
 
-        self._tools = []           # list of Tool
-        self._handlers = []        # list of IngressHandler
-        self._event_listeners = [] # list of (pattern, fn, priority)
-        self._middleware = []       # list of Middleware instances
-        self._setup_hooks = []     # list of callable(box, settings)
+        self._tools = []  # list of Tool
+        self._handlers = []  # list of IngressHandler
+        self._event_listeners = []  # list of (pattern, fn, priority)
+        self._middleware = []  # list of Middleware instances
+        self._setup_hooks = []  # list of callable(box, settings)
         self._teardown_hooks = []  # list of callable(box)
 
     # -- tool decorator -----------------------------------------------------
@@ -68,6 +68,7 @@ class EdgeboxPlugin:
             def get_timeline(box, pr_id=0, limit=50):
                 ...
         """
+
         def decorator(fn):
             t = Tool(
                 name=name,
@@ -78,6 +79,7 @@ class EdgeboxPlugin:
             )
             self._tools.append(t)
             return fn
+
         return decorator
 
     # -- handler decorator --------------------------------------------------
@@ -90,6 +92,7 @@ class EdgeboxPlugin:
             def handle_webhook(box, request):
                 ...
         """
+
         def decorator(fn):
             h = IngressHandler(
                 method=method,
@@ -99,6 +102,7 @@ class EdgeboxPlugin:
             )
             self._handlers.append(h)
             return fn
+
         return decorator
 
     # -- event decorator ----------------------------------------------------
@@ -115,9 +119,11 @@ class EdgeboxPlugin:
             def on_any_push(box, event):
                 ...
         """
+
         def decorator(fn):
             self._event_listeners.append((pattern, fn, priority))
             return fn
+
         return decorator
 
     # -- middleware ----------------------------------------------------------
@@ -164,6 +170,7 @@ class EdgeboxPlugin:
 # Plugin factory -- create_plugin(config) pattern (Flask-inspired)
 # ---------------------------------------------------------------------------
 
+
 def create_plugin(name, config_class=None):
     """Factory function to create a new plugin instance.
 
@@ -176,6 +183,7 @@ def create_plugin(name, config_class=None):
 # ---------------------------------------------------------------------------
 # PluginRegistry -- manages installed plugins (Django INSTALLED_APPS)
 # ---------------------------------------------------------------------------
+
 
 class PluginRegistry:
     """Registry that discovers, loads, and indexes all installed plugins.
@@ -191,11 +199,11 @@ class PluginRegistry:
     DISCOVERY_MODULES = ["tools", "handlers", "events"]
 
     def __init__(self):
-        self._plugins = {}       # name -> EdgeboxPlugin
-        self._load_order = []    # list of plugin names in load order
-        self._tools = {}         # tool_name -> Tool
-        self._handlers = []      # list of IngressHandler
-        self._middleware = []     # list of Middleware (sorted by priority)
+        self._plugins = {}  # name -> EdgeboxPlugin
+        self._load_order = []  # list of plugin names in load order
+        self._tools = {}  # tool_name -> Tool
+        self._handlers = []  # list of IngressHandler
+        self._middleware = []  # list of Middleware (sorted by priority)
         self._event_bus = EventBus()
         self._settings = Settings()
 
@@ -223,9 +231,7 @@ class PluginRegistry:
 
         # Register default config
         if hasattr(plugin.config, "default_config"):
-            self._settings.register_defaults(
-                plugin.name, plugin.config.default_config
-            )
+            self._settings.register_defaults(plugin.name, plugin.config.default_config)
 
         # Index tools
         idx = 0
@@ -235,9 +241,13 @@ class PluginRegistry:
             if tool.name in self._tools:
                 existing = self._tools[tool.name]
                 raise ValueError(
-                    "Tool name conflict: '" + tool.name
-                    + "' registered by both '" + existing.plugin_name
-                    + "' and '" + tool.plugin_name + "'"
+                    "Tool name conflict: '"
+                    + tool.name
+                    + "' registered by both '"
+                    + existing.plugin_name
+                    + "' and '"
+                    + tool.plugin_name
+                    + "'"
                 )
             self._tools[tool.name] = tool
 
@@ -252,8 +262,7 @@ class PluginRegistry:
         while idx < len(plugin._event_listeners):
             pattern, fn, priority = plugin._event_listeners[idx]
             idx = idx + 1
-            self._event_bus.on(pattern, fn, plugin_name=plugin.name,
-                               priority=priority)
+            self._event_bus.on(pattern, fn, plugin_name=plugin.name, priority=priority)
 
         # Index middleware
         idx = 0
@@ -308,7 +317,8 @@ class PluginRegistry:
 
         if plugin is None:
             raise ValueError(
-                "No EdgeboxPlugin instance found in " + plugin_module_path
+                "No EdgeboxPlugin instance found in "
+                + plugin_module_path
                 + ". Define a `plugin` variable in __init__.py."
             )
 
@@ -445,6 +455,7 @@ def get_current_box():
 # ---------------------------------------------------------------------------
 # Module import helper
 # ---------------------------------------------------------------------------
+
 
 def _import_module(dotted_path):
     """Import a module by dotted path, returning it or None on failure.

@@ -38,13 +38,11 @@ _MOLT_CSV_QUOTE_STRINGS = _require_intrinsic("molt_csv_quote_strings")
 _MOLT_CSV_QUOTE_NOTNULL = _require_intrinsic("molt_csv_quote_notnull")
 _MOLT_CSV_FIELD_SIZE_LIMIT = _require_intrinsic("molt_csv_field_size_limit")
 _MOLT_CSV_REGISTER_DIALECT = _require_intrinsic("molt_csv_register_dialect")
-_MOLT_CSV_UNREGISTER_DIALECT = _require_intrinsic(
-    "molt_csv_unregister_dialect")
+_MOLT_CSV_UNREGISTER_DIALECT = _require_intrinsic("molt_csv_unregister_dialect")
 _MOLT_CSV_LIST_DIALECTS = _require_intrinsic("molt_csv_list_dialects")
 _MOLT_CSV_GET_DIALECT = _require_intrinsic("molt_csv_get_dialect")
 _MOLT_CSV_READER_NEW = _require_intrinsic("molt_csv_reader_new")
-_MOLT_CSV_READER_PARSE_LINE = _require_intrinsic(
-    "molt_csv_reader_parse_line")
+_MOLT_CSV_READER_PARSE_LINE = _require_intrinsic("molt_csv_reader_parse_line")
 _MOLT_CSV_READER_DROP = _require_intrinsic("molt_csv_reader_drop")
 _MOLT_CSV_DICT_PROJECT = _require_intrinsic("molt_csv_dict_project")
 _MOLT_CSV_WRITER_NEW = _require_intrinsic("molt_csv_writer_new")
@@ -53,13 +51,10 @@ _MOLT_CSV_WRITER_WRITEROWS = _require_intrinsic("molt_csv_writer_writerows")
 _MOLT_CSV_WRITER_DROP = _require_intrinsic("molt_csv_writer_drop")
 _MOLT_CSV_SNIFF = _require_intrinsic("molt_csv_sniff")
 _MOLT_CSV_HAS_HEADER = _require_intrinsic("molt_csv_has_header")
-_MOLT_CSV_VALIDATE_FMTPARAMS = _require_intrinsic(
-    "molt_csv_validate_fmtparams")
-_MOLT_CSV_VALIDATE_DIALECT = _require_intrinsic(
-    "molt_csv_validate_dialect")
+_MOLT_CSV_VALIDATE_FMTPARAMS = _require_intrinsic("molt_csv_validate_fmtparams")
+_MOLT_CSV_VALIDATE_DIALECT = _require_intrinsic("molt_csv_validate_dialect")
 _MOLT_CSV_NORMALIZE_ROW = _require_intrinsic("molt_csv_normalize_row")
-_MOLT_CSV_DIALECT_LOOKUP_NAME = _require_intrinsic(
-    "molt_csv_dialect_lookup_name")
+_MOLT_CSV_DIALECT_LOOKUP_NAME = _require_intrinsic("molt_csv_dialect_lookup_name")
 
 _MOLT_CSV_RUNTIME_READY()
 
@@ -555,5 +550,6 @@ class Sniffer:
             return bool(_MOLT_CSV_HAS_HEADER(sample))
         except ValueError as exc:
             raise Error(str(exc)) from None
+
 
 globals().pop("_require_intrinsic", None)

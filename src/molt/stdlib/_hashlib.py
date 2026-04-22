@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib as _hashlib
 import hmac as _hmac
-from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 

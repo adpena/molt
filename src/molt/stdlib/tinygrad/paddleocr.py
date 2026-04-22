@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import struct
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.tensor import Tensor
@@ -46,6 +47,7 @@ from tinygrad.dtypes import dtypes
 # ONNX weight parser — minimal protobuf reader for ONNX initializer tensors.
 # ONNX uses protobuf: we parse only the fields we need (no protobuf dep).
 # ---------------------------------------------------------------------------
+
 
 class OnnxWeightParser:
     """Extract named weight tensors from an ONNX model file.
@@ -68,14 +70,16 @@ class OnnxWeightParser:
 
     # ONNX data_type enum → (struct format char, element byte size)
     _DTYPE_MAP: dict[int, tuple[str, int]] = {
-        1: ("f", 4),    # FLOAT
-        6: ("i", 4),    # INT32
-        7: ("q", 8),    # INT64
-        11: ("d", 8),   # DOUBLE
+        1: ("f", 4),  # FLOAT
+        6: ("i", 4),  # INT32
+        7: ("q", 8),  # INT64
+        11: ("d", 8),  # DOUBLE
     }
 
     @staticmethod
-    def parse(data: bytes) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
+    def parse(
+        data: bytes,
+    ) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
         """Parse ONNX bytes → {name: (shape, data_type, flat_values)}.
 
         ``data_type`` follows ONNX convention (1=float32, 6=int32, 7=int64).
@@ -91,7 +95,9 @@ class OnnxWeightParser:
     # Strategy 1: onnx library (preferred)
     # ------------------------------------------------------------------
     @staticmethod
-    def _parse_with_onnx(data: bytes) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
+    def _parse_with_onnx(
+        data: bytes,
+    ) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
         import onnx
         from onnx import numpy_helper
         import numpy as np
@@ -105,7 +111,9 @@ class OnnxWeightParser:
             dtype_code = init.data_type
             shape = tuple(int(d) for d in init.dims)
             if dtype_code in (1, 11):
-                values: list[float] | list[int] = arr.astype(np.float32).flatten().tolist()
+                values: list[float] | list[int] = (
+                    arr.astype(np.float32).flatten().tolist()
+                )
             elif dtype_code in (6, 7):
                 values = arr.flatten().tolist()
             else:
@@ -141,7 +149,9 @@ class OnnxWeightParser:
     # Strategy 2: raw protobuf (no dependencies)
     # ------------------------------------------------------------------
     @staticmethod
-    def _parse_raw_protobuf(data: bytes) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
+    def _parse_raw_protobuf(
+        data: bytes,
+    ) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
         weights: dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]] = {}
 
         graph_bytes = OnnxWeightParser._extract_field(data, field_num=7, wire_type=2)
@@ -159,24 +169,32 @@ class OnnxWeightParser:
 
             # field 5 = initializer (TensorProto)
             if field_num == 5 and wire_type == 2:
-                name, shape, dtype_code, vals = OnnxWeightParser._parse_tensor_proto(value)
+                name, shape, dtype_code, vals = OnnxWeightParser._parse_tensor_proto(
+                    value
+                )
                 if name and vals is not None:
                     weights[name] = (shape, dtype_code, vals)
 
             # field 1 = node (NodeProto) — look for Constant ops
             if field_num == 1 and wire_type == 2:
-                cname, cshape, cdtype, cvals = OnnxWeightParser._parse_constant_node(value)
+                cname, cshape, cdtype, cvals = OnnxWeightParser._parse_constant_node(
+                    value
+                )
                 if cname and cvals is not None:
                     weights[cname] = (cshape, cdtype, cvals)
 
         return weights
 
     @staticmethod
-    def _parse_constant_node(data: bytes) -> tuple[str, tuple[int, ...], int, list[float] | list[int] | None]:
+    def _parse_constant_node(
+        data: bytes,
+    ) -> tuple[str, tuple[int, ...], int, list[float] | list[int] | None]:
         """Parse a NodeProto looking for Constant op with value attribute."""
         op_type = ""
         output_name = ""
-        tensor_data: tuple[str, tuple[int, ...], int, list[float] | list[int] | None] | None = None
+        tensor_data: (
+            tuple[str, tuple[int, ...], int, list[float] | list[int] | None] | None
+        ) = None
 
         offset = 0
         while offset < len(data):
@@ -201,7 +219,11 @@ class OnnxWeightParser:
         return output_name, shape, dtype_code, vals
 
     @staticmethod
-    def _parse_attribute(data: bytes) -> tuple[str, tuple[str, tuple[int, ...], int, list[float] | list[int] | None] | None]:
+    def _parse_attribute(
+        data: bytes,
+    ) -> tuple[
+        str, tuple[str, tuple[int, ...], int, list[float] | list[int] | None] | None
+    ]:
         """Parse AttributeProto. Returns (attr_name, tensor_data_or_None)."""
         attr_name = ""
         tensor_bytes: bytes | None = None
@@ -222,7 +244,9 @@ class OnnxWeightParser:
         return attr_name, None
 
     @staticmethod
-    def _parse_tensor_proto(data: bytes) -> tuple[str, tuple[int, ...], int, list[float] | list[int] | None]:
+    def _parse_tensor_proto(
+        data: bytes,
+    ) -> tuple[str, tuple[int, ...], int, list[float] | list[int] | None]:
         name = ""
         dims: list[int] = []
         data_type = 0
@@ -249,19 +273,19 @@ class OnnxWeightParser:
                 data_type = value
             elif field_num == 4 and wire_type == 2:
                 count = len(value) // 4
-                float_data = list(struct.unpack(f"<{count}f", value[:count * 4]))
+                float_data = list(struct.unpack(f"<{count}f", value[: count * 4]))
             elif field_num == 4 and wire_type == 5:
                 float_data.append(struct.unpack("<f", value)[0])
             elif field_num == 7 and wire_type == 2:
                 # packed repeated int64 (int64_data)
                 count = len(value) // 8
-                int64_data = list(struct.unpack(f"<{count}q", value[:count * 8]))
+                int64_data = list(struct.unpack(f"<{count}q", value[: count * 8]))
             elif field_num == 7 and wire_type == 0:
                 int64_data.append(value)
             elif field_num == 8 and wire_type == 2:
                 # packed repeated int32 (int32_data, field 8 in some versions)
                 count = len(value) // 4
-                int32_data = list(struct.unpack(f"<{count}i", value[:count * 4]))
+                int32_data = list(struct.unpack(f"<{count}i", value[: count * 4]))
             elif field_num == 13 and wire_type == 2:
                 raw_data = value
 
@@ -271,7 +295,9 @@ class OnnxWeightParser:
         if raw_data is not None and dtype_info is not None:
             fmt_char, elem_size = dtype_info
             count = len(raw_data) // elem_size
-            vals: list[float] | list[int] = list(struct.unpack(f"<{count}{fmt_char}", raw_data[:count * elem_size]))
+            vals: list[float] | list[int] = list(
+                struct.unpack(f"<{count}{fmt_char}", raw_data[: count * elem_size])
+            )
             return name, shape, data_type, vals
 
         if data_type in (1, 11) and float_data:
@@ -316,18 +342,18 @@ class OnnxWeightParser:
         elif wire_type == 1:  # 64-bit
             if offset + 8 > len(data):
                 return field_num, wire_type, None, None
-            value = data[offset:offset + 8]
+            value = data[offset : offset + 8]
             return field_num, wire_type, value, offset + 8
         elif wire_type == 2:  # length-delimited
             length, offset = OnnxWeightParser._read_varint(data, offset)
             if offset is None or offset + length > len(data):
                 return field_num, wire_type, None, None
-            value = data[offset:offset + length]
+            value = data[offset : offset + length]
             return field_num, wire_type, value, offset + length
         elif wire_type == 5:  # 32-bit
             if offset + 4 > len(data):
                 return field_num, wire_type, None, None
-            value = data[offset:offset + 4]
+            value = data[offset : offset + 4]
             return field_num, wire_type, value, offset + 4
         else:
             return field_num, wire_type, None, None
@@ -361,6 +387,7 @@ class OnnxWeightParser:
 # Weight container — maps ONNX node names to tinygrad Tensors.
 # ---------------------------------------------------------------------------
 
+
 class WeightStore:
     """Holds named weight tensors loaded from ONNX."""
 
@@ -382,6 +409,7 @@ class WeightStore:
             if not shape:
                 shape = (len(values),)
             from tinygrad.lazy import LazyOp, LazyBuffer
+
             if dtype_code in (6, 7):
                 # Integer constant (shape params, indices, etc.)
                 # Store as int64 for shape operations
@@ -414,8 +442,15 @@ class WeightStore:
 # Reusable NN building blocks for PaddleOCR (all tinygrad primitives).
 # ---------------------------------------------------------------------------
 
-def _batch_norm(x: Tensor, weight: Tensor, bias: Tensor,
-                mean: Tensor, var: Tensor, eps: float = 1e-5) -> Tensor:
+
+def _batch_norm(
+    x: Tensor,
+    weight: Tensor,
+    bias: Tensor,
+    mean: Tensor,
+    var: Tensor,
+    eps: float = 1e-5,
+) -> Tensor:
     """BatchNormalization in inference mode.
 
     x: (N, C, H, W)
@@ -433,12 +468,19 @@ def _batch_norm(x: Tensor, weight: Tensor, bias: Tensor,
     v = var.reshape(1, c, 1, 1)
 
     inv_std = (v + eps).sqrt().reciprocal()
-    return (x - m._broadcast_to(x.shape)) * inv_std._broadcast_to(x.shape) * w._broadcast_to(x.shape) + b._broadcast_to(x.shape)
+    return (x - m._broadcast_to(x.shape)) * inv_std._broadcast_to(
+        x.shape
+    ) * w._broadcast_to(x.shape) + b._broadcast_to(x.shape)
 
 
-def _conv_bn_relu(x: Tensor, ws: WeightStore, prefix: str,
-                  stride: int = 1, padding: int = 0,
-                  activation: str = "relu") -> Tensor:
+def _conv_bn_relu(
+    x: Tensor,
+    ws: WeightStore,
+    prefix: str,
+    stride: int = 1,
+    padding: int = 0,
+    activation: str = "relu",
+) -> Tensor:
     """Conv2d + BatchNorm + activation — the most common block in PaddleOCR.
 
     Looks up weights from the WeightStore using PaddlePaddle's naming:
@@ -467,7 +509,9 @@ def _conv_bn_relu(x: Tensor, ws: WeightStore, prefix: str,
         # hard_sigmoid(x) = clip(x * alpha + beta, 0, 1), alpha=0.2, beta=0.5
         # Equivalent to: clip(x/6 + 0.5, 0, 1) in some implementations
         # PaddleOCR ONNX uses: clip(x * 0.1666... + 0.5, 0, 1)
-        return (conv_out * 0.16666667 + 0.5).relu() - (conv_out * 0.16666667 - 0.5).relu()
+        return (conv_out * 0.16666667 + 0.5).relu() - (
+            conv_out * 0.16666667 - 0.5
+        ).relu()
     elif activation == "none":
         return conv_out
     else:
@@ -550,6 +594,7 @@ def _nearest_upsample_2x(x: Tensor) -> Tensor:
 # DBNet Text Detector
 # ---------------------------------------------------------------------------
 
+
 class PaddleOCRDetector:
     """DBNet text detector — finds text bounding boxes in images.
 
@@ -586,6 +631,7 @@ class PaddleOCRDetector:
 
         # Load the full ONNX graph for interpreter-based forward pass
         from tinygrad.onnx_interpreter import OnnxInterpreter
+
         self._interpreter = OnnxInterpreter()
         self._interpreter.load_model(onnx_bytes)
 
@@ -629,8 +675,9 @@ class PaddleOCRDetector:
             return tensor
         raise RuntimeError("Detector ONNX graph produced no outputs")
 
-    def detect(self, image: Tensor, threshold: float = 0.3,
-               min_area: int = 100) -> list[tuple[int, int, int, int]]:
+    def detect(
+        self, image: Tensor, threshold: float = 0.3, min_area: int = 100
+    ) -> list[tuple[int, int, int, int]]:
         """Run detection and extract bounding boxes.
 
         Args:
@@ -690,6 +737,7 @@ class PaddleOCRDetector:
 # Direction Classifier
 # ---------------------------------------------------------------------------
 
+
 class PaddleOCRClassifier:
     """Text direction classifier — determines 0° vs 180° orientation.
 
@@ -713,6 +761,7 @@ class PaddleOCRClassifier:
         self._loaded = count > 0
 
         from tinygrad.onnx_interpreter import OnnxInterpreter
+
         self._interpreter = OnnxInterpreter()
         self._interpreter.load_model(onnx_bytes)
 
@@ -736,6 +785,7 @@ class PaddleOCRClassifier:
     def needs_rotation(self, crops: Tensor, threshold: float = 0.9) -> list[bool]:
         """Returns per-crop boolean: True if crop needs 180° rotation."""
         import tinygrad.realize
+
         probs = self.forward(crops)
         flat = tinygrad.realize.realize(probs.lazydata)
         n = crops.shape[0]
@@ -746,13 +796,14 @@ class PaddleOCRClassifier:
 # SVTRv2 Text Recognizer
 # ---------------------------------------------------------------------------
 
+
 def _ctc_rows_are_probabilities(flat: list[float], timesteps: int, vocab: int) -> bool:
     """Return True when every CTC row is already a probability distribution."""
     if timesteps <= 0 or vocab <= 0:
         return False
     tol = 1e-4
     for step in range(timesteps):
-        row = flat[step * vocab:(step + 1) * vocab]
+        row = flat[step * vocab : (step + 1) * vocab]
         if any(value < -tol or value > 1.0 + tol for value in row):
             return False
         if abs(sum(row) - 1.0) > tol:
@@ -812,6 +863,7 @@ class PaddleOCRRecognizer:
         self._loaded = count > 0
 
         from tinygrad.onnx_interpreter import OnnxInterpreter
+
         self._interpreter = OnnxInterpreter()
         self._interpreter.load_model(onnx_bytes)
 
@@ -891,7 +943,7 @@ class PaddleOCRRecognizer:
         else:
             probs = []
             for step in range(t):
-                row = flat[step * vocab:(step + 1) * vocab]
+                row = flat[step * vocab : (step + 1) * vocab]
                 max_val = max(row)
                 exps = [math.exp(v - max_val) for v in row]
                 total = sum(exps)
@@ -939,6 +991,7 @@ class PaddleOCRRecognizer:
 # Full PaddleOCR Pipeline
 # ---------------------------------------------------------------------------
 
+
 class PaddleOCR:
     """Full PaddleOCR pipeline: detect text regions -> classify direction -> recognize text.
 
@@ -973,16 +1026,19 @@ class PaddleOCR:
     # Recognizer models vary per language; the dict MUST match the model's
     # output dimension.
     SUPPORTED_LANGUAGES: dict[str, dict[str, str]] = {
-        "en":           {"dict": "en_ppocr_dict.txt",  "rec_model": "en_PP-OCRv4_rec"},
-        "ch":           {"dict": "ppocr_keys_v1.txt",  "rec_model": "ch_PP-OCRv4_rec"},
-        "ch_cht":       {"dict": "chinese_cht_dict.txt", "rec_model": "ch_cht_PP-OCRv4_rec"},
-        "ja":           {"dict": "japan_dict.txt",     "rec_model": "ja_PP-OCRv4_rec"},
-        "ko":           {"dict": "korean_dict.txt",    "rec_model": "ko_PP-OCRv4_rec"},
-        "latin":        {"dict": "latin_dict.txt",     "rec_model": "latin_PP-OCRv4_rec"},
-        "cyrillic":     {"dict": "cyrillic_dict.txt",  "rec_model": "cyrillic_PP-OCRv4_rec"},
-        "devanagari":   {"dict": "devanagari_dict.txt", "rec_model": "devanagari_PP-OCRv4_rec"},
-        "arabic":       {"dict": "arabic_dict.txt",    "rec_model": "arabic_PP-OCRv4_rec"},
-        "multilingual": {"dict": "ppocrv5_dict.txt",  "rec_model": "multi_PP-OCRv5_rec"},
+        "en": {"dict": "en_ppocr_dict.txt", "rec_model": "en_PP-OCRv4_rec"},
+        "ch": {"dict": "ppocr_keys_v1.txt", "rec_model": "ch_PP-OCRv4_rec"},
+        "ch_cht": {"dict": "chinese_cht_dict.txt", "rec_model": "ch_cht_PP-OCRv4_rec"},
+        "ja": {"dict": "japan_dict.txt", "rec_model": "ja_PP-OCRv4_rec"},
+        "ko": {"dict": "korean_dict.txt", "rec_model": "ko_PP-OCRv4_rec"},
+        "latin": {"dict": "latin_dict.txt", "rec_model": "latin_PP-OCRv4_rec"},
+        "cyrillic": {"dict": "cyrillic_dict.txt", "rec_model": "cyrillic_PP-OCRv4_rec"},
+        "devanagari": {
+            "dict": "devanagari_dict.txt",
+            "rec_model": "devanagari_PP-OCRv4_rec",
+        },
+        "arabic": {"dict": "arabic_dict.txt", "rec_model": "arabic_PP-OCRv4_rec"},
+        "multilingual": {"dict": "ppocrv5_dict.txt", "rec_model": "multi_PP-OCRv5_rec"},
     }
 
     __slots__ = ("detector", "classifier", "recognizer", "language")
@@ -1031,17 +1087,28 @@ class PaddleOCR:
         # Subtract mean, divide by std
         # mean/std are applied per-channel: reshape to (1, 3, 1, 1) for broadcast
         from tinygrad.lazy import LazyOp, LazyBuffer
+
         mean_data = [0.485, 0.456, 0.406]
         std_data = [0.229, 0.224, 0.225]
-        mean_t = Tensor(LazyBuffer(
-            LazyOp("LOAD", (), dtype=dtypes.float32, shape=(1, 3, 1, 1)),
-            dtypes.float32, (1, 3, 1, 1), data=mean_data
-        ))
-        std_t = Tensor(LazyBuffer(
-            LazyOp("LOAD", (), dtype=dtypes.float32, shape=(1, 3, 1, 1)),
-            dtypes.float32, (1, 3, 1, 1), data=std_data
-        ))
-        return (x - mean_t._broadcast_to(x.shape)) * std_t._broadcast_to(x.shape).reciprocal()
+        mean_t = Tensor(
+            LazyBuffer(
+                LazyOp("LOAD", (), dtype=dtypes.float32, shape=(1, 3, 1, 1)),
+                dtypes.float32,
+                (1, 3, 1, 1),
+                data=mean_data,
+            )
+        )
+        std_t = Tensor(
+            LazyBuffer(
+                LazyOp("LOAD", (), dtype=dtypes.float32, shape=(1, 3, 1, 1)),
+                dtypes.float32,
+                (1, 3, 1, 1),
+                data=std_data,
+            )
+        )
+        return (x - mean_t._broadcast_to(x.shape)) * std_t._broadcast_to(
+            x.shape
+        ).reciprocal()
 
     def _crop_region(self, image: Tensor, box: tuple[int, int, int, int]) -> Tensor:
         """Crop a text region from the image and resize to recognizer input.
@@ -1071,11 +1138,13 @@ class PaddleOCR:
 
         new_w = max(1, int(48.0 * crop_w / crop_h))
         from tinygrad.onnx_interpreter import _nearest_resize
+
         return _nearest_resize(crop, (1, 3, 48, new_w))
 
     def _resize_for_classifier(self, crop: Tensor) -> Tensor:
         """Resize a text crop to the direction classifier's fixed input."""
         from tinygrad.onnx_interpreter import _nearest_resize
+
         return _nearest_resize(crop, (1, 3, 48, 192))
 
     def _rotate_crop_180(self, crop: Tensor) -> Tensor:
@@ -1135,11 +1204,13 @@ class PaddleOCR:
         results: list[dict] = []
         for crop, box in zip(crops, boxes):
             text, conf = self.recognizer.recognize(crop)
-            results.append({
-                "text": text,
-                "confidence": conf,
-                "bbox": list(box),
-            })
+            results.append(
+                {
+                    "text": text,
+                    "confidence": conf,
+                    "bbox": list(box),
+                }
+            )
 
         # 6. Sort by vertical position (top-to-bottom reading order)
         results.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
@@ -1151,11 +1222,18 @@ class PaddleOCR:
 # Convenience: load all models from file paths or bytes
 # ---------------------------------------------------------------------------
 
-def load_paddleocr(detector_path: str = None, classifier_path: str = None,
-                   recognizer_path: str = None, charset_path: str = None,
-                   detector_bytes: bytes = None, classifier_bytes: bytes = None,
-                   recognizer_bytes: bytes = None, charset_text: str = None,
-                   language: str = "en") -> PaddleOCR:
+
+def load_paddleocr(
+    detector_path: str = None,
+    classifier_path: str = None,
+    recognizer_path: str = None,
+    charset_path: str = None,
+    detector_bytes: bytes = None,
+    classifier_bytes: bytes = None,
+    recognizer_bytes: bytes = None,
+    charset_text: str = None,
+    language: str = "en",
+) -> PaddleOCR:
     """Create a fully loaded PaddleOCR instance.
 
     Accepts either file paths or raw bytes for each component.

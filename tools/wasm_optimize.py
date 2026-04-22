@@ -207,7 +207,9 @@ def optimize(
             return {
                 "ok": False,
                 "input_bytes": input_bytes,
-                "output_bytes": output_path.stat().st_size if output_path.exists() else 0,
+                "output_bytes": output_path.stat().st_size
+                if output_path.exists()
+                else 0,
                 "reduction_bytes": 0,
                 "reduction_pct": 0.0,
                 "elapsed_s": elapsed,
@@ -219,12 +221,15 @@ def optimize(
             return {
                 "ok": False,
                 "input_bytes": input_bytes,
-                "output_bytes": output_path.stat().st_size if output_path.exists() else 0,
+                "output_bytes": output_path.stat().st_size
+                if output_path.exists()
+                else 0,
                 "reduction_bytes": 0,
                 "reduction_pct": 0.0,
                 "elapsed_s": elapsed,
                 "output_path": str(output_path),
-                "error": "optimized wasm missing required exports: " + ", ".join(missing),
+                "error": "optimized wasm missing required exports: "
+                + ", ".join(missing),
             }
 
     output_bytes = output_path.stat().st_size

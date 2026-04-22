@@ -72,9 +72,13 @@ def _validate_projected_tensor(name: str, tensor: Tensor) -> None:
         )
 
 
-def _broadcast_mask_row(mask: Tensor, batch_index: int, head_index: int, query_index: int):
+def _broadcast_mask_row(
+    mask: Tensor, batch_index: int, head_index: int, query_index: int
+):
     if mask.ndim != 4:
-        raise ValueError(f"attention mask must be 4D for KV cache attention, got {mask.shape}")
+        raise ValueError(
+            f"attention mask must be 4D for KV cache attention, got {mask.shape}"
+        )
     b_index = batch_index if mask.shape[0] > 1 else 0
     h_index = head_index if mask.shape[1] > 1 else 0
     q_index = query_index if mask.shape[2] > 1 else 0
@@ -134,7 +138,9 @@ def _materialize_projected_chunks(chunks) -> Tensor:
         for outer_idx in range(outer):
             src_base = outer_idx * row_chunk_bytes
             dst_base = outer_idx * row_total_bytes + dst_row_offset
-            out[dst_base:dst_base + row_chunk_bytes] = src[src_base:src_base + row_chunk_bytes]
+            out[dst_base : dst_base + row_chunk_bytes] = src[
+                src_base : src_base + row_chunk_bytes
+            ]
         seq_offset += chunk_seq
 
     out_buf = Buffer(
@@ -170,7 +176,9 @@ def _hadamard_apply_with_signs(values, signs) -> list[float]:
 
 
 def _tensor_f32(flat, shape) -> Tensor:
-    return Tensor(to_device(array.array("f", [float(value) for value in flat])), shape=shape)
+    return Tensor(
+        to_device(array.array("f", [float(value) for value in flat])), shape=shape
+    )
 
 
 class DenseKVCache:
@@ -194,7 +202,9 @@ class DenseKVCache:
         _validate_projected_tensor("k", k)
         _validate_projected_tensor("v", v)
         if k.shape != v.shape:
-            raise ValueError(f"k and v must have identical shapes, got {k.shape} and {v.shape}")
+            raise ValueError(
+                f"k and v must have identical shapes, got {k.shape} and {v.shape}"
+            )
         batch, heads, seq, head_dim = k.shape
         if self._batch is None:
             self._batch = batch
@@ -224,7 +234,9 @@ class DenseKVCache:
         self._value_chunks = [value]
         return key, value
 
-    def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
+    def attention(
+        self, q: Tensor, *, scale: float, mask: Tensor | None = None
+    ) -> Tensor:
         return self._attention_reference(q, mask, scale)
 
     def _attention_reference(
@@ -274,7 +286,9 @@ class DenseKVCache:
             raise ValueError("KV cache length must be non-negative")
         if not self._key_chunks or not self._value_chunks:
             if length != 0:
-                raise ValueError("cannot truncate an empty KV cache to a non-zero length")
+                raise ValueError(
+                    "cannot truncate an empty KV cache to a non-zero length"
+                )
             return
         current = len(self)
         if length > current:
@@ -333,7 +347,9 @@ class TurboQuantAttentionKVCache:
         _validate_projected_tensor("k", k)
         _validate_projected_tensor("v", v)
         if k.shape != v.shape:
-            raise ValueError(f"k and v must have identical shapes, got {k.shape} and {v.shape}")
+            raise ValueError(
+                f"k and v must have identical shapes, got {k.shape} and {v.shape}"
+            )
         batch, heads, seq, head_dim = k.shape
         if head_dim != self.codec.dim:
             raise ValueError(
@@ -353,10 +369,14 @@ class TurboQuantAttentionKVCache:
             for head_index in range(heads):
                 for seq_index in range(seq):
                     self._key_vectors[batch_index][head_index].append(
-                        self.codec.quantize_prod(k_rows[batch_index][head_index][seq_index])
+                        self.codec.quantize_prod(
+                            k_rows[batch_index][head_index][seq_index]
+                        )
                     )
                     self._value_vectors[batch_index][head_index].append(
-                        self.codec.quantize_prod(v_rows[batch_index][head_index][seq_index])
+                        self.codec.quantize_prod(
+                            v_rows[batch_index][head_index][seq_index]
+                        )
                     )
         self._decoded_value_rows = None
         if (
@@ -374,7 +394,9 @@ class TurboQuantAttentionKVCache:
             for batch_index in range(batch):
                 for head_index in range(heads):
                     for seq_index in range(seq):
-                        key_encoded = self._key_vectors[batch_index][head_index][-seq + seq_index]
+                        key_encoded = self._key_vectors[batch_index][head_index][
+                            -seq + seq_index
+                        ]
                         if key_encoded.mse_weights is not None:
                             key_mse.extend(key_encoded.mse_weights)
                         else:
@@ -397,13 +419,17 @@ class TurboQuantAttentionKVCache:
                 _tensor_f32(key_mse, (batch, heads, seq, self.codec.dim)),
                 dim=2,
             )
-            self._runtime_key_residual_sign_rows = self._runtime_key_residual_sign_rows.cat(
-                _tensor_f32(key_sign, (batch, heads, seq, self.codec.dim)),
-                dim=2,
+            self._runtime_key_residual_sign_rows = (
+                self._runtime_key_residual_sign_rows.cat(
+                    _tensor_f32(key_sign, (batch, heads, seq, self.codec.dim)),
+                    dim=2,
+                )
             )
-            self._runtime_key_residual_scale_rows = self._runtime_key_residual_scale_rows.cat(
-                _tensor_f32(key_scale, (batch, heads, seq)),
-                dim=2,
+            self._runtime_key_residual_scale_rows = (
+                self._runtime_key_residual_scale_rows.cat(
+                    _tensor_f32(key_scale, (batch, heads, seq)),
+                    dim=2,
+                )
             )
             self._runtime_value_rows = self._runtime_value_rows.cat(
                 _tensor_f32(value_rows, (batch, heads, seq, self.codec.dim)),
@@ -412,7 +438,9 @@ class TurboQuantAttentionKVCache:
         else:
             self._invalidate_runtime_shadow_rows()
 
-    def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
+    def attention(
+        self, q: Tensor, *, scale: float, mask: Tensor | None = None
+    ) -> Tensor:
         intrinsic = _resolve_optional_intrinsic(
             "_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED",
             "molt_gpu_turboquant_attention_packed",
@@ -439,7 +467,9 @@ class TurboQuantAttentionKVCache:
             and self._runtime_key_residual_scale_rows is not None
             and self._runtime_value_rows is not None
         )
-        if not use_shadow and (self._key_vectors is None or self._value_vectors is None):
+        if not use_shadow and (
+            self._key_vectors is None or self._value_vectors is None
+        ):
             raise RuntimeError("cannot attend with an empty KV cache")
 
         batch, heads, query_seq, head_dim = q.shape
@@ -448,7 +478,11 @@ class TurboQuantAttentionKVCache:
         codec_dim = (
             self.codec.dim
             if self.codec is not None
-            else (self._runtime_mse_signs.shape[0] if self._runtime_mse_signs is not None else None)
+            else (
+                self._runtime_mse_signs.shape[0]
+                if self._runtime_mse_signs is not None
+                else None
+            )
         )
         if head_dim != codec_dim:
             raise ValueError(
@@ -482,8 +516,12 @@ class TurboQuantAttentionKVCache:
                     query_row = q_rows[batch_index][query_head_index][query_index]
                     logits = []
                     if use_shadow:
-                        rotated_query = _hadamard_apply_with_signs(query_row, shadow_mse_signs)
-                        query_sketch = _hadamard_apply_with_signs(query_row, shadow_qjl_signs)
+                        rotated_query = _hadamard_apply_with_signs(
+                            query_row, shadow_mse_signs
+                        )
+                        query_sketch = _hadamard_apply_with_signs(
+                            query_row, shadow_qjl_signs
+                        )
                         seq_k = self._runtime_key_mse_weight_rows.shape[2]
                         for seq_index in range(seq_k):
                             mse_weights = self._runtime_key_mse_weight_rows[
@@ -499,16 +537,22 @@ class TurboQuantAttentionKVCache:
                             )
                             score = 0.0
                             for dim_index in range(head_dim):
-                                score += rotated_query[dim_index] * float(mse_weights[dim_index])
+                                score += rotated_query[dim_index] * float(
+                                    mse_weights[dim_index]
+                                )
                             residual = 0.0
                             for dim_index in range(head_dim):
-                                residual += query_sketch[dim_index] * float(residual_signs[dim_index])
+                                residual += query_sketch[dim_index] * float(
+                                    residual_signs[dim_index]
+                                )
                             logits.append((score + residual * residual_scale) * scale)
                     else:
                         prepared = self.codec.prepare_query(query_row)
                         for encoded in self._key_vectors[batch_index][kv_head_index]:
                             logits.append(
-                                self.codec.estimate_inner_product_prepared(prepared, encoded)
+                                self.codec.estimate_inner_product_prepared(
+                                    prepared, encoded
+                                )
                                 * scale
                             )
                     if mask is not None:
@@ -533,7 +577,10 @@ class TurboQuantAttentionKVCache:
                             for value_index in range(len(weights)):
                                 value = float(
                                     self._runtime_value_rows[
-                                        batch_index, kv_head_index, value_index, dim_index
+                                        batch_index,
+                                        kv_head_index,
+                                        value_index,
+                                        dim_index,
                                     ].item()
                                 )
                                 acc += weights[value_index] * value
@@ -542,7 +589,9 @@ class TurboQuantAttentionKVCache:
                         for dim_index in range(head_dim):
                             acc = 0.0
                             for value_index, value_row in enumerate(decoded_values):
-                                acc += weights[value_index] * float(value_row[dim_index])
+                                acc += weights[value_index] * float(
+                                    value_row[dim_index]
+                                )
                             out_row.append(acc)
                     head_out.append(out_row)
                 batch_out.append(head_out)
@@ -555,8 +604,7 @@ class TurboQuantAttentionKVCache:
     ) -> list[list[float]]:
         if self._decoded_value_rows is None:
             self._decoded_value_rows = [
-                [[] for _ in range(self._heads)]
-                for _ in range(self._batch)
+                [[] for _ in range(self._heads)] for _ in range(self._batch)
             ]
         cached = self._decoded_value_rows[batch_index][kv_head_index]
         if cached:
@@ -587,7 +635,9 @@ class TurboQuantAttentionKVCache:
         ):
             return
         if self._key_vectors is None or self._value_vectors is None:
-            raise RuntimeError("cannot build TurboQuant runtime shadow rows from an empty cache")
+            raise RuntimeError(
+                "cannot build TurboQuant runtime shadow rows from an empty cache"
+            )
 
         batch = self._batch
         heads = self._heads
@@ -655,7 +705,9 @@ class TurboQuantAttentionKVCache:
             raise ValueError("cannot extend KV cache via truncate")
         if self._key_vectors is None or self._value_vectors is None:
             if length != 0:
-                raise ValueError("cannot truncate an empty KV cache to a non-zero length")
+                raise ValueError(
+                    "cannot truncate an empty KV cache to a non-zero length"
+                )
             return
         if length == current:
             return
@@ -678,9 +730,15 @@ class TurboQuantAttentionKVCache:
             and self._runtime_key_residual_scale_rows is not None
             and self._runtime_value_rows is not None
         ):
-            self._runtime_key_mse_weight_rows = self._runtime_key_mse_weight_rows[:, :, :length, :]
-            self._runtime_key_residual_sign_rows = self._runtime_key_residual_sign_rows[:, :, :length, :]
-            self._runtime_key_residual_scale_rows = self._runtime_key_residual_scale_rows[:, :, :length]
+            self._runtime_key_mse_weight_rows = self._runtime_key_mse_weight_rows[
+                :, :, :length, :
+            ]
+            self._runtime_key_residual_sign_rows = self._runtime_key_residual_sign_rows[
+                :, :, :length, :
+            ]
+            self._runtime_key_residual_scale_rows = (
+                self._runtime_key_residual_scale_rows[:, :, :length]
+            )
             self._runtime_value_rows = self._runtime_value_rows[:, :, :length, :]
         else:
             self._invalidate_runtime_shadow_rows()

@@ -5,6 +5,7 @@ from PaddleOCR ONNX models (which store weights as Constant graph nodes,
 not graph.initializer). We test the parser directly — the tinygrad Tensor
 integration requires the molt runtime and is covered by runtime tests.
 """
+
 import os
 import sys
 import types
@@ -56,7 +57,7 @@ def _import_paddleocr_module():
     mock_lazy = types.ModuleType("tinygrad.lazy")
     mock_realize = types.ModuleType("tinygrad.realize")
     mock_intrinsics = types.ModuleType("_intrinsics")
-    mock_intrinsics.require_intrinsic = lambda _name: (lambda *args, **kwargs: None)
+    mock_intrinsics.require_intrinsic = lambda _name: lambda *args, **kwargs: None
 
     class FakeDtypes:
         float32 = "float32"
@@ -68,6 +69,7 @@ def _import_paddleocr_module():
     class FakeTensor:
         def __init__(self, *a, **kw):
             pass
+
         @staticmethod
         def zeros(*a, **kw):
             return FakeTensor()
@@ -86,8 +88,14 @@ def _import_paddleocr_module():
     mock_lazy.LazyBuffer = FakeLazyBuffer
 
     saved = {}
-    for name in ("_intrinsics", "tinygrad", "tinygrad.tensor", "tinygrad.dtypes",
-                  "tinygrad.lazy", "tinygrad.realize"):
+    for name in (
+        "_intrinsics",
+        "tinygrad",
+        "tinygrad.tensor",
+        "tinygrad.dtypes",
+        "tinygrad.lazy",
+        "tinygrad.realize",
+    ):
         saved[name] = sys.modules.get(name)
 
     sys.modules["_intrinsics"] = mock_intrinsics
@@ -99,6 +107,7 @@ def _import_paddleocr_module():
 
     # Use importlib.util from the real stdlib (not molt's overlay)
     import importlib.util as ilu
+
     paddleocr_path = os.path.join(
         os.path.dirname(__file__),
         "../../src/molt/stdlib/tinygrad/paddleocr.py",
@@ -285,7 +294,9 @@ def test_weight_data_integrity() -> None:
             f"Dtype mismatch for '{name}': onnx={onnx_dtype}, parsed={parsed_dtype}"
         )
 
-    print(f"Data integrity: {len(onnx_constants)} constants cross-validated against onnx library")
+    print(
+        f"Data integrity: {len(onnx_constants)} constants cross-validated against onnx library"
+    )
     print("  PASS")
 
 
@@ -337,9 +348,9 @@ def test_classifier_forward_matches_onnxruntime_single_sample() -> None:
         out = classifier.forward(
             Tensor(input_array.reshape(-1).tolist()).reshape(1, 3, 48, 192)
         )
-        got = np.array(modules["realize"].realize(out.lazydata), dtype=np.float32).reshape(
-            out.shape
-        )
+        got = np.array(
+            modules["realize"].realize(out.lazydata), dtype=np.float32
+        ).reshape(out.shape)
 
     assert got.shape == ref.shape == (1, 2)
     np.testing.assert_allclose(got, ref, rtol=1e-5, atol=1e-6)

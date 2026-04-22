@@ -25,7 +25,10 @@ def _find_project_root() -> Path:
             return candidate
         parent = candidate.parent
         if parent == candidate:
-            print("error: could not find project root (no Cargo.toml found)", file=sys.stderr)
+            print(
+                "error: could not find project root (no Cargo.toml found)",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
         candidate = parent
 
@@ -46,8 +49,7 @@ def main() -> None:
     match = _HASH_RE.search(text)
     if match is None:
         print(
-            "error: could not find 'molt_runtime.wasm' hash entry in "
-            f"{link_py}",
+            f"error: could not find 'molt_runtime.wasm' hash entry in {link_py}",
             file=sys.stderr,
         )
         raise SystemExit(1)

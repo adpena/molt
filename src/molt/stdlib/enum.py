@@ -133,12 +133,26 @@ class EnumType(type):
         except Exception:
             return False
 
-    def __call__(cls, value: Any, names=None, *, module=None, qualname=None, type=None, start=1, boundary=None):
+    def __call__(
+        cls,
+        value: Any,
+        names=None,
+        *,
+        module=None,
+        qualname=None,
+        type=None,
+        start=1,
+        boundary=None,
+    ):
         # Functional API: IntEnum("Color", "RED GREEN BLUE")
         if names is not None:
             if isinstance(names, str):
                 names = names.replace(",", " ").split()
-            if isinstance(names, (list, tuple)) and names and not isinstance(names[0], tuple):
+            if (
+                isinstance(names, (list, tuple))
+                and names
+                and not isinstance(names[0], tuple)
+            ):
                 names = [(n, i + start) for i, n in enumerate(names)]
             namespace = {}
             for member_name, member_value in names:
@@ -317,5 +331,6 @@ def unique(enumeration: type) -> type:
 def verify(enumeration: type) -> type:
     """Class decorator that checks all enum members are valid."""
     return enumeration
+
 
 globals().pop("_require_intrinsic", None)

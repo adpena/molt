@@ -12,29 +12,28 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_DECIMAL_CONTEXT_NEW = _require_intrinsic("molt_decimal_context_new")
 _MOLT_DECIMAL_CONTEXT_GET_CURRENT = _require_intrinsic(
-    "molt_decimal_context_get_current")
+    "molt_decimal_context_get_current"
+)
 _MOLT_DECIMAL_CONTEXT_SET_CURRENT = _require_intrinsic(
-    "molt_decimal_context_set_current")
+    "molt_decimal_context_set_current"
+)
 _MOLT_DECIMAL_CONTEXT_COPY = _require_intrinsic("molt_decimal_context_copy")
 _MOLT_DECIMAL_CONTEXT_DROP = _require_intrinsic("molt_decimal_context_drop")
-_MOLT_DECIMAL_CONTEXT_GET_PREC = _require_intrinsic(
-    "molt_decimal_context_get_prec")
-_MOLT_DECIMAL_CONTEXT_SET_PREC = _require_intrinsic(
-    "molt_decimal_context_set_prec")
+_MOLT_DECIMAL_CONTEXT_GET_PREC = _require_intrinsic("molt_decimal_context_get_prec")
+_MOLT_DECIMAL_CONTEXT_SET_PREC = _require_intrinsic("molt_decimal_context_set_prec")
 _MOLT_DECIMAL_CONTEXT_GET_ROUNDING = _require_intrinsic(
-    "molt_decimal_context_get_rounding")
+    "molt_decimal_context_get_rounding"
+)
 _MOLT_DECIMAL_CONTEXT_SET_ROUNDING = _require_intrinsic(
-    "molt_decimal_context_set_rounding")
+    "molt_decimal_context_set_rounding"
+)
 _MOLT_DECIMAL_CONTEXT_CLEAR_FLAGS = _require_intrinsic(
-    "molt_decimal_context_clear_flags")
-_MOLT_DECIMAL_CONTEXT_GET_FLAG = _require_intrinsic(
-    "molt_decimal_context_get_flag")
-_MOLT_DECIMAL_CONTEXT_SET_FLAG = _require_intrinsic(
-    "molt_decimal_context_set_flag")
-_MOLT_DECIMAL_CONTEXT_GET_TRAP = _require_intrinsic(
-    "molt_decimal_context_get_trap")
-_MOLT_DECIMAL_CONTEXT_SET_TRAP = _require_intrinsic(
-    "molt_decimal_context_set_trap")
+    "molt_decimal_context_clear_flags"
+)
+_MOLT_DECIMAL_CONTEXT_GET_FLAG = _require_intrinsic("molt_decimal_context_get_flag")
+_MOLT_DECIMAL_CONTEXT_SET_FLAG = _require_intrinsic("molt_decimal_context_set_flag")
+_MOLT_DECIMAL_CONTEXT_GET_TRAP = _require_intrinsic("molt_decimal_context_get_trap")
+_MOLT_DECIMAL_CONTEXT_SET_TRAP = _require_intrinsic("molt_decimal_context_set_trap")
 
 _MOLT_DECIMAL_FROM_STR = _require_intrinsic("molt_decimal_from_str")
 _MOLT_DECIMAL_FROM_INT = _require_intrinsic("molt_decimal_from_int")
@@ -46,8 +45,7 @@ _MOLT_DECIMAL_TO_FLOAT = _require_intrinsic("molt_decimal_to_float")
 _MOLT_DECIMAL_DIV = _require_intrinsic("molt_decimal_div")
 _MOLT_DECIMAL_QUANTIZE = _require_intrinsic("molt_decimal_quantize")
 _MOLT_DECIMAL_COMPARE = _require_intrinsic("molt_decimal_compare")
-_MOLT_DECIMAL_COMPARE_TOTAL = _require_intrinsic(
-    "molt_decimal_compare_total")
+_MOLT_DECIMAL_COMPARE_TOTAL = _require_intrinsic("molt_decimal_compare_total")
 _MOLT_DECIMAL_NORMALIZE = _require_intrinsic("molt_decimal_normalize")
 _MOLT_DECIMAL_EXP = _require_intrinsic("molt_decimal_exp")
 
@@ -66,22 +64,17 @@ _MOLT_DECIMAL_LOG10 = _require_intrinsic("molt_decimal_log10")
 _MOLT_DECIMAL_FMA = _require_intrinsic("molt_decimal_fma")
 _MOLT_DECIMAL_MAX = _require_intrinsic("molt_decimal_max")
 _MOLT_DECIMAL_MIN = _require_intrinsic("molt_decimal_min")
-_MOLT_DECIMAL_REMAINDER_NEAR = _require_intrinsic(
-    "molt_decimal_remainder_near")
+_MOLT_DECIMAL_REMAINDER_NEAR = _require_intrinsic("molt_decimal_remainder_near")
 _MOLT_DECIMAL_SCALEB = _require_intrinsic("molt_decimal_scaleb")
 _MOLT_DECIMAL_NEXT_MINUS = _require_intrinsic("molt_decimal_next_minus")
 _MOLT_DECIMAL_NEXT_PLUS = _require_intrinsic("molt_decimal_next_plus")
 _MOLT_DECIMAL_NUMBER_CLASS = _require_intrinsic("molt_decimal_number_class")
 _MOLT_DECIMAL_TO_INT = _require_intrinsic("molt_decimal_to_int")
-_MOLT_DECIMAL_TO_INTEGRAL_VALUE = _require_intrinsic(
-    "molt_decimal_to_integral_value")
-_MOLT_DECIMAL_TO_INTEGRAL_EXACT = _require_intrinsic(
-    "molt_decimal_to_integral_exact")
-_MOLT_DECIMAL_TO_ENG_STRING = _require_intrinsic(
-    "molt_decimal_to_eng_string")
+_MOLT_DECIMAL_TO_INTEGRAL_VALUE = _require_intrinsic("molt_decimal_to_integral_value")
+_MOLT_DECIMAL_TO_INTEGRAL_EXACT = _require_intrinsic("molt_decimal_to_integral_exact")
+_MOLT_DECIMAL_TO_ENG_STRING = _require_intrinsic("molt_decimal_to_eng_string")
 _MOLT_DECIMAL_ADJUSTED = _require_intrinsic("molt_decimal_adjusted")
-_MOLT_DECIMAL_AS_INTEGER_RATIO = _require_intrinsic(
-    "molt_decimal_as_integer_ratio")
+_MOLT_DECIMAL_AS_INTEGER_RATIO = _require_intrinsic("molt_decimal_as_integer_ratio")
 _MOLT_DECIMAL_FROM_FLOAT = _require_intrinsic("molt_decimal_from_float")
 _MOLT_DECIMAL_IS_FINITE = _require_intrinsic("molt_decimal_is_finite")
 _MOLT_DECIMAL_IS_INFINITE = _require_intrinsic("molt_decimal_is_infinite")

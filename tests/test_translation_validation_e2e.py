@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,7 @@ from translation_validator import TranslationValidator
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_simple_ops():
     """Return a realistic list of op-dicts representing a tiny function.
 
@@ -38,15 +38,26 @@ def _make_simple_ops():
             d = 99        # dead
             return c
     """
+
     def _val(name, th="int"):
         return {"name": name, "type_hint": th}
 
     return [
         {"kind": "CONST", "args": [10], "result": _val("a"), "metadata": None},
         {"kind": "CONST", "args": [20], "result": _val("b"), "metadata": None},
-        {"kind": "ADD", "args": [_val("a"), _val("b")], "result": _val("c"), "metadata": None},
+        {
+            "kind": "ADD",
+            "args": [_val("a"), _val("b")],
+            "result": _val("c"),
+            "metadata": None,
+        },
         {"kind": "CONST", "args": [99], "result": _val("d"), "metadata": None},
-        {"kind": "RETURN", "args": [_val("c")], "result": {"name": "none", "type_hint": "Unknown"}, "metadata": None},
+        {
+            "kind": "RETURN",
+            "args": [_val("c")],
+            "result": {"name": "none", "type_hint": "Unknown"},
+            "metadata": None,
+        },
     ]
 
 

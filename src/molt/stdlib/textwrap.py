@@ -117,4 +117,5 @@ def shorten(text: str, width: int, **kwargs) -> str:
         raise RuntimeError("textwrap.shorten intrinsic returned invalid value")
     return out
 
+
 globals().pop("_require_intrinsic", None)

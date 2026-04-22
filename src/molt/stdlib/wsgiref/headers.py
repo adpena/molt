@@ -6,8 +6,7 @@ from collections.abc import Iterable, Iterator
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_WSGIREF_RUNTIME_READY = _require_intrinsic(
-    "molt_wsgiref_runtime_ready")
+_MOLT_WSGIREF_RUNTIME_READY = _require_intrinsic("molt_wsgiref_runtime_ready")
 
 
 class Headers:

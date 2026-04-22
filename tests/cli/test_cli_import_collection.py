@@ -368,8 +368,7 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
 ) -> None:
     entry_path = tmp_path / "demo.py"
     entry_path.write_text(
-        "import importlib as loader\n"
-        "value = loader.import_module('json')\n"
+        "import importlib as loader\nvalue = loader.import_module('json')\n"
     )
     entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
     prepared, error = cli._prepare_entry_module_graph(
@@ -498,8 +497,7 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
 ) -> None:
     sleeper = tmp_path / "sleeper.py"
     sleeper.write_text(
-        "import time\n"
-        "time.sleep(2.0)\n",
+        "import time\ntime.sleep(2.0)\n",
         encoding="utf-8",
     )
     parent = tmp_path / "parent.py"
@@ -2382,7 +2380,8 @@ def test_backend_source_paths_are_cached(tmp_path: Path) -> None:
 
 def test_backend_source_paths_are_feature_aware() -> None:
     native_paths = {
-        path.relative_to(ROOT).as_posix() for path in cli._backend_source_paths(ROOT, ())
+        path.relative_to(ROOT).as_posix()
+        for path in cli._backend_source_paths(ROOT, ())
     }
     wasm_paths = {
         path.relative_to(ROOT).as_posix()
@@ -3384,7 +3383,9 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     assert context_payload_calls == 1
 
 
-@pytest.mark.skip(reason="cache_enabled parameter was removed from _prepare_frontend_parallel_batch")
+@pytest.mark.skip(
+    reason="cache_enabled parameter was removed from _prepare_frontend_parallel_batch"
+)
 def test_prepare_frontend_parallel_batch_skips_cache_reads_when_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3709,9 +3710,9 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
     assert payload_b is not None
     assert payload_a["compiler_fingerprint"] == "tool-a"
     assert payload_b["compiler_fingerprint"] == "tool-b"
-    assert cli._module_lowering_context_digest(payload_a) != cli._module_lowering_context_digest(
-        payload_b
-    )
+    assert cli._module_lowering_context_digest(
+        payload_a
+    ) != cli._module_lowering_context_digest(payload_b)
 
 
 def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions() -> (
@@ -6338,7 +6339,9 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
     monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", fake_wait_until_ready)
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
 
-    with tempfile.TemporaryDirectory(prefix="moltbd-test-", dir=tempfile.gettempdir()) as sockdir:
+    with tempfile.TemporaryDirectory(
+        prefix="moltbd-test-", dir=tempfile.gettempdir()
+    ) as sockdir:
         socket_dir = Path(sockdir)
         socket_path = socket_dir / "moltbd.current.sock"
 
@@ -6390,15 +6393,21 @@ def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
     monkeypatch.setenv("CARGO_TARGET_DIR", str(explicit_target))
-    monkeypatch.setattr(cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path)
-    monkeypatch.setattr(cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path)
+    monkeypatch.setattr(
+        cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path
+    )
+    monkeypatch.setattr(
+        cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
+    )
     monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
     monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: 1234)
     monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(
         cli, "_backend_daemon_binary_is_newer", lambda *args, **kwargs: True
     )
-    monkeypatch.setattr(cli, "_terminate_backend_daemon_pid", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_terminate_backend_daemon_pid", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(cli, "_remove_backend_daemon_pid", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         cli, "_backend_daemon_wait_until_ready", lambda *args, **kwargs: (True, None)
@@ -6406,7 +6415,9 @@ def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
     monkeypatch.setattr(cli, "_build_slot", lambda: contextlib.nullcontext(0))
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/cargo")
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         env = cast(dict[str, str] | None, kwargs.get("env"))
         captured_env.update(env or {})
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -6472,8 +6483,9 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
     monkeypatch.setattr(
         cli,
         "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: ensure_calls.append(runtime_state.runtime_lib)
-        or True,
+        lambda runtime_state, **kwargs: (
+            ensure_calls.append(runtime_state.runtime_lib) or True
+        ),
     )
     monkeypatch.setattr(
         cli,
@@ -6553,8 +6565,9 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_m
     monkeypatch.setattr(
         cli,
         "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: ensure_calls.append(runtime_state.runtime_lib)
-        or True,
+        lambda runtime_state, **kwargs: (
+            ensure_calls.append(runtime_state.runtime_lib) or True
+        ),
     )
     monkeypatch.setattr(
         cli,
@@ -6670,7 +6683,9 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
 
     assert backend_setup_error is None
     assert prepared_backend_setup is not None
-    assert scheduled == [(runtime_lib, None, "release-fast", frozenset({"__main__", "json"}))]
+    assert scheduled == [
+        (runtime_lib, None, "release-fast", frozenset({"__main__", "json"}))
+    ]
 
 
 def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
@@ -6790,16 +6805,18 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_state = cli._RuntimeArtifactState(runtime_lib=tmp_path / "libmolt_runtime.a")
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_lib=tmp_path / "libmolt_runtime.a"
+    )
     captured: list[frozenset[str]] = []
 
     monkeypatch.setattr(
         cli,
         "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: captured.append(
-            frozenset(cast(set[str], kwargs["resolved_modules"]))
-        )
-        or True,
+        lambda runtime_state, **kwargs: (
+            captured.append(frozenset(cast(set[str], kwargs["resolved_modules"])))
+            or True
+        ),
     )
 
     ready = cli._ensure_native_runtime_lib_ready_before_link(
@@ -6854,10 +6871,12 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
     monkeypatch.setattr(
         cli,
         "_ensure_runtime_wasm_artifact",
-        lambda runtime_state, *, reloc, **kwargs: captured.append(
-            (reloc, frozenset(cast(set[str], kwargs["resolved_modules"])))
-        )
-        or True,
+        lambda runtime_state, *, reloc, **kwargs: (
+            captured.append(
+                (reloc, frozenset(cast(set[str], kwargs["resolved_modules"])))
+            )
+            or True
+        ),
     )
 
     runtime_context = cli._prepare_backend_runtime_context(
@@ -7117,10 +7136,12 @@ def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
     monkeypatch.setattr(
         cli,
         "_artifact_needs_rebuild",
-        lambda artifact, fingerprint, stored_fingerprint: verification_calls.append(
-            frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
-        )
-        or False,
+        lambda artifact, fingerprint, stored_fingerprint: (
+            verification_calls.append(
+                frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
+            )
+            or False
+        ),
     )
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
 
@@ -7160,17 +7181,29 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
-    built_src = tmp_path / "target" / "wasm32-wasip1" / "dev-fast" / "deps" / "molt_runtime-test.wasm"
+    built_src = (
+        tmp_path
+        / "target"
+        / "wasm32-wasip1"
+        / "dev-fast"
+        / "deps"
+        / "molt_runtime-test.wasm"
+    )
     built_src.parent.mkdir(parents=True, exist_ok=True)
     built_src.write_bytes(b"\0asm\x01\0\0\0runtime")
 
-    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"})
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
+    )
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
     monkeypatch.setattr(
         cli,
         "_run_runtime_wasm_cargo_build",
-        lambda **kwargs: (subprocess.CompletedProcess(kwargs["cmd"], 0, "", ""), built_src),
+        lambda **kwargs: (
+            subprocess.CompletedProcess(kwargs["cmd"], 0, "", ""),
+            built_src,
+        ),
     )
     monkeypatch.setattr(cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None)
 
@@ -7212,7 +7245,9 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     built_src.write_bytes(b"\0asm\x01\0\0\0runtime")
     captured_env: dict[str, str] = {}
 
-    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"})
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
+    )
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
 
@@ -7263,10 +7298,14 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
 
-    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "same"})
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "same"}
+    )
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
-    monkeypatch.setattr(cli, "_runtime_wasm_exports_satisfy", lambda path, required: True)
+    monkeypatch.setattr(
+        cli, "_runtime_wasm_exports_satisfy", lambda path, required: True
+    )
     monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
     monkeypatch.setattr(
         cli,
@@ -7420,10 +7459,9 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         json_output=True,
         runtime_wasm=runtime_wasm,
         runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: shared_required.append(
-            frozenset(required or set())
-        )
-        or True,
+        ensure_runtime_wasm_shared=lambda required=None: (
+            shared_required.append(frozenset(required or set())) or True
+        ),
         ensure_runtime_wasm_reloc=lambda: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
@@ -7466,11 +7504,19 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         lambda path, module_name: {"alloc", "molt_fast_list_append"},
     )
     monkeypatch.setattr(cli, "_wasm_import_minima", lambda _path: (1, 1))
-    monkeypatch.setattr(cli, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {})
-    monkeypatch.setattr(cli, "_wasm_import_function_signatures", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        cli, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        cli, "_wasm_import_function_signatures", lambda *args, **kwargs: {}
+    )
     monkeypatch.setattr(cli, "_export_wasm_table_refs", lambda _path: None)
-    monkeypatch.setattr(cli, "_wasm_export_function_signatures", lambda *args, **kwargs: {})
-    monkeypatch.setattr(cli, "_effective_split_worker_table_base", lambda **kwargs: 8192)
+    monkeypatch.setattr(
+        cli, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        cli, "_effective_split_worker_table_base", lambda **kwargs: 8192
+    )
     monkeypatch.setattr(cli, "_generate_split_worker_js", lambda **kwargs: "// worker")
     monkeypatch.setattr(cli.shutil, "copy2", lambda *args, **kwargs: None)
 
@@ -7486,10 +7532,9 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         json_output=True,
         runtime_wasm=runtime_wasm,
         runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: shared_required.append(
-            frozenset(required or set())
-        )
-        or True,
+        ensure_runtime_wasm_shared=lambda required=None: (
+            shared_required.append(frozenset(required or set())) or True
+        ),
         ensure_runtime_wasm_reloc=lambda: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
@@ -7532,15 +7577,23 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
         lambda path, module_name: {"alloc", "molt_fast_list_append"},
     )
     monkeypatch.setattr(cli, "_wasm_import_minima", lambda _path: (1, 1))
-    monkeypatch.setattr(cli, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {})
-    monkeypatch.setattr(cli, "_wasm_import_function_signatures", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        cli, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        cli, "_wasm_import_function_signatures", lambda *args, **kwargs: {}
+    )
     monkeypatch.setattr(
         cli,
         "_export_wasm_table_refs",
         lambda path: export_ref_calls.append(path),
     )
-    monkeypatch.setattr(cli, "_wasm_export_function_signatures", lambda *args, **kwargs: {})
-    monkeypatch.setattr(cli, "_effective_split_worker_table_base", lambda **kwargs: 8192)
+    monkeypatch.setattr(
+        cli, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        cli, "_effective_split_worker_table_base", lambda **kwargs: 8192
+    )
     monkeypatch.setattr(cli, "_generate_split_worker_js", lambda **kwargs: "// worker")
     monkeypatch.setattr(cli.shutil, "copy2", lambda *args, **kwargs: None)
 
@@ -7582,12 +7635,7 @@ def test_runtime_wasm_exports_satisfy_required_surface(tmp_path: Path) -> None:
         payload.extend(encoded)
         payload.append(0x00)  # func export
         payload.append(index)
-    wasm.write_bytes(
-        b"\0asm\x01\0\0\0"
-        + b"\x07"
-        + bytes([len(payload)])
-        + payload
-    )
+    wasm.write_bytes(b"\0asm\x01\0\0\0" + b"\x07" + bytes([len(payload)]) + payload)
     assert cli._runtime_wasm_exports_satisfy(
         wasm, {"molt_fast_list_append", "molt_resource_on_free"}
     )
@@ -7628,10 +7676,7 @@ def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
         payload.append(0x00)  # func export
         payload.append(index)
     wasm.write_bytes(
-        b"\0asm\x01\0\0\0"
-        + b"\x07"
-        + _encode_varuint(len(payload))
-        + payload
+        b"\0asm\x01\0\0\0" + b"\x07" + _encode_varuint(len(payload)) + payload
     )
 
     required = {
@@ -7699,17 +7744,23 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = tmp_path / "molt_runtime.wasm"
-    current_src = tmp_path / "target" / "wasm32-wasip1" / "release-fast" / "molt_runtime.wasm"
+    current_src = (
+        tmp_path / "target" / "wasm32-wasip1" / "release-fast" / "molt_runtime.wasm"
+    )
     current_src.parent.mkdir(parents=True, exist_ok=True)
     runtime.write_bytes(b"\0asm\x01\0\0\0")
     current_src.write_bytes(b"\0asm\x01\0\0\0")
 
     monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: {"hash": "ok"})
-    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "ok"})
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "ok"}
+    )
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
-    monkeypatch.setattr(cli, "_resolve_built_runtime_wasm_artifact", lambda *args: current_src)
+    monkeypatch.setattr(
+        cli, "_resolve_built_runtime_wasm_artifact", lambda *args: current_src
+    )
     monkeypatch.setattr(
         cli,
         "_runtime_wasm_exports_satisfy",
@@ -7761,10 +7812,12 @@ def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(
     monkeypatch.setattr(
         cli,
         "_artifact_needs_rebuild",
-        lambda artifact, fingerprint, stored_fingerprint: verification_calls.append(
-            frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
-        )
-        or False,
+        lambda artifact, fingerprint, stored_fingerprint: (
+            verification_calls.append(
+                frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
+            )
+            or False
+        ),
     )
 
     try:
@@ -7976,7 +8029,9 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         ),
     )
 
-    def fake_prepare_backend_setup(**kwargs: object) -> tuple[cli._PreparedBackendSetup, None]:
+    def fake_prepare_backend_setup(
+        **kwargs: object,
+    ) -> tuple[cli._PreparedBackendSetup, None]:
         del kwargs
         call_order.append("backend_setup")
         runtime_state = cli._RuntimeArtifactState(runtime_lib=runtime_lib)
@@ -8050,11 +8105,12 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
     monkeypatch.setattr(
         cli,
         "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: call_order.append("runtime_ready")
-        or False,
+        lambda runtime_state, **kwargs: call_order.append("runtime_ready") or False,
     )
 
-    def fake_prepare_native_link(**kwargs: object) -> tuple[None, dict[str, object] | None]:
+    def fake_prepare_native_link(
+        **kwargs: object,
+    ) -> tuple[None, dict[str, object] | None]:
         del kwargs
         call_order.append("native_link")
         pytest.fail("native link should not run after runtime readiness failure")
@@ -9539,7 +9595,10 @@ def test_backend_compile_stages_one_shot_output_into_cache(
             function_cache_path=function_cache_path,
             stdlib_object_path=None,
             stdlib_object_cache_key=None,
-            cache_candidates=(("module", cache_path), ("function", function_cache_path)),
+            cache_candidates=(
+                ("module", cache_path),
+                ("function", function_cache_path),
+            ),
             cache_hit=False,
             cache_hit_tier=None,
         ),
@@ -9615,7 +9674,9 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
             True,
         )
 
-    monkeypatch.setattr(cli, "_backend_daemon_compile_request_bytes", fake_request_bytes)
+    monkeypatch.setattr(
+        cli, "_backend_daemon_compile_request_bytes", fake_request_bytes
+    )
     monkeypatch.setattr(
         cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
     )
@@ -9644,7 +9705,10 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
             function_cache_path=function_cache_path,
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key="stdlib-cache-key",
-            cache_candidates=(("module", cache_path), ("function", function_cache_path)),
+            cache_candidates=(
+                ("module", cache_path),
+                ("function", function_cache_path),
+            ),
             cache_hit=False,
             cache_hit_tier=None,
         ),
@@ -9737,7 +9801,9 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         assert args[1] == tmp_path / "daemon.sock"
         return True
 
-    monkeypatch.setattr(cli, "_backend_daemon_compile_request_bytes", fake_request_bytes)
+    monkeypatch.setattr(
+        cli, "_backend_daemon_compile_request_bytes", fake_request_bytes
+    )
     monkeypatch.setattr(
         cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
     )
@@ -9767,7 +9833,10 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
             function_cache_path=function_cache_path,
             stdlib_object_path=None,
             stdlib_object_cache_key=None,
-            cache_candidates=(("module", cache_path), ("function", function_cache_path)),
+            cache_candidates=(
+                ("module", cache_path),
+                ("function", function_cache_path),
+            ),
             cache_hit=False,
             cache_hit_tier=None,
         ),
@@ -9851,7 +9920,9 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
             function_cache_path=None,
             stdlib_object_path=None,
             stdlib_object_cache_key=None,
-            cache_candidates=(("module", project_root / ".molt_cache" / "cache-key.o"),),
+            cache_candidates=(
+                ("module", project_root / ".molt_cache" / "cache-key.o"),
+            ),
             cache_hit=False,
             cache_hit_tier=None,
         ),
@@ -11602,7 +11673,9 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     warnings: list[str] = []
-    monkeypatch.setattr(cli, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True)
+    monkeypatch.setattr(
+        cli, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
+    )
 
     ok, cache_hit_tier = cli._try_cached_backend_candidates(
         project_root=tmp_path,
@@ -12035,7 +12108,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
     )
 
     setup_split = cli._prepare_backend_cache_setup(
-        emit_mode="obj",             # native + obj  => split enabled
+        emit_mode="obj",  # native + obj  => split enabled
         output_artifact=ROOT / "dummy_split.o",
         **common,
     )
@@ -12104,17 +12177,28 @@ def test_link_fingerprint_changes_when_stdlib_artifact_content_changes(
 def test_stdlib_partition_mode_changes_cache_identity():
     """Cache identity must differ when stdlib partition mode changes."""
     import sys
+
     sys.path.insert(0, "src")
     from molt.cli import _build_cache_variant
 
     variant_mono = _build_cache_variant(
-        profile="dev", runtime_cargo="debug", backend_cargo="debug",
-        emit="bin", stdlib_split=False, codegen_env="x", linked=False,
+        profile="dev",
+        runtime_cargo="debug",
+        backend_cargo="debug",
+        emit="bin",
+        stdlib_split=False,
+        codegen_env="x",
+        linked=False,
         partition_mode=False,
     )
     variant_part = _build_cache_variant(
-        profile="dev", runtime_cargo="debug", backend_cargo="debug",
-        emit="bin", stdlib_split=False, codegen_env="x", linked=False,
+        profile="dev",
+        runtime_cargo="debug",
+        backend_cargo="debug",
+        emit="bin",
+        stdlib_split=False,
+        codegen_env="x",
+        linked=False,
         partition_mode=True,
     )
     assert variant_mono != variant_part, (

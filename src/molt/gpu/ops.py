@@ -15,7 +15,7 @@ Metal/WebGPU/CUDA GPU kernels when compiled by Molt.
 In interpreted mode, they run on CPU as a fallback.
 """
 
-from . import Buffer, to_device, from_device, alloc, kernel, thread_id
+from . import Buffer, to_device, alloc
 import struct
 import math
 
@@ -30,7 +30,9 @@ def map(func, buf: Buffer, dtype: type = None) -> Buffer:
     """
     dtype = dtype or buf.element_type
     n = buf.size
-    result_format = buf.format_char if dtype == float and buf.element_type == float else None
+    result_format = (
+        buf.format_char if dtype is float and buf.element_type is float else None
+    )
     result = alloc(n, dtype, format_char=result_format)
 
     # Interpreted fallback: apply element-wise on CPU
@@ -46,7 +48,7 @@ def map(func, buf: Buffer, dtype: type = None) -> Buffer:
     return result
 
 
-def reduce(buf: Buffer, op: str = 'sum', initial=None):
+def reduce(buf: Buffer, op: str = "sum", initial=None):
     """Reduce a buffer to a scalar value.
 
     Operations: 'sum', 'product', 'min', 'max', 'mean'
@@ -62,18 +64,18 @@ def reduce(buf: Buffer, op: str = 'sum', initial=None):
     fmt = buf.format_char
     values = [struct.unpack_from(fmt, buf._data, i * buf.itemsize)[0] for i in range(n)]
 
-    if op == 'sum':
+    if op == "sum":
         return sum(values) if initial is None else sum(values, initial)
-    elif op == 'product':
+    elif op == "product":
         result = initial if initial is not None else 1
         for v in values:
             result *= v
         return result
-    elif op == 'min':
+    elif op == "min":
         return min(values) if initial is None else min(min(values), initial)
-    elif op == 'max':
+    elif op == "max":
         return max(values) if initial is None else max(max(values), initial)
-    elif op == 'mean':
+    elif op == "mean":
         return sum(values) / n
     else:
         raise ValueError(f"Unknown reduce operation: {op}")
@@ -103,7 +105,7 @@ def filter(pred, buf: Buffer) -> Buffer:
     return result
 
 
-def scan(buf: Buffer, op: str = 'sum', exclusive: bool = False) -> Buffer:
+def scan(buf: Buffer, op: str = "sum", exclusive: bool = False) -> Buffer:
     """Prefix scan (cumulative operation).
 
     Inclusive: scan([1,2,3,4], 'sum') -> [1,3,6,10]
@@ -120,15 +122,20 @@ def scan(buf: Buffer, op: str = 'sum', exclusive: bool = False) -> Buffer:
 
     # Use type-appropriate identity values so they can be packed into the buffer's format.
     # For int buffers, float('inf') cannot be packed as 'q'; use 2**62 instead.
-    if buf.element_type == float:
-        identity = {'sum': 0.0, 'product': 1.0, 'min': float('inf'), 'max': float('-inf')}
+    if buf.element_type is float:
+        identity = {
+            "sum": 0.0,
+            "product": 1.0,
+            "min": float("inf"),
+            "max": float("-inf"),
+        }
     else:
-        identity = {'sum': 0, 'product': 1, 'min': 2**62, 'max': -(2**62)}
+        identity = {"sum": 0, "product": 1, "min": 2**62, "max": -(2**62)}
     combine = {
-        'sum': lambda a, b: a + b,
-        'product': lambda a, b: a * b,
-        'min': lambda a, b: min(a, b),
-        'max': lambda a, b: max(a, b),
+        "sum": lambda a, b: a + b,
+        "product": lambda a, b: a * b,
+        "min": lambda a, b: min(a, b),
+        "max": lambda a, b: max(a, b),
     }
 
     acc = identity.get(op, 0)
@@ -146,7 +153,12 @@ def scan(buf: Buffer, op: str = 'sum', exclusive: bool = False) -> Buffer:
     result = alloc(n, buf.element_type, format_char=buf.format_char)
     result._data = bytearray(result._data)
     for i, val in enumerate(result_vals):
-        struct.pack_into(fmt, result._data, i * result.itemsize, val if isinstance(val, (int, float)) else float(val))
+        struct.pack_into(
+            fmt,
+            result._data,
+            i * result.itemsize,
+            val if isinstance(val, (int, float)) else float(val),
+        )
 
     return result
 
@@ -181,7 +193,11 @@ def scatter(buf: Buffer, indices: Buffer, values: Buffer) -> Buffer:
     """
     result = alloc(buf.size, buf.element_type, format_char=buf.format_char)
     result._data = bytearray(buf._data)  # copy source
-    val_fmt = values.format_char if values.element_type == buf.element_type else buf.format_char
+    val_fmt = (
+        values.format_char
+        if values.element_type == buf.element_type
+        else buf.format_char
+    )
     idx_fmt = indices.format_char
 
     n = min(indices.size, values.size)
@@ -208,7 +224,6 @@ def where(cond: Buffer, a: Buffer, b: Buffer) -> Buffer:
     result = alloc(n, a.element_type, format_char=a.format_char)
     result._data = bytearray(result._data)
     cond_fmt = cond.format_char
-    val_fmt = a.format_char
 
     for i in range(n):
         c = struct.unpack_from(cond_fmt, cond._data, i * cond.itemsize)[0]
@@ -246,7 +261,7 @@ def zeros(n: int, dtype=float) -> Buffer:
 
 def ones(n: int, dtype=float) -> Buffer:
     """Create a one-filled Buffer."""
-    if dtype == float:
+    if dtype is float:
         return to_device([1.0] * n)
     else:
         return to_device([1] * n)
@@ -284,13 +299,15 @@ def norm(buf: Buffer, ord: int = 2) -> float:
     ord=inf: Linf norm (max absolute value)
     """
     fmt = buf.format_char
-    values = [struct.unpack_from(fmt, buf._data, i * buf.itemsize)[0] for i in range(buf.size)]
+    values = [
+        struct.unpack_from(fmt, buf._data, i * buf.itemsize)[0] for i in range(buf.size)
+    ]
 
     if ord == 1:
         return sum(abs(v) for v in values)
     elif ord == 2:
         return math.sqrt(sum(v * v for v in values))
-    elif ord == float('inf'):
+    elif ord == float("inf"):
         return max(abs(v) for v in values) if values else 0.0
     else:
         return sum(abs(v) ** ord for v in values) ** (1.0 / ord)

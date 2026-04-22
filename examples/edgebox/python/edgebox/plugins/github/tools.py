@@ -17,10 +17,10 @@ def get_timeline(box, pr_id=0, limit=50):
     return rows
 
 
-@plugin.tool("add_review_comment",
-             description="Post a review comment on a file in the PR")
-def add_review_comment(box, pr_id=0, path="", line=0, body="",
-                       author="edgebox"):
+@plugin.tool(
+    "add_review_comment", description="Post a review comment on a file in the PR"
+)
+def add_review_comment(box, pr_id=0, path="", line=0, body="", author="edgebox"):
     """Insert a review comment into local storage."""
     row_id = box.db.execute(
         "INSERT INTO review_comments (pr_id, path, line, body, author) "
@@ -30,8 +30,7 @@ def add_review_comment(box, pr_id=0, path="", line=0, body="",
     return {"comment_id": row_id, "pr_id": pr_id}
 
 
-@plugin.tool("get_diff_summary",
-             description="Get a summary of files changed in the PR")
+@plugin.tool("get_diff_summary", description="Get a summary of files changed in the PR")
 def get_diff_summary(box, pr_id=0):
     """Summarize the PR by counting events and comments."""
     event_count = box.db.query(
@@ -62,12 +61,14 @@ def get_diff_summary(box, pr_id=0):
     }
 
 
-@plugin.tool("query_timeline",
-             description="Run a filtered query against the event timeline")
+@plugin.tool(
+    "query_timeline", description="Run a filtered query against the event timeline"
+)
 def query_timeline(box, pr_id=0, event_type="", actor="", limit=20):
     """Query events with optional filters on type and actor."""
-    sql = ("SELECT id, event_type, actor, payload, created_at "
-           "FROM events WHERE pr_id = ?")
+    sql = (
+        "SELECT id, event_type, actor, payload, created_at FROM events WHERE pr_id = ?"
+    )
     params = [pr_id]
 
     if event_type:

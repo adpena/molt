@@ -2,30 +2,30 @@
 # All output via print() for diff comparison
 
 print("=== Large integers (>64 bit) ===")
-print(2 ** 200)
-print(10 ** 50)
-print(2 ** 100 + 2 ** 100)
-print(2 ** 100 % 17)
+print(2**200)
+print(10**50)
+print(2**100 + 2**100)
+print(2**100 % 17)
 
 print("=== Very large int operations ===")
-a = 10 ** 30
-b = 10 ** 30 + 1
+a = 10**30
+b = 10**30 + 1
 print(a < b)
 print(b - a)
-print(a * a == 10 ** 60)
+print(a * a == 10**60)
 
 print("=== Int/float boundary ===")
-print(2 ** 53)
-print(2 ** 53 + 1)
-print(float(2 ** 53))
-print(float(2 ** 53 + 1))
-print(float(2 ** 53) == float(2 ** 53 + 1))
-print(2 ** 53 == 2 ** 53 + 1)
+print(2**53)
+print(2**53 + 1)
+print(float(2**53))
+print(float(2**53 + 1))
+print(float(2**53) == float(2**53 + 1))
+print(2**53 == 2**53 + 1)
 
 print("=== Float special values ===")
-inf = float('inf')
-ninf = float('-inf')
-nan = float('nan')
+inf = float("inf")
+ninf = float("-inf")
+nan = float("nan")
 print(repr(inf))
 print(repr(ninf))
 print(repr(nan))
@@ -45,7 +45,7 @@ print(nan == 0)
 
 print("=== nan in collections ===")
 print(nan in [1.0, nan, 3.0])  # identity match
-print(float('nan') in [1.0, float('nan'), 3.0])  # no identity match
+print(float("nan") in [1.0, float("nan"), 3.0])  # no identity match
 
 print("=== Negative zero ===")
 pz = 0.0
@@ -54,6 +54,7 @@ print(pz == nz)
 print(repr(pz))
 print(repr(nz))
 import math
+
 print(math.copysign(1.0, pz))
 print(math.copysign(1.0, nz))
 

@@ -78,9 +78,7 @@ class TestFuzzExtendedBatch:
             b = _generate(seed, max_depth, max_stmts)
             if a != b:
                 mismatches.append(seed)
-        assert not mismatches, (
-            f"[{level}] Non-deterministic for seeds: {mismatches}"
-        )
+        assert not mismatches, f"[{level}] Non-deterministic for seeds: {mismatches}"
 
     def test_cpython_terminates(self, level: str) -> None:
         max_depth, max_stmts = COMPLEXITY_PRESETS[level]
@@ -117,9 +115,7 @@ class TestFuzzExtendedBatch:
             source = _generate(seed, max_depth, max_stmts)
             if "print(" not in source:
                 missing.append(seed)
-        assert not missing, (
-            f"[{level}] Programs without print() for seeds: {missing}"
-        )
+        assert not missing, f"[{level}] Programs without print() for seeds: {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -167,9 +163,7 @@ class TestFuzzASTCoverage:
             source = _generate(seed, max_depth=4, max_stmts=25)
             all_types |= _collect_ast_node_types(source)
         missing = expected - all_types
-        assert not missing, (
-            f"Expected AST node types not generated: {sorted(missing)}"
-        )
+        assert not missing, f"Expected AST node types not generated: {sorted(missing)}"
 
 
 # ---------------------------------------------------------------------------

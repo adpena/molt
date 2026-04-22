@@ -10,9 +10,7 @@ _MOLT_BZ2_DECOMPRESS = _require_intrinsic("molt_bz2_decompress")
 
 # --- Incremental compressor ---
 _MOLT_BZ2_COMPRESSOR_NEW = _require_intrinsic("molt_bz2_compressor_new")
-_MOLT_BZ2_COMPRESSOR_COMPRESS = _require_intrinsic(
-    "molt_bz2_compressor_compress"
-)
+_MOLT_BZ2_COMPRESSOR_COMPRESS = _require_intrinsic("molt_bz2_compressor_compress")
 _MOLT_BZ2_COMPRESSOR_FLUSH = _require_intrinsic("molt_bz2_compressor_flush")
 _MOLT_BZ2_COMPRESSOR_DROP = _require_intrinsic("molt_bz2_compressor_drop")
 
@@ -28,9 +26,7 @@ _MOLT_BZ2_DECOMPRESSOR_NEEDS_INPUT = _require_intrinsic(
 _MOLT_BZ2_DECOMPRESSOR_UNUSED_DATA = _require_intrinsic(
     "molt_bz2_decompressor_unused_data"
 )
-_MOLT_BZ2_DECOMPRESSOR_DROP = _require_intrinsic(
-    "molt_bz2_decompressor_drop"
-)
+_MOLT_BZ2_DECOMPRESSOR_DROP = _require_intrinsic("molt_bz2_decompressor_drop")
 
 # --- File handle intrinsics ---
 _MOLT_BZ2_FILE_OPEN = _require_intrinsic("molt_bz2_file_open")

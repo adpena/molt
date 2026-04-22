@@ -20,6 +20,7 @@ DEFAULT_EXTERNAL_ROOT = None
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
+
 DEFAULT_BUILD_SCRIPTS = [
     "examples/hello.py",
     "tests/differential/basic/ellipsis_basic.py",

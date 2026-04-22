@@ -17,7 +17,9 @@ def test_readme_declares_parity_target_and_no_host_python_fallback() -> None:
     assert "runtime monkeypatching" in text
 
 
-def test_readme_links_to_getting_started_and_status_and_drops_internal_sections() -> None:
+def test_readme_links_to_getting_started_and_status_and_drops_internal_sections() -> (
+    None
+):
     text = _read_text("README.md")
     assert "docs/getting-started.md" in text
     assert "docs/spec/STATUS.md" in text

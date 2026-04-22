@@ -23,8 +23,10 @@ def sieve(limit: int) -> int:
         i = i + 1
     return count
 
+
 def main() -> None:
     result: int = sieve(1000000)
     print(result)
+
 
 main()

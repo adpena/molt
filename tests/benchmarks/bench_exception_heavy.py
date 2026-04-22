@@ -1,4 +1,6 @@
 """Measures exception handling overhead in tight loops."""
+
+
 def main() -> None:
     total = 0
     for i in range(2_000_000):
@@ -9,6 +11,7 @@ def main() -> None:
         except ValueError as e:
             total += int(str(e))
     print(total)
+
 
 if __name__ == "__main__":
     main()

@@ -56,15 +56,11 @@ _MOLT_SIGNAL_SIGSYS = _require_intrinsic("molt_signal_sigsys")
 
 # New function intrinsics
 _MOLT_SIGNAL_STRSIGNAL = _require_intrinsic("molt_signal_strsignal")
-_MOLT_SIGNAL_PTHREAD_SIGMASK = _require_intrinsic(
-    "molt_signal_pthread_sigmask"
-)
+_MOLT_SIGNAL_PTHREAD_SIGMASK = _require_intrinsic("molt_signal_pthread_sigmask")
 _MOLT_SIGNAL_PTHREAD_KILL = _require_intrinsic("molt_signal_pthread_kill")
 _MOLT_SIGNAL_SIGPENDING = _require_intrinsic("molt_signal_sigpending")
 _MOLT_SIGNAL_SIGWAIT = _require_intrinsic("molt_signal_sigwait")
-_MOLT_SIGNAL_DEFAULT_INT_HANDLER = _require_intrinsic(
-    "molt_signal_default_int_handler"
-)
+_MOLT_SIGNAL_DEFAULT_INT_HANDLER = _require_intrinsic("molt_signal_default_int_handler")
 
 # Signal number constants
 SIG_DFL = int(_MOLT_SIGNAL_SIG_DFL())

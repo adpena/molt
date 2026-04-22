@@ -6,7 +6,6 @@ independent of the Molt compiler.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -17,8 +16,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from translation_validator import (
-    CheckResult,
-    PassReport,
     TranslationValidator,
 )
 
@@ -29,7 +26,9 @@ TV_DUMPS = Path(__file__).resolve().parent / "fixtures" / "tv_dumps"
 # ---------------------------------------------------------------------------
 
 
-def _op(kind: str, args=None, name: str = "none", type_hint: str = "Unknown", metadata=None):
+def _op(
+    kind: str, args=None, name: str = "none", type_hint: str = "Unknown", metadata=None
+):
     result = {"name": name, "type_hint": type_hint}
     return {"kind": kind, "args": args or [], "result": result, "metadata": metadata}
 
@@ -237,9 +236,7 @@ class TestValidateDumpDirectory:
                     details = "; ".join(
                         f"{c.check}: {c.detail}" for c in pr.checks if not c.passed
                     )
-                    pytest.fail(
-                        f"{fr.function}/{pr.pass_name} failed: {details}"
-                    )
+                    pytest.fail(f"{fr.function}/{pr.pass_name} failed: {details}")
 
     def test_nonexistent_directory_returns_empty(self):
         reports = self.tv.validate_dump_directory("/nonexistent/path")

@@ -16,6 +16,7 @@ Usage:
     python3 tests/harness/run_monty_conformance.py [--verbose]
     python3 tests/harness/run_monty_conformance.py --runner <cmd>  # e.g. --runner "molt run"
 """
+
 from __future__ import annotations
 
 import re
@@ -45,18 +46,18 @@ def parse_expectation(filepath: Path) -> tuple[str, str]:
     for line in reversed(lines):
         stripped = line.strip()
         if stripped.startswith("# Raise="):
-            exc_spec = stripped[len("# Raise="):]
+            exc_spec = stripped[len("# Raise=") :]
             exc_type = exc_spec.split("(")[0]
             return ("raise", exc_type)
         if stripped.startswith("# ref-counts="):
-            return ("refcount", stripped[len("# ref-counts="):])
+            return ("refcount", stripped[len("# ref-counts=") :])
         if stripped.startswith("#"):
             continue
         break
 
     # Check for TRACEBACK: docstring block
     traceback_match = re.search(
-        r'TRACEBACK:\s*\n.*?(\w+Error|\w+Exception|SyntaxError|ImportError)',
+        r"TRACEBACK:\s*\n.*?(\w+Error|\w+Exception|SyntaxError|ImportError)",
         text,
         re.DOTALL,
     )
@@ -98,9 +99,15 @@ def run_test(
         # (e.g., wrong argument count) with MOLT_COMPAT_ERROR instead of
         # producing a runtime exception. This is a CORRECT rejection — Molt's
         # static analysis caught the bug before runtime.
-        if "MOLT_COMPAT_ERROR" in result.stderr or "unsupported construct" in result.stderr:
+        if (
+            "MOLT_COMPAT_ERROR" in result.stderr
+            or "unsupported construct" in result.stderr
+        ):
             return (True, f"correctly rejected at compile time (expected {expected})")
-        return (False, f"expected {expected}, got stderr: {result.stderr.strip()[-200:]}")
+        return (
+            False,
+            f"expected {expected}, got stderr: {result.stderr.strip()[-200:]}",
+        )
 
     elif kind in ("success", "refcount"):
         if result.returncode == 0:

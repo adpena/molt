@@ -13,7 +13,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def artifact_record(*, kind: str, path: Path, root: Path | None = None) -> dict[str, Any]:
+def artifact_record(
+    *, kind: str, path: Path, root: Path | None = None
+) -> dict[str, Any]:
     resolved = path.resolve()
     payload = {
         "kind": kind,
@@ -37,7 +39,9 @@ def directory_records(
         raise FileNotFoundError(f"artifact directory not found: {resolved_root}")
     records: list[dict[str, Any]] = []
     for path in sorted(p for p in resolved_root.rglob("*") if p.is_file()):
-        if not include_hidden and any(part.startswith(".") for part in path.relative_to(resolved_root).parts):
+        if not include_hidden and any(
+            part.startswith(".") for part in path.relative_to(resolved_root).parts
+        ):
             continue
         records.append(artifact_record(kind=kind, path=path, root=resolved_root))
     return records

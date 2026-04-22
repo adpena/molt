@@ -15,15 +15,9 @@ import sys as _sys
 from . import glob
 
 _require_intrinsic("molt_capabilities_has")
-_MOLT_ZIPFILE_PATH_IMPLIED_DIRS = _require_intrinsic(
-    "molt_zipfile_path_implied_dirs"
-)
-_MOLT_ZIPFILE_PATH_RESOLVE_DIR = _require_intrinsic(
-    "molt_zipfile_path_resolve_dir"
-)
-_MOLT_ZIPFILE_PATH_IS_CHILD = _require_intrinsic(
-    "molt_zipfile_path_is_child"
-)
+_MOLT_ZIPFILE_PATH_IMPLIED_DIRS = _require_intrinsic("molt_zipfile_path_implied_dirs")
+_MOLT_ZIPFILE_PATH_RESOLVE_DIR = _require_intrinsic("molt_zipfile_path_resolve_dir")
+_MOLT_ZIPFILE_PATH_IS_CHILD = _require_intrinsic("molt_zipfile_path_is_child")
 
 
 if _sys.version_info >= (3, 13):
@@ -271,5 +265,6 @@ class Path:
         if parent_at:
             parent_at += "/"
         return self._next(parent_at)
+
 
 globals().pop("_require_intrinsic", None)

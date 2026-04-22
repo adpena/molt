@@ -18,6 +18,7 @@ to falcon_ocr.py and exists solely as the WASM compilation target.
 
 from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from .examples.falcon_ocr import init as _falcon_init

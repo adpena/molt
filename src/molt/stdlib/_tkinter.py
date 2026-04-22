@@ -35,7 +35,9 @@ _MOLT_TK_TKWAIT_VARIABLE = _require_intrinsic("molt_tk_tkwait_variable")
 _MOLT_TK_TKWAIT_WINDOW = _require_intrinsic("molt_tk_tkwait_window")
 _MOLT_TK_TKWAIT_VISIBILITY = _require_intrinsic("molt_tk_tkwait_visibility")
 _MOLT_TK_BIND_CALLBACK_REGISTER = _require_intrinsic("molt_tk_bind_callback_register")
-_MOLT_TK_BIND_CALLBACK_UNREGISTER = _require_intrinsic("molt_tk_bind_callback_unregister")
+_MOLT_TK_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_bind_callback_unregister"
+)
 _MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER = _require_intrinsic(
     "molt_tk_widget_bind_callback_register"
 )

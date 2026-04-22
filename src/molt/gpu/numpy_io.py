@@ -45,7 +45,9 @@ def _parse_npy_header(data: bytes, offset: int = 0):
     else:
         raise ValueError(f"Unsupported .npy version: {major}.{minor}")
 
-    header_str = data[header_offset : header_offset + header_len].decode("latin-1").strip()
+    header_str = (
+        data[header_offset : header_offset + header_len].decode("latin-1").strip()
+    )
     data_offset = header_offset + header_len
     header_dict = _parse_numpy_header_dict(header_str)
 
@@ -186,8 +188,7 @@ def to_numpy_array(tensor: Tensor):
         import numpy as np
     except ImportError:
         raise ImportError(
-            "numpy is required for to_numpy_array(). "
-            "Install it with: pip install numpy"
+            "numpy is required for to_numpy_array(). Install it with: pip install numpy"
         )
 
     flat = tensor._data_list()

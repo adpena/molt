@@ -118,7 +118,9 @@ def test_thin_adapter_validate_bundle_contract_accepts_materialized_layout(
         + "\n",
         encoding="utf-8",
     )
-    worker_entrypoint = bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
+    worker_entrypoint = (
+        bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
+    )
     worker_entrypoint.parent.mkdir(parents=True)
     worker_entrypoint.write_text("export default {};\n", encoding="utf-8")
     wrangler_config = bundle_root / "wrangler.jsonc"
@@ -162,7 +164,9 @@ def test_thin_adapter_validate_bundle_contract_rejects_missing_manifest_route(
         "driver-manifest.base.json",
     ]:
         (assets_root / name).write_text("x\n", encoding="utf-8")
-    worker_entrypoint = bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
+    worker_entrypoint = (
+        bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
+    )
     worker_entrypoint.parent.mkdir(parents=True)
     worker_entrypoint.write_text("export default {};\n", encoding="utf-8")
     wrangler_config = bundle_root / "wrangler.jsonc"
@@ -188,4 +192,6 @@ def test_thin_adapter_validate_bundle_contract_rejects_missing_manifest_route(
     except RuntimeError as exc:
         assert "run_worker_first" in str(exc)
     else:
-        raise AssertionError("expected validate_bundle_contract to reject missing manifest route")
+        raise AssertionError(
+            "expected validate_bundle_contract to reject missing manifest route"
+        )

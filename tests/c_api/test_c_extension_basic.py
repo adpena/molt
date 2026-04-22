@@ -10,17 +10,18 @@ When run under Molt, they validate Molt's C API compatibility.
 """
 
 import sys
-import os
 
 # ---------------------------------------------------------------------------
 # Integer operations through C API
 # ---------------------------------------------------------------------------
+
 
 def test_int_from_long():
     """PyLong_FromLong: basic integer creation."""
     x = 42
     assert isinstance(x, int)
     assert x == 42
+
 
 def test_int_boundaries():
     """PyLong_FromLong / PyLong_FromLongLong: boundary values."""
@@ -29,6 +30,7 @@ def test_int_boundaries():
     assert 2**31 - 1 == 2147483647  # INT_MAX
     assert -(2**31) == -2147483648  # INT_MIN
 
+
 def test_int_arithmetic():
     """PyNumber_Add etc.: arithmetic through number protocol."""
     assert 3 + 4 == 7
@@ -36,11 +38,13 @@ def test_int_arithmetic():
     assert 6 * 7 == 42
     assert 15 // 4 == 3
     assert 15 % 4 == 3
-    assert 2 ** 10 == 1024
+    assert 2**10 == 1024
+
 
 # ---------------------------------------------------------------------------
 # Float operations
 # ---------------------------------------------------------------------------
+
 
 def test_float_from_double():
     """PyFloat_FromDouble: basic float creation."""
@@ -48,19 +52,23 @@ def test_float_from_double():
     assert isinstance(x, float)
     assert abs(x - 3.14) < 1e-10
 
+
 def test_float_int_coercion():
     """PyFloat_AsDouble on int: implicit coercion."""
     x = float(7)
     assert x == 7.0
+
 
 def test_float_arithmetic():
     """Number protocol on floats."""
     assert abs(1.5 + 2.5 - 4.0) < 1e-10
     assert abs(3.0 * 2.0 - 6.0) < 1e-10
 
+
 # ---------------------------------------------------------------------------
 # Bool operations
 # ---------------------------------------------------------------------------
+
 
 def test_bool_from_long():
     """PyBool_FromLong: truthiness."""
@@ -69,15 +77,18 @@ def test_bool_from_long():
     assert bool(-1) is True
     assert bool(42) is True
 
+
 def test_bool_identity():
     """True and False are singletons."""
     assert True is True
     assert False is False
     assert (True is False) is False
 
+
 # ---------------------------------------------------------------------------
 # String operations
 # ---------------------------------------------------------------------------
+
 
 def test_string_creation():
     """PyUnicode_FromString: basic string."""
@@ -85,11 +96,13 @@ def test_string_creation():
     assert isinstance(s, str)
     assert len(s) == 5
 
+
 def test_string_empty():
     """Empty string."""
     s = ""
     assert len(s) == 0
     assert s == ""
+
 
 def test_string_comparison():
     """PyUnicode_Compare: string comparison."""
@@ -97,15 +110,18 @@ def test_string_comparison():
     assert "abc" != "def"
     assert "abc" < "def"
 
+
 # ---------------------------------------------------------------------------
 # List operations
 # ---------------------------------------------------------------------------
+
 
 def test_list_creation():
     """PyList_New + PyList_Append."""
     lst = [1, 2, 3]
     assert isinstance(lst, list)
     assert len(lst) == 3
+
 
 def test_list_getitem():
     """PyList_GetItem."""
@@ -114,11 +130,13 @@ def test_list_getitem():
     assert lst[1] == 20
     assert lst[2] == 30
 
+
 def test_list_setitem():
     """PyList_SetItem."""
     lst = [1, 2, 3]
     lst[1] = 99
     assert lst[1] == 99
+
 
 def test_list_append():
     """PyList_Append."""
@@ -127,15 +145,18 @@ def test_list_append():
     assert len(lst) == 1
     assert lst[0] == 42
 
+
 # ---------------------------------------------------------------------------
 # Tuple operations
 # ---------------------------------------------------------------------------
+
 
 def test_tuple_creation():
     """PyTuple_New + PyTuple_SetItem."""
     t = (1, 2, 3)
     assert isinstance(t, tuple)
     assert len(t) == 3
+
 
 def test_tuple_getitem():
     """PyTuple_GetItem."""
@@ -144,14 +165,17 @@ def test_tuple_getitem():
     assert t[1] == 20
     assert t[2] == 30
 
+
 def test_tuple_empty():
     """Empty tuple."""
     t = ()
     assert len(t) == 0
 
+
 # ---------------------------------------------------------------------------
 # Dict operations
 # ---------------------------------------------------------------------------
+
 
 def test_dict_creation():
     """PyDict_New."""
@@ -159,16 +183,19 @@ def test_dict_creation():
     assert isinstance(d, dict)
     assert len(d) == 0
 
+
 def test_dict_setitem_getitem():
     """PyDict_SetItem + PyDict_GetItem."""
     d = {}
     d["key"] = "value"
     assert d["key"] == "value"
 
+
 def test_dict_size():
     """PyDict_Size."""
     d = {"a": 1, "b": 2, "c": 3}
     assert len(d) == 3
+
 
 def test_dict_keys_values():
     """PyDict_Keys / PyDict_Values."""
@@ -176,39 +203,47 @@ def test_dict_keys_values():
     assert set(d.keys()) == {"x", "y"}
     assert set(d.values()) == {10, 20}
 
+
 # ---------------------------------------------------------------------------
 # Type checking
 # ---------------------------------------------------------------------------
+
 
 def test_isinstance_int():
     """PyLong_Check / isinstance."""
     assert isinstance(42, int)
     assert not isinstance(42, str)
 
+
 def test_isinstance_float():
     """PyFloat_Check."""
     assert isinstance(3.14, float)
     assert not isinstance(3.14, int)
+
 
 def test_isinstance_str():
     """PyUnicode_Check."""
     assert isinstance("hello", str)
     assert not isinstance("hello", int)
 
+
 def test_isinstance_list():
     """PyList_Check."""
     assert isinstance([1, 2], list)
     assert not isinstance([1, 2], tuple)
+
 
 def test_isinstance_tuple():
     """PyTuple_Check."""
     assert isinstance((1, 2), tuple)
     assert not isinstance((1, 2), list)
 
+
 def test_isinstance_dict():
     """PyDict_Check."""
     assert isinstance({}, dict)
     assert not isinstance({}, list)
+
 
 def test_isinstance_bool():
     """PyBool_Check."""
@@ -217,9 +252,11 @@ def test_isinstance_bool():
     # In CPython, bool is a subclass of int
     assert isinstance(True, int)
 
+
 # ---------------------------------------------------------------------------
 # Exception handling
 # ---------------------------------------------------------------------------
+
 
 def test_value_error():
     """PyErr_SetString with ValueError."""
@@ -228,12 +265,14 @@ def test_value_error():
     except ValueError as e:
         assert str(e) == "test message"
 
+
 def test_type_error():
     """PyErr_SetString with TypeError."""
     try:
         raise TypeError("bad type")
     except TypeError as e:
         assert str(e) == "bad type"
+
 
 def test_index_error():
     """IndexError on list access."""
@@ -243,6 +282,7 @@ def test_index_error():
         assert False, "Should have raised IndexError"
     except IndexError:
         pass
+
 
 def test_key_error():
     """KeyError on dict access."""
@@ -259,7 +299,6 @@ def test_key_error():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import inspect
     tests = [
         (name, obj)
         for name, obj in sorted(globals().items())

@@ -15,4 +15,5 @@ def DocTestSuite(*_args, **_kwargs):
         "MOLT_COMPAT_ERROR: doctest requires eval/exec/compile, which is not supported"
     )
 
+
 globals().pop("_require_intrinsic", None)

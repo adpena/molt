@@ -30,6 +30,7 @@ ARTIFACT_ROOT = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _compile_to_luau(python_source: str) -> str:
     """Compile Python source to Luau via molt CLI and return the Luau source code.
 
@@ -52,7 +53,9 @@ def _compile_to_luau(python_source: str) -> str:
             "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-            "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
+            "MOLT_DEV_CARGO_PROFILE": os.environ.get(
+                "MOLT_DEV_CARGO_PROFILE", "release-fast"
+            ),
             "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
             "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
         }
@@ -60,9 +63,15 @@ def _compile_to_luau(python_source: str) -> str:
         py_exec = sys.executable or "python3"
         result = subprocess.run(
             [
-                py_exec, "-m", "molt.cli", "build",
-                py_path, "--target", "luau",
-                "--output", luau_path,
+                py_exec,
+                "-m",
+                "molt.cli",
+                "build",
+                py_path,
+                "--target",
+                "luau",
+                "--output",
+                luau_path,
             ],
             capture_output=True,
             text=True,
@@ -100,7 +109,9 @@ def _run_luau(python_source: str) -> str:
             "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-            "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
+            "MOLT_DEV_CARGO_PROFILE": os.environ.get(
+                "MOLT_DEV_CARGO_PROFILE", "release-fast"
+            ),
             "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
             "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
         }
@@ -108,9 +119,15 @@ def _run_luau(python_source: str) -> str:
         py_exec = sys.executable or "python3"
         result = subprocess.run(
             [
-                py_exec, "-m", "molt.cli", "build",
-                py_path, "--target", "luau",
-                "--output", luau_path,
+                py_exec,
+                "-m",
+                "molt.cli",
+                "build",
+                py_path,
+                "--target",
+                "luau",
+                "--output",
+                luau_path,
             ],
             capture_output=True,
             text=True,
@@ -232,14 +249,21 @@ print("x".replace("x", "100%"))
         # - Use a plain-replace helper that avoids patterns entirely
         has_gsub = "gsub" in luau
         has_escape = "%%." in luau or "%%%%" in luau or "escape" in luau.lower()
-        has_plain_replace = "string.rep" in luau or "_replace" in luau.lower() or "find" in luau
+        has_plain_replace = (
+            "string.rep" in luau or "_replace" in luau.lower() or "find" in luau
+        )
         assert has_gsub or has_plain_replace, (
             "str.replace should compile to gsub or a replace helper, "
             f"but neither found.\n--- snippet ---\n{luau[:1000]}"
         )
         if has_gsub:
             # If using gsub directly, there must be some form of escaping
-            assert has_escape or has_plain_replace or "_replace" in luau.lower() or "plain" in luau.lower(), (
+            assert (
+                has_escape
+                or has_plain_replace
+                or "_replace" in luau.lower()
+                or "plain" in luau.lower()
+            ), (
                 "gsub is used but no pattern escaping detected — "
                 f"pattern-special chars will break.\n--- snippet ---\n{luau[:1000]}"
             )
@@ -291,7 +315,9 @@ print("c" in d)
     def test_pattern_string_membership(self):
         """Generated Luau should use string.find for string `in` checks."""
         luau = _compile_to_luau(self.SRC)
-        has_string_find = "string.find" in luau or ":find(" in luau or "string_find" in luau
+        has_string_find = (
+            "string.find" in luau or ":find(" in luau or "string_find" in luau
+        )
         has_contains_helper = "_contains" in luau.lower() or "_in(" in luau.lower()
         assert has_string_find or has_contains_helper, (
             "`in` for strings should lower to string.find or a contains helper, "
@@ -335,7 +361,7 @@ print(len(lst))
         )
         # Must NOT use `= nil` for deletion
         # Look for patterns like `lst[...] = nil` which indicate the old bug
-        nil_assign = re.search(r'\w+\[.*\]\s*=\s*nil', luau)
+        nil_assign = re.search(r"\w+\[.*\]\s*=\s*nil", luau)
         assert nil_assign is None, (
             f"del list[i] should NOT compile to `= nil`, "
             f"but found: {nil_assign.group()}"
@@ -440,12 +466,10 @@ print(isinstance(42, str))
         """Generated Luau should contain actual type-checking logic."""
         luau = _compile_to_luau(self.SRC)
         # Should use typeof() or type() for runtime type checking
-        has_type_check = (
-            "typeof(" in luau
-            or "type(" in luau
-            or "typeof " in luau
+        has_type_check = "typeof(" in luau or "type(" in luau or "typeof " in luau
+        has_isinstance_helper = (
+            "isinstance" in luau.lower() or "_isinstance" in luau.lower()
         )
-        has_isinstance_helper = "isinstance" in luau.lower() or "_isinstance" in luau.lower()
         assert has_type_check or has_isinstance_helper, (
             "isinstance should compile to type()/typeof() checks or a helper, "
             f"but found neither.\n--- snippet ---\n{luau[:1000]}"
@@ -486,9 +510,10 @@ print(math.log10(1000))
         #   math.log(x) / math.log(10)  -- manual base conversion
         #   math.log10(x)  -- if Luau has it (it doesn't natively)
         has_log10 = "math.log10" in luau
-        has_log_base10 = re.search(r'math\.log\([^)]+,\s*10\)', luau) is not None
+        has_log_base10 = re.search(r"math\.log\([^)]+,\s*10\)", luau) is not None
         has_log_division = (
-            re.search(r'math\.log\([^)]+\)\s*/\s*math\.log\(\s*10\s*\)', luau) is not None
+            re.search(r"math\.log\([^)]+\)\s*/\s*math\.log\(\s*10\s*\)", luau)
+            is not None
         )
         assert has_log10 or has_log_base10 or has_log_division, (
             "math.log10 should compile to math.log(x, 10) or equivalent, "
@@ -536,6 +561,8 @@ print(s.strip())
 
         # At minimum, they should not be identical codegen
         # (strip the boilerplate and compare the core logic)
+        assert lstrip_has_caret, "lstrip codegen should anchor at the start"
+        assert rstrip_has_dollar, "rstrip codegen should anchor at the end"
         assert luau_lstrip != luau_rstrip, (
             "lstrip and rstrip generated identical Luau code — "
             "they should differ to strip from different sides."

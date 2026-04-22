@@ -14,32 +14,33 @@ separately, but Molt can fuse chains at compile time.
 """
 
 import struct
-from . import Buffer, alloc, to_device, from_device
+from . import alloc
 
 
 # ── Reduce helpers ────────────────────────────────────────────────────
 
 _REDUCE_INIT = {
-    'sum': 0.0,
-    'product': 1.0,
-    'min': float('inf'),
-    'max': float('-inf'),
-    'count': 0,
+    "sum": 0.0,
+    "product": 1.0,
+    "min": float("inf"),
+    "max": float("-inf"),
+    "count": 0,
 }
+
 
 def _reduce_combine(op, acc, val):
     """Combine accumulator with a new value for a given reduce op."""
-    if op == 'sum':
+    if op == "sum":
         return acc + val
-    elif op == 'product':
+    elif op == "product":
         return acc * val
-    elif op == 'min':
+    elif op == "min":
         return val if val < acc else acc
-    elif op == 'max':
+    elif op == "max":
         return val if val > acc else acc
-    elif op == 'count':
+    elif op == "count":
         return acc + 1
-    elif op == 'mean':
+    elif op == "mean":
         # For mean, we accumulate (sum, count) — handled separately
         return acc + val
     else:
@@ -52,6 +53,7 @@ def _read_buf(buf, i):
 
 
 # ── Fused two-stage operations ────────────────────────────────────────
+
 
 def fused_map_reduce(map_fn, reduce_op, buf):
     """Fused map+reduce: single pass, no intermediate buffer.
@@ -74,8 +76,8 @@ def fused_map_reduce(map_fn, reduce_op, buf):
     if n == 0:
         return _REDUCE_INIT.get(reduce_op, 0.0)
 
-    is_mean = reduce_op == 'mean'
-    op = 'sum' if is_mean else reduce_op
+    is_mean = reduce_op == "mean"
+    op = "sum" if is_mean else reduce_op
     acc = _REDUCE_INIT.get(op, 0.0)
 
     for i in range(n):
@@ -108,8 +110,8 @@ def fused_filter_reduce(pred, reduce_op, buf):
     if n == 0:
         return _REDUCE_INIT.get(reduce_op, 0.0)
 
-    is_mean = reduce_op == 'mean'
-    op = 'sum' if is_mean else reduce_op
+    is_mean = reduce_op == "mean"
+    op = "sum" if is_mean else reduce_op
     acc = _REDUCE_INIT.get(op, 0.0)
     count = 0
 
@@ -121,7 +123,7 @@ def fused_filter_reduce(pred, reduce_op, buf):
 
     if is_mean:
         return acc / count if count > 0 else 0.0
-    if reduce_op == 'count':
+    if reduce_op == "count":
         return count
     return acc
 
@@ -189,8 +191,8 @@ def fused_map_filter_reduce(map_fn, pred, reduce_op, buf):
     if n == 0:
         return _REDUCE_INIT.get(reduce_op, 0.0)
 
-    is_mean = reduce_op == 'mean'
-    op = 'sum' if is_mean else reduce_op
+    is_mean = reduce_op == "mean"
+    op = "sum" if is_mean else reduce_op
     acc = _REDUCE_INIT.get(op, 0.0)
     count = 0
 
@@ -203,12 +205,13 @@ def fused_map_filter_reduce(map_fn, pred, reduce_op, buf):
 
     if is_mean:
         return acc / count if count > 0 else 0.0
-    if reduce_op == 'count':
+    if reduce_op == "count":
         return count
     return acc
 
 
 # ── DataFrame integration ────────────────────────────────────────────
+
 
 def fused_group_agg(df, by_col, agg_col, agg_op):
     """Fused group-by + aggregation in a single pass.
@@ -229,7 +232,6 @@ def fused_group_agg(df, by_col, agg_col, agg_op):
         totals = fused_group_agg(df, 'category', 'price', 'sum')
         # {'A': 26.2, 'B': 45.4, 'C': 30.2}
     """
-    from .dataframe import DataFrame
 
     by_series = df[by_col]
     agg_series = df[agg_col]
@@ -238,38 +240,38 @@ def fused_group_agg(df, by_col, agg_col, agg_op):
     # Single pass: accumulate per-group
     groups = {}  # key -> (accumulator, count)
 
-    init = _REDUCE_INIT.get(agg_op if agg_op != 'mean' else 'sum', 0.0)
+    init = _REDUCE_INIT.get(agg_op if agg_op != "mean" else "sum", 0.0)
 
     for i in range(n):
         key = by_series[i]
         val = agg_series[i]
 
         if key not in groups:
-            if agg_op in ('min', 'max'):
+            if agg_op in ("min", "max"):
                 groups[key] = (val, 1)
             else:
                 groups[key] = (init, 0)
 
         acc, cnt = groups[key]
 
-        if agg_op == 'sum' or agg_op == 'mean':
+        if agg_op == "sum" or agg_op == "mean":
             groups[key] = (acc + val, cnt + 1)
-        elif agg_op == 'min':
+        elif agg_op == "min":
             groups[key] = (val if val < acc else acc, cnt + 1)
-        elif agg_op == 'max':
+        elif agg_op == "max":
             groups[key] = (val if val > acc else acc, cnt + 1)
-        elif agg_op == 'count':
+        elif agg_op == "count":
             groups[key] = (acc, cnt + 1)
-        elif agg_op == 'product':
+        elif agg_op == "product":
             new_acc = acc * val if cnt > 0 else val
             groups[key] = (new_acc, cnt + 1)
 
     # Finalize
     result = {}
     for key, (acc, cnt) in groups.items():
-        if agg_op == 'mean':
+        if agg_op == "mean":
             result[key] = acc / cnt if cnt > 0 else 0.0
-        elif agg_op == 'count':
+        elif agg_op == "count":
             result[key] = cnt
         else:
             result[key] = acc
@@ -278,6 +280,7 @@ def fused_group_agg(df, by_col, agg_col, agg_op):
 
 
 # ── Pipeline builder ─────────────────────────────────────────────────
+
 
 class FusedPipeline:
     """Build a pipeline of operations that get fused into a single kernel.
@@ -298,17 +301,17 @@ class FusedPipeline:
 
     def map(self, func):
         """Add a map operation to the pipeline."""
-        self._ops.append(('map', func))
+        self._ops.append(("map", func))
         return self
 
     def filter(self, pred):
         """Add a filter operation."""
-        self._ops.append(('filter', pred))
+        self._ops.append(("filter", pred))
         return self
 
-    def reduce(self, op='sum'):
+    def reduce(self, op="sum"):
         """Add a terminal reduce operation and execute the pipeline."""
-        self._ops.append(('reduce', op))
+        self._ops.append(("reduce", op))
         return self.execute()
 
     def execute(self):
@@ -321,16 +324,18 @@ class FusedPipeline:
         if n == 0:
             # Check if there's a reduce terminal
             for op_type, *_ in self._ops:
-                if op_type == 'reduce':
-                    return _REDUCE_INIT.get(_[0] if _ else 'sum', 0.0)
-            return alloc(0, self._input.element_type, format_char=self._input.format_char)
+                if op_type == "reduce":
+                    return _REDUCE_INIT.get(_[0] if _ else "sum", 0.0)
+            return alloc(
+                0, self._input.element_type, format_char=self._input.format_char
+            )
 
         # Separate ops into stages
         transforms = []  # (type, func) pairs for map/filter
-        terminal = None   # ('reduce', op) or None
+        terminal = None  # ('reduce', op) or None
 
         for entry in self._ops:
-            if entry[0] == 'reduce':
+            if entry[0] == "reduce":
                 terminal = entry
             else:
                 transforms.append(entry)
@@ -338,8 +343,8 @@ class FusedPipeline:
         if terminal is not None:
             # Fused transform + reduce: single pass, zero intermediate buffers
             reduce_op = terminal[1]
-            is_mean = reduce_op == 'mean'
-            op = 'sum' if is_mean else reduce_op
+            is_mean = reduce_op == "mean"
+            op = "sum" if is_mean else reduce_op
             acc = _REDUCE_INIT.get(op, 0.0)
             count = 0
 
@@ -349,9 +354,9 @@ class FusedPipeline:
                 # Apply transforms in order
                 skip = False
                 for t_type, t_func in transforms:
-                    if t_type == 'map':
+                    if t_type == "map":
                         val = t_func(val)
-                    elif t_type == 'filter':
+                    elif t_type == "filter":
                         if not t_func(val):
                             skip = True
                             break
@@ -362,7 +367,7 @@ class FusedPipeline:
 
             if is_mean:
                 return acc / count if count > 0 else 0.0
-            if reduce_op == 'count':
+            if reduce_op == "count":
                 return count
             return acc
 
@@ -376,9 +381,9 @@ class FusedPipeline:
 
                 skip = False
                 for t_type, t_func in transforms:
-                    if t_type == 'map':
+                    if t_type == "map":
                         val = t_func(val)
-                    elif t_type == 'filter':
+                    elif t_type == "filter":
                         if not t_func(val):
                             skip = True
                             break
@@ -387,11 +392,19 @@ class FusedPipeline:
                     selected.append(val)
 
             if not selected:
-                return alloc(0, self._input.element_type, format_char=self._input.format_char)
+                return alloc(
+                    0, self._input.element_type, format_char=self._input.format_char
+                )
 
-            result = alloc(len(selected), self._input.element_type, format_char=self._input.format_char)
+            result = alloc(
+                len(selected),
+                self._input.element_type,
+                format_char=self._input.format_char,
+            )
             result._data = bytearray(result._data)
             for i, val in enumerate(selected):
-                struct.pack_into(result.format_char, result._data, i * result.itemsize, val)
+                struct.pack_into(
+                    result.format_char, result._data, i * result.itemsize, val
+                )
             result._size = len(selected)
             return result

@@ -734,21 +734,28 @@ _GPT_SHAPES: list = [
 
 # --- Route handler functions (placed after GPT weights to avoid WASM data segment corruption) ---
 
+
 def fibonacci(n):
     a, b = 0, 1
     for _ in range(n):
         a, b = b, a + b
     return a
 
+
 def is_prime(n):
-    if n < 2: return False
-    if n < 4: return True
-    if n % 2 == 0 or n % 3 == 0: return False
+    if n < 2:
+        return False
+    if n < 4:
+        return True
+    if n % 2 == 0 or n % 3 == 0:
+        return False
     i = 5
     while i * i <= n:
-        if n % i == 0 or n % (i + 2) == 0: return False
+        if n % i == 0 or n % (i + 2) == 0:
+            return False
         i += 6
     return True
+
 
 def primes_up_to(limit):
     result = []
@@ -759,6 +766,7 @@ def primes_up_to(limit):
         n = n + 1
     return result
 
+
 def diamond(size=9):
     lines = []
     for i in range(size):
@@ -766,10 +774,18 @@ def diamond(size=9):
         lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
     return "\n".join(lines)
 
-def mandelbrot_render(width: int = 80, height: int = 30,
-                      cx: float = -0.5, cy: float = 0.0,
-                      zoom: float = 1.0, max_iter: int = 60) -> str:
-    chars: str = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
+
+def mandelbrot_render(
+    width: int = 80,
+    height: int = 30,
+    cx: float = -0.5,
+    cy: float = 0.0,
+    zoom: float = 1.0,
+    max_iter: int = 60,
+) -> str:
+    chars: str = (
+        " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
+    )
     scale: float = 3.0 / (zoom * width)
     x_off: float = cx - scale * width / 2.0
     y_off: float = cy - scale * height / 2.0
@@ -801,6 +817,7 @@ def mandelbrot_render(width: int = 80, height: int = 30,
         row = row + 1
     return "\n".join(out)
 
+
 def sort_data(data_str):
     nums = []
     bad = []
@@ -816,14 +833,20 @@ def sort_data(data_str):
             bad.append(s)
     return nums, bad
 
+
 def fizzbuzz(n):
     lines = []
     for i in range(1, n + 1):
-        if i % 15 == 0: lines.append("FizzBuzz")
-        elif i % 3 == 0: lines.append("Fizz")
-        elif i % 5 == 0: lines.append("Buzz")
-        else: lines.append(str(i))
+        if i % 15 == 0:
+            lines.append("FizzBuzz")
+        elif i % 3 == 0:
+            lines.append("Fizz")
+        elif i % 5 == 0:
+            lines.append("Buzz")
+        else:
+            lines.append(str(i))
     return "\n".join(lines)
+
 
 def safe_int(s, default, lo=0, hi=1000000):
     try:
@@ -838,6 +861,7 @@ def safe_int(s, default, lo=0, hi=1000000):
         return hi
     return v
 
+
 def safe_float(s, default, lo=-1e15, hi=1e15):
     try:
         v = float(s)
@@ -851,22 +875,25 @@ def safe_float(s, default, lo=-1e15, hi=1e15):
         return hi
     return v
 
+
 def fmt_big(n):
     s = str(n)
     if len(s) <= 3:
         return s
     parts = []
     while len(s) > 3:
-        parts.append(s[len(s) - 3:])
-        s = s[:len(s) - 3]
+        parts.append(s[len(s) - 3 :])
+        s = s[: len(s) - 3]
     parts.append(s)
     parts.reverse()
     return ",".join(parts)
+
 
 def truncate_num(s, digits=60):
     if len(s) <= digits:
         return s
     return s[:digits] + "... (" + fmt_big(len(s)) + " digits)"
+
 
 def _join_ints(lst):
     result = []
@@ -875,6 +902,7 @@ def _join_ints(lst):
         result.append(str(lst[i]))
         i = i + 1
     return ", ".join(result)
+
 
 def _gpt_unpack(w_str):
     parts = w_str.split(",")
@@ -898,12 +926,15 @@ def _gpt_unpack(w_str):
         sd[key] = mat
     return sd
 
+
 _GPT_SD: list = [None]
+
 
 def _gpt_get_sd():
     if _GPT_SD[0] is None:
         _GPT_SD[0] = _gpt_unpack(_GPT_W)
     return _GPT_SD[0]
+
 
 def _gpt_exp(x):
     if x > 20.0:
@@ -923,6 +954,7 @@ def _gpt_exp(x):
         return 1.0 / result
     return result
 
+
 def _gpt_sqrt(x):
     if x <= 0.0:
         return 0.0
@@ -933,7 +965,9 @@ def _gpt_sqrt(x):
         i = i + 1
     return g
 
+
 _GPT_XORSTATE: list = [2463534242]
+
 
 def _gpt_xorshift32():
     x = _GPT_XORSTATE[0]
@@ -944,8 +978,10 @@ def _gpt_xorshift32():
     _GPT_XORSTATE[0] = x
     return x
 
+
 def _gpt_random_float():
     return _gpt_xorshift32() / 4294967296.0
+
 
 def _gpt_sample(probs):
     r = _gpt_random_float()
@@ -957,6 +993,7 @@ def _gpt_sample(probs):
             return i
         i = i + 1
     return len(probs) - 1
+
 
 def _gpt_linear(x, w):
     out = []
@@ -970,6 +1007,7 @@ def _gpt_linear(x, w):
         out.append(s)
         i = i + 1
     return out
+
 
 def _gpt_softmax(logits):
     max_val = logits[0]
@@ -993,6 +1031,7 @@ def _gpt_softmax(logits):
         i = i + 1
     return result
 
+
 def _gpt_rmsnorm(x):
     n = len(x)
     ms = 0.0
@@ -1009,6 +1048,7 @@ def _gpt_rmsnorm(x):
         i = i + 1
     return result
 
+
 def _gpt_relu(x):
     result = []
     i = 0
@@ -1020,6 +1060,7 @@ def _gpt_relu(x):
         i = i + 1
     return result
 
+
 def _gpt_vecadd(a, b):
     result = []
     i = 0
@@ -1027,6 +1068,7 @@ def _gpt_vecadd(a, b):
         result.append(a[i] + b[i])
         i = i + 1
     return result
+
 
 def _gpt_forward(token, pos, keys, values):
     sd = _gpt_get_sd()
@@ -1094,6 +1136,7 @@ def _gpt_forward(token, pos, keys, values):
     logits = _gpt_linear(x, sd["lm_head"])
     return logits
 
+
 def generate(num_samples):
     temperature = 0.5
     bos = _GPT_VOCAB_SIZE - 1
@@ -1127,6 +1170,7 @@ def generate(num_samples):
         sample_i = sample_i + 1
     return results
 
+
 # --- SQL database and engine ---
 
 _SQL_DB = {
@@ -1143,7 +1187,7 @@ _SQL_DB = {
             ["Beijing", "China", 21.33, 522.2],
             ["Osaka", "Japan", 19.11, 654.8],
             ["London", "UK", 8.98, 850.1],
-        ]
+        ],
     },
     "languages": {
         "columns": ["name", "year", "paradigm", "typing"],
@@ -1156,23 +1200,24 @@ _SQL_DB = {
             ["Lua", 1993, "multi", "dynamic"],
             ["Swift", 2014, "multi", "static"],
             ["Kotlin", 2011, "multi", "static"],
-        ]
-    }
+        ],
+    },
 }
+
 
 def _sql_tokenize(sql):
     tokens = []
     i = 0
     while i < len(sql):
         ch = sql[i]
-        if ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r':
+        if ch == " " or ch == "\t" or ch == "\n" or ch == "\r":
             i = i + 1
-        elif ch == ',' or ch == '(' or ch == ')' or ch == '*':
+        elif ch == "," or ch == "(" or ch == ")" or ch == "*":
             tokens.append(ch)
             i = i + 1
-        elif ch == '>' or ch == '<' or ch == '!' or ch == '=':
-            if i + 1 < len(sql) and sql[i + 1] == '=':
-                tokens.append(ch + '=')
+        elif ch == ">" or ch == "<" or ch == "!" or ch == "=":
+            if i + 1 < len(sql) and sql[i + 1] == "=":
+                tokens.append(ch + "=")
                 i = i + 2
             else:
                 tokens.append(ch)
@@ -1181,11 +1226,24 @@ def _sql_tokenize(sql):
             j = i + 1
             while j < len(sql) and sql[j] != "'":
                 j = j + 1
-            tokens.append(sql[i:j + 1])
+            tokens.append(sql[i : j + 1])
             i = j + 1
         else:
             j = i
-            while j < len(sql) and sql[j] != ' ' and sql[j] != '\t' and sql[j] != ',' and sql[j] != '(' and sql[j] != ')' and sql[j] != '>' and sql[j] != '<' and sql[j] != '=' and sql[j] != '!' and sql[j] != '\n' and sql[j] != '\r':
+            while (
+                j < len(sql)
+                and sql[j] != " "
+                and sql[j] != "\t"
+                and sql[j] != ","
+                and sql[j] != "("
+                and sql[j] != ")"
+                and sql[j] != ">"
+                and sql[j] != "<"
+                and sql[j] != "="
+                and sql[j] != "!"
+                and sql[j] != "\n"
+                and sql[j] != "\r"
+            ):
                 j = j + 1
             tokens.append(sql[i:j])
             i = j
@@ -1194,7 +1252,17 @@ def _sql_tokenize(sql):
     ti = 0
     while ti < len(tokens):
         tok_up = tokens[ti].upper()
-        if (tok_up == "COUNT" or tok_up == "SUM" or tok_up == "AVG" or tok_up == "MIN" or tok_up == "MAX") and ti + 3 < len(tokens) and tokens[ti + 1] == "(":
+        if (
+            (
+                tok_up == "COUNT"
+                or tok_up == "SUM"
+                or tok_up == "AVG"
+                or tok_up == "MIN"
+                or tok_up == "MAX"
+            )
+            and ti + 3 < len(tokens)
+            and tokens[ti + 1] == "("
+        ):
             combined = tokens[ti] + "(" + tokens[ti + 2] + ")"
             merged.append(combined)
             ti = ti + 4
@@ -1203,19 +1271,20 @@ def _sql_tokenize(sql):
             ti = ti + 1
     return merged
 
+
 def _sql_parse_value(tok):
     if len(tok) >= 2 and tok[0] == "'" and tok[len(tok) - 1] == "'":
-        return tok[1:len(tok) - 1]
+        return tok[1 : len(tok) - 1]
     dot_count = 0
     digit_start = 0
-    if len(tok) > 0 and tok[0] == '-':
+    if len(tok) > 0 and tok[0] == "-":
         digit_start = 1
     all_num = True
     ci = digit_start
     while ci < len(tok):
-        if tok[ci] == '.':
+        if tok[ci] == ".":
             dot_count = dot_count + 1
-        elif tok[ci] < '0' or tok[ci] > '9':
+        elif tok[ci] < "0" or tok[ci] > "9":
             all_num = False
         ci = ci + 1
     if all_num and len(tok) > digit_start:
@@ -1224,6 +1293,7 @@ def _sql_parse_value(tok):
         elif dot_count == 0:
             return int(tok)
     return tok
+
 
 def _sql_parse_condition(tokens, pos):
     left = tokens[pos]
@@ -1236,6 +1306,7 @@ def _sql_parse_condition(tokens, pos):
     pos = pos + 1
     right = _sql_parse_value(right_raw)
     return (left, op, right), pos
+
 
 def _sql_eval_condition(cond, row_dict):
     col_name = cond[0]
@@ -1259,15 +1330,16 @@ def _sql_eval_condition(cond, row_dict):
     elif op == "LIKE":
         pattern = str(target)
         value = str(val)
-        if len(pattern) >= 2 and pattern[0] == '%' and pattern[len(pattern) - 1] == '%':
-            return pattern[1:len(pattern) - 1].lower() in value.lower()
-        elif len(pattern) >= 1 and pattern[0] == '%':
+        if len(pattern) >= 2 and pattern[0] == "%" and pattern[len(pattern) - 1] == "%":
+            return pattern[1 : len(pattern) - 1].lower() in value.lower()
+        elif len(pattern) >= 1 and pattern[0] == "%":
             return value.lower().endswith(pattern[1:].lower())
-        elif len(pattern) >= 1 and pattern[len(pattern) - 1] == '%':
-            return value.lower().startswith(pattern[:len(pattern) - 1].lower())
+        elif len(pattern) >= 1 and pattern[len(pattern) - 1] == "%":
+            return value.lower().startswith(pattern[: len(pattern) - 1].lower())
         else:
             return value.lower() == pattern.lower()
     return False
+
 
 def _sql_parse_where(tokens, pos):
     conditions = []
@@ -1285,6 +1357,7 @@ def _sql_parse_where(tokens, pos):
             break
     return conditions, connectors, pos
 
+
 def _sql_eval_where(conditions, connectors, row_dict):
     result = _sql_eval_condition(conditions[0], row_dict)
     ci = 0
@@ -1297,17 +1370,26 @@ def _sql_eval_where(conditions, connectors, row_dict):
         ci = ci + 1
     return result
 
+
 def _sql_is_agg(col_expr):
     upper = col_expr.upper()
-    if upper.startswith("COUNT(") or upper.startswith("SUM(") or upper.startswith("AVG(") or upper.startswith("MIN(") or upper.startswith("MAX("):
+    if (
+        upper.startswith("COUNT(")
+        or upper.startswith("SUM(")
+        or upper.startswith("AVG(")
+        or upper.startswith("MIN(")
+        or upper.startswith("MAX(")
+    ):
         return True
     return False
+
 
 def _sql_parse_agg(expr):
     paren = expr.index("(")
     func_name = expr[:paren].upper()
-    inner = expr[paren + 1:len(expr) - 1]
+    inner = expr[paren + 1 : len(expr) - 1]
     return func_name, inner
+
 
 def _sql_compute_agg(func_name, col_name, rows, columns):
     if func_name == "COUNT":
@@ -1359,6 +1441,7 @@ def _sql_compute_agg(func_name, col_name, rows, columns):
             vi = vi + 1
         return m
     return 0
+
 
 def _sql_execute(sql):
     tokens = _sql_tokenize(sql)
@@ -1558,6 +1641,7 @@ def _sql_execute(sql):
         ri = ri + 1
     return out_cols, out_rows
 
+
 def _sql_format_text(result_cols, result_rows):
     if len(result_cols) == 0:
         return "No results."
@@ -1613,23 +1697,24 @@ def _sql_format_text(result_cols, result_rows):
     lines.append(str(len(result_rows)) + " row(s)")
     return "\n".join(lines)
 
+
 def _sql_urldecode(s):
     result = ""
     i = 0
     while i < len(s):
-        if s[i] == '+':
-            result = result + ' '
+        if s[i] == "+":
+            result = result + " "
             i = i + 1
-        elif s[i] == '%' and i + 2 < len(s):
-            hex_str = s[i + 1:i + 3]
+        elif s[i] == "%" and i + 2 < len(s):
+            hex_str = s[i + 1 : i + 3]
             code = 0
             hi = 0
             while hi < len(hex_str):
                 c = hex_str[hi].lower()
-                if c >= '0' and c <= '9':
-                    code = code * 16 + (ord(c) - ord('0'))
-                elif c >= 'a' and c <= 'f':
-                    code = code * 16 + 10 + (ord(c) - ord('a'))
+                if c >= "0" and c <= "9":
+                    code = code * 16 + (ord(c) - ord("0"))
+                elif c >= "a" and c <= "f":
+                    code = code * 16 + 10 + (ord(c) - ord("a"))
                 hi = hi + 1
             result = result + chr(code)
             i = i + 3
@@ -1638,8 +1723,10 @@ def _sql_urldecode(s):
             i = i + 1
     return result
 
+
 # --- Request parsing ---
 import sys
+
 
 def _parse_query(qs):
     """Parse a query string into a dict, handling edge cases."""
@@ -1653,10 +1740,11 @@ def _parse_query(qs):
         eq_pos = pair.find("=")
         if eq_pos >= 0:
             key = pair[:eq_pos]
-            val = pair[eq_pos + 1:]
+            val = pair[eq_pos + 1 :]
             result[key] = val
         i = i + 1
     return result
+
 
 def _strip_slashes(s):
     """Strip leading and trailing '/' characters from a string."""
@@ -1668,11 +1756,13 @@ def _strip_slashes(s):
         end = end - 1
     return s[start:end]
 
+
 def _param(key, default=""):
     """Get a query parameter by key, with a default value."""
     if key in params:
         return params[key]
     return default
+
 
 _argv = sys.argv
 path = _argv[1] if len(_argv) > 1 else "/"
@@ -1776,7 +1866,17 @@ elif route == "mandelbrot":
     print("Mandelbrot Set")
     print("=" * w)
     if preset > 0:
-        print("preset: " + str(preset) + "  center: (" + str(cx) + ", " + str(cy) + ")  zoom: " + str(zm) + "x")
+        print(
+            "preset: "
+            + str(preset)
+            + "  center: ("
+            + str(cx)
+            + ", "
+            + str(cy)
+            + ")  zoom: "
+            + str(zm)
+            + "x"
+        )
     else:
         print("center: (-0.5, 0.0)  zoom: 1x  max_iter: " + str(mi))
     print("resolution: " + str(w) + "x" + str(h))
@@ -1898,33 +1998,59 @@ elif route == "demo":
     print("<title>Moltlang — Python Compiled to WebAssembly</title>")
     print("<style>")
     print("*{margin:0;padding:0;box-sizing:border-box}")
-    print("body{background:#0d1117;color:#c9d1d9;font-family:'SF Mono','Cascadia Code','Fira Code',monospace;line-height:1.6;padding:2rem;max-width:720px;margin:0 auto}")
+    print(
+        "body{background:#0d1117;color:#c9d1d9;font-family:'SF Mono','Cascadia Code','Fira Code',monospace;line-height:1.6;padding:2rem;max-width:720px;margin:0 auto}"
+    )
     print("a{color:#58a6ff;text-decoration:none}")
     print("a:hover{text-decoration:underline}")
-    print("pre.logo{color:#58a6ff;font-size:0.75rem;line-height:1.2;margin-bottom:1.5rem}")
+    print(
+        "pre.logo{color:#58a6ff;font-size:0.75rem;line-height:1.2;margin-bottom:1.5rem}"
+    )
     print("h1{font-size:1.4rem;color:#f0f6fc;margin-bottom:0.25rem}")
     print(".subtitle{color:#8b949e;font-size:0.9rem;margin-bottom:2rem}")
     print(".stats{display:flex;gap:2rem;margin-bottom:2rem;flex-wrap:wrap}")
-    print(".stat{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:0.75rem 1rem}")
-    print(".stat-label{color:#8b949e;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em}")
+    print(
+        ".stat{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:0.75rem 1rem}"
+    )
+    print(
+        ".stat-label{color:#8b949e;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em}"
+    )
     print(".stat-value{color:#f0f6fc;font-size:1.1rem;font-weight:bold}")
     print(".endpoints{margin-bottom:2rem}")
-    print(".endpoints h2{font-size:1rem;color:#f0f6fc;margin-bottom:0.75rem;border-bottom:1px solid #30363d;padding-bottom:0.5rem}")
-    print(".ep{display:block;padding:0.5rem 0.75rem;margin-bottom:0.25rem;border-radius:4px;transition:background 0.15s}")
+    print(
+        ".endpoints h2{font-size:1rem;color:#f0f6fc;margin-bottom:0.75rem;border-bottom:1px solid #30363d;padding-bottom:0.5rem}"
+    )
+    print(
+        ".ep{display:block;padding:0.5rem 0.75rem;margin-bottom:0.25rem;border-radius:4px;transition:background 0.15s}"
+    )
     print(".ep:hover{background:#161b22;text-decoration:none}")
     print(".ep code{color:#7ee787;font-size:0.85rem}")
     print(".ep span{color:#8b949e;font-size:0.8rem;margin-left:0.75rem}")
-    print("footer{border-top:1px solid #30363d;padding-top:1rem;color:#8b949e;font-size:0.8rem}")
+    print(
+        "footer{border-top:1px solid #30363d;padding-top:1rem;color:#8b949e;font-size:0.8rem}"
+    )
     print("footer a{color:#58a6ff}")
-    print("@media(max-width:480px){body{padding:1rem}.stats{flex-direction:column;gap:0.5rem}}")
+    print(
+        "@media(max-width:480px){body{padding:1rem}.stats{flex-direction:column;gap:0.5rem}}"
+    )
     print("</style>")
     print("<script type='modelcontext'>")
     print('{"tools":[')
-    print('  {"name":"query_sql","description":"Execute SQL against city/language datasets. Example: SELECT * FROM cities WHERE population_m > 20","params":{"sql":{"type":"string","required":true}},"call":"/sql?q={sql}"},')
-    print('  {"name":"fibonacci","description":"Compute Nth Fibonacci number (1-10000)","params":{"n":{"type":"integer","required":true}},"call":"/fib/{n}"},')
-    print('  {"name":"generate_names","description":"Generate fictional names using microGPT (4192-parameter model)","params":{"count":{"type":"integer","required":false,"default":5}},"call":"/generate/{count}"},')
-    print('  {"name":"primes","description":"Find all prime numbers up to N (max 50000)","params":{"n":{"type":"integer","required":true}},"call":"/primes/{n}"},')
-    print('  {"name":"hash_text","description":"Compute cryptographic hashes of text","params":{"text":{"type":"string","required":true}},"call":"/hash?msg={text}"}')
+    print(
+        '  {"name":"query_sql","description":"Execute SQL against city/language datasets. Example: SELECT * FROM cities WHERE population_m > 20","params":{"sql":{"type":"string","required":true}},"call":"/sql?q={sql}"},'
+    )
+    print(
+        '  {"name":"fibonacci","description":"Compute Nth Fibonacci number (1-10000)","params":{"n":{"type":"integer","required":true}},"call":"/fib/{n}"},'
+    )
+    print(
+        '  {"name":"generate_names","description":"Generate fictional names using microGPT (4192-parameter model)","params":{"count":{"type":"integer","required":false,"default":5}},"call":"/generate/{count}"},'
+    )
+    print(
+        '  {"name":"primes","description":"Find all prime numbers up to N (max 50000)","params":{"n":{"type":"integer","required":true}},"call":"/primes/{n}"},'
+    )
+    print(
+        '  {"name":"hash_text","description":"Compute cryptographic hashes of text","params":{"text":{"type":"string","required":true}},"call":"/hash?msg={text}"}'
+    )
     print("]}")
     print("</script>")
     print("</head><body>")
@@ -1937,25 +2063,55 @@ elif route == "demo":
     print("                                     |___/")
     print("</pre>")
     print("<h1>Moltlang</h1>")
-    print("<p class='subtitle'>Python compiled to WebAssembly, running on Cloudflare Workers (Free Tier).</p>")
+    print(
+        "<p class='subtitle'>Python compiled to WebAssembly, running on Cloudflare Workers (Free Tier).</p>"
+    )
     print("<div class='stats'>")
-    print("<div class='stat'><div class='stat-label'>Binary Size</div><div class='stat-value'>2.8 MB gzip</div></div>")
-    print("<div class='stat'><div class='stat-label'>Runtime</div><div class='stat-value'>WASM</div></div>")
-    print("<div class='stat'><div class='stat-label'>Platform</div><div class='stat-value'>Cloudflare Workers</div></div>")
+    print(
+        "<div class='stat'><div class='stat-label'>Binary Size</div><div class='stat-value'>2.8 MB gzip</div></div>"
+    )
+    print(
+        "<div class='stat'><div class='stat-label'>Runtime</div><div class='stat-value'>WASM</div></div>"
+    )
+    print(
+        "<div class='stat'><div class='stat-label'>Platform</div><div class='stat-value'>Cloudflare Workers</div></div>"
+    )
     print("</div>")
     print("<div class='endpoints'>")
     print("<h2>Endpoints</h2>")
-    print("<a class='ep' href='/fib/100'><code>/fib/N</code><span>Fibonacci (N up to 10,000)</span></a>")
-    print("<a class='ep' href='/primes/1000'><code>/primes/N</code><span>Primes up to N (max 50,000)</span></a>")
-    print("<a class='ep' href='/mandelbrot'><code>/mandelbrot</code><span>ASCII Mandelbrot set</span></a>")
-    print("<a class='ep' href='/mandelbrot/3'><code>/mandelbrot/1-5</code><span>Mandelbrot zoom presets</span></a>")
-    print("<a class='ep' href='/diamond/21'><code>/diamond/N</code><span>ASCII diamond pattern</span></a>")
-    print("<a class='ep' href='/sort?data=42,7,19,3,88,1'><code>/sort?data=5,3,1</code><span>Sort numbers</span></a>")
-    print("<a class='ep' href='/fizzbuzz/30'><code>/fizzbuzz/N</code><span>FizzBuzz</span></a>")
-    print("<a class='ep' href='/pi/100000'><code>/pi/N</code><span>Approximate pi (Leibniz series)</span></a>")
-    print("<a class='ep' href='/generate/5'><code>/generate/N</code><span>Generate N names with microGPT</span></a>")
-    print("<a class='ep' href='/bench'><code>/bench</code><span>Run benchmark suite</span></a>")
-    print("<a class='ep' href='/sql'><code>/sql</code><span>SQL playground — query cities &amp; languages</span></a>")
+    print(
+        "<a class='ep' href='/fib/100'><code>/fib/N</code><span>Fibonacci (N up to 10,000)</span></a>"
+    )
+    print(
+        "<a class='ep' href='/primes/1000'><code>/primes/N</code><span>Primes up to N (max 50,000)</span></a>"
+    )
+    print(
+        "<a class='ep' href='/mandelbrot'><code>/mandelbrot</code><span>ASCII Mandelbrot set</span></a>"
+    )
+    print(
+        "<a class='ep' href='/mandelbrot/3'><code>/mandelbrot/1-5</code><span>Mandelbrot zoom presets</span></a>"
+    )
+    print(
+        "<a class='ep' href='/diamond/21'><code>/diamond/N</code><span>ASCII diamond pattern</span></a>"
+    )
+    print(
+        "<a class='ep' href='/sort?data=42,7,19,3,88,1'><code>/sort?data=5,3,1</code><span>Sort numbers</span></a>"
+    )
+    print(
+        "<a class='ep' href='/fizzbuzz/30'><code>/fizzbuzz/N</code><span>FizzBuzz</span></a>"
+    )
+    print(
+        "<a class='ep' href='/pi/100000'><code>/pi/N</code><span>Approximate pi (Leibniz series)</span></a>"
+    )
+    print(
+        "<a class='ep' href='/generate/5'><code>/generate/N</code><span>Generate N names with microGPT</span></a>"
+    )
+    print(
+        "<a class='ep' href='/bench'><code>/bench</code><span>Run benchmark suite</span></a>"
+    )
+    print(
+        "<a class='ep' href='/sql'><code>/sql</code><span>SQL playground — query cities &amp; languages</span></a>"
+    )
     print("</div>")
     print("<footer>")
     print("<a href='https://github.com/adpena/molt'>github.com/adpena/molt</a>")
@@ -1976,62 +2132,102 @@ elif route == "sql":
         print("<title>SQL Playground — Moltlang</title>")
         print("<style>")
         print("*{margin:0;padding:0;box-sizing:border-box}")
-        print("body{background:#0d1117;color:#c9d1d9;font-family:'SF Mono','Cascadia Code','Fira Code',monospace;line-height:1.6;padding:2rem;max-width:860px;margin:0 auto}")
+        print(
+            "body{background:#0d1117;color:#c9d1d9;font-family:'SF Mono','Cascadia Code','Fira Code',monospace;line-height:1.6;padding:2rem;max-width:860px;margin:0 auto}"
+        )
         print("a{color:#58a6ff;text-decoration:none}")
         print("a:hover{text-decoration:underline}")
         print("h1{font-size:1.4rem;color:#f0f6fc;margin-bottom:0.25rem}")
         print(".subtitle{color:#8b949e;font-size:0.9rem;margin-bottom:1.5rem}")
         print(".editor{margin-bottom:1.5rem}")
-        print("textarea{width:100%;height:80px;background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:0.75rem;font-family:inherit;font-size:0.9rem;resize:vertical}")
+        print(
+            "textarea{width:100%;height:80px;background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:0.75rem;font-family:inherit;font-size:0.9rem;resize:vertical}"
+        )
         print("textarea:focus{outline:none;border-color:#58a6ff}")
-        print(".btn{display:inline-block;background:#238636;color:#fff;border:none;padding:0.5rem 1.25rem;border-radius:6px;font-family:inherit;font-size:0.85rem;cursor:pointer;margin-top:0.5rem}")
+        print(
+            ".btn{display:inline-block;background:#238636;color:#fff;border:none;padding:0.5rem 1.25rem;border-radius:6px;font-family:inherit;font-size:0.85rem;cursor:pointer;margin-top:0.5rem}"
+        )
         print(".btn:hover{background:#2ea043}")
         print(".examples{margin-bottom:1.5rem}")
-        print(".examples h2{font-size:0.95rem;color:#f0f6fc;margin-bottom:0.5rem;border-bottom:1px solid #30363d;padding-bottom:0.4rem}")
-        print(".eq{display:block;padding:0.35rem 0.5rem;margin-bottom:0.15rem;border-radius:4px;color:#7ee787;font-size:0.8rem;cursor:pointer;transition:background 0.15s}")
+        print(
+            ".examples h2{font-size:0.95rem;color:#f0f6fc;margin-bottom:0.5rem;border-bottom:1px solid #30363d;padding-bottom:0.4rem}"
+        )
+        print(
+            ".eq{display:block;padding:0.35rem 0.5rem;margin-bottom:0.15rem;border-radius:4px;color:#7ee787;font-size:0.8rem;cursor:pointer;transition:background 0.15s}"
+        )
         print(".eq:hover{background:#161b22;text-decoration:none}")
         print(".tables{margin-bottom:1.5rem}")
-        print(".tables h2{font-size:0.95rem;color:#f0f6fc;margin-bottom:0.5rem;border-bottom:1px solid #30363d;padding-bottom:0.4rem}")
+        print(
+            ".tables h2{font-size:0.95rem;color:#f0f6fc;margin-bottom:0.5rem;border-bottom:1px solid #30363d;padding-bottom:0.4rem}"
+        )
         print(".tinfo{color:#8b949e;font-size:0.8rem;margin-bottom:0.25rem}")
         print(".result{margin-top:1rem}")
         print("table{border-collapse:collapse;width:100%;margin-top:0.5rem}")
-        print("th{background:#161b22;color:#f0f6fc;text-align:left;padding:0.5rem 0.75rem;border:1px solid #30363d;font-size:0.8rem;font-weight:600}")
+        print(
+            "th{background:#161b22;color:#f0f6fc;text-align:left;padding:0.5rem 0.75rem;border:1px solid #30363d;font-size:0.8rem;font-weight:600}"
+        )
         print("td{padding:0.4rem 0.75rem;border:1px solid #30363d;font-size:0.8rem}")
         print("tr:hover td{background:#161b22}")
         print(".row-count{color:#8b949e;font-size:0.8rem;margin-top:0.5rem}")
-        print(".error-box{color:#f85149;background:#1c0c0c;border:1px solid #f8514933;padding:0.75rem;border-radius:6px;font-size:0.85rem;margin-top:0.5rem}")
-        print("footer{border-top:1px solid #30363d;padding-top:1rem;margin-top:2rem;color:#8b949e;font-size:0.8rem}")
+        print(
+            ".error-box{color:#f85149;background:#1c0c0c;border:1px solid #f8514933;padding:0.75rem;border-radius:6px;font-size:0.85rem;margin-top:0.5rem}"
+        )
+        print(
+            "footer{border-top:1px solid #30363d;padding-top:1rem;margin-top:2rem;color:#8b949e;font-size:0.8rem}"
+        )
         print("footer a{color:#58a6ff}")
         print("@media(max-width:480px){body{padding:1rem}}")
         print("</style>")
         print("<script type='modelcontext'>")
         print('{"tools":[')
-        print('  {"name":"query_sql","description":"Execute SQL against city/language datasets. Tables: cities (name, country, population_m, gdp_b), languages (name, year, paradigm, typing)","params":{"sql":{"type":"string","required":true}},"call":"/sql?q={sql}"}')
+        print(
+            '  {"name":"query_sql","description":"Execute SQL against city/language datasets. Tables: cities (name, country, population_m, gdp_b), languages (name, year, paradigm, typing)","params":{"sql":{"type":"string","required":true}},"call":"/sql?q={sql}"}'
+        )
         print("]}")
         print("</script>")
         print("</head><body>")
         print("<h1>SQL Playground</h1>")
-        print("<p class='subtitle'>Pure Python SQL engine compiled to WASM. Query the pre-loaded datasets.</p>")
+        print(
+            "<p class='subtitle'>Pure Python SQL engine compiled to WASM. Query the pre-loaded datasets.</p>"
+        )
         print("<div class='tables'>")
         print("<h2>Available Tables</h2>")
-        print("<p class='tinfo'><strong>cities</strong> — name, country, population_m, gdp_b (10 rows)</p>")
-        print("<p class='tinfo'><strong>languages</strong> — name, year, paradigm, typing (8 rows)</p>")
+        print(
+            "<p class='tinfo'><strong>cities</strong> — name, country, population_m, gdp_b (10 rows)</p>"
+        )
+        print(
+            "<p class='tinfo'><strong>languages</strong> — name, year, paradigm, typing (8 rows)</p>"
+        )
         print("</div>")
         print("<div class='editor'>")
-        print("<textarea id='sql' placeholder='Enter SQL query...'>SELECT * FROM cities ORDER BY population_m DESC</textarea>")
+        print(
+            "<textarea id='sql' placeholder='Enter SQL query...'>SELECT * FROM cities ORDER BY population_m DESC</textarea>"
+        )
         print("<button class='btn' onclick='runQuery()'>Run Query</button>")
         print("</div>")
         print("<div class='examples'>")
         print("<h2>Example Queries</h2>")
-        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT * FROM cities ORDER BY population_m DESC</a>")
-        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT country, COUNT(*) FROM cities GROUP BY country</a>")
-        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT name, gdp_b FROM cities WHERE gdp_b > 500 ORDER BY gdp_b DESC</a>")
-        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT * FROM languages WHERE typing = &apos;static&apos; ORDER BY year</a>")
-        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT paradigm, COUNT(*) FROM languages GROUP BY paradigm</a>")
+        print(
+            "<a class='eq' onclick='setQuery(this.textContent)'>SELECT * FROM cities ORDER BY population_m DESC</a>"
+        )
+        print(
+            "<a class='eq' onclick='setQuery(this.textContent)'>SELECT country, COUNT(*) FROM cities GROUP BY country</a>"
+        )
+        print(
+            "<a class='eq' onclick='setQuery(this.textContent)'>SELECT name, gdp_b FROM cities WHERE gdp_b > 500 ORDER BY gdp_b DESC</a>"
+        )
+        print(
+            "<a class='eq' onclick='setQuery(this.textContent)'>SELECT * FROM languages WHERE typing = &apos;static&apos; ORDER BY year</a>"
+        )
+        print(
+            "<a class='eq' onclick='setQuery(this.textContent)'>SELECT paradigm, COUNT(*) FROM languages GROUP BY paradigm</a>"
+        )
         print("</div>")
         print("<div id='result' class='result'></div>")
         print("<footer>")
-        print("<a href='/demo'>Back to demo</a> &middot; <a href='https://github.com/adpena/molt'>github.com/adpena/molt</a>")
+        print(
+            "<a href='/demo'>Back to demo</a> &middot; <a href='https://github.com/adpena/molt'>github.com/adpena/molt</a>"
+        )
         print("</footer>")
         print("<script>")
         print("function setQuery(q){document.getElementById('sql').value=q;runQuery()}")
@@ -2042,28 +2238,50 @@ elif route == "sql":
         print("    .then(function(r){return r.text()})")
         print("    .then(function(text){")
         print("      var lines=text.split('\\n');")
-        print("      if(lines.length<2){document.getElementById('result').textContent=text;return}")
+        print(
+            "      if(lines.length<2){document.getElementById('result').textContent=text;return}"
+        )
         print("      var headers=[];var h=lines[0];var positions=[];")
         print("      var sep=lines[1];var si=0;")
-        print("      while(si<sep.length){if(sep[si]==='-'){var ps=si;while(si<sep.length&&sep[si]==='-')si++;positions.push([ps,si])}else{si++}}")
-        print("      var pi=0;while(pi<positions.length){headers.push(h.substring(positions[pi][0],positions[pi][1]).trim());pi++}")
-        print("      var tbl=document.createElement('table');var thead=document.createElement('tr');")
-        print("      var hi=0;while(hi<headers.length){var th=document.createElement('th');th.textContent=headers[hi];thead.appendChild(th);hi++}")
+        print(
+            "      while(si<sep.length){if(sep[si]==='-'){var ps=si;while(si<sep.length&&sep[si]==='-')si++;positions.push([ps,si])}else{si++}}"
+        )
+        print(
+            "      var pi=0;while(pi<positions.length){headers.push(h.substring(positions[pi][0],positions[pi][1]).trim());pi++}"
+        )
+        print(
+            "      var tbl=document.createElement('table');var thead=document.createElement('tr');"
+        )
+        print(
+            "      var hi=0;while(hi<headers.length){var th=document.createElement('th');th.textContent=headers[hi];thead.appendChild(th);hi++}"
+        )
         print("      tbl.appendChild(thead);")
         print("      var ri=2;while(ri<lines.length){")
-        print("        var line=lines[ri];if(line.indexOf('row(s)')>=0){break}if(!line){ri++;continue}")
+        print(
+            "        var line=lines[ri];if(line.indexOf('row(s)')>=0){break}if(!line){ri++;continue}"
+        )
         print("        var tr=document.createElement('tr');var ci=0;")
-        print("        while(ci<positions.length){var td=document.createElement('td');var cell='';")
-        print("          if(positions[ci][0]<line.length){cell=line.substring(positions[ci][0],Math.min(positions[ci][1]+2,line.length)).trim()}")
+        print(
+            "        while(ci<positions.length){var td=document.createElement('td');var cell='';"
+        )
+        print(
+            "          if(positions[ci][0]<line.length){cell=line.substring(positions[ci][0],Math.min(positions[ci][1]+2,line.length)).trim()}"
+        )
         print("          td.textContent=cell;tr.appendChild(td);ci++}")
         print("        tbl.appendChild(tr);ri++}")
         print("      var rowLine=lines[lines.length-1]||lines[lines.length-2]||'';")
-        print("      var countDiv=document.createElement('div');countDiv.className='row-count';countDiv.textContent=rowLine;")
+        print(
+            "      var countDiv=document.createElement('div');countDiv.className='row-count';countDiv.textContent=rowLine;"
+        )
         print("      var container=document.getElementById('result');")
-        print("      while(container.firstChild)container.removeChild(container.firstChild);")
+        print(
+            "      while(container.firstChild)container.removeChild(container.firstChild);"
+        )
         print("      container.appendChild(tbl);container.appendChild(countDiv)")
         print("    })")
-        print("    .catch(function(e){var el=document.getElementById('result');el.textContent='Error: '+e})")
+        print(
+            "    .catch(function(e){var el=document.getElementById('result');el.textContent='Error: '+e})"
+        )
         print("}")
         print("</script>")
         print("</body></html>")

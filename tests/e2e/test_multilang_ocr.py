@@ -7,9 +7,7 @@ OCR endpoint.
 """
 
 import json
-import hashlib
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -49,7 +47,11 @@ MIN_REASONABLE_TOKENS = 1
 # is present).
 
 TOKENIZER_PATHS = [
-    Path(__file__).parent.parent.parent / "deploy" / "cloudflare" / ".wrangler" / "tokenizer.json",
+    Path(__file__).parent.parent.parent
+    / "deploy"
+    / "cloudflare"
+    / ".wrangler"
+    / "tokenizer.json",
     Path(__file__).parent / "test_images" / "tokenizer.json",
 ]
 
@@ -66,6 +68,7 @@ def _find_tokenizer():
 # Full BPE tokenizer roundtrip requires the tokenizers library.
 try:
     from tokenizers import Tokenizer as HFTokenizer
+
     _HAS_TOKENIZERS = True
 except ImportError:
     _HAS_TOKENIZERS = False
@@ -117,11 +120,11 @@ class TestMultilangTokenizerRoundtrip:
             )
             decoded = tokenizer.decode(token_ids)
             # BPE decode may normalize whitespace; compare stripped versions
-            assert text.strip() in decoded or decoded.strip() in text.strip() or (
-                text.replace(" ", "") == decoded.replace(" ", "")
-            ), (
-                f"{lang}: BPE roundtrip mismatch: {text!r} -> {decoded!r}"
-            )
+            assert (
+                text.strip() in decoded
+                or decoded.strip() in text.strip()
+                or (text.replace(" ", "") == decoded.replace(" ", ""))
+            ), f"{lang}: BPE roundtrip mismatch: {text!r} -> {decoded!r}"
 
     @pytest.mark.skipif(not _HAS_TOKENIZERS, reason="tokenizers library not installed")
     def test_token_count_reasonable(self):
@@ -171,17 +174,27 @@ class TestMultilangWorkersAI:
     @pytest.mark.parametrize("lang,prompt", MULTILANG_PROMPTS)
     def test_workers_ai_accepts_multilang_prompt(self, lang, prompt):
         """The Worker must accept prompts in any language and return 200."""
-        payload = json.dumps({
-            "image": TINY_PNG_B64,
-            "prompt": prompt,
-        })
+        payload = json.dumps(
+            {
+                "image": TINY_PNG_B64,
+                "prompt": prompt,
+            }
+        )
         result = subprocess.run(
             [
-                "curl", "-s", "-w", "\n%{http_code}",
-                "-X", "POST", WORKER_URL,
-                "-H", "Content-Type: application/json",
-                "-H", "X-Use-Backend: workers-ai",
-                "-d", payload,
+                "curl",
+                "-s",
+                "-w",
+                "\n%{http_code}",
+                "-X",
+                "POST",
+                WORKER_URL,
+                "-H",
+                "Content-Type: application/json",
+                "-H",
+                "X-Use-Backend: workers-ai",
+                "-d",
+                payload,
             ],
             capture_output=True,
             text=True,
@@ -199,16 +212,24 @@ class TestMultilangWorkersAI:
 
     def test_batch_endpoint_accepts_request(self):
         """The /ocr/batch endpoint must accept a valid batch request."""
-        payload = json.dumps({
-            "images": [TINY_PNG_B64, TINY_PNG_B64],
-        })
+        payload = json.dumps(
+            {
+                "images": [TINY_PNG_B64, TINY_PNG_B64],
+            }
+        )
         result = subprocess.run(
             [
-                "curl", "-s", "-w", "\n%{http_code}",
-                "-X", "POST",
+                "curl",
+                "-s",
+                "-w",
+                "\n%{http_code}",
+                "-X",
+                "POST",
                 "https://falcon-ocr.adpena.workers.dev/ocr/batch",
-                "-H", "Content-Type: application/json",
-                "-d", payload,
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                payload,
             ],
             capture_output=True,
             text=True,
@@ -221,5 +242,7 @@ class TestMultilangWorkersAI:
         )
         body = json.loads(lines[0])
         assert "results" in body, "Missing 'results' in batch response"
-        assert len(body["results"]) == 2, f"Expected 2 results, got {len(body['results'])}"
+        assert len(body["results"]) == 2, (
+            f"Expected 2 results, got {len(body['results'])}"
+        )
         assert "total_time_ms" in body, "Missing 'total_time_ms' in batch response"

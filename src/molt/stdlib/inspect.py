@@ -147,11 +147,10 @@ def getgeneratorlocals(gen):
 def getasyncgenlocals(agen):
     return _molt_getasyncgenlocals(agen)
 
+
 # --- Intrinsics used by retained wrappers ---
 
-_MOLT_INSPECT_SIGNATURE_DATA = _require_intrinsic(
-    "molt_inspect_signature_data"
-)
+_MOLT_INSPECT_SIGNATURE_DATA = _require_intrinsic("molt_inspect_signature_data")
 
 
 class _Empty:
@@ -328,5 +327,6 @@ def signature(obj: Any) -> Signature:
             raise ValueError(f"no signature found for builtin {obj!r}")
         raise ValueError(f"no signature found for builtin type {obj!r}")
     raise ValueError(f"no signature found for {obj!r}")
+
 
 globals().pop("_require_intrinsic", None)

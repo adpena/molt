@@ -13,13 +13,9 @@ _MOLT_TRACEBACK_PAYLOAD = _require_intrinsic("molt_traceback_payload")
 _MOLT_TRACEBACK_FORMAT_EXCEPTION_ONLY = _require_intrinsic(
     "molt_traceback_format_exception_only"
 )
-_MOLT_TRACEBACK_FORMAT_EXCEPTION = _require_intrinsic(
-    "molt_traceback_format_exception"
-)
+_MOLT_TRACEBACK_FORMAT_EXCEPTION = _require_intrinsic("molt_traceback_format_exception")
 _MOLT_TRACEBACK_FORMAT_TB = _require_intrinsic("molt_traceback_format_tb")
-_MOLT_TRACEBACK_FORMAT_STACK = _require_intrinsic(
-    "molt_traceback_format_stack"
-)
+_MOLT_TRACEBACK_FORMAT_STACK = _require_intrinsic("molt_traceback_format_stack")
 _MOLT_TRACEBACK_EXTRACT_TB = _require_intrinsic("molt_traceback_extract_tb")
 _MOLT_TRACEBACK_EXCEPTION_CHAIN_PAYLOAD = _require_intrinsic(
     "molt_traceback_exception_chain_payload"
@@ -415,5 +411,6 @@ def format_exc(limit: int | None = None) -> str:
 def print_exc(limit: int | None = None, file: Any | None = None) -> None:
     exc_type, value, tb = sys.exc_info()
     print_exception(exc_type, value, tb, limit, file)
+
 
 globals().pop("_require_intrinsic", None)

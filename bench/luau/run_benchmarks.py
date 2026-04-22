@@ -13,6 +13,7 @@ Environment variables:
     LUNE_PATH       Path to lune binary (default: searches PATH)
     MOLT_EXT_ROOT   Artifact root for molt compilation
 """
+
 import subprocess
 import time
 import sys
@@ -54,7 +55,9 @@ def run_cpython(bench_file: Path, runs: int = 3) -> tuple:
         start = time.perf_counter()
         result = subprocess.run(
             [sys.executable, str(bench_file)],
-            capture_output=True, text=True, timeout=120
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         elapsed = (time.perf_counter() - start) * 1000
         if result.returncode != 0:
@@ -79,13 +82,19 @@ def compile_to_luau(bench_file: Path, molt_path: str) -> Path:
     }
     result = subprocess.run(
         [
-            molt_path, "build",
+            molt_path,
+            "build",
             str(bench_file),
-            "--target", "luau",
-            "--output", str(out_path),
+            "--target",
+            "luau",
+            "--output",
+            str(out_path),
         ],
-        capture_output=True, text=True, timeout=120,
-        env=env, cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        cwd=str(REPO_ROOT),
     )
     if result.returncode != 0:
         print(f"  COMPILE FAILED: {result.stderr[:200]}")
@@ -101,7 +110,9 @@ def run_lune(luau_file: Path, lune_path: str, runs: int = 3) -> tuple:
         start = time.perf_counter()
         result = subprocess.run(
             [lune_path, "run", str(luau_file)],
-            capture_output=True, text=True, timeout=120
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         elapsed = (time.perf_counter() - start) * 1000
         if result.returncode != 0:
@@ -134,9 +145,15 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Molt-Luau Benchmark Suite")
-    parser.add_argument("--runs", type=int, default=3, help="Number of runs per benchmark")
-    parser.add_argument("--cpython-only", action="store_true", help="Only run CPython (skip Luau)")
-    parser.add_argument("--benchmarks", nargs="*", help="Specific benchmark files to run")
+    parser.add_argument(
+        "--runs", type=int, default=3, help="Number of runs per benchmark"
+    )
+    parser.add_argument(
+        "--cpython-only", action="store_true", help="Only run CPython (skip Luau)"
+    )
+    parser.add_argument(
+        "--benchmarks", nargs="*", help="Specific benchmark files to run"
+    )
     args = parser.parse_args()
 
     molt_cmd = resolve_molt_path()
@@ -165,22 +182,26 @@ def main():
             print(f"  CPython:    {cpython_time:8.1f} ms")
         except Exception as e:
             print(f"  CPython:    FAILED ({e})")
-            results.append({
-                "name": bench_name,
-                "cpython_ms": None,
-                "luau_ms": None,
-                "correct": False,
-                "error": str(e),
-            })
+            results.append(
+                {
+                    "name": bench_name,
+                    "cpython_ms": None,
+                    "luau_ms": None,
+                    "correct": False,
+                    "error": str(e),
+                }
+            )
             continue
 
         if args.cpython_only:
-            results.append({
-                "name": bench_name,
-                "cpython_ms": round(cpython_time, 1),
-                "luau_ms": None,
-                "correct": None,
-            })
+            results.append(
+                {
+                    "name": bench_name,
+                    "cpython_ms": round(cpython_time, 1),
+                    "luau_ms": None,
+                    "correct": None,
+                }
+            )
             continue
 
         # Compile to Luau
@@ -204,26 +225,37 @@ def main():
 
         compile_start = time.perf_counter()
         compile_result = subprocess.run(
-            cmd_parts + [
-                "build", str(bench_file),
-                "--target", "luau",
-                "--output", str(out_path),
+            cmd_parts
+            + [
+                "build",
+                str(bench_file),
+                "--target",
+                "luau",
+                "--output",
+                str(out_path),
             ],
-            capture_output=True, text=True, timeout=120,
-            env=env, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+            cwd=str(REPO_ROOT),
         )
         compile_time = (time.perf_counter() - compile_start) * 1000
 
         if compile_result.returncode != 0:
-            print(f"  COMPILE FAILED ({compile_time:.0f} ms): {compile_result.stderr[:200]}")
-            results.append({
-                "name": bench_name,
-                "cpython_ms": round(cpython_time, 1),
-                "luau_ms": None,
-                "correct": False,
-                "compile_ms": round(compile_time, 1),
-                "error": "compile failed",
-            })
+            print(
+                f"  COMPILE FAILED ({compile_time:.0f} ms): {compile_result.stderr[:200]}"
+            )
+            results.append(
+                {
+                    "name": bench_name,
+                    "cpython_ms": round(cpython_time, 1),
+                    "luau_ms": None,
+                    "correct": False,
+                    "compile_ms": round(compile_time, 1),
+                    "error": "compile failed",
+                }
+            )
             continue
 
         luau_lines = len(out_path.read_text().splitlines())
@@ -236,44 +268,62 @@ def main():
             speedup = cpython_time / luau_time if luau_time > 0 else 0
 
             status = "PASS" if correct else "FAIL (output mismatch)"
-            print(f"  Luau:       {luau_time:8.1f} ms  ({speedup:.2f}x vs CPython) [{status}]")
+            print(
+                f"  Luau:       {luau_time:8.1f} ms  ({speedup:.2f}x vs CPython) [{status}]"
+            )
 
             if not correct:
                 print(f"  Expected: {cpython_output[:80]}")
                 print(f"  Got:      {luau_output[:80]}")
 
-            results.append({
-                "name": bench_name,
-                "cpython_ms": round(cpython_time, 1),
-                "luau_ms": round(luau_time, 1),
-                "speedup": round(speedup, 2),
-                "correct": correct,
-                "compile_ms": round(compile_time, 1),
-                "luau_lines": luau_lines,
-            })
+            results.append(
+                {
+                    "name": bench_name,
+                    "cpython_ms": round(cpython_time, 1),
+                    "luau_ms": round(luau_time, 1),
+                    "speedup": round(speedup, 2),
+                    "correct": correct,
+                    "compile_ms": round(compile_time, 1),
+                    "luau_lines": luau_lines,
+                }
+            )
         except Exception as e:
             print(f"  Luau:       FAILED ({e})")
-            results.append({
-                "name": bench_name,
-                "cpython_ms": round(cpython_time, 1),
-                "luau_ms": None,
-                "correct": False,
-                "error": str(e),
-            })
+            results.append(
+                {
+                    "name": bench_name,
+                    "cpython_ms": round(cpython_time, 1),
+                    "luau_ms": None,
+                    "correct": False,
+                    "error": str(e),
+                }
+            )
 
     # Summary table
     print("\n" + "=" * 70)
     print("Summary")
     print("=" * 70)
-    print(f"{'Benchmark':<25} {'CPython (ms)':>12} {'Luau (ms)':>12} {'Speedup':>10} {'Correct':>8}")
+    print(
+        f"{'Benchmark':<25} {'CPython (ms)':>12} {'Luau (ms)':>12} {'Speedup':>10} {'Correct':>8}"
+    )
     print("-" * 70)
     for r in results:
-        cp_str = f"{r['cpython_ms']:>12.1f}" if r.get('cpython_ms') is not None else "      FAILED"
-        luau_str = f"{r['luau_ms']:>12.1f}" if r.get('luau_ms') is not None else "      FAILED"
-        speedup_str = f"{r.get('speedup', 0):>9.2f}x" if r.get('luau_ms') is not None else "         -"
-        if r.get('correct') is True:
+        cp_str = (
+            f"{r['cpython_ms']:>12.1f}"
+            if r.get("cpython_ms") is not None
+            else "      FAILED"
+        )
+        luau_str = (
+            f"{r['luau_ms']:>12.1f}" if r.get("luau_ms") is not None else "      FAILED"
+        )
+        speedup_str = (
+            f"{r.get('speedup', 0):>9.2f}x"
+            if r.get("luau_ms") is not None
+            else "         -"
+        )
+        if r.get("correct") is True:
             correct_str = "PASS"
-        elif r.get('correct') is False:
+        elif r.get("correct") is False:
             correct_str = "FAIL"
         else:
             correct_str = "-"

@@ -15,11 +15,14 @@ print(issubclass(KeyboardInterrupt, BaseException))
 print(not issubclass(KeyboardInterrupt, Exception))
 
 print("=== Custom exceptions with args ===")
+
+
 class AppError(Exception):
     def __init__(self, code, message, details=None):
         super().__init__(message)
         self.code = code
         self.details = details
+
 
 try:
     raise AppError(404, "not found", {"path": "/missing"})
@@ -74,12 +77,14 @@ except TypeError as e:
 print("=== finally guarantees ===")
 results = []
 
+
 def test_finally_return():
     try:
         results.append("try")
         return "from-try"
     finally:
         results.append("finally")
+
 
 ret = test_finally_return()
 print(ret)
@@ -98,15 +103,20 @@ except ValueError:
 print(results2)
 
 print("=== finally overrides return ===")
+
+
 def finally_overrides():
     try:
         return "try"
     finally:
         return "finally"
 
+
 print(finally_overrides())
 
 print("=== Nested try/except ===")
+
+
 def nested_errors(level):
     try:
         if level == 0:
@@ -122,21 +132,27 @@ def nested_errors(level):
     except RuntimeError as e:
         return f"outer caught runtime: {e}"
 
+
 print(nested_errors(0))
 print(nested_errors(1))
 print(nested_errors(2))
 
 print("=== Exception in context manager ===")
+
+
 class SafeBlock:
     def __init__(self, suppress_types):
         self.suppress_types = suppress_types
+
     def __enter__(self):
         return self
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type and issubclass(exc_type, self.suppress_types):
             print(f"suppressed: {exc_type.__name__}: {exc_val}")
             return True
         return False
+
 
 with SafeBlock((ValueError, TypeError)):
     raise ValueError("v")
@@ -172,12 +188,16 @@ for idx, msg in errors:
     print(f"  index {idx}: {msg}")
 
 print("=== Custom exception with __str__ ===")
+
+
 class DetailedError(Exception):
     def __init__(self, operation, reason):
         self.operation = operation
         self.reason = reason
+
     def __str__(self):
         return f"{self.operation} failed: {self.reason}"
+
 
 try:
     raise DetailedError("connect", "timeout")
@@ -186,6 +206,8 @@ except DetailedError as e:
     print(repr(e))
 
 print("=== except* -like pattern (sequential) ===")
+
+
 def run_tasks():
     results = []
     errors = []
@@ -198,6 +220,7 @@ def run_tasks():
         except ValueError as e:
             errors.append(str(e))
     return results, errors
+
 
 r, e = run_tasks()
 print(f"results: {r}")
@@ -215,11 +238,14 @@ except AssertionError as e:
     print(f"no message: args={e.args}")
 
 print("=== Exception as condition ===")
+
+
 def safe_divide(a, b):
     try:
         return ("ok", a / b)
     except ZeroDivisionError:
         return ("error", None)
+
 
 print(safe_divide(10, 3))
 print(safe_divide(10, 0))

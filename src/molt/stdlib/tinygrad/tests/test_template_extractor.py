@@ -14,10 +14,8 @@ import json
 
 from molt.stdlib.tinygrad.template_extractor import (
     BoundingBox,
-    InferredStyles,
     OcrBlock,
     OcrResult,
-    TemplateDefinition,
     classify_sections,
     extract_template_from_ocr,
     infer_layout,
@@ -29,9 +27,14 @@ from molt.stdlib.tinygrad.template_extractor import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _block(text: str, x: float, y: float, w: float, h: float, conf: float = 0.9) -> OcrBlock:
+
+def _block(
+    text: str, x: float, y: float, w: float, h: float, conf: float = 0.9
+) -> OcrBlock:
     """Create an OcrBlock with the given parameters."""
-    return OcrBlock(text=text, bbox=BoundingBox(x=x, y=y, width=w, height=h), confidence=conf)
+    return OcrBlock(
+        text=text, bbox=BoundingBox(x=x, y=y, width=w, height=h), confidence=conf
+    )
 
 
 def _standard_invoice_blocks() -> list[OcrBlock]:
@@ -138,6 +141,7 @@ def _landscape_invoice_blocks() -> list[OcrBlock]:
 # Section classification tests
 # ---------------------------------------------------------------------------
 
+
 class TestSectionClassification:
     def test_header_detection(self):
         blocks = _standard_invoice_blocks()
@@ -173,6 +177,7 @@ class TestSectionClassification:
         item_texts = [b.text for b in items]
         # Should contain table headers or dollar amounts in the mid-page zone
         assert len(items) > 0, "Expected line items blocks"
+        assert any("$" in text or "Item" in text for text in item_texts), item_texts
 
     def test_totals_detection(self):
         blocks = _standard_invoice_blocks()
@@ -200,8 +205,14 @@ class TestSectionClassification:
     def test_all_sections_present(self):
         sections = classify_sections([], page_height=792)
         expected = {
-            "header", "parties", "metadata", "line_items",
-            "totals", "notes", "terms", "footer",
+            "header",
+            "parties",
+            "metadata",
+            "line_items",
+            "totals",
+            "notes",
+            "terms",
+            "footer",
         }
         assert set(sections.keys()) == expected
 
@@ -209,6 +220,7 @@ class TestSectionClassification:
 # ---------------------------------------------------------------------------
 # Style inference tests
 # ---------------------------------------------------------------------------
+
 
 class TestStyleInference:
     def test_heading_larger_than_body(self):
@@ -251,6 +263,7 @@ class TestStyleInference:
 # ---------------------------------------------------------------------------
 # Layout inference tests
 # ---------------------------------------------------------------------------
+
 
 class TestLayoutInference:
     def test_section_order_follows_vertical_position(self):
@@ -296,8 +309,14 @@ class TestLayoutInference:
         sections = classify_sections(blocks, page_height=792)
         layout = infer_layout(sections, page_width=612, page_height=792)
         expected = {
-            "header", "parties", "metadata", "line_items",
-            "totals", "notes", "terms", "footer",
+            "header",
+            "parties",
+            "metadata",
+            "line_items",
+            "totals",
+            "notes",
+            "terms",
+            "footer",
         }
         assert set(layout.section_order) == expected
 
@@ -305,6 +324,7 @@ class TestLayoutInference:
 # ---------------------------------------------------------------------------
 # Full pipeline tests
 # ---------------------------------------------------------------------------
+
 
 class TestExtractTemplate:
     def test_full_extraction_standard_invoice(self):
@@ -330,7 +350,12 @@ class TestExtractTemplate:
         assert "name" in json_output
         assert "description" in json_output
         assert "type" in json_output
-        assert json_output["type"] in ("invoice", "credit_note", "quote", "purchase_order")
+        assert json_output["type"] in (
+            "invoice",
+            "credit_note",
+            "quote",
+            "purchase_order",
+        )
 
         # Layout structure
         layout = json_output["layout"]
@@ -342,8 +367,14 @@ class TestExtractTemplate:
             assert "visible" in section
             assert "order" in section
             assert section["type"] in (
-                "header", "parties", "metadata", "line_items",
-                "totals", "notes", "terms", "footer",
+                "header",
+                "parties",
+                "metadata",
+                "line_items",
+                "totals",
+                "notes",
+                "terms",
+                "footer",
             )
 
         page = layout["page"]
@@ -359,7 +390,14 @@ class TestExtractTemplate:
         assert "fonts" in styles
         assert "spacing" in styles
         assert "logo" in styles
-        for color_key in ("primary", "secondary", "accent", "text", "background", "border"):
+        for color_key in (
+            "primary",
+            "secondary",
+            "accent",
+            "text",
+            "background",
+            "border",
+        ):
             assert color_key in styles["colors"]
         for font_key in ("heading", "body", "mono"):
             assert font_key in styles["fonts"]

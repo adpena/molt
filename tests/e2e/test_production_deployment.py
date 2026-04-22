@@ -19,8 +19,6 @@ a running Worker or compiled WASM binary.
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 import re
 import sys
@@ -46,17 +44,25 @@ def _read(path: str) -> str:
 def test_worker_imports_x402_and_monitoring():
     """worker.js imports x402.js and monitoring.js modules."""
     source = _read(os.path.join(CF_DIR, "worker.js"))
-    assert 'import' in source and 'x402.js' in source, "worker.js must import x402.js"
-    assert 'import' in source and 'monitoring.js' in source, "worker.js must import monitoring.js"
+    assert "import" in source and "x402.js" in source, "worker.js must import x402.js"
+    assert "import" in source and "monitoring.js" in source, (
+        "worker.js must import monitoring.js"
+    )
 
 
 def test_worker_fallback_chain():
     """worker.js implements fallback chain with structured error."""
     source = _read(os.path.join(CF_DIR, "worker.js"))
-    assert "fallback_available" in source, "worker.js must include fallback_available field"
+    assert "fallback_available" in source, (
+        "worker.js must include fallback_available field"
+    )
     assert "fallback_url" in source, "worker.js must include fallback_url field"
-    assert "/api/ocr/paddle" in source, "worker.js must reference PaddleOCR fallback URL"
-    assert "fallbackErrorResponse" in source, "worker.js must define fallbackErrorResponse"
+    assert "/api/ocr/paddle" in source, (
+        "worker.js must reference PaddleOCR fallback URL"
+    )
+    assert "fallbackErrorResponse" in source, (
+        "worker.js must define fallbackErrorResponse"
+    )
 
 
 def test_worker_health_reports_backends():
@@ -88,7 +94,15 @@ def test_x402_module_exists():
 def test_x402_payment_proof_parsing():
     """x402.js validates all required payment proof fields."""
     source = _read(os.path.join(CF_DIR, "x402.js"))
-    required_fields = ["sender", "recipient", "amount", "currency", "timestamp", "nonce", "signature"]
+    required_fields = [
+        "sender",
+        "recipient",
+        "amount",
+        "currency",
+        "timestamp",
+        "nonce",
+        "signature",
+    ]
     for field in required_fields:
         assert field in source, f"x402.js must validate '{field}' field"
 
@@ -103,12 +117,24 @@ def test_x402_price_matches_mcp():
 def test_x402_payment_required_response():
     """402 response includes payment instructions per x402 spec."""
     source = _read(os.path.join(CF_DIR, "x402.js"))
-    assert "payment_required" in source, "402 response must include payment_required object"
-    assert "X-Payment-Version" in source, "402 response must include X-Payment-Version header"
-    assert "X-Payment-Network" in source, "402 response must include X-Payment-Network header"
-    assert "X-Payment-Currency" in source, "402 response must include X-Payment-Currency header"
-    assert "X-Payment-Amount" in source, "402 response must include X-Payment-Amount header"
-    assert "X-Payment-Recipient" in source, "402 response must include X-Payment-Recipient header"
+    assert "payment_required" in source, (
+        "402 response must include payment_required object"
+    )
+    assert "X-Payment-Version" in source, (
+        "402 response must include X-Payment-Version header"
+    )
+    assert "X-Payment-Network" in source, (
+        "402 response must include X-Payment-Network header"
+    )
+    assert "X-Payment-Currency" in source, (
+        "402 response must include X-Payment-Currency header"
+    )
+    assert "X-Payment-Amount" in source, (
+        "402 response must include X-Payment-Amount header"
+    )
+    assert "X-Payment-Recipient" in source, (
+        "402 response must include X-Payment-Recipient header"
+    )
 
 
 def test_x402_timestamp_validation():
@@ -121,7 +147,9 @@ def test_x402_timestamp_validation():
 def test_x402_dev_mode_skip():
     """x402 skips verification when no wallet is configured (dev mode)."""
     source = _read(os.path.join(CF_DIR, "x402.js"))
-    assert "authorized: true" in source, "x402.js must authorize when no wallet configured"
+    assert "authorized: true" in source, (
+        "x402.js must authorize when no wallet configured"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +162,9 @@ def test_cors_restricted_origin():
     source = _read(os.path.join(CF_DIR, "worker.js"))
     assert "freeinvoicemaker.app" in source, "CORS must reference freeinvoicemaker.app"
     # Ensure no wildcard CORS
-    assert 'Access-Control-Allow-Origin": "*"' not in source, "CORS must NOT use wildcard origin"
+    assert 'Access-Control-Allow-Origin": "*"' not in source, (
+        "CORS must NOT use wildcard origin"
+    )
 
 
 def test_cors_allowed_headers():
@@ -176,9 +206,9 @@ def test_health_response_schema():
     expected = {"status", "model", "version", "device", "request_id", "backends"}
     source = _read(os.path.join(CF_DIR, "worker.js"))
     for field in expected:
-        assert f'"{field}"' in source or f"'{field}'" in source or f"{field}:" in source, (
-            f"Health response missing field: {field}"
-        )
+        assert (
+            f'"{field}"' in source or f"'{field}'" in source or f"{field}:" in source
+        ), f"Health response missing field: {field}"
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +236,9 @@ def test_error_402_payment_required():
     """Worker returns 402 when payment is missing or invalid."""
     source = _read(os.path.join(CF_DIR, "x402.js"))
     assert "402" in source, "x402.js must return 402 status"
-    assert "paymentRequiredResponse" in source, "x402.js must define paymentRequiredResponse"
+    assert "paymentRequiredResponse" in source, (
+        "x402.js must define paymentRequiredResponse"
+    )
 
 
 def test_error_405_method_not_allowed():
@@ -220,7 +252,9 @@ def test_error_503_fallback():
     """Worker returns 503 with fallback info when model fails to load."""
     source = _read(os.path.join(CF_DIR, "worker.js"))
     assert "503" in source, "Worker must return 503 for backend unavailable"
-    assert "fallback_available" in source, "503 response must include fallback_available"
+    assert "fallback_available" in source, (
+        "503 response must include fallback_available"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +278,15 @@ def test_monitoring_structured_fields():
     """Monitoring logs include required structured fields."""
     source = _read(os.path.join(CF_DIR, "monitoring.js"))
     required_fields = [
-        "request_id", "timestamp", "method", "path", "status_code",
-        "latency_ms", "device_type", "browser", "model_version",
+        "request_id",
+        "timestamp",
+        "method",
+        "path",
+        "status_code",
+        "latency_ms",
+        "device_type",
+        "browser",
+        "model_version",
     ]
     for field in required_fields:
         assert field in source, f"Monitoring must log '{field}'"
@@ -263,8 +304,12 @@ def test_monitoring_error_categories():
     """Monitoring defines all required error categories."""
     source = _read(os.path.join(CF_DIR, "monitoring.js"))
     categories = [
-        "MODEL_LOAD_FAILED", "INFERENCE_TIMEOUT", "WEBGPU_UNAVAILABLE",
-        "PAYMENT_INVALID", "INPUT_INVALID", "INTERNAL_ERROR",
+        "MODEL_LOAD_FAILED",
+        "INFERENCE_TIMEOUT",
+        "WEBGPU_UNAVAILABLE",
+        "PAYMENT_INVALID",
+        "INPUT_INVALID",
+        "INTERNAL_ERROR",
     ]
     for cat in categories:
         assert cat in source, f"Monitoring must define error category: {cat}"
@@ -289,7 +334,9 @@ def test_monitoring_no_pii():
 def test_monitoring_cloudflare_analytics():
     """Monitoring integrates with Cloudflare Analytics via ctx.waitUntil."""
     source = _read(os.path.join(CF_DIR, "monitoring.js"))
-    assert "waitUntil" in source, "Monitoring must use ctx.waitUntil for async analytics"
+    assert "waitUntil" in source, (
+        "Monitoring must use ctx.waitUntil for async analytics"
+    )
     assert "writeDataPoint" in source, "Monitoring must write to Analytics Engine"
 
 
@@ -332,7 +379,9 @@ def test_request_id_in_all_responses():
     """All response formats include request_id."""
     for filename in ["worker.js", "ocr_api.js", "x402.js"]:
         source = _read(os.path.join(CF_DIR, filename))
-        assert "request_id" in source, f"{filename} must include request_id in responses"
+        assert "request_id" in source, (
+            f"{filename} must include request_id in responses"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +392,14 @@ def test_request_id_in_all_responses():
 def test_ocr_response_has_required_fields():
     """OCR response schema matches MCP tool definition."""
     source = _read(os.path.join(CF_DIR, "ocr_api.js"))
-    required_fields = ["text", "tokens", "confidence", "time_ms", "device", "request_id"]
+    required_fields = [
+        "text",
+        "tokens",
+        "confidence",
+        "time_ms",
+        "device",
+        "request_id",
+    ]
     for field in required_fields:
         assert field in source, f"OCR response must include '{field}'"
 
@@ -365,7 +421,9 @@ def test_lazy_init_idempotent():
     source = _read(os.path.join(CF_DIR, "worker.js"))
     assert "initPromise" in source, "Worker must use shared init promise"
     assert "if (modelReady) return" in source, "Worker must short-circuit when ready"
-    assert "if (initPromise)" in source, "Worker must share init promise across requests"
+    assert "if (initPromise)" in source, (
+        "Worker must share init promise across requests"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +515,13 @@ def test_deploy_script_validates_environment():
 def test_deploy_script_steps():
     """deploy.sh includes all required deployment steps."""
     source = _read(os.path.join(SCRIPTS_DIR, "deploy.sh"))
-    steps = ["Building WASM", "Uploading artifacts", "Deploying Worker", "Health check", "Smoke test"]
+    steps = [
+        "Building WASM",
+        "Uploading artifacts",
+        "Deploying Worker",
+        "Health check",
+        "Smoke test",
+    ]
     for step in steps:
         assert step in source, f"deploy.sh must include step: {step}"
 
@@ -483,7 +547,9 @@ def test_no_todos_in_deployment_code():
                 for line_num, line in enumerate(f, 1):
                     if todo_pattern.search(line):
                         violations.append(f"{filepath}:{line_num}: {line.strip()}")
-    assert not violations, "Found TODO/FIXME in deployment code:\n" + "\n".join(violations)
+    assert not violations, "Found TODO/FIXME in deployment code:\n" + "\n".join(
+        violations
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -500,10 +566,13 @@ def test_js_files_syntactically_valid():
 
 def test_ts_files_syntactically_valid():
     """All .ts files have balanced braces, brackets, and parens."""
-    for filename in ["falcon-ocr-molt.ts", "ocr-backend-molt.ts", "capabilities-update.ts"]:
+    for filename in [
+        "falcon-ocr-molt.ts",
+        "ocr-backend-molt.ts",
+        "capabilities-update.ts",
+    ]:
         source = _read(os.path.join(ENJOICE_DIR, filename))
         _assert_balanced(source, filename)
-
 
 
 def _assert_balanced(source: str, filename: str) -> None:
@@ -587,9 +656,7 @@ def _assert_balanced(source: str, filename: str) -> None:
             stack.append(pairs[c])
         elif c in closers:
             if not stack or stack[-1] != c:
-                raise AssertionError(
-                    f"{filename}: unbalanced '{c}'"
-                )
+                raise AssertionError(f"{filename}: unbalanced '{c}'")
             stack.pop()
 
         i += 1
@@ -617,8 +684,7 @@ def test_payment_receipt_header():
 
 if __name__ == "__main__":
     test_functions = [
-        v for k, v in sorted(globals().items())
-        if k.startswith("test_") and callable(v)
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
     ]
     passed = 0
     failed = 0

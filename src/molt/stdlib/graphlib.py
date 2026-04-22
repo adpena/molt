@@ -12,9 +12,7 @@ _MOLT_GRAPHLIB_PREPARE = _require_intrinsic("molt_graphlib_prepare")
 _MOLT_GRAPHLIB_GET_READY = _require_intrinsic("molt_graphlib_get_ready")
 _MOLT_GRAPHLIB_IS_ACTIVE = _require_intrinsic("molt_graphlib_is_active")
 _MOLT_GRAPHLIB_DONE = _require_intrinsic("molt_graphlib_done")
-_MOLT_GRAPHLIB_STATIC_ORDER = _require_intrinsic(
-    "molt_graphlib_static_order"
-)
+_MOLT_GRAPHLIB_STATIC_ORDER = _require_intrinsic("molt_graphlib_static_order")
 _MOLT_GRAPHLIB_DROP = _require_intrinsic("molt_graphlib_drop")
 
 __all__ = ["TopologicalSorter", "CycleError"]
@@ -88,5 +86,6 @@ class TopologicalSorter:
     @classmethod
     def __class_getitem__(cls, item):
         return GenericAlias(cls, item)
+
 
 globals().pop("_require_intrinsic", None)

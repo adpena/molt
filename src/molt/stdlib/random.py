@@ -22,23 +22,15 @@ _molt_random_uniform = _require_intrinsic("molt_random_uniform")
 _molt_random_triangular = _require_intrinsic("molt_random_triangular")
 _molt_random_expovariate = _require_intrinsic("molt_random_expovariate")
 _molt_random_normalvariate = _require_intrinsic("molt_random_normalvariate")
-_molt_random_lognormvariate = _require_intrinsic(
-    "molt_random_lognormvariate"
-)
-_molt_random_vonmisesvariate = _require_intrinsic(
-    "molt_random_vonmisesvariate"
-)
+_molt_random_lognormvariate = _require_intrinsic("molt_random_lognormvariate")
+_molt_random_vonmisesvariate = _require_intrinsic("molt_random_vonmisesvariate")
 _molt_random_paretovariate = _require_intrinsic("molt_random_paretovariate")
-_molt_random_weibullvariate = _require_intrinsic(
-    "molt_random_weibullvariate"
-)
+_molt_random_weibullvariate = _require_intrinsic("molt_random_weibullvariate")
 _molt_random_gammavariate = _require_intrinsic("molt_random_gammavariate")
 _molt_random_betavariate = _require_intrinsic("molt_random_betavariate")
 _molt_random_choices = _require_intrinsic("molt_random_choices")
 _molt_random_sample = _require_intrinsic("molt_random_sample")
-_molt_random_binomialvariate = _require_intrinsic(
-    "molt_random_binomialvariate"
-)
+_molt_random_binomialvariate = _require_intrinsic("molt_random_binomialvariate")
 _molt_random_randrange = _require_intrinsic("molt_random_randrange")
 _molt_random_randbytes = _require_intrinsic("molt_random_randbytes")
 
@@ -369,5 +361,6 @@ def weibullvariate(alpha, beta):
 
 def binomialvariate(n=1, p=0.5):
     return _global.binomialvariate(n, p)
+
 
 globals().pop("_require_intrinsic", None)

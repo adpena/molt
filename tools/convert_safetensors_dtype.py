@@ -15,7 +15,9 @@ _TARGET_DTYPE_NAMES = frozenset({"F16", "F32"})
 def _numpy_module() -> Any:
     try:
         import numpy as np  # type: ignore
-    except ModuleNotFoundError as exc:  # pragma: no cover - exercised via CLI error path
+    except (
+        ModuleNotFoundError
+    ) as exc:  # pragma: no cover - exercised via CLI error path
         raise RuntimeError(
             "convert_safetensors_dtype requires numpy; install it in the active environment"
         ) from exc
@@ -79,7 +81,9 @@ def convert_safetensors_dtype(
     target_dtype = target_dtype.upper()
     if target_dtype not in _TARGET_DTYPE_NAMES:
         supported = ", ".join(sorted(_TARGET_DTYPE_NAMES))
-        raise ValueError(f"unsupported target dtype {target_dtype!r}; expected one of {supported}")
+        raise ValueError(
+            f"unsupported target dtype {target_dtype!r}; expected one of {supported}"
+        )
     input_data = input_path.read_bytes()
     header, data_start = _load_safetensors_header(input_data)
     payload = bytearray()

@@ -49,6 +49,7 @@ def find_site_packages() -> str:
                 return str(sp)
     # Fallback: ask the current interpreter
     import site
+
     for sp in site.getsitepackages():
         if os.path.isdir(sp):
             return sp
@@ -95,9 +96,13 @@ def run_molt(
 
         # Build
         build_cmd = [
-            sys.executable, "-m", "molt", "build",
+            sys.executable,
+            "-m",
+            "molt",
+            "build",
             str(script),
-            "--output", binary_path,
+            "--output",
+            binary_path,
         ]
         if lib_path:
             build_cmd.extend(["--lib-path", lib_path])
@@ -134,13 +139,21 @@ def run_molt(
 
         # WASM target: skip execution (needs a host runtime)
         if target == "wasm":
-            return "<WASM BUILD OK — execution skipped (needs host runtime)>\n", 0, build_log
+            return (
+                "<WASM BUILD OK — execution skipped (needs host runtime)>\n",
+                0,
+                build_log,
+            )
 
         # Luau target: run via luau/lune binary
         if target == "luau":
             luau_bin = _find_luau_binary()
             if luau_bin is None:
-                return "<SKIP: neither 'luau' nor 'lune' found on PATH>\n", -1, build_log
+                return (
+                    "<SKIP: neither 'luau' nor 'lune' found on PATH>\n",
+                    -1,
+                    build_log,
+                )
             run_cmd = [luau_bin, str(output_path)]
         else:
             run_cmd = [str(output_path)]
@@ -181,7 +194,9 @@ def diff_output(cpython_out: str, molt_out: str) -> str:
     """Return a unified diff between CPython and molt output."""
     cp_lines = cpython_out.splitlines(keepends=True)
     mo_lines = molt_out.splitlines(keepends=True)
-    diff = list(difflib.unified_diff(cp_lines, mo_lines, fromfile="cpython", tofile="molt"))
+    diff = list(
+        difflib.unified_diff(cp_lines, mo_lines, fromfile="cpython", tofile="molt")
+    )
     return "".join(diff)
 
 
@@ -218,7 +233,9 @@ def test_library(
 
     # Molt
     t0 = time.monotonic()
-    mo_out, mo_code, build_log = run_molt(script, lib_path, target=target, verbose=verbose)
+    mo_out, mo_code, build_log = run_molt(
+        script, lib_path, target=target, verbose=verbose
+    )
     result["molt_time"] = time.monotonic() - t0
     result["molt_exit"] = mo_code
     result["molt_output"] = mo_out
@@ -292,7 +309,9 @@ def print_summary(results: list[dict]) -> None:
     print()
     print("=" * 60)
     print("  Runtime Compatibility Results")
-    print(f"  PASS: {pass_count}  FAIL: {fail_count}  BUILD_FAIL: {build_fail}  RUN_FAIL: {run_fail}  SKIP: {skip_count}  TOTAL: {total}")
+    print(
+        f"  PASS: {pass_count}  FAIL: {fail_count}  BUILD_FAIL: {build_fail}  RUN_FAIL: {run_fail}  SKIP: {skip_count}  TOTAL: {total}"
+    )
     print("=" * 60)
 
     if fail_count > 0:
@@ -315,11 +334,19 @@ def print_summary(results: list[dict]) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Molt runtime compatibility test harness")
+    parser = argparse.ArgumentParser(
+        description="Molt runtime compatibility test harness"
+    )
     parser.add_argument("libraries", nargs="*", help="Library names to test")
-    parser.add_argument("--all", action="store_true", help="Test all discovered libraries")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
-    parser.add_argument("--summary", "-s", action="store_true", help="Show only the summary")
+    parser.add_argument(
+        "--all", action="store_true", help="Test all discovered libraries"
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Show detailed output"
+    )
+    parser.add_argument(
+        "--summary", "-s", action="store_true", help="Show only the summary"
+    )
     parser.add_argument("--lib-path", default=None, help="Override site-packages path")
     parser.add_argument(
         "--target",
@@ -344,7 +371,9 @@ def main():
 
     lib_path = args.lib_path or find_site_packages()
     if not lib_path:
-        print("WARNING: Could not find site-packages. Builds may fail.", file=sys.stderr)
+        print(
+            "WARNING: Could not find site-packages. Builds may fail.", file=sys.stderr
+        )
 
     target = args.target
 

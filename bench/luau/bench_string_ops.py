@@ -23,4 +23,5 @@ def main() -> None:
     print(count)
     print(len(result))
 
+
 main()

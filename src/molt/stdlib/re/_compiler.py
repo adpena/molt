@@ -35,4 +35,5 @@ def _compile(pattern: Any, flags: int = 0) -> Pattern[str]:
     # CPython's `re` calls into `_compile` internally; keep the name available.
     return compile(pattern, flags)
 
+
 globals().pop("_require_intrinsic", None)

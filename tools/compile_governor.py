@@ -101,7 +101,9 @@ def _guard_root(env: Mapping[str, str]) -> Path:
     ext_root = env.get("MOLT_EXT_ROOT")
     if ext_root:
         return Path(ext_root).expanduser() / "target" / ".molt_state" / "compile_guard"
-    return Path(__file__).resolve().parents[1] / "target" / ".molt_state" / "compile_guard"
+    return (
+        Path(__file__).resolve().parents[1] / "target" / ".molt_state" / "compile_guard"
+    )
 
 
 def _count_active_compile_processes() -> int | None:

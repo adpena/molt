@@ -175,7 +175,12 @@ def test_intrinsic_alias_lowers_to_canonical_runtime_symbol() -> None:
 
 def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
     source_path = (
-        Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib" / "json" / "__init__.py"
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "molt"
+        / "stdlib"
+        / "json"
+        / "__init__.py"
     )
     source = (
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
@@ -202,8 +207,12 @@ def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
     )
 
 
-def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_require_intrinsic() -> None:
-    source_path = Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib" / "sys.py"
+def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_require_intrinsic() -> (
+    None
+):
+    source_path = (
+        Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib" / "sys.py"
+    )
     source = (
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
         "def _safe(name, _ri=_require_intrinsic):\n"
@@ -252,13 +261,7 @@ def test_module_chunking_starts_new_chunk_before_large_top_level_statement() -> 
 
 def test_module_chunking_starts_new_chunk_before_large_multiline_assignment() -> None:
     entries = "".join(f"    {i}: {i},\n" for i in range(80))
-    source = (
-        "seed = 0\n"
-        "limit = 1\n"
-        "table = {\n"
-        f"{entries}"
-        "}\n"
-    )
+    source = f"seed = 0\nlimit = 1\ntable = {{\n{entries}}}\n"
     gen = SimpleTIRGenerator(
         module_name="chunk_probe_assign",
         module_chunking=True,
@@ -290,11 +293,7 @@ def test_function_metadata_uses_runtime_helper_instead_of_attr_storm() -> None:
     )
     gen.visit(ast.parse(source))
 
-    ops = [
-        op
-        for func in gen.funcs_map.values()
-        for op in func["ops"]
-    ]
+    ops = [op for func in gen.funcs_map.values() for op in func["ops"]]
     assert any(
         op.kind == "BUILTIN_FUNC"
         and op.args == ["molt_function_init_metadata_packed", 4]
@@ -414,7 +413,8 @@ def test_nested_listcomp_function_does_not_capture_comprehension_target() -> Non
         tuple_op = next(
             candidate
             for candidate in outer_ops[:idx]
-            if candidate.get("kind") == "tuple_new" and candidate.get("out") == closure_tuple_var
+            if candidate.get("kind") == "tuple_new"
+            and candidate.get("out") == closure_tuple_var
         )
         assert tuple_op["args"] == [data_cell_var]
         break
@@ -531,15 +531,15 @@ def test_local_user_class_ctor_lowers_via_call_bind() -> None:
         for op in main_ops
     ), "expected local class constructor to lower via call_bind on the class object"
     assert all(
-        op.get("kind") not in {"alloc_class", "alloc_class_static", "alloc_class_trusted"}
+        op.get("kind")
+        not in {"alloc_class", "alloc_class_static", "alloc_class_trusted"}
         for op in main_ops
     ), "local class constructor should not lower via synthetic object allocation"
 
 
 def test_function_param_types_cover_kwonly_and_varkw_slots() -> None:
     ir = compile_to_tir(
-        "def f(x: int, *, strict=None, parse=None, **kw):\n"
-        "    return x\n"
+        "def f(x: int, *, strict=None, parse=None, **kw):\n    return x\n"
     )
     fn = next(func for func in ir["functions"] if func["name"] == "__main____f")
     assert fn["params"] == ["x", "strict", "parse", "kw"]
@@ -579,25 +579,23 @@ def test_internal_module_function_import_lowers_via_direct_call() -> None:
 
 def test_internal_module_imported_class_ctor_stays_on_call_bind() -> None:
     ir = compile_to_tir(
-        "from molt.gpu.tensor import Tensor\n"
-        "def f(x):\n"
-        "    return Tensor(x)\n"
+        "from molt.gpu.tensor import Tensor\ndef f(x):\n    return Tensor(x)\n"
     )
     func_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )
     assert any(op.get("kind") == "call_bind" for op in func_ops), func_ops
     assert all(
-        not (op.get("kind") == "call" and op.get("s_value") == "molt_gpu_tensor__Tensor")
+        not (
+            op.get("kind") == "call" and op.get("s_value") == "molt_gpu_tensor__Tensor"
+        )
         for op in func_ops
     ), func_ops
 
 
 def test_internal_module_vararg_function_import_stays_on_call_bind() -> None:
     ir = compile_to_tir(
-        "from molt.gpu.tensor import zeros\n"
-        "def f():\n"
-        "    return zeros((2, 3))\n"
+        "from molt.gpu.tensor import zeros\ndef f():\n    return zeros((2, 3))\n"
     )
     func_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
@@ -613,11 +611,12 @@ def test_tensor_linear_uses_internal_fast_tensor_wrap_helper() -> None:
     source = Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8")
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____tensor_linear"
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"] == "__main____tensor_linear"
     )
     assert any(
-        op.get("kind") == "call"
-        and op.get("s_value") == "__main_____tensor_from_parts"
+        op.get("kind") == "call" and op.get("s_value") == "__main_____tensor_from_parts"
         for op in func_ops
     ), func_ops
 
@@ -641,8 +640,7 @@ def test_tensor_view_helpers_use_internal_fast_wrap_helpers() -> None:
         for op in reshape_ops
     ), reshape_ops
     assert any(
-        op.get("kind") == "call"
-        and op.get("s_value") == "__main_____buffer_to_list"
+        op.get("kind") == "call" and op.get("s_value") == "__main_____buffer_to_list"
         for op in data_list_ops
     ), data_list_ops
 
@@ -656,11 +654,7 @@ def test_internal_module_intrinsic_alias_import_stays_on_call_bind() -> None:
         known_func_defaults={"abc": {}, "_abc": {}},
     )
     gen.visit(
-        ast.parse(
-            "from _abc import _abc_init\n"
-            "def f(x):\n"
-            "    return _abc_init(x)\n"
-        )
+        ast.parse("from _abc import _abc_init\ndef f(x):\n    return _abc_init(x)\n")
     )
     ir = gen.to_json()
     func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "abc__f")
@@ -701,10 +695,11 @@ def test_module_optional_intrinsic_global_call_lowers_directly() -> None:
         "        return _MOLT_GPU(a, b, c, d, e, f0, g, h)\n"
         "    return None\n"
     )
-    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
     assert any(
-        op.get("kind") == "call"
-        and op.get("s_value") == "molt_gpu_linear_contiguous"
+        op.get("kind") == "call" and op.get("s_value") == "molt_gpu_linear_contiguous"
         for op in func_ops
     ), func_ops
 
@@ -750,11 +745,10 @@ def test_module_optional_intrinsic_call_avoids_python_symbol_collision() -> None
 
 
 def test_getattr_without_default_lowers_via_missing_default_path() -> None:
-    ir = compile_to_tir(
-        "def f(obj):\n"
-        "    return getattr(obj, 'missing_attr')\n"
+    ir = compile_to_tir("def f(obj):\n    return getattr(obj, 'missing_attr')\n")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )
-    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
     assert any(op.get("kind") == "missing" for op in func_ops), func_ops
     assert any(op.get("kind") == "get_attr_name_default" for op in func_ops), func_ops
     assert not any(op.get("kind") == "get_attr_name" for op in func_ops), func_ops

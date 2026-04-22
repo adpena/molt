@@ -8,8 +8,6 @@ the processing pipeline handles them gracefully: no crashes, no panics, valid
 import io
 import os
 import random
-import struct
-import tempfile
 from pathlib import Path
 
 try:
@@ -17,6 +15,7 @@ try:
 except ImportError:
     import subprocess
     import sys
+
     subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
     from PIL import Image, ImageDraw, ImageFont
 
@@ -48,6 +47,7 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 # ---------------------------------------------------------------------------
 # Adversarial image generators
 # ---------------------------------------------------------------------------
+
 
 def gen_blank_white() -> Path:
     """All-white image — no content whatsoever."""
@@ -107,7 +107,12 @@ def gen_rotated_45() -> Path:
     img = Image.new("RGB", (800, 600), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     font = _get_font(24)
-    draw.text((100, 200), "Invoice #12345\nDate: 2025-01-15\nTotal: $1,234.56", fill=(0, 0, 0), font=font)
+    draw.text(
+        (100, 200),
+        "Invoice #12345\nDate: 2025-01-15\nTotal: $1,234.56",
+        fill=(0, 0, 0),
+        font=font,
+    )
     img = img.rotate(45, expand=True, fillcolor=(255, 255, 255))
     path = OUTPUT_DIR / "rotated_45.png"
     img.save(path)
@@ -119,7 +124,12 @@ def gen_rotated_90() -> Path:
     img = Image.new("RGB", (400, 800), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     font = _get_font(20)
-    draw.text((50, 100), "INVOICE\nCompany: Test Corp\nAmount: $500.00", fill=(0, 0, 0), font=font)
+    draw.text(
+        (50, 100),
+        "INVOICE\nCompany: Test Corp\nAmount: $500.00",
+        fill=(0, 0, 0),
+        font=font,
+    )
     img = img.rotate(90, expand=True)
     path = OUTPUT_DIR / "rotated_90.png"
     img.save(path)
@@ -131,7 +141,9 @@ def gen_rotated_180() -> Path:
     img = Image.new("RGB", (800, 600), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     font = _get_font(24)
-    draw.text((100, 200), "INVOICE #99999\nTotal Due: $10,000.00", fill=(0, 0, 0), font=font)
+    draw.text(
+        (100, 200), "INVOICE #99999\nTotal Due: $10,000.00", fill=(0, 0, 0), font=font
+    )
     img = img.rotate(180)
     path = OUTPUT_DIR / "rotated_180.png"
     img.save(path)
@@ -147,7 +159,12 @@ def gen_tiny_font() -> Path:
     draw = ImageDraw.Draw(img)
     font = _get_font(18)
     for y_offset in range(0, full_h - 20, 24):
-        draw.text((10, y_offset), "Invoice Line Item - Product ABC - Qty 10 - $99.99", fill=(0, 0, 0), font=font)
+        draw.text(
+            (10, y_offset),
+            "Invoice Line Item - Product ABC - Qty 10 - $99.99",
+            fill=(0, 0, 0),
+            font=font,
+        )
     # Scale down 6x to produce ~3px effective font size
     img = img.resize((400, 300), Image.LANCZOS)
     path = OUTPUT_DIR / "tiny_font.png"
@@ -185,7 +202,9 @@ def gen_high_contrast() -> Path:
     img = Image.new("RGB", (800, 600), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     font = _get_font(28)
-    draw.text((50, 100), "HIGH CONTRAST INVOICE\nTotal: $5,000.00", fill=(0, 0, 0), font=font)
+    draw.text(
+        (50, 100), "HIGH CONTRAST INVOICE\nTotal: $5,000.00", fill=(0, 0, 0), font=font
+    )
     path = OUTPUT_DIR / "high_contrast.png"
     img.save(path)
     return path
@@ -196,7 +215,12 @@ def gen_low_contrast() -> Path:
     img = Image.new("RGB", (800, 600), (210, 210, 210))
     draw = ImageDraw.Draw(img)
     font = _get_font(28)
-    draw.text((50, 100), "LOW CONTRAST INVOICE\nTotal: $5,000.00", fill=(195, 195, 195), font=font)
+    draw.text(
+        (50, 100),
+        "LOW CONTRAST INVOICE\nTotal: $5,000.00",
+        fill=(195, 195, 195),
+        font=font,
+    )
     path = OUTPUT_DIR / "low_contrast.png"
     img.save(path)
     return path
@@ -207,7 +231,12 @@ def gen_jpeg_artifacts() -> Path:
     img = Image.new("RGB", (800, 600), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     font = _get_font(22)
-    draw.text((50, 100), "JPEG ARTIFACTS TEST\nInvoice #77777\nTotal: $3,500.00", fill=(0, 0, 0), font=font)
+    draw.text(
+        (50, 100),
+        "JPEG ARTIFACTS TEST\nInvoice #77777\nTotal: $3,500.00",
+        fill=(0, 0, 0),
+        font=font,
+    )
     # Compress to JPEG quality 5 and reload
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=5)
@@ -240,7 +269,7 @@ def gen_corrupted_header() -> Path:
     # Garbage IHDR
     corrupted_ihdr = b"\x00\x00\x00\x0dIHDR" + b"\xff" * 13
     # CRC (deliberately wrong)
-    corrupted_ihdr += b"\xDE\xAD\xBE\xEF"
+    corrupted_ihdr += b"\xde\xad\xbe\xef"
     path = OUTPUT_DIR / "corrupted_header.png"
     path.write_bytes(png_sig + corrupted_ihdr)
     return path
@@ -267,6 +296,7 @@ def gen_gradient_fade() -> Path:
 # ---------------------------------------------------------------------------
 # Test runner
 # ---------------------------------------------------------------------------
+
 
 def validate_image_loadable(path: Path) -> tuple[bool, str]:
     """Try to load an image file. Returns (success, message)."""
@@ -318,16 +348,18 @@ def main() -> None:
             print(f"GEN_ERROR: {e}")
 
     # Summary
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"{'Test Case':<30} {'Status':<15} {'Size':>10} {'Info'}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     for name, status, size, info in results:
         size_str = f"{size:,}" if size > 0 else "N/A"
         print(f"{name:<30} {status:<15} {size_str:>10} {info}")
 
     ok_count = sum(1 for _, s, _, _ in results if s in ("OK", "DECODE_ERR (expected)"))
     fail_count = len(results) - ok_count
-    print(f"\nTotal: {len(results)} tests — {ok_count} passed — {fail_count} unexpected failures")
+    print(
+        f"\nTotal: {len(results)} tests — {ok_count} passed — {fail_count} unexpected failures"
+    )
 
     if fail_count > 0:
         print("\nWARNING: Some adversarial generators failed unexpectedly.")

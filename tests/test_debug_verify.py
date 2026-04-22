@@ -49,7 +49,9 @@ def _load_verify_module():
         pytest.fail(f"molt.debug.verify is not available yet: {exc}")
 
 
-def test_debug_verify_json_exposes_ir_inventory_and_probe_checks(tmp_path: Path) -> None:
+def test_debug_verify_json_exposes_ir_inventory_and_probe_checks(
+    tmp_path: Path,
+) -> None:
     res = _run_cli(["debug", "verify", "--format", "json"], cwd=tmp_path)
     assert res.returncode == 0, res.stderr
 

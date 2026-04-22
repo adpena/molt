@@ -11,4 +11,5 @@ def __getattr__(attr: str):
         'stdlib module "_pyrepl.windows_eventqueue" is not fully lowered yet; only an intrinsic-first stub is available.'
     )
 
+
 globals().pop("_require_intrinsic", None)

@@ -20,8 +20,8 @@ def test_wasm_importlib_import_forms_and_os_sys_bootstrap_smoke(
         "from importlib import machinery\n"
         "import os\n"
         "import sys\n\n"
-        'print(importlib.__name__)\n'
-        'print(machinery.__name__)\n'
+        "print(importlib.__name__)\n"
+        "print(machinery.__name__)\n"
         'print(sys.modules["os"] is os)\n'
         'print(sys.modules["sys"] is sys)\n',
         encoding="utf-8",
@@ -73,17 +73,17 @@ def test_wasm_importlib_package_main_alias_identity_smoke(
         "import probe_pkg.helper as helper_alias\n"
         "from .helper import Helper as HelperAlias\n"
         "from .subpkg.leaf import describe_leaf as describe_leaf_alias\n\n"
-        'print(__name__)\n'
-        'print(__package__)\n'
+        "print(__name__)\n"
+        "print(__package__)\n"
         'print(sys_alias.modules["__main__"] is sys_alias.modules[__name__])\n'
         'print(sys_alias is sys_alias.modules["sys"])\n'
         'print(os_alias is sys_alias.modules["os"])\n'
         'print(helper_alias is sys_alias.modules["probe_pkg.helper"])\n'
-        'print(HelperAlias is helper_alias.Helper)\n'
-        'print(describe_leaf_alias())\n'
-        'print(helper_alias.ping())\n'
-        'print(sys_alias.__name__)\n'
-        'print(os_alias.__name__)\n',
+        "print(HelperAlias is helper_alias.Helper)\n"
+        "print(describe_leaf_alias())\n"
+        "print(helper_alias.ping())\n"
+        "print(sys_alias.__name__)\n"
+        "print(os_alias.__name__)\n",
         encoding="utf-8",
     )
 
@@ -231,12 +231,7 @@ def test_wasm_linked_bool_truthiness_controls_if_branch(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "bool_truthiness_probe.py"
     src.write_text(
-        "y = True\n"
-        "print(y)\n"
-        "if y:\n"
-        "    print('a')\n"
-        "else:\n"
-        "    print('b')\n",
+        "y = True\nprint(y)\nif y:\n    print('a')\nelse:\n    print('b')\n",
         encoding="utf-8",
     )
 

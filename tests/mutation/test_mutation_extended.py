@@ -246,9 +246,7 @@ def test_operator_discovers_in_target_program(
     """Each operator should discover sites in its corresponding sample."""
     source = SAMPLE_PROGRAMS[expected_program]
     sites = discover_mutations(f"<{expected_program}>", source, {operator})
-    assert len(sites) >= 1, (
-        f"Operator {operator} found no sites in {expected_program}"
-    )
+    assert len(sites) >= 1, f"Operator {operator} found no sites in {expected_program}"
 
 
 # ---------------------------------------------------------------------------

@@ -21,11 +21,13 @@ import random
 # Micro model generator
 # ---------------------------------------------------------------------------
 
+
 class MicroFalconOCRConfig:
     """Configuration for the micro Falcon-OCR model.
 
     Chosen to produce ~33KB of parameters at fp32 (8,432 params * 4 bytes).
     """
+
     dim: int = 16
     n_heads: int = 2
     head_dim: int = 8
@@ -41,7 +43,9 @@ def _seed_rng(seed: int) -> random.Random:
     return random.Random(seed)
 
 
-def _random_matrix(rng: random.Random, rows: int, cols: int, scale: float = 0.02) -> list:
+def _random_matrix(
+    rng: random.Random, rows: int, cols: int, scale: float = 0.02
+) -> list:
     """Generate a random weight matrix as a flat list."""
     return [rng.gauss(0.0, scale) for _ in range(rows * cols)]
 
@@ -66,6 +70,7 @@ class MicroFalconOCRWeights:
 
         # Positional embedding: max_seq_len positions × dim
         n_patches = (cfg.image_size // cfg.patch_size) ** 2
+        assert cfg.max_seq_len >= n_patches
         self.pos_embed = _random_matrix(rng, cfg.max_seq_len, d)
 
         # Transformer layers
@@ -120,6 +125,7 @@ class MicroFalconOCRWeights:
 # ---------------------------------------------------------------------------
 # Micro inference engine (pure Python, no GPU)
 # ---------------------------------------------------------------------------
+
 
 def _matmul(a: list, b: list, m: int, k: int, n: int) -> list:
     """Matrix multiply: a (m×k) @ b (k×n) → result (m×n). All flat lists."""
@@ -183,7 +189,7 @@ def _attention(q: list, k: list, v: list, seq_len: int, head_dim: int) -> list:
 
     # Softmax over last dim (key dim)
     for i in range(seq_len):
-        row = scores[i * seq_len:(i + 1) * seq_len]
+        row = scores[i * seq_len : (i + 1) * seq_len]
         row = _softmax(row)
         for j in range(seq_len):
             scores[i * seq_len + j] = row[j]
@@ -279,13 +285,19 @@ def _transformer_block(
     # Pre-norm MHA
     normed = []
     for i in range(seq_len):
-        row = x[i * dim:(i + 1) * dim]
+        row = x[i * dim : (i + 1) * dim]
         normed.extend(_layer_norm(row, layer["ln1_g"], layer["ln1_b"], dim))
 
     attn_out = _multi_head_attention(
-        normed, layer["qkv_w"], layer["qkv_b"],
-        layer["out_w"], layer["out_b"],
-        seq_len, dim, n_heads, head_dim,
+        normed,
+        layer["qkv_w"],
+        layer["qkv_b"],
+        layer["out_w"],
+        layer["out_b"],
+        seq_len,
+        dim,
+        n_heads,
+        head_dim,
     )
 
     # Residual
@@ -294,13 +306,17 @@ def _transformer_block(
     # Pre-norm FFN
     normed2 = []
     for i in range(seq_len):
-        row = residual1[i * dim:(i + 1) * dim]
+        row = residual1[i * dim : (i + 1) * dim]
         normed2.extend(_layer_norm(row, layer["ln2_g"], layer["ln2_b"], dim))
 
     ffn_out = _ffn(
-        normed2, layer["ffn_up_w"], layer["ffn_up_b"],
-        layer["ffn_down_w"], layer["ffn_down_b"],
-        seq_len, dim,
+        normed2,
+        layer["ffn_up_w"],
+        layer["ffn_up_b"],
+        layer["ffn_down_w"],
+        layer["ffn_down_b"],
+        seq_len,
+        dim,
     )
 
     # Residual
@@ -416,6 +432,7 @@ def _argmax(logits: list, start: int, length: int) -> int:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_model_size():
     """Verify the micro model is ~50KB in parameters."""
     cfg = MicroFalconOCRConfig()
@@ -467,12 +484,10 @@ def test_softmax_sums_to_one():
     vocab = cfg.vocab_size
 
     for pos in range(n_patches):
-        row = logits[pos * vocab:(pos + 1) * vocab]
+        row = logits[pos * vocab : (pos + 1) * vocab]
         probs = _softmax(row)
         total = sum(probs)
-        assert abs(total - 1.0) < 1e-6, (
-            f"softmax at pos {pos} sums to {total}"
-        )
+        assert abs(total - 1.0) < 1e-6, f"softmax at pos {pos} sums to {total}"
 
 
 def test_tokens_in_valid_range():
@@ -578,4 +593,5 @@ def test_different_images_different_output():
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

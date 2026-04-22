@@ -165,9 +165,7 @@ def _case_env(
     repo_src = str(REPO_ROOT / "src")
     current_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath
-        if current_pythonpath
-        else repo_src
+        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
     )
     env["PYTHONHASHSEED"] = "0"
     env["MOLT_HASH_SEED"] = "0"

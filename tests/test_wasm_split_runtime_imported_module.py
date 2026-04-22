@@ -29,7 +29,9 @@ def _split_runtime_imported_module_target_dirs(
     return target_dir, diff_target_dir
 
 
-def test_split_runtime_imported_module_target_dir_respects_explicit_env_override() -> None:
+def test_split_runtime_imported_module_target_dir_respects_explicit_env_override() -> (
+    None
+):
     env = {
         "CARGO_TARGET_DIR": "/tmp/molt-imported-target",
         "MOLT_DIFF_CARGO_TARGET_DIR": "/tmp/molt-imported-diff-target",
@@ -125,15 +127,10 @@ def test_split_runtime_imported_module_function_attr_survives_publication(
     tmp_path: Path,
 ) -> None:
     module_src = tmp_path / "probe_mod.py"
-    module_src.write_text(
-        "def foo():\n"
-        "    return 7\n"
-    )
+    module_src.write_text("def foo():\n    return 7\n")
     main_src = tmp_path / "probe_main.py"
     main_src.write_text(
-        "import probe_mod\n"
-        "print(callable(probe_mod.foo))\n"
-        "print(probe_mod.foo())\n"
+        "import probe_mod\nprint(callable(probe_mod.foo))\nprint(probe_mod.foo())\n"
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -161,10 +158,7 @@ def test_split_runtime_imported_module_function_attr_survives_publication(
 @pytest.mark.slow
 def test_split_runtime_import_os_exposes_open_flags(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text(
-        "import os\n"
-        "print(os.O_RDONLY)\n"
-    )
+    main_src.write_text("import os\nprint(os.O_RDONLY)\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -210,10 +204,7 @@ def test_split_runtime_import_builtins_direct_mode(tmp_path: Path) -> None:
 @pytest.mark.slow
 def test_split_runtime_import_importlib_direct_mode(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text(
-        "import importlib\n"
-        "print('hi')\n"
-    )
+    main_src.write_text("import importlib\nprint('hi')\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -307,10 +298,7 @@ def test_split_runtime_typing_alias_bootstrap(tmp_path: Path) -> None:
 @pytest.mark.slow
 def test_split_runtime_import_typing_direct_mode(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text(
-        "import typing\n"
-        "print('ok')\n"
-    )
+    main_src.write_text("import typing\nprint('ok')\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -408,13 +396,7 @@ def test_split_runtime_annotated_staticmethod_tuple_param_direct_mode(
 @pytest.mark.slow
 def test_split_runtime_generator_creation_direct_mode(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text(
-        "def _f():\n"
-        "    yield\n"
-        "\n"
-        "_g = _f()\n"
-        "print(type(_g))\n"
-    )
+    main_src.write_text("def _f():\n    yield\n\n_g = _f()\nprint(type(_g))\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -502,10 +484,7 @@ def test_split_runtime_imported_module_getframe_globals_direct_mode(
         "    return sys._getframe(1).f_globals.get('__name__', '__main__')\n"
     )
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text(
-        "from probe_mod import probe\n"
-        "print(probe())\n"
-    )
+    main_src.write_text("from probe_mod import probe\nprint(probe())\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -530,14 +509,11 @@ def test_split_runtime_imported_module_getframe_globals_direct_mode(
 
 
 @pytest.mark.slow
-def test_split_runtime_inline_python_function_returned_list_prints(tmp_path: Path) -> None:
+def test_split_runtime_inline_python_function_returned_list_prints(
+    tmp_path: Path,
+) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text(
-        "def f():\n"
-        "    return [1, 2]\n"
-        "\n"
-        "print(f())\n"
-    )
+    main_src.write_text("def f():\n    return [1, 2]\n\nprint(f())\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -616,10 +592,7 @@ def test_split_runtime_import_typing_then_raise_direct_mode_surfaces_exception(
     tmp_path: Path,
 ) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text(
-        "import typing\n"
-        "raise RuntimeError('AFTER')\n"
-    )
+    main_src.write_text("import typing\nraise RuntimeError('AFTER')\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 

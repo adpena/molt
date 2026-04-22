@@ -73,4 +73,5 @@ def JSONObject(
 def py_scanstring(_s, _end, _strict=True):
     raise NotImplementedError("py_scanstring runtime path is not implemented")
 
+
 globals().pop("_require_intrinsic", None)

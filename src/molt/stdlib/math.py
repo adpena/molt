@@ -191,4 +191,5 @@ def lcm(*integers: object) -> int:
 def hypot(*coordinates: object) -> float:
     return _MOLT_MATH_HYPOT(coordinates)
 
+
 globals().pop("_require_intrinsic", None)

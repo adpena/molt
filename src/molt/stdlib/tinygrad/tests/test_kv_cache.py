@@ -14,7 +14,6 @@ Covers:
   - Determinism
 """
 
-import math
 import random
 import sys
 import os
@@ -76,10 +75,12 @@ def _make_tensor_2d(data: list, rows: int, cols: int) -> Tensor:
 # Test: Basic append and retrieval
 # ============================================================
 
+
 def test_append_and_retrieve():
     d_k = 16
-    cache = TieredKVCache(d_k=d_k, max_hot=10, max_warm=10, max_cold=10,
-                          sliding_window=2, n_sinks=1)
+    cache = TieredKVCache(
+        d_k=d_k, max_hot=10, max_warm=10, max_cold=10, sliding_window=2, n_sinks=1
+    )
 
     k0 = _make_kv_vec(d_k, seed=0)
     v0 = _make_kv_vec(d_k, seed=1)
@@ -111,6 +112,7 @@ def test_append_and_retrieve():
 # Test: Quantization roundtrip accuracy
 # ============================================================
 
+
 def test_quantization_roundtrip_int8():
     d_k = 64
     rng = random.Random(42)
@@ -127,7 +129,9 @@ def test_quantization_roundtrip_int8():
     assert relative_error < 0.02, (
         f"INT8 quantization error too high: {relative_error:.4f}"
     )
-    print(f"PASS: test_quantization_roundtrip_int8 (max relative error: {relative_error:.6f})")
+    print(
+        f"PASS: test_quantization_roundtrip_int8 (max relative error: {relative_error:.6f})"
+    )
 
 
 def test_quantization_roundtrip_int4():
@@ -146,7 +150,9 @@ def test_quantization_roundtrip_int4():
     assert relative_error < 0.20, (
         f"INT4 quantization error too high: {relative_error:.4f}"
     )
-    print(f"PASS: test_quantization_roundtrip_int4 (max relative error: {relative_error:.6f})")
+    print(
+        f"PASS: test_quantization_roundtrip_int4 (max relative error: {relative_error:.6f})"
+    )
 
 
 def test_quantization_zero_vector():
@@ -162,12 +168,18 @@ def test_quantization_zero_vector():
 # Test: Tier demotion via threshold
 # ============================================================
 
+
 def test_tier_demotion_threshold():
     d_k = 8
     cache = TieredKVCache(
-        d_k=d_k, max_hot=100, max_warm=100, max_cold=100,
-        sliding_window=1, n_sinks=1,
-        hot_threshold=0.1, warm_threshold=0.01,
+        d_k=d_k,
+        max_hot=100,
+        max_warm=100,
+        max_cold=100,
+        sliding_window=1,
+        n_sinks=1,
+        hot_threshold=0.1,
+        warm_threshold=0.01,
         score_decay=0.9,
     )
 
@@ -199,9 +211,14 @@ def test_tier_demotion_threshold():
 def test_tier_demotion_warm_to_cold():
     d_k = 8
     cache = TieredKVCache(
-        d_k=d_k, max_hot=100, max_warm=100, max_cold=100,
-        sliding_window=1, n_sinks=1,
-        hot_threshold=0.1, warm_threshold=0.01,
+        d_k=d_k,
+        max_hot=100,
+        max_warm=100,
+        max_cold=100,
+        sliding_window=1,
+        n_sinks=1,
+        hot_threshold=0.1,
+        warm_threshold=0.01,
         score_decay=0.5,
     )
 
@@ -225,7 +242,9 @@ def test_tier_demotion_warm_to_cold():
     # Decay again: 0.025 * 0.5 = 0.0125, still above 0.01, stays warm
     cache.update_scores({0: 1.0, 2: 1.0})
     cache.step()
-    assert cache.get_tier(1) == TIER_WARM, "Token 1 should still be warm (0.0125 > 0.01)"
+    assert cache.get_tier(1) == TIER_WARM, (
+        "Token 1 should still be warm (0.0125 > 0.01)"
+    )
 
     # Decay again: 0.0125 * 0.5 = 0.00625 < 0.01, should demote to cold
     cache.update_scores({0: 1.0, 2: 1.0})
@@ -241,13 +260,19 @@ def test_tier_demotion_warm_to_cold():
 # Test: Attention sink protection
 # ============================================================
 
+
 def test_attention_sink_protection():
     d_k = 8
     n_sinks = 3
     cache = TieredKVCache(
-        d_k=d_k, max_hot=10, max_warm=10, max_cold=10,
-        sliding_window=1, n_sinks=n_sinks,
-        hot_threshold=0.5, score_decay=0.9,
+        d_k=d_k,
+        max_hot=10,
+        max_warm=10,
+        max_cold=10,
+        sliding_window=1,
+        n_sinks=n_sinks,
+        hot_threshold=0.5,
+        score_decay=0.9,
     )
 
     # Add 6 tokens
@@ -276,13 +301,19 @@ def test_attention_sink_protection():
 # Test: Sliding window protection
 # ============================================================
 
+
 def test_sliding_window_protection():
     d_k = 8
     window = 3
     cache = TieredKVCache(
-        d_k=d_k, max_hot=20, max_warm=20, max_cold=20,
-        sliding_window=window, n_sinks=1,
-        hot_threshold=0.5, score_decay=0.9,
+        d_k=d_k,
+        max_hot=20,
+        max_warm=20,
+        max_cold=20,
+        sliding_window=window,
+        n_sinks=1,
+        hot_threshold=0.5,
+        score_decay=0.9,
     )
 
     # Add 8 tokens
@@ -296,7 +327,9 @@ def test_sliding_window_protection():
     # Last 3 tokens (positions 5, 6, 7) should be protected
     hot_positions = sorted(cache._hot.keys())
     for pos in hot_positions[-window:]:
-        assert cache.get_tier(pos) == TIER_HOT, f"Sliding window token {pos} must stay hot"
+        assert cache.get_tier(pos) == TIER_HOT, (
+            f"Sliding window token {pos} must stay hot"
+        )
 
     # Sink (position 0) also protected
     assert cache.get_tier(0) == TIER_HOT, "Sink must stay hot"
@@ -308,13 +341,19 @@ def test_sliding_window_protection():
 # Test: Capacity enforcement
 # ============================================================
 
+
 def test_hot_capacity_enforcement():
     d_k = 8
     max_hot = 5
     cache = TieredKVCache(
-        d_k=d_k, max_hot=max_hot, max_warm=100, max_cold=100,
-        sliding_window=1, n_sinks=1,
-        hot_threshold=1e-6, warm_threshold=1e-8,  # Very low thresholds
+        d_k=d_k,
+        max_hot=max_hot,
+        max_warm=100,
+        max_cold=100,
+        sliding_window=1,
+        n_sinks=1,
+        hot_threshold=1e-6,
+        warm_threshold=1e-8,  # Very low thresholds
         score_decay=0.99,
     )
 
@@ -341,9 +380,14 @@ def test_hot_capacity_enforcement():
 def test_cold_capacity_permanent_eviction():
     d_k = 8
     cache = TieredKVCache(
-        d_k=d_k, max_hot=2, max_warm=2, max_cold=2,
-        sliding_window=1, n_sinks=1,
-        hot_threshold=0.5, warm_threshold=0.01,
+        d_k=d_k,
+        max_hot=2,
+        max_warm=2,
+        max_cold=2,
+        sliding_window=1,
+        n_sinks=1,
+        hot_threshold=0.5,
+        warm_threshold=0.01,
         score_decay=0.1,
     )
 
@@ -371,13 +415,21 @@ def test_cold_capacity_permanent_eviction():
 # Test: Memory savings measurement
 # ============================================================
 
+
 def test_memory_savings():
     d_k = 64
     cache = TieredKVCache(
-        d_k=d_k, max_hot=10, max_warm=50, max_cold=100,
-        sliding_window=2, n_sinks=1,
-        hot_threshold=0.1, warm_threshold=0.01,
-        score_decay=0.9, warm_n_bits=8, cold_n_bits=4,
+        d_k=d_k,
+        max_hot=10,
+        max_warm=50,
+        max_cold=100,
+        sliding_window=2,
+        n_sinks=1,
+        hot_threshold=0.1,
+        warm_threshold=0.01,
+        score_decay=0.9,
+        warm_n_bits=8,
+        cold_n_bits=4,
     )
 
     # Add 20 tokens
@@ -405,18 +457,28 @@ def test_memory_savings():
         f"Actual memory {total_actual} should be less than full precision {total_full}"
     )
 
-    print(f"PASS: test_memory_savings (ratio: {ratio:.4f}, "
-          f"hot: {hot_bytes}, warm: {warm_bytes}, cold: {cold_bytes})")
+    print(
+        f"PASS: test_memory_savings (ratio: {ratio:.4f}, "
+        f"hot: {hot_bytes}, warm: {warm_bytes}, cold: {cold_bytes})"
+    )
 
 
 # ============================================================
 # Test: Score decay and accumulation
 # ============================================================
 
+
 def test_score_decay():
     d_k = 8
-    cache = TieredKVCache(d_k=d_k, max_hot=10, max_warm=10, max_cold=10,
-                          sliding_window=1, n_sinks=1, score_decay=0.5)
+    cache = TieredKVCache(
+        d_k=d_k,
+        max_hot=10,
+        max_warm=10,
+        max_cold=10,
+        sliding_window=1,
+        n_sinks=1,
+        score_decay=0.5,
+    )
 
     cache.append(_make_kv_vec(d_k, seed=0), _make_kv_vec(d_k, seed=1))
 
@@ -439,9 +501,14 @@ def test_heavy_hitter_retention():
     """Heavy hitter tokens (consistently high attention) should stay in hot tier."""
     d_k = 8
     cache = TieredKVCache(
-        d_k=d_k, max_hot=5, max_warm=20, max_cold=20,
-        sliding_window=1, n_sinks=1,
-        hot_threshold=0.1, score_decay=0.9,
+        d_k=d_k,
+        max_hot=5,
+        max_warm=20,
+        max_cold=20,
+        sliding_window=1,
+        n_sinks=1,
+        hot_threshold=0.1,
+        score_decay=0.9,
     )
 
     # Add 10 tokens
@@ -468,12 +535,18 @@ def test_heavy_hitter_retention():
 # Test: Promotion from warm/cold back to hot
 # ============================================================
 
+
 def test_promotion():
     d_k = 8
     cache = TieredKVCache(
-        d_k=d_k, max_hot=100, max_warm=100, max_cold=100,
-        sliding_window=1, n_sinks=1,
-        hot_threshold=0.5, warm_threshold=0.01,
+        d_k=d_k,
+        max_hot=100,
+        max_warm=100,
+        max_cold=100,
+        sliding_window=1,
+        n_sinks=1,
+        hot_threshold=0.5,
+        warm_threshold=0.01,
         score_decay=0.5,
     )
 
@@ -487,7 +560,9 @@ def test_promotion():
     # Demote token 1 to warm (score between thresholds: 0.01 < 0.05 < 0.5)
     cache.update_scores({0: 1.0, 1: 0.05, 2: 1.0})
     cache.step()
-    assert cache.get_tier(1) == TIER_WARM, f"Expected warm, got tier {cache.get_tier(1)}"
+    assert cache.get_tier(1) == TIER_WARM, (
+        f"Expected warm, got tier {cache.get_tier(1)}"
+    )
 
     # Promote token 1 back to hot
     success = cache.promote_to_hot(1)
@@ -495,11 +570,13 @@ def test_promotion():
     assert cache.get_tier(1) == TIER_HOT
 
     # Verify data integrity: token 0 should have original data
-    k_tensor, _, positions = cache.get_hot_kv()
+    k_tensor, v_tensor, positions = cache.get_hot_kv()
     k_data = k_tensor.realize().lazydata._data
+    v_data = v_tensor.realize().lazydata._data
     pos_idx = positions.index(0)
     for i in range(d_k):
         assert abs(k_data[pos_idx * d_k + i] - original_k0[i]) < 1e-10
+        assert abs(v_data[pos_idx * d_k + i] - original_v0[i]) < 1e-10
 
     print("PASS: test_promotion")
 
@@ -508,10 +585,12 @@ def test_promotion():
 # Test: Compact to accepted (speculative decoding)
 # ============================================================
 
+
 def test_compact_to_accepted():
     d_k = 8
-    cache = TieredKVCache(d_k=d_k, max_hot=20, max_warm=20, max_cold=20,
-                          sliding_window=1, n_sinks=1)
+    cache = TieredKVCache(
+        d_k=d_k, max_hot=20, max_warm=20, max_cold=20, sliding_window=1, n_sinks=1
+    )
 
     # Add 5 tokens
     for i in range(5):
@@ -536,14 +615,23 @@ def test_compact_to_accepted():
 # Test: Attention importance computation
 # ============================================================
 
+
 def test_attention_importance():
-    d_k = 4
     # Query that aligns with key 1
     q_data = [0.0, 1.0, 0.0, 0.0]
     k_data = [
-        1.0, 0.0, 0.0, 0.0,   # key 0: orthogonal to q
-        0.0, 1.0, 0.0, 0.0,   # key 1: aligned with q
-        0.0, 0.0, 1.0, 0.0,   # key 2: orthogonal to q
+        1.0,
+        0.0,
+        0.0,
+        0.0,  # key 0: orthogonal to q
+        0.0,
+        1.0,
+        0.0,
+        0.0,  # key 1: aligned with q
+        0.0,
+        0.0,
+        1.0,
+        0.0,  # key 2: orthogonal to q
     ]
     q = _make_tensor_1d(q_data)
     k = _make_tensor_2d(k_data, 3, 4)
@@ -562,11 +650,16 @@ def test_attention_importance():
 
 
 def test_attention_importance_from_positions():
-    d_k = 4
     q = _make_tensor_1d([1.0, 0.0, 0.0, 0.0])
     k_data = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
     ]
     k = _make_tensor_2d(k_data, 2, 4)
     positions = [10, 20]
@@ -584,10 +677,12 @@ def test_attention_importance_from_positions():
 # Test: Tiered attention
 # ============================================================
 
+
 def test_tiered_attention_hot_only():
     d_k = 4
-    cache = TieredKVCache(d_k=d_k, max_hot=10, max_warm=10, max_cold=10,
-                          sliding_window=1, n_sinks=1)
+    cache = TieredKVCache(
+        d_k=d_k, max_hot=10, max_warm=10, max_cold=10, sliding_window=1, n_sinks=1
+    )
 
     # Add 3 tokens with known K/V
     cache.append([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0])
@@ -610,9 +705,14 @@ def test_tiered_attention_hot_only():
 def test_tiered_attention_mixed_tiers():
     d_k = 8
     cache = TieredKVCache(
-        d_k=d_k, max_hot=100, max_warm=100, max_cold=100,
-        sliding_window=1, n_sinks=1,
-        hot_threshold=0.5, warm_threshold=0.01,
+        d_k=d_k,
+        max_hot=100,
+        max_warm=100,
+        max_cold=100,
+        sliding_window=1,
+        n_sinks=1,
+        hot_threshold=0.5,
+        warm_threshold=0.01,
         score_decay=0.9,
     )
 
@@ -652,10 +752,12 @@ def test_tiered_attention_mixed_tiers():
 # Test: Integration with speculative decoding
 # ============================================================
 
+
 def test_speculative_decode_with_kv_cache():
     d_k = 8
-    cache = TieredKVCache(d_k=d_k, max_hot=20, max_warm=20, max_cold=20,
-                          sliding_window=2, n_sinks=1)
+    cache = TieredKVCache(
+        d_k=d_k, max_hot=20, max_warm=20, max_cold=20, sliding_window=2, n_sinks=1
+    )
 
     # Pre-fill 3 context tokens
     for i in range(3):
@@ -696,7 +798,12 @@ def test_speculative_decode_with_kv_cache():
     q = _make_tensor_1d(_make_kv_vec(d_k, seed=999))
 
     accepted_tokens, n_accepted, accepted_positions = speculative_decode_with_kv_cache(
-        draft_logits, target_logits, draft_tokens, cache, draft_positions, q,
+        draft_logits,
+        target_logits,
+        draft_tokens,
+        cache,
+        draft_positions,
+        q,
     )
 
     # At least the first token should be accepted (target agrees)
@@ -716,10 +823,12 @@ def test_speculative_decode_with_kv_cache():
 # Test: Integration with tree attention
 # ============================================================
 
+
 def test_tiered_tree_attention():
     d_k = 4
-    cache = TieredKVCache(d_k=d_k, max_hot=20, max_warm=20, max_cold=20,
-                          sliding_window=1, n_sinks=1)
+    cache = TieredKVCache(
+        d_k=d_k, max_hot=20, max_warm=20, max_cold=20, sliding_window=1, n_sinks=1
+    )
 
     # Add 2 prefix tokens
     cache.append([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0])
@@ -736,9 +845,18 @@ def test_tiered_tree_attention():
 
     # Queries for each tree node
     q_data = [
-        0.0, 0.0, 1.0, 0.0,  # root query
-        1.0, 1.0, 0.0, 0.0,  # left child query
-        0.0, 0.0, 0.0, 1.0,  # right child query
+        0.0,
+        0.0,
+        1.0,
+        0.0,  # root query
+        1.0,
+        1.0,
+        0.0,
+        0.0,  # left child query
+        0.0,
+        0.0,
+        0.0,
+        1.0,  # right child query
     ]
     q = _make_tensor_2d(q_data, 3, d_k)
 
@@ -747,6 +865,7 @@ def test_tiered_tree_attention():
 
     # Output should have shape (3, 4)
     assert output.shape == (3, d_k)
+    assert len(out_data) == 3 * d_k
 
     # Each tree node should attend to prefix + its ancestors
     # Node 0 (root): attends to prefix [0,1] + self [2]
@@ -759,8 +878,9 @@ def test_tiered_tree_attention():
 
 def test_compact_tiered_kv_cache():
     d_k = 4
-    cache = TieredKVCache(d_k=d_k, max_hot=20, max_warm=20, max_cold=20,
-                          sliding_window=2, n_sinks=2)
+    cache = TieredKVCache(
+        d_k=d_k, max_hot=20, max_warm=20, max_cold=20, sliding_window=2, n_sinks=2
+    )
 
     # Add 2 prefix tokens (both sinks since n_sinks=2)
     cache.append([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0])
@@ -789,12 +909,20 @@ def test_compact_tiered_kv_cache():
     assert cache.get_tier(1) == TIER_HOT, "Prefix token 1 should remain hot"
 
     # Accepted tree tokens should remain (in some tier)
-    assert cache.get_tier(tree_positions[0]) != -1, "Accepted tree token 0 should remain"
-    assert cache.get_tier(tree_positions[1]) != -1, "Accepted tree token 1 should remain"
+    assert cache.get_tier(tree_positions[0]) != -1, (
+        "Accepted tree token 0 should remain"
+    )
+    assert cache.get_tier(tree_positions[1]) != -1, (
+        "Accepted tree token 1 should remain"
+    )
 
     # Rejected tree tokens should be gone
-    assert cache.get_tier(tree_positions[2]) == -1, "Rejected tree token 2 should be evicted"
-    assert cache.get_tier(tree_positions[3]) == -1, "Rejected tree token 3 should be evicted"
+    assert cache.get_tier(tree_positions[2]) == -1, (
+        "Rejected tree token 2 should be evicted"
+    )
+    assert cache.get_tier(tree_positions[3]) == -1, (
+        "Rejected tree token 3 should be evicted"
+    )
 
     print("PASS: test_compact_tiered_kv_cache")
 
@@ -803,15 +931,21 @@ def test_compact_tiered_kv_cache():
 # Test: Determinism
 # ============================================================
 
+
 def test_determinism():
     """Running the same sequence of operations twice should produce identical results."""
     d_k = 16
 
     def run_scenario():
         cache = TieredKVCache(
-            d_k=d_k, max_hot=5, max_warm=10, max_cold=10,
-            sliding_window=2, n_sinks=1,
-            hot_threshold=0.1, warm_threshold=0.01,
+            d_k=d_k,
+            max_hot=5,
+            max_warm=10,
+            max_cold=10,
+            sliding_window=2,
+            n_sinks=1,
+            hot_threshold=0.1,
+            warm_threshold=0.01,
             score_decay=0.9,
         )
         rng = random.Random(12345)
@@ -839,6 +973,7 @@ def test_determinism():
 # ============================================================
 # Test: Validation errors
 # ============================================================
+
 
 def test_validation_errors():
     # Invalid d_k
@@ -884,12 +1019,18 @@ def test_validation_errors():
 # Test: get_all_kv combines all tiers
 # ============================================================
 
+
 def test_get_all_kv():
     d_k = 8
     cache = TieredKVCache(
-        d_k=d_k, max_hot=100, max_warm=100, max_cold=100,
-        sliding_window=1, n_sinks=1,
-        hot_threshold=0.5, warm_threshold=0.01,
+        d_k=d_k,
+        max_hot=100,
+        max_warm=100,
+        max_cold=100,
+        sliding_window=1,
+        n_sinks=1,
+        hot_threshold=0.5,
+        warm_threshold=0.01,
         score_decay=0.9,
     )
 
@@ -916,6 +1057,7 @@ def test_get_all_kv():
 # Test: Empty cache operations
 # ============================================================
 
+
 def test_empty_cache():
     d_k = 8
     cache = TieredKVCache(d_k=d_k)
@@ -941,6 +1083,7 @@ def test_empty_cache():
 # ============================================================
 # Test: Promote nonexistent position
 # ============================================================
+
 
 def test_promote_nonexistent():
     d_k = 8

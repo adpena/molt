@@ -4,6 +4,7 @@ Ported from: https://github.com/paiml/depyler/blob/main/tests/fixtures/python_sa
 Measures: integer modulo/division throughput (sum_of_digits, reverse_integer).
 """
 
+
 def sum_of_digits(n: int) -> int:
     total: int = 0
     while n > 0:

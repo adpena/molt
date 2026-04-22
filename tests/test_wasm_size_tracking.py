@@ -1,4 +1,5 @@
 """Tests for tracking wasm binary sizes across builds (regression tracking)."""
+
 from __future__ import annotations
 
 import subprocess

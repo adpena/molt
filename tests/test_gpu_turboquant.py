@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 import subprocess
 import sys
@@ -68,12 +67,12 @@ def test_turboquant_prepared_query_matches_direct_estimates():
 
     prepared = codec.prepare_query(query)
 
-    assert codec.estimate_mse_inner_product_prepared(prepared, mse_encoded) == pytest.approx(
-        codec.estimate_mse_inner_product(query, mse_encoded)
-    )
-    assert codec.estimate_inner_product_prepared(prepared, prod_encoded) == pytest.approx(
-        codec.estimate_inner_product(query, prod_encoded)
-    )
+    assert codec.estimate_mse_inner_product_prepared(
+        prepared, mse_encoded
+    ) == pytest.approx(codec.estimate_mse_inner_product(query, mse_encoded))
+    assert codec.estimate_inner_product_prepared(
+        prepared, prod_encoded
+    ) == pytest.approx(codec.estimate_inner_product(query, prod_encoded))
 
 
 def test_turboquant_prepared_estimates_do_not_depend_on_codec_codebook_after_encode():
@@ -91,12 +90,12 @@ def test_turboquant_prepared_estimates_do_not_depend_on_codec_codebook_after_enc
 
     codec.codebook = None
 
-    assert codec.estimate_mse_inner_product_prepared(prepared, mse_encoded) == pytest.approx(
-        mse_expected
-    )
-    assert codec.estimate_inner_product_prepared(prepared, prod_encoded) == pytest.approx(
-        prod_expected
-    )
+    assert codec.estimate_mse_inner_product_prepared(
+        prepared, mse_encoded
+    ) == pytest.approx(mse_expected)
+    assert codec.estimate_inner_product_prepared(
+        prepared, prod_encoded
+    ) == pytest.approx(prod_expected)
 
 
 def test_turboquant_kv_cache_attention_output_matches_manual_reference():
@@ -129,7 +128,9 @@ def test_turboquant_kv_cache_attention_output_matches_manual_reference():
     assert output.shape == (8,)
 
     weights = logits.softmax().to_list()
-    decoded_values = [codec.dequantize(encoded).to_list() for encoded in cache.value_vectors]
+    decoded_values = [
+        codec.dequantize(encoded).to_list() for encoded in cache.value_vectors
+    ]
     manual = []
     for dim_index in range(8):
         acc = 0.0
@@ -266,7 +267,9 @@ def test_turboquant_compiles_in_native_molt(tmp_path: Path) -> None:
     assert lines[2] == "(8,)"
 
 
-def test_turboquant_codebook_and_attention_are_finite_in_native_molt(tmp_path: Path) -> None:
+def test_turboquant_codebook_and_attention_are_finite_in_native_molt(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "gpu_turboquant_finite_native.py"
     probe.write_text(
@@ -307,7 +310,12 @@ def test_turboquant_codebook_and_attention_are_finite_in_native_molt(tmp_path: P
     assert run.returncode == 0, run.stdout + run.stderr
     lines = run.stdout.strip().splitlines()
     assert ast.literal_eval(lines[0]) == pytest.approx(
-        (-0.9998145434070118, -0.35570716906104066, 0.355186710744008, 0.9998141061052793)
+        (
+            -0.9998145434070118,
+            -0.35570716906104066,
+            0.355186710744008,
+            0.9998141061052793,
+        )
     )
     assert ast.literal_eval(lines[1])[0][0][0] == pytest.approx(
         [0.019662419334053993, 0.22147667407989502]

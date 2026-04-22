@@ -176,6 +176,7 @@ def _load_safetensor_entry(data: bytes, data_start: int, meta: dict):
     global Tensor
     if Tensor is None:
         from .tensor import Tensor as _Tensor
+
         Tensor = _Tensor
 
     dtype_str = meta["dtype"]

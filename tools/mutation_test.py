@@ -773,9 +773,15 @@ class _MutationApplier(ast.NodeTransformer):
                 return node
         if self.site.operator == "container_method_swap" and self._match(node):
             if self.site.description == "append(x) -> extend([x])":
-                if len(node.args) == 1 and not node.keywords and node.func.attr == "append":
+                if (
+                    len(node.args) == 1
+                    and not node.keywords
+                    and node.func.attr == "append"
+                ):
                     node.func.attr = "extend"
-                    node.args = [ast.List(elts=[copy.deepcopy(node.args[0])], ctx=ast.Load())]
+                    node.args = [
+                        ast.List(elts=[copy.deepcopy(node.args[0])], ctx=ast.Load())
+                    ]
                     self._applied = True
                     return node
             replacement = _CONTAINER_METHOD_SWAPS.get(node.func.attr)

@@ -27,6 +27,7 @@ Total model size: ~16.1 MB (detector 4.7 + classifier 0.6 + recognizer 10.8)
 
 from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
+
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.tensor import Tensor
@@ -38,8 +39,7 @@ from tinygrad.lazy import LazyOp, LazyBuffer
 _ocr: PaddleOCR | None = None
 
 
-def init(detector_bytes: bytes, recognizer_bytes: bytes,
-         dict_bytes: bytes) -> None:
+def init(detector_bytes: bytes, recognizer_bytes: bytes, dict_bytes: bytes) -> None:
     """Initialize PaddleOCR with ONNX model weights.
 
     Args:
@@ -57,8 +57,12 @@ def init(detector_bytes: bytes, recognizer_bytes: bytes,
     _ocr.load_recognizer(recognizer_bytes, dict_bytes.decode("utf-8"))
 
 
-def init_full(detector_bytes: bytes, classifier_bytes: bytes,
-              recognizer_bytes: bytes, dict_bytes: bytes) -> None:
+def init_full(
+    detector_bytes: bytes,
+    classifier_bytes: bytes,
+    recognizer_bytes: bytes,
+    dict_bytes: bytes,
+) -> None:
     """Initialize with all three models including direction classifier.
 
     Args:
@@ -125,8 +129,7 @@ def _rgb_bytes_to_tensor(width: int, height: int, rgb: bytes) -> Tensor:
     n_pixels = width * height
     if len(rgb) != n_pixels * 3:
         raise ValueError(
-            f"Expected {n_pixels * 3} bytes for {width}x{height} RGB, "
-            f"got {len(rgb)}"
+            f"Expected {n_pixels * 3} bytes for {width}x{height} RGB, got {len(rgb)}"
         )
 
     # Deinterleave RGB -> separate R, G, B channels

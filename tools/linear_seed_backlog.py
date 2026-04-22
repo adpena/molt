@@ -104,9 +104,7 @@ def _display_source_path(path: Path, repo_root: Path | None) -> str:
         return str(path)
 
 
-def extract_todos(
-    path: Path, *, repo_root: Path | None = None
-) -> list[dict[str, Any]]:
+def extract_todos(path: Path, *, repo_root: Path | None = None) -> list[dict[str, Any]]:
     todos: list[dict[str, Any]] = []
     source_path = _display_source_path(path, repo_root)
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -282,7 +280,9 @@ def _group_family(project: str, item: dict[str, Any]) -> str:
     owner = str(metadata.get("owner") or "").strip().lower()
     milestone = str(metadata.get("milestone") or "").strip().upper()
     title = str(item.get("title") or "").strip().lower()
-    haystack = " ".join(part for part in [area, owner, milestone.lower(), title] if part)
+    haystack = " ".join(
+        part for part in [area, owner, milestone.lower(), title] if part
+    )
 
     if project == "Compiler & Frontend":
         if milestone.startswith("LF") or any(
@@ -298,7 +298,11 @@ def _group_family(project: str, item: dict[str, Any]) -> str:
         return "compiler-language-surface-parity"
 
     if project == "Runtime & Intrinsics":
-        if "stdlib" in haystack or "top level stub" in haystack or "intrinsic" in haystack:
+        if (
+            "stdlib" in haystack
+            or "top level stub" in haystack
+            or "intrinsic" in haystack
+        ):
             return "stdlib-intrinsic-migration"
         if any(
             token in haystack
@@ -330,8 +334,7 @@ def _group_family(project: str, item: dict[str, Any]) -> str:
 
     if project == "Tooling & DevEx":
         if any(
-            token in haystack
-            for token in ("extension", "abi", "libmolt", "headers")
+            token in haystack for token in ("extension", "abi", "libmolt", "headers")
         ):
             return "tooling-extension-build-and-abi"
         if any(
@@ -396,23 +399,31 @@ def _build_group_issue(
     )
 
     metadata_rows = [item.get("metadata") or {} for item in sorted_items]
-    owners = _sorted_unique(str(row.get("owner") or "").strip() for row in metadata_rows)
+    owners = _sorted_unique(
+        str(row.get("owner") or "").strip() for row in metadata_rows
+    )
     milestones = _sorted_unique(
         str(row.get("milestone") or "").strip() for row in metadata_rows
     )
-    sources = _sorted_unique(str(row.get("source") or "").strip() for row in metadata_rows)
+    sources = _sorted_unique(
+        str(row.get("source") or "").strip() for row in metadata_rows
+    )
     areas = _sorted_unique(str(row.get("area") or "").strip() for row in metadata_rows)
     statuses = [str(row.get("status") or "").strip().lower() for row in metadata_rows]
-    source_kinds = [_source_kind(str(row.get("source") or "").strip()) for row in metadata_rows]
+    source_kinds = [
+        _source_kind(str(row.get("source") or "").strip()) for row in metadata_rows
+    ]
     priority_counts = Counter(
-        str(row.get("priority") or LINEAR_TO_PRIORITY.get(int(item.get("priority") or 3), "P2"))
+        str(
+            row.get("priority")
+            or LINEAR_TO_PRIORITY.get(int(item.get("priority") or 3), "P2")
+        )
         for row, item in zip(metadata_rows, sorted_items)
     )
     status_counts = Counter(status for status in statuses if status)
     source_kind_counts = Counter(source_kinds)
     codebacked_count = sum(
-        source_kind_counts.get(kind, 0)
-        for kind in ("code", "tool", "test", "formal")
+        source_kind_counts.get(kind, 0) for kind in ("code", "tool", "test", "formal")
     )
     docbacked_count = source_kind_counts.get("doc", 0)
 
@@ -448,9 +459,7 @@ def _build_group_issue(
     if milestones:
         description_lines.append(f"Milestones: {', '.join(milestones)}.")
     if sources:
-        description_lines.append(
-            f"Representative sources: {'; '.join(sources[:5])}."
-        )
+        description_lines.append(f"Representative sources: {'; '.join(sources[:5])}.")
     description_lines.extend(
         [
             "",
@@ -633,7 +642,7 @@ def build_seed_backlog(
     if max_items is None or max_items <= 0:
         selected = deduped
     else:
-        selected = deduped[: max_items]
+        selected = deduped[:max_items]
 
     return {
         "source_mode": source_mode,
@@ -726,7 +735,9 @@ def _has_interpreter_pool_executor() -> bool:
     return hasattr(futures, "InterpreterPoolExecutor")
 
 
-def _discover_source_paths(repo_root: Path, *, source_mode: str = "codebase") -> list[Path]:
+def _discover_source_paths(
+    repo_root: Path, *, source_mode: str = "codebase"
+) -> list[Path]:
     if source_mode not in SOURCE_MODES:
         raise RuntimeError(
             f"unsupported source mode: {source_mode} (expected one of {', '.join(SOURCE_MODES)})"

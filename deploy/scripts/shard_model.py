@@ -17,6 +17,7 @@ Output:
 Usage:
   python3 deploy/scripts/shard_model.py [--input-dir DIR] [--output-dir DIR] [--max-shard-mb 30]
 """
+
 import struct
 import json
 import os
@@ -39,11 +40,16 @@ def read_safetensors(path):
             offset_start, offset_end = info["data_offsets"]
             f.seek(data_start + offset_start)
             raw = f.read(offset_end - offset_start)
-            tensors.append((name, {
-                "shape": info["shape"],
-                "dtype": info["dtype"],
-                "data": raw,
-            }))
+            tensors.append(
+                (
+                    name,
+                    {
+                        "shape": info["shape"],
+                        "dtype": info["dtype"],
+                        "data": raw,
+                    },
+                )
+            )
     return tensors
 
 
@@ -73,13 +79,24 @@ def write_safetensors(path, tensors):
 
 def main():
     parser = argparse.ArgumentParser(description="Shard a quantized model")
-    parser.add_argument("--input-dir", type=str,
-                        default=os.path.expanduser("~/.cache/molt/falcon-ocr/quantized-int4"),
-                        help="Input directory with model.safetensors")
-    parser.add_argument("--output-dir", type=str, default=None,
-                        help="Output directory (default: input-dir/sharded)")
-    parser.add_argument("--max-shard-mb", type=float, default=30.0,
-                        help="Maximum shard size in MB (default: 30)")
+    parser.add_argument(
+        "--input-dir",
+        type=str,
+        default=os.path.expanduser("~/.cache/molt/falcon-ocr/quantized-int4"),
+        help="Input directory with model.safetensors",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: input-dir/sharded)",
+    )
+    parser.add_argument(
+        "--max-shard-mb",
+        type=float,
+        default=30.0,
+        help="Maximum shard size in MB (default: 30)",
+    )
     args = parser.parse_args()
 
     input_dir = args.input_dir
@@ -123,12 +140,14 @@ def main():
     total_written = 0
 
     for i, shard_tensors in enumerate(shards):
-        shard_name = f"model-{i+1:05d}-of-{num_shards:05d}.safetensors"
+        shard_name = f"model-{i + 1:05d}-of-{num_shards:05d}.safetensors"
         shard_path = os.path.join(output_dir, shard_name)
 
         shard_size = sum(len(t[1]["data"]) for t in shard_tensors)
-        print(f"  Shard {i+1}/{num_shards}: {shard_name} "
-              f"({len(shard_tensors)} tensors, {shard_size / 1024**2:.1f} MB)")
+        print(
+            f"  Shard {i + 1}/{num_shards}: {shard_name} "
+            f"({len(shard_tensors)} tensors, {shard_size / 1024**2:.1f} MB)"
+        )
 
         write_safetensors(shard_path, shard_tensors)
         total_written += os.path.getsize(shard_path)
@@ -157,7 +176,9 @@ def main():
             shutil.copy2(src_file, dst_file)
             print(f"  Copied: {dst_file}")
 
-    print(f"\nTotal sharded size: {total_written / 1024**2:.1f} MB in {num_shards} shards")
+    print(
+        f"\nTotal sharded size: {total_written / 1024**2:.1f} MB in {num_shards} shards"
+    )
     print(f"Output: {output_dir}")
 
 

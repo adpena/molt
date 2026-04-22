@@ -19,4 +19,5 @@ def gettext(message: object) -> object:
 def ngettext(singular: object, plural: object, n: object) -> object:
     return _MOLT_GETTEXT_NGETTEXT(singular, plural, n)
 
+
 globals().pop("_require_intrinsic", None)

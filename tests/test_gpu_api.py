@@ -5,7 +5,6 @@ Tensor, DataFrame, ops, and all sub-module imports.
 """
 
 import json
-import math
 from pathlib import Path
 import pytest
 import struct
@@ -53,13 +52,21 @@ def _write_f16_safetensors_fixture(path: Path) -> None:
         handle.write(header_bytes)
         handle.write(raw)
 
+
 def test_core_imports():
     from molt.gpu import Buffer, kernel, to_device, from_device, alloc
     from molt.gpu import thread_id, block_id, block_dim, grid_dim, barrier
+
+    assert Buffer is not None
     assert callable(kernel)
     assert callable(to_device)
     assert callable(from_device)
     assert callable(alloc)
+    assert callable(thread_id)
+    assert callable(block_id)
+    assert callable(block_dim)
+    assert callable(grid_dim)
+    assert callable(barrier)
 
 
 def test_buffer_generic_subscription_is_runtime_stable():
@@ -71,6 +78,7 @@ def test_buffer_generic_subscription_is_runtime_stable():
 
 def test_buffer_roundtrip_float():
     from molt.gpu import to_device, from_device
+
     data = [1.0, 2.0, 3.0, 4.0]
     buf = to_device(data)
     assert buf.size == 4
@@ -96,6 +104,7 @@ def test_buffer_roundtrip_f32_array():
 
 def test_buffer_roundtrip_int():
     from molt.gpu import to_device, from_device
+
     data = [10, 20, 30]
     buf = to_device(data)
     assert buf.size == 3
@@ -105,6 +114,7 @@ def test_buffer_roundtrip_int():
 
 def test_buffer_indexing():
     from molt.gpu import to_device
+
     buf = to_device([10.0, 20.0, 30.0])
     assert buf[0] == 10.0
     assert buf[1] == 20.0
@@ -113,6 +123,7 @@ def test_buffer_indexing():
 
 def test_buffer_setitem():
     from molt.gpu import alloc
+
     buf = alloc(3, float)
     buf[0] = 42.0
     buf[1] = 99.0
@@ -123,11 +134,13 @@ def test_buffer_setitem():
 
 def test_alloc_zeros():
     from molt.gpu import alloc, from_device
+
     buf = alloc(5, float)
     assert from_device(buf) == [0.0, 0.0, 0.0, 0.0, 0.0]
 
 
 # ── Kernel simulation ───────────────────────────────────────────────────────
+
 
 def test_kernel_simulation():
     """Kernel decorator + simulated sequential execution.
@@ -286,8 +299,10 @@ def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
 
 # ── Tensor ───────────────────────────────────────────────────────────────────
 
+
 def test_tensor_create_and_shape():
     from molt.gpu.tensor import Tensor
+
     t = Tensor([[1, 2, 3], [4, 5, 6]])
     assert t.shape == (2, 3)
     assert t.ndim == 2
@@ -296,6 +311,7 @@ def test_tensor_create_and_shape():
 
 def test_tensor_matmul():
     from molt.gpu.tensor import Tensor
+
     a = Tensor([[1, 2], [3, 4]])
     b = Tensor([[5, 6], [7, 8]])
     c = a @ b
@@ -408,7 +424,9 @@ def test_tensor_linear_split_last_dim_prefers_contiguous_intrinsic(
 
     calls = []
 
-    def fake_contiguous(x_data, x_format, w_data, w_format, outer, in_features, sizes_arg, out_format):
+    def fake_contiguous(
+        x_data, x_format, w_data, w_format, outer, in_features, sizes_arg, out_format
+    ):
         calls.append((x.shape, w.shape, tuple(sizes_arg)))
         del x_data, x_format, w_data, w_format, outer, in_features, out_format
         left = array.array("f", [1.0, 2.0, 3.0, 4.0]).tobytes()
@@ -424,7 +442,9 @@ def test_tensor_linear_split_last_dim_prefers_contiguous_intrinsic(
         tensor_mod,
         "_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("tensor-level split intrinsic should not be used when contiguous primitive is available")
+            AssertionError(
+                "tensor-level split intrinsic should not be used when contiguous primitive is available"
+            )
         ),
     )
 
@@ -455,9 +475,12 @@ def test_tensor_scaled_dot_product_attention_matches_manual_path():
     )
 
     out = tensor_scaled_dot_product_attention(q, k, v, mask, 1.0)
-    manual = tensor_softmax_last_axis(
-        (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * Tensor(1.0) + mask
-    ) @ v
+    manual = (
+        tensor_softmax_last_axis(
+            (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * Tensor(1.0) + mask
+        )
+        @ v
+    )
 
     assert out.shape == (1, 1, 2, 2)
     assert out._buf.format_char == manual._buf.format_char
@@ -580,7 +603,9 @@ def test_tensor_scaled_dot_product_attention_uses_composed_path_without_gpu_back
         tensor_mod,
         "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("fused attention intrinsic should not be used without explicit GPU backend")
+            AssertionError(
+                "fused attention intrinsic should not be used without explicit GPU backend"
+            )
         ),
     )
 
@@ -604,7 +629,9 @@ def test_tensor_functional_permute_and_softmax_last_axis_preserve_f32_layout():
         shape=(1, 2, 1, 2),
     )
     permuted = tensor_permute_dims(t, (0, 2, 1, 3))
-    softmaxed = tensor_softmax_last_axis(Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2)))
+    softmaxed = tensor_softmax_last_axis(
+        Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    )
 
     assert permuted.to_list() == [[[[1.0, 2.0], [3.0, 4.0]]]]
     assert permuted._buf.format_char == "f"
@@ -681,7 +708,9 @@ def test_tensor_take_rows_preserves_values_and_f32_buffer_layout():
     from molt.gpu import to_device
     from molt.gpu.tensor import Tensor
 
-    weight = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])), shape=(3, 2))
+    weight = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])), shape=(3, 2)
+    )
 
     out = weight.take_rows([2, 0])
 
@@ -738,7 +767,9 @@ def test_tensor_repeat_axis_preserves_values_and_f32_layout():
     out = t.repeat_axis(1, 3)
 
     assert out.shape == (1, 6, 2)
-    assert out.to_list() == [[[1.0, 2.0], [1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [3.0, 4.0], [3.0, 4.0]]]
+    assert out.to_list() == [
+        [[1.0, 2.0], [1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [3.0, 4.0], [3.0, 4.0]]
+    ]
     assert out._buf.format_char == "f"
     assert out._buf.itemsize == 4
 
@@ -805,6 +836,7 @@ def test_tensor_batched_matmul_preserves_all_leading_dims():
 
 def test_tensor_elementwise():
     from molt.gpu.tensor import Tensor
+
     a = Tensor([1.0, 2.0, 3.0])
     b = Tensor([4.0, 5.0, 6.0])
     assert (a + b).to_list() == [5.0, 7.0, 9.0]
@@ -877,6 +909,7 @@ def test_tensor_broadcast_promotes_int_tensor_with_float_scalar_tensor():
 
 def test_tensor_reshape():
     from molt.gpu.tensor import Tensor
+
     t = Tensor([1, 2, 3, 4, 5, 6], shape=(6,))
     t2 = t.reshape(2, 3)
     assert t2.shape == (2, 3)
@@ -885,6 +918,7 @@ def test_tensor_reshape():
 
 def test_tensor_transpose():
     from molt.gpu.tensor import Tensor
+
     t = Tensor([[1, 2, 3], [4, 5, 6]])
     tt = t.T
     assert tt.shape == (3, 2)
@@ -975,6 +1009,7 @@ def test_tensor_permute_4d_common_orders():
 
 def test_tensor_reductions():
     from molt.gpu.tensor import Tensor
+
     t = Tensor([1.0, 2.0, 3.0, 4.0])
     assert t.sum().item() == 10.0
     assert t.mean().item() == 2.5
@@ -994,12 +1029,13 @@ def test_tensor_mean_keepdim_preserves_reduced_axis():
 
 def test_tensor_activations():
     from molt.gpu.tensor import Tensor
+
     t = Tensor([-1.0, 0.0, 1.0, 2.0])
     relu = t.relu().to_list()
     assert relu == [0.0, 0.0, 1.0, 2.0]
     sig = t.sigmoid().to_list()
     assert 0.26 < sig[0] < 0.28  # sigmoid(-1) ~ 0.2689
-    assert sig[1] == 0.5          # sigmoid(0) = 0.5
+    assert sig[1] == 0.5  # sigmoid(0) = 0.5
     sm = t.softmax().to_list()
     assert abs(sum(sm) - 1.0) < 1e-6  # softmax sums to 1
 
@@ -1014,6 +1050,7 @@ def test_tensor_softmax_preserves_f32_output_layout():
 
     rows = out.to_list()
     assert out.shape == (2, 2)
+    assert len(rows) == 2
     assert out._buf.format_char == "f"
     assert out._buf.itemsize == 4
 
@@ -1056,6 +1093,7 @@ def test_tensor_squared_relu_gate_interleaved_preserves_f32_output_layout():
 
 def test_tensor_constructors():
     from molt.gpu.tensor import zeros, ones, randn
+
     z = zeros(3, 4)
     assert z.shape == (3, 4)
     assert z.sum().item() == 0.0
@@ -1067,18 +1105,23 @@ def test_tensor_constructors():
 
 # ── DataFrame ────────────────────────────────────────────────────────────────
 
+
 def test_dataframe_create():
     from molt.gpu.dataframe import DataFrame
-    df = DataFrame({
-        "price": [10.5, 20.3, 15.7],
-        "name": ["a", "b", "c"],
-    })
+
+    df = DataFrame(
+        {
+            "price": [10.5, 20.3, 15.7],
+            "name": ["a", "b", "c"],
+        }
+    )
     assert df.shape == (3, 2)
     assert df.columns == ["price", "name"]
 
 
 def test_dataframe_filter():
     from molt.gpu.dataframe import DataFrame
+
     df = DataFrame({"x": [1.0, 2.0, 3.0, 4.0, 5.0]})
     filtered = df.filter(df["x"] > 3.0)
     assert len(filtered) == 2
@@ -1086,10 +1129,13 @@ def test_dataframe_filter():
 
 def test_dataframe_groupby():
     from molt.gpu.dataframe import DataFrame
-    df = DataFrame({
-        "cat": ["A", "B", "A", "B"],
-        "val": [10.0, 20.0, 30.0, 40.0],
-    })
+
+    df = DataFrame(
+        {
+            "cat": ["A", "B", "A", "B"],
+            "val": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
     result = df.group_by("cat").agg(total=("val", "sum"))
     d = result.to_dict()
     # Order may vary
@@ -1101,6 +1147,7 @@ def test_dataframe_groupby():
 
 def test_dataframe_sort():
     from molt.gpu.dataframe import DataFrame
+
     df = DataFrame({"x": [3.0, 1.0, 2.0]})
     sorted_df = df.sort("x")
     assert sorted_df["x"].to_list() == [1.0, 2.0, 3.0]
@@ -1108,9 +1155,11 @@ def test_dataframe_sort():
 
 # ── Ops ──────────────────────────────────────────────────────────────────────
 
+
 def test_ops_reduce():
     from molt.gpu import to_device
     from molt.gpu.ops import reduce
+
     buf = to_device([1.0, 2.0, 3.0, 4.0, 5.0])
     assert reduce(buf, "sum") == 15.0
     assert reduce(buf, "max") == 5.0
@@ -1121,6 +1170,7 @@ def test_ops_reduce():
 def test_ops_map():
     from molt.gpu import to_device, from_device
     from molt.gpu.ops import map
+
     buf = to_device([1.0, 2.0, 3.0])
     result = map(lambda x: x * 2.0, buf)
     assert from_device(result) == [2.0, 4.0, 6.0]
@@ -1129,14 +1179,16 @@ def test_ops_map():
 def test_ops_filter():
     from molt.gpu import to_device, from_device
     from molt.gpu.ops import filter
+
     buf = to_device([1.0, 2.0, 3.0, 4.0, 5.0])
     result = filter(lambda x: x > 3.0, buf)
-    assert from_device(result)[:result.size] == [4.0, 5.0]
+    assert from_device(result)[: result.size] == [4.0, 5.0]
 
 
 def test_ops_scan():
     from molt.gpu import to_device, from_device
     from molt.gpu.ops import scan
+
     buf = to_device([1.0, 2.0, 3.0, 4.0])
     result = scan(buf, "sum")
     assert from_device(result) == [1.0, 3.0, 6.0, 10.0]
@@ -1145,6 +1197,7 @@ def test_ops_scan():
 def test_ops_dot():
     from molt.gpu import to_device
     from molt.gpu.ops import dot
+
     a = to_device([1.0, 2.0, 3.0])
     b = to_device([4.0, 5.0, 6.0])
     assert dot(a, b) == 32.0
@@ -1153,15 +1206,22 @@ def test_ops_dot():
 def test_ops_norm():
     from molt.gpu import to_device
     from molt.gpu.ops import norm
+
     buf = to_device([3.0, 4.0])
     assert norm(buf, 2) == 5.0
 
 
 # ── Sub-module imports ───────────────────────────────────────────────────────
 
+
 def test_submodule_nn():
     from molt.gpu.nn import Linear, ReLU, Sequential, LayerNorm, Conv2d, Embedding
     from molt.gpu.tensor import Tensor, randn
+
+    assert all(
+        obj is not None
+        for obj in (ReLU, Sequential, LayerNorm, Conv2d, Embedding, Tensor)
+    )
     linear = Linear(4, 2)
     x = randn(1, 4, seed=1)
     out = linear(x)
@@ -1259,7 +1319,9 @@ def test_transformer_multihead_attention_uses_tensor_sdpa(monkeypatch):
         seen["scale"] = scale
         return q
 
-    monkeypatch.setattr(transformer_mod, "tensor_scaled_dot_product_attention", fake_sdpa)
+    monkeypatch.setattr(
+        transformer_mod, "tensor_scaled_dot_product_attention", fake_sdpa
+    )
 
     x = Tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
     out = attn(x)
@@ -1431,21 +1493,34 @@ def test_embedding_lookup_avoids_full_weight_materialization(monkeypatch):
 def test_submodule_transformer():
     from molt.gpu.transformer import TransformerBlock
 
+    assert TransformerBlock is not None
+
 
 def test_submodule_quantize():
     from molt.gpu.quantize import QuantizedTensor, QuantizedLinear
+
+    assert QuantizedTensor is not None
+    assert QuantizedLinear is not None
 
 
 def test_submodule_gguf():
     from molt.gpu.gguf import load_gguf, GGUFModel
 
+    assert callable(load_gguf)
+    assert GGUFModel is not None
+
 
 def test_submodule_hub():
     from molt.gpu.hub import download_model, list_files
 
+    assert callable(download_model)
+    assert callable(list_files)
+
 
 def test_submodule_interop():
     from molt.gpu.interop import load_safetensors
+
+    assert callable(load_safetensors)
 
 
 def test_load_safetensors_materializes_tensors_on_demand(tmp_path, monkeypatch):
@@ -1536,7 +1611,9 @@ def test_load_safetensors_f32_entries_stay_f32_buffer_backed(tmp_path):
     assert from_device(tensor._buf) == [1.0, 2.0]
 
 
-def test_load_safetensors_f16_entries_use_intrinsic_when_available(tmp_path, monkeypatch):
+def test_load_safetensors_f16_entries_use_intrinsic_when_available(
+    tmp_path, monkeypatch
+):
     import molt.gpu.interop as interop
     from molt.gpu import from_device
 
@@ -1585,7 +1662,9 @@ def test_tensor_scatter_rows_preserves_f32_layout():
     from molt.gpu.tensor import Tensor, tensor_scatter_rows
 
     base = Tensor(
-        Buffer(struct.pack("<6f", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), float, 6, format_char="f"),
+        Buffer(
+            struct.pack("<6f", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), float, 6, format_char="f"
+        ),
         shape=(3, 2),
         dtype=float,
     )
@@ -1633,9 +1712,7 @@ def test_tensor_gather_and_scatter_methods_cover_falcon_axis0_patterns():
 def test_tensor_dot_and_tolist_aliases_match_tinygrad_surface():
     from molt.gpu.tensor import Tensor
 
-    out = Tensor([[1.0, 2.0], [3.0, 4.0]]).dot(
-        Tensor([[5.0, 6.0], [7.0, 8.0]])
-    )
+    out = Tensor([[1.0, 2.0], [3.0, 4.0]]).dot(Tensor([[5.0, 6.0], [7.0, 8.0]]))
 
     assert out.tolist() == [[19.0, 22.0], [43.0, 50.0]]
 
@@ -1643,17 +1720,29 @@ def test_tensor_dot_and_tolist_aliases_match_tinygrad_surface():
 def test_submodule_numpy_io():
     from molt.gpu.numpy_io import load_numpy, load_npz
 
+    assert callable(load_numpy)
+    assert callable(load_npz)
+
 
 def test_submodule_fusion():
     from molt.gpu.fusion import FusedPipeline, fused_map_reduce
+
+    assert FusedPipeline is not None
+    assert callable(fused_map_reduce)
 
 
 def test_submodule_distributed():
     from molt.gpu.distributed import Cluster, Worker
 
+    assert Cluster is not None
+    assert Worker is not None
+
 
 def test_submodule_generate():
     from molt.gpu.generate import greedy_decode, top_k_sample
+
+    assert callable(greedy_decode)
+    assert callable(top_k_sample)
 
 
 def test_submodule_dflash():
@@ -1669,9 +1758,27 @@ def test_submodule_dflash():
         require_dflash_conditioning,
     )
 
+    assert all(
+        obj is not None
+        for obj in (
+            DFlashAdapterSpec,
+            DFlashConditioning,
+            SpeculativeConditioning,
+            SpeculativeDraftRequest,
+            SpeculativeDraftResult,
+            SpeculativeVerifyRequest,
+            SpeculativeVerifyResult,
+        )
+    )
+    assert callable(build_dflash_runtime)
+    assert callable(require_dflash_conditioning)
+
 
 def test_submodule_kv_cache():
     from molt.gpu.kv_cache import DenseKVCache, TurboQuantAttentionKVCache
+
+    assert DenseKVCache is not None
+    assert TurboQuantAttentionKVCache is not None
 
 
 def test_submodule_turboquant():
@@ -1683,10 +1790,22 @@ def test_submodule_turboquant():
         TurboQuantProdVector,
     )
 
+    assert all(
+        obj is not None
+        for obj in (
+            TurboQuantCodec,
+            TurboQuantConfig,
+            TurboQuantKVCache,
+            TurboQuantMSEVector,
+            TurboQuantProdVector,
+        )
+    )
+
 
 if __name__ == "__main__":
     # Run all tests manually
     import traceback
+
     passed = 0
     failed = 0
     for name, func in sorted(globals().items()):

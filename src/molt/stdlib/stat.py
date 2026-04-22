@@ -193,4 +193,5 @@ def S_ISWHT(mode: int) -> bool:
 def filemode(mode: int) -> str:
     return _MOLT_STAT_FILEMODE(mode)
 
+
 globals().pop("_require_intrinsic", None)

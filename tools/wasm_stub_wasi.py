@@ -9,6 +9,7 @@ Usage::
 
     python tools/wasm_stub_wasi.py input.wasm -o output.wasm
 """
+
 from __future__ import annotations
 
 import argparse
@@ -100,14 +101,14 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
 
     # Phase 1: Parse imports to find WASI function imports and their type indices
     wasi_imports: list[tuple[int, int]] = []  # (import_index, type_index)
-    non_wasi_imports: list[tuple[str, str, int, bytes]] = []  # (mod, name, kind, desc_bytes)
-    import_section_idx = None
+    non_wasi_imports: list[
+        tuple[str, str, int, bytes]
+    ] = []  # (mod, name, kind, desc_bytes)
     total_import_funcs = 0
 
-    for sec_idx, (section_id, payload) in enumerate(sections):
+    for _sec_idx, (section_id, payload) in enumerate(sections):
         if section_id != 2:
             continue
-        import_section_idx = sec_idx
         offset = 0
         count, offset = _read_varuint(payload, offset)
         func_import_idx = 0  # tracks position in the function index space (funcs only)
@@ -128,7 +129,6 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
                 func_import_idx += 1
             else:
                 # table/memory/global import — figure out size
-                desc_start = offset
                 if kind == 1:  # table
                     offset += 1  # reftype
                     flags, offset = _read_varuint(payload, offset)
@@ -151,23 +151,25 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
 
     # Phase 2: Parse type section to get function signatures for WASI imports
     type_section_payload = None
-    type_section_idx = None
-    for sec_idx, (section_id, payload) in enumerate(sections):
+    for _sec_idx, (section_id, payload) in enumerate(sections):
         if section_id == 1:
             type_section_payload = payload
-            type_section_idx = sec_idx
             break
 
     if type_section_payload is None:
         raise ValueError("No type section found")
 
     # Parse all types to get param/result counts
-    type_signatures: dict[int, tuple[int, int]] = {}  # type_idx -> (n_params, n_results)
+    type_signatures: dict[
+        int, tuple[int, int]
+    ] = {}  # type_idx -> (n_params, n_results)
     offset = 0
     type_count, offset = _read_varuint(type_section_payload, offset)
     for tidx in range(type_count):
         if type_section_payload[offset] != 0x60:
-            raise ValueError(f"Expected functype marker 0x60, got {type_section_payload[offset]:#x}")
+            raise ValueError(
+                f"Expected functype marker 0x60, got {type_section_payload[offset]:#x}"
+            )
         offset += 1
         n_params, offset = _read_varuint(type_section_payload, offset)
         for _ in range(n_params):
@@ -192,11 +194,9 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
     n_stubbed = len(wasi_imports)
 
     # Parse existing function section
-    func_section_idx = None
     func_section_types: list[int] = []
-    for sec_idx, (section_id, payload) in enumerate(sections):
+    for _sec_idx, (section_id, payload) in enumerate(sections):
         if section_id == 3:
-            func_section_idx = sec_idx
             offset = 0
             count, offset = _read_varuint(payload, offset)
             for _ in range(count):
@@ -205,11 +205,9 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
             break
 
     # Parse existing code section
-    code_section_idx = None
     code_bodies: list[bytes] = []
-    for sec_idx, (section_id, payload) in enumerate(sections):
+    for _sec_idx, (section_id, payload) in enumerate(sections):
         if section_id == 10:
-            code_section_idx = sec_idx
             offset = 0
             count, offset = _read_varuint(payload, offset)
             for _ in range(count):
@@ -654,7 +652,10 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
                     output.extend(_write_varuint(tag_idx))
                     label, offset = _read_varuint(body, offset)
                     output.extend(_write_varuint(label))
-                elif catch_kind in (0x02, 0x03):  # catch_all, catch_all_ref — label only
+                elif catch_kind in (
+                    0x02,
+                    0x03,
+                ):  # catch_all, catch_all_ref — label only
                     label, offset = _read_varuint(body, offset)
                     output.extend(_write_varuint(label))
         elif opcode in (0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26):
@@ -676,10 +677,10 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
             val, offset = _read_signed_leb128(body, offset)
             output.extend(_write_signed_leb128(val))
         elif opcode == 0x43:  # f32.const
-            output.extend(body[offset:offset + 4])
+            output.extend(body[offset : offset + 4])
             offset += 4
         elif opcode == 0x44:  # f64.const
-            output.extend(body[offset:offset + 8])
+            output.extend(body[offset : offset + 8])
             offset += 8
         elif opcode == 0xD2:  # ref.func
             func_idx, offset = _read_varuint(body, offset)
@@ -691,7 +692,12 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
         elif opcode == 0xFC:  # multi-byte prefix (misc instructions)
             sub_opcode, offset = _read_varuint(body, offset)
             output.extend(_write_varuint(sub_opcode))
-            if sub_opcode in (8, 10, 12, 14):  # memory.init, memory.copy, table.init, table.copy
+            if sub_opcode in (
+                8,
+                10,
+                12,
+                14,
+            ):  # memory.init, memory.copy, table.init, table.copy
                 idx1, offset = _read_varuint(body, offset)
                 output.extend(_write_varuint(idx1))
                 idx2, offset = _read_varuint(body, offset)
@@ -708,10 +714,10 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
             sub_opcode, offset = _read_varuint(body, offset)
             output.extend(_write_varuint(sub_opcode))
             if sub_opcode == 12:  # v128.const — 16 byte immediate
-                output.extend(body[offset:offset + 16])
+                output.extend(body[offset : offset + 16])
                 offset += 16
             elif sub_opcode == 13:  # i8x16.shuffle — 16 byte lane mask
-                output.extend(body[offset:offset + 16])
+                output.extend(body[offset : offset + 16])
                 offset += 16
             elif 0 <= sub_opcode <= 11:
                 # v128.load, v128.store variants — memarg (align + offset)
@@ -810,8 +816,7 @@ def main() -> int:
 
     if n_stubbed:
         print(
-            f"Stubbed {n_stubbed} WASI imports → {output} "
-            f"({len(result):,} bytes)",
+            f"Stubbed {n_stubbed} WASI imports → {output} ({len(result):,} bytes)",
             file=sys.stderr,
         )
     else:

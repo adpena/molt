@@ -29,13 +29,19 @@ class Conv2d:
         if groups != 1:
             raise NotImplementedError("tinygrad Conv2d groups != 1 not implemented yet")
         if dilation != 1:
-            raise NotImplementedError("tinygrad Conv2d dilation != 1 not implemented yet")
+            raise NotImplementedError(
+                "tinygrad Conv2d dilation != 1 not implemented yet"
+            )
         if isinstance(padding, str):
             if padding.lower() != "same":
-                raise ValueError(f"Invalid padding string {padding!r}, only 'same' is supported")
+                raise ValueError(
+                    f"Invalid padding string {padding!r}, only 'same' is supported"
+                )
             stride_pair = _pair(stride)
             if stride_pair != (1, 1):
-                raise ValueError("padding='same' is not supported for strided convolutions")
+                raise ValueError(
+                    "padding='same' is not supported for strided convolutions"
+                )
             kh, kw = _pair(kernel_size)
             padding = (kh // 2, kw // 2)
 
@@ -57,7 +63,9 @@ class Conv2d:
             low=-scale,
             high=scale,
         )
-        self.bias = Tensor.uniform(out_channels, low=-scale, high=scale) if bias else None
+        self.bias = (
+            Tensor.uniform(out_channels, low=-scale, high=scale) if bias else None
+        )
 
     def __call__(self, x: Tensor) -> Tensor:
         return x.conv2d(
@@ -165,7 +173,9 @@ class Embedding:
 class LayerNorm:
     """tinygrad-compatible LayerNorm."""
 
-    def __init__(self, normalized_shape, eps: float = 1e-5, elementwise_affine: bool = True):
+    def __init__(
+        self, normalized_shape, eps: float = 1e-5, elementwise_affine: bool = True
+    ):
         if isinstance(normalized_shape, int):
             normalized_shape = (normalized_shape,)
         self.normalized_shape = tuple(normalized_shape)
@@ -182,7 +192,7 @@ class LayerNorm:
             self.bias = None
 
     def __call__(self, x: Tensor) -> Tensor:
-        assert self.normalized_shape == x.shape[-len(self.normalized_shape):], (
+        assert self.normalized_shape == x.shape[-len(self.normalized_shape) :], (
             f"last dimensions of {x.shape} must match {self.normalized_shape}"
         )
         out = x.layernorm(axis=self.axis, eps=self.eps)

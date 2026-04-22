@@ -6,8 +6,9 @@ Demonstrates:
 3. Kernel fusion for zero-intermediate-buffer compute
 4. Per-channel vs per-tensor quantization comparison
 """
+
 from molt.gpu.dataframe import DataFrame
-from molt.gpu.distributed import Cluster, DistributedDataFrame
+from molt.gpu.distributed import DistributedDataFrame
 from molt.gpu.fusion import FusedPipeline, fused_map_reduce, fused_filter_reduce
 from molt.gpu import ops
 
@@ -17,10 +18,12 @@ def demo_distributed():
     print("=== Distributed DataFrame ===")
 
     # Create data
-    df = DataFrame({
-        "price": [float(i) * 0.5 for i in range(1000)],
-        "quantity": [i * 10 for i in range(1000)],
-    })
+    df = DataFrame(
+        {
+            "price": [float(i) * 0.5 for i in range(1000)],
+            "quantity": [i * 10 for i in range(1000)],
+        }
+    )
 
     # Distribute across 4 partitions
     ddf = DistributedDataFrame.from_dataframe(df, n_partitions=4)
@@ -48,21 +51,23 @@ def demo_fusion():
     data = ops.arange(1.0, 10001.0)
 
     # Fused map+reduce vs. separate ops
-    fused_result = fused_map_reduce(lambda x: x * x, 'sum', data)
-    regular_result = ops.reduce(ops.map(lambda x: x * x, data), 'sum')
+    fused_result = fused_map_reduce(lambda x: x * x, "sum", data)
+    regular_result = ops.reduce(ops.map(lambda x: x * x, data), "sum")
     print(f"Fused map+reduce:   {fused_result:.0f}")
     print(f"Regular map+reduce: {regular_result:.0f}")
     print(f"Results match: {abs(fused_result - regular_result) < 1e-6}")
 
     # Fused filter+reduce
-    positive_sum = fused_filter_reduce(lambda x: x > 5000, 'sum', data)
+    positive_sum = fused_filter_reduce(lambda x: x > 5000, "sum", data)
     print(f"Sum of values > 5000: {positive_sum:.0f}")
 
     # Pipeline API
-    pipeline_result = (FusedPipeline(data)
+    pipeline_result = (
+        FusedPipeline(data)
         .map(lambda x: x * x)
         .filter(lambda x: x > 1000000)
-        .reduce('count'))
+        .reduce("count")
+    )
     print(f"Count of squares > 1M: {pipeline_result}")
     print()
 
@@ -73,9 +78,7 @@ def demo_quantization():
 
     from molt.gpu.tensor import Tensor
     from molt.gpu.nn import Linear
-    from molt.gpu.quantize import (
-        quantize_model, quantize_model_per_channel
-    )
+    from molt.gpu.quantize import quantize_model, quantize_model_per_channel
 
     # Create a linear layer with varied weight magnitudes per row.
     # Per-channel quantization shines when rows have different dynamic ranges:
@@ -83,9 +86,9 @@ def demo_quantization():
     # on rows with small values when the global range is dominated by large ones.
     layer = Linear(8, 4, bias=False)
     weights = [
-        [0.1, 0.2, 0.15, 0.3, 0.1, 0.2, 0.15, 0.25],    # small range
-        [5.0, 10.0, 7.5, 12.0, 5.0, 10.0, 7.5, 12.0],    # medium range
-        [0.5, 0.6, 0.4, 0.7, 0.5, 0.6, 0.4, 0.7],        # small-medium
+        [0.1, 0.2, 0.15, 0.3, 0.1, 0.2, 0.15, 0.25],  # small range
+        [5.0, 10.0, 7.5, 12.0, 5.0, 10.0, 7.5, 12.0],  # medium range
+        [0.5, 0.6, 0.4, 0.7, 0.5, 0.6, 0.4, 0.7],  # small-medium
         [50.0, 100.0, 75.0, 120.0, 50.0, 100.0, 75.0, 120.0],  # large range
     ]
     layer.weight = Tensor(weights)
@@ -94,6 +97,7 @@ def demo_quantization():
     expected = layer(x)
 
     from molt.gpu.nn import Sequential
+
     model = Sequential(layer)
 
     exp = expected._data_list()

@@ -64,7 +64,9 @@ def _install_intrinsics() -> tuple[types.ModuleType | None, object]:
     return previous_intrinsics_mod, previous_builtins
 
 
-def _restore_intrinsics(previous_intrinsics_mod: types.ModuleType | None, previous_builtins: object) -> None:
+def _restore_intrinsics(
+    previous_intrinsics_mod: types.ModuleType | None, previous_builtins: object
+) -> None:
     if previous_intrinsics_mod is None:
         sys.modules.pop("_intrinsics", None)
     else:
@@ -88,7 +90,10 @@ def test_mixed_stub_batch_hides_raw_capability_intrinsic() -> None:
     for path in ALL_PATHS:
         source = path.read_text()
         assert '_require_intrinsic("molt_capabilities_has", globals())' not in source
-        assert '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")' in source
+        assert (
+            '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")'
+            in source
+        )
 
     previous_intrinsics_mod, previous_builtins = _install_intrinsics()
     try:
@@ -101,9 +106,13 @@ def test_mixed_stub_batch_hides_raw_capability_intrinsic() -> None:
             except RuntimeError as exc:
                 assert "only an intrinsic-first stub is available" in str(exc)
             else:
-                raise AssertionError(f"{path} did not raise RuntimeError from __getattr__")
+                raise AssertionError(
+                    f"{path} did not raise RuntimeError from __getattr__"
+                )
 
-        for index, path in enumerate(RUNTIME_NONSTUB_PATHS, start=len(RUNTIME_STUB_PATHS)):
+        for index, path in enumerate(
+            RUNTIME_NONSTUB_PATHS, start=len(RUNTIME_STUB_PATHS)
+        ):
             module = _load_module(path, index)
             assert "molt_capabilities_has" not in module.__dict__
             assert "_MOLT_CAPABILITIES_HAS" in module.__dict__

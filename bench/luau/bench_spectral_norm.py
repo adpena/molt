@@ -1,6 +1,7 @@
 def eval_a(i: int, j: int) -> float:
     return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)
 
+
 def eval_a_times_u(n: int, u: list[float], au: list[float]) -> None:
     i: int = 0
     while i < n:
@@ -11,6 +12,7 @@ def eval_a_times_u(n: int, u: list[float], au: list[float]) -> None:
             j = j + 1
         au[i] = s
         i = i + 1
+
 
 def eval_at_times_u(n: int, u: list[float], atu: list[float]) -> None:
     i: int = 0
@@ -23,6 +25,7 @@ def eval_at_times_u(n: int, u: list[float], atu: list[float]) -> None:
         atu[i] = s
         i = i + 1
 
+
 def eval_ata_times_u(n: int, u: list[float], atu: list[float]) -> None:
     v: list[float] = []
     i: int = 0
@@ -31,6 +34,7 @@ def eval_ata_times_u(n: int, u: list[float], atu: list[float]) -> None:
         i = i + 1
     eval_a_times_u(n, u, v)
     eval_at_times_u(n, v, atu)
+
 
 def main() -> None:
     n: int = 100
@@ -58,5 +62,6 @@ def main() -> None:
 
     result: float = (vbv / vv) ** 0.5
     print(result)
+
 
 main()

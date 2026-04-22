@@ -101,10 +101,10 @@ _molt_socket_recvmsg_into = _require_intrinsic("molt_socket_recvmsg_into")
 _molt_socket_shutdown = _require_intrinsic("molt_socket_shutdown")
 _molt_socket_reader_new = _require_intrinsic("molt_socket_reader_new")
 _molt_socket_reader_read = _require_intrinsic("molt_socket_reader_read")
-_molt_socket_reader_readline = _require_intrinsic(
-    "molt_socket_reader_readline")
+_molt_socket_reader_readline = _require_intrinsic("molt_socket_reader_readline")
 _molt_socket_reader_readline_limit = _require_intrinsic(
-    "molt_socket_reader_readline_limit")
+    "molt_socket_reader_readline_limit"
+)
 _molt_socket_reader_drop = _require_intrinsic("molt_socket_reader_drop")
 _molt_socket_getsockname = _require_intrinsic("molt_socket_getsockname")
 _molt_socket_getpeername = _require_intrinsic("molt_socket_getpeername")
@@ -126,19 +126,14 @@ _molt_socket_htons = _require_intrinsic("molt_socket_htons")
 _molt_socket_ntohs = _require_intrinsic("molt_socket_ntohs")
 _molt_socket_htonl = _require_intrinsic("molt_socket_htonl")
 _molt_socket_ntohl = _require_intrinsic("molt_socket_ntohl")
-_molt_socket_getprotobyname = _require_intrinsic(
-    "molt_socket_getprotobyname")
-_molt_socket_gethostbyname_ex = _require_intrinsic(
-    "molt_socket_gethostbyname_ex")
+_molt_socket_getprotobyname = _require_intrinsic("molt_socket_getprotobyname")
+_molt_socket_gethostbyname_ex = _require_intrinsic("molt_socket_gethostbyname_ex")
 _molt_socket_cmsg_len = _require_intrinsic("molt_socket_cmsg_len")
 _molt_socket_cmsg_space = _require_intrinsic("molt_socket_cmsg_space")
 _molt_socket_if_nameindex = _require_intrinsic("molt_socket_if_nameindex")
-_molt_socket_if_nametoindex = _require_intrinsic(
-    "molt_socket_if_nametoindex")
-_molt_socket_if_indextoname = _require_intrinsic(
-    "molt_socket_if_indextoname")
-_molt_socket_has_dualstack_ipv6 = _require_intrinsic(
-    "molt_socket_has_dualstack_ipv6")
+_molt_socket_if_nametoindex = _require_intrinsic("molt_socket_if_nametoindex")
+_molt_socket_if_indextoname = _require_intrinsic("molt_socket_if_indextoname")
+_molt_socket_has_dualstack_ipv6 = _require_intrinsic("molt_socket_has_dualstack_ipv6")
 _molt_socket_send_fds = _require_intrinsic("molt_socket_send_fds")
 _molt_socket_recv_fds = _require_intrinsic("molt_socket_recv_fds")
 _molt_socket_sendfile = _require_intrinsic("molt_socket_sendfile")
@@ -974,5 +969,6 @@ def send_fds(sock, buffers, fds, flags=0, address=None):
 def recv_fds(sock, bufsize, maxfds, flags=0):
     """Receive file descriptors from a Unix socket using SCM_RIGHTS."""
     return _molt_socket_recv_fds(sock._handle, bufsize, maxfds, flags)
+
 
 globals().pop("_require_intrinsic", None)

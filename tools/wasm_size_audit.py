@@ -57,6 +57,7 @@ DEFAULT_DATA_BUDGET_MB = 4.0
 # LEB128 helper
 # ---------------------------------------------------------------------------
 
+
 def _read_leb128_u32(data: bytes, offset: int) -> tuple[int, int]:
     """Read an unsigned LEB128 value. Returns (value, new_offset)."""
     result = 0
@@ -89,12 +90,15 @@ def _parse_size_spec(spec: str) -> int:
 # Section parsing
 # ---------------------------------------------------------------------------
 
+
 class SectionInfo:
     """Metadata for one WASM section."""
 
     __slots__ = ("id", "name", "offset", "size", "custom_name")
 
-    def __init__(self, *, id: int, name: str, offset: int, size: int, custom_name: str = ""):
+    def __init__(
+        self, *, id: int, name: str, offset: int, size: int, custom_name: str = ""
+    ):
         self.id = id
         self.name = name
         self.offset = offset
@@ -159,9 +163,8 @@ def parse_sections(wasm_path: Path) -> list[SectionInfo]:
 # Analysis and suggestions
 # ---------------------------------------------------------------------------
 
-def suggest_optimisations(
-    sections: list[SectionInfo], total_bytes: int
-) -> list[str]:
+
+def suggest_optimisations(sections: list[SectionInfo], total_bytes: int) -> list[str]:
     """Return a list of optimisation suggestions based on section sizes."""
     suggestions: list[str] = []
     code_size = sum(s.size for s in sections if s.name == "code")
@@ -169,7 +172,9 @@ def suggest_optimisations(
     custom_size = sum(s.size for s in sections if s.name == "custom")
 
     # Find custom section names
-    custom_names = [s.custom_name for s in sections if s.name == "custom" and s.custom_name]
+    custom_names = [
+        s.custom_name for s in sections if s.name == "custom" and s.custom_name
+    ]
 
     if code_size > total_bytes * 0.5:
         suggestions.append(
@@ -238,6 +243,7 @@ def suggest_optimisations(
 # Size budget gate (MOL-183/MOL-186)
 # ---------------------------------------------------------------------------
 
+
 class BudgetViolation:
     """A single budget violation."""
 
@@ -298,10 +304,13 @@ def check_budget(
 # Reporting
 # ---------------------------------------------------------------------------
 
+
 def print_report(sections: list[SectionInfo], total_bytes: int) -> None:
     """Print a human-readable size audit."""
     print("=" * 72)
-    print(f"WASM Module Size Audit -- {total_bytes:,} bytes ({total_bytes / 1024 / 1024:.2f} MB)")
+    print(
+        f"WASM Module Size Audit -- {total_bytes:,} bytes ({total_bytes / 1024 / 1024:.2f} MB)"
+    )
     print("=" * 72)
 
     # Group by section type
@@ -326,7 +335,9 @@ def print_report(sections: list[SectionInfo], total_bytes: int) -> None:
     accounted = sum(s.size for s in sections)
     overhead = total_bytes - accounted
     if overhead > 0:
-        print(f"  {'<headers/padding>':<33s} {overhead:>10,}  {overhead / total_bytes * 100:>5.1f}%")
+        print(
+            f"  {'<headers/padding>':<33s} {overhead:>10,}  {overhead / total_bytes * 100:>5.1f}%"
+        )
 
     print("-" * 57)
     print(f"  {'TOTAL':<33s} {total_bytes:>10,}")
@@ -370,10 +381,13 @@ def print_json_report(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit WASM module size by section")
     parser.add_argument("wasm", type=Path, help="Path to .wasm file")
-    parser.add_argument("--json", action="store_true", dest="json_output", help="JSON output")
+    parser.add_argument(
+        "--json", action="store_true", dest="json_output", help="JSON output"
+    )
     parser.add_argument(
         "--budget",
         type=str,
@@ -439,7 +453,9 @@ def main() -> None:
 
     # Run budget checks
     violations: list[BudgetViolation] | None = None
-    any_budget = total_budget is not None or code_budget is not None or data_budget is not None
+    any_budget = (
+        total_budget is not None or code_budget is not None or data_budget is not None
+    )
     if any_budget:
         violations = check_budget(
             sections,

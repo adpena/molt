@@ -1,6 +1,5 @@
 """Tests for prefix caching in kv_cache.py (radix tree / trie)."""
 
-import sys
 import os
 import math
 
@@ -35,6 +34,7 @@ D_K = 16  # dimension for test vectors
 
 
 # --- Basic insert and lookup ---
+
 
 def test_empty_lookup():
     cache = PrefixCache(d_k=D_K)
@@ -108,6 +108,7 @@ def test_lookup_diverges_midway():
 
 # --- Multiple prefixes ---
 
+
 def test_two_prefixes_shared_root():
     cache = PrefixCache(d_k=D_K)
     # Two prompts sharing prefix [10, 20]
@@ -139,6 +140,7 @@ def test_disjoint_prefixes():
 
 
 # --- LRU eviction ---
+
 
 def test_eviction_at_capacity():
     # Cache with max 3 blocks.
@@ -175,6 +177,7 @@ def test_lru_preserves_recently_accessed():
 
 # --- Invalidation ---
 
+
 def test_invalidate_existing():
     cache = PrefixCache(d_k=D_K)
     cache.insert([1, 2, 3], [make_kv(D_K) for _ in range(3)])
@@ -209,6 +212,7 @@ def test_invalidate_subtree():
 
 # --- Clear ---
 
+
 def test_clear():
     cache = PrefixCache(d_k=D_K)
     cache.insert([1, 2, 3], [make_kv(D_K) for _ in range(3)])
@@ -222,6 +226,7 @@ def test_clear():
 
 
 # --- Edge cases ---
+
 
 def test_empty_token_sequence():
     cache = PrefixCache(d_k=D_K)
@@ -286,6 +291,7 @@ def test_validation_wrong_vector_size():
 
 # --- Properties ---
 
+
 def test_d_k_property():
     cache = PrefixCache(d_k=32)
     assert cache.d_k == 32
@@ -300,4 +306,5 @@ def test_total_blocks_property():
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

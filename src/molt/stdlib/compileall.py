@@ -9,12 +9,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 __all__ = ["compile_file", "compile_dir", "compile_path"]
 
 
-_MOLT_COMPILEALL_COMPILE_FILE = _require_intrinsic(
-    "molt_compileall_compile_file")
-_MOLT_COMPILEALL_COMPILE_DIR = _require_intrinsic(
-    "molt_compileall_compile_dir")
-_MOLT_COMPILEALL_COMPILE_PATH = _require_intrinsic(
-    "molt_compileall_compile_path")
+_MOLT_COMPILEALL_COMPILE_FILE = _require_intrinsic("molt_compileall_compile_file")
+_MOLT_COMPILEALL_COMPILE_DIR = _require_intrinsic("molt_compileall_compile_dir")
+_MOLT_COMPILEALL_COMPILE_PATH = _require_intrinsic("molt_compileall_compile_path")
 
 
 def compile_file(
@@ -88,5 +85,6 @@ def compile_path(
 ) -> bool:
     del quiet
     return bool(_MOLT_COMPILEALL_COMPILE_PATH(sys.path, skip_curdir, int(maxlevels)))
+
 
 globals().pop("_require_intrinsic", None)

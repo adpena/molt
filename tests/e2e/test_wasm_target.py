@@ -11,12 +11,11 @@ Run: python -m pytest tests/e2e/test_wasm_target.py -v
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import subprocess
 import sys
 import textwrap
+import math
 
 import pytest
 
@@ -126,11 +125,17 @@ class TestWgslShaderStructure:
             }}
         """)
 
-    def _minimal_wgsl_reduce(self, reduce_op: str, n: int = 256, reduce_size: int = 16) -> str:
+    def _minimal_wgsl_reduce(
+        self, reduce_op: str, n: int = 256, reduce_size: int = 16
+    ) -> str:
         """Generate a minimal valid WGSL reduce compute shader."""
         out_n = n // reduce_size
         init = "f32(0)" if reduce_op == "sum" else "bitcast<f32>(0xff800000u)"
-        accum = "acc = acc + buf1[eidx]" if reduce_op == "sum" else "acc = max(acc, buf1[eidx])"
+        accum = (
+            "acc = acc + buf1[eidx]"
+            if reduce_op == "sum"
+            else "acc = max(acc, buf1[eidx])"
+        )
         return textwrap.dedent(f"""\
             @group(0) @binding(0) var<storage, read_write> buf0: array<f32>;
             @group(0) @binding(1) var<storage, read> buf1: array<f32>;
@@ -233,7 +238,6 @@ class TestDTypeNarrowing:
         = 1 * 2048 * 2048 * 65536 = ~274 billion — exceeds i32.
         But individual dimension indices are always < 2^31.
         """
-        import struct
 
         # Individual dimension sizes are always within i32 range
         max_dim = 2**31 - 1  # i32 max
@@ -245,7 +249,14 @@ class TestDTypeNarrowing:
         """Narrowing twice produces the same result as narrowing once."""
         import struct
 
-        test_f64 = [1.23456789012345, -9876.54321, 1e-30, 1e30, float("inf"), float("-inf")]
+        test_f64 = [
+            1.23456789012345,
+            -9876.54321,
+            1e-30,
+            1e30,
+            float("inf"),
+            float("-inf"),
+        ]
         for val in test_f64:
             f32_once = struct.unpack("f", struct.pack("f", val))[0]
             f32_twice = struct.unpack("f", struct.pack("f", f32_once))[0]
@@ -263,7 +274,9 @@ class TestDTypeNarrowing:
 class TestWgslBinarySize:
     """Validate that rendered WGSL shader source sizes are reasonable."""
 
-    def _estimate_wgsl_size(self, op_count: int, buf_count: int, has_reduce: bool) -> int:
+    def _estimate_wgsl_size(
+        self, op_count: int, buf_count: int, has_reduce: bool
+    ) -> int:
         """Estimate WGSL source size based on kernel structure.
 
         Based on actual WgslRenderer output measurements from the Rust test suite:
@@ -308,12 +321,12 @@ class TestWgslBinarySize:
         6. V matmul (reshape+expand+mul+reduce_sum)
         """
         kernel_sizes = [
-            self._estimate_wgsl_size(4, 3, True),   # QK^T
-            self._estimate_wgsl_size(1, 2, False),   # Scale
-            self._estimate_wgsl_size(1, 3, False),   # Mask
-            self._estimate_wgsl_size(3, 3, True),    # Softmax k1
-            self._estimate_wgsl_size(3, 3, True),    # Softmax k2
-            self._estimate_wgsl_size(4, 3, True),    # V matmul
+            self._estimate_wgsl_size(4, 3, True),  # QK^T
+            self._estimate_wgsl_size(1, 2, False),  # Scale
+            self._estimate_wgsl_size(1, 3, False),  # Mask
+            self._estimate_wgsl_size(3, 3, True),  # Softmax k1
+            self._estimate_wgsl_size(3, 3, True),  # Softmax k2
+            self._estimate_wgsl_size(4, 3, True),  # V matmul
         ]
         total = sum(kernel_sizes)
         assert total < 10240, f"Attention block estimated at {total} bytes"
@@ -362,12 +375,14 @@ class TestWasmCompatibility:
         # Our default workgroup sizes
         local_sizes = [
             [256, 1, 1],  # standard elementwise
-            [64, 1, 1],   # small kernel
-            [1, 1, 1],    # scalar
+            [64, 1, 1],  # small kernel
+            [1, 1, 1],  # scalar
         ]
         for local in local_sizes:
             for dim_size in local:
-                assert dim_size <= max_per_dim, f"Workgroup dim {dim_size} > {max_per_dim}"
+                assert dim_size <= max_per_dim, (
+                    f"Workgroup dim {dim_size} > {max_per_dim}"
+                )
             total = local[0] * local[1] * local[2]
             assert total <= max_total, f"Workgroup total {total} > {max_total}"
 
@@ -376,10 +391,10 @@ class TestWasmCompatibility:
         max_dispatch = 65535
         # For typical inference tensor sizes
         typical_sizes = [
-            1,        # scalar
-            256,      # small vector
-            2048,     # sequence length
-            65536,    # vocab size
+            1,  # scalar
+            256,  # small vector
+            2048,  # sequence length
+            65536,  # vocab size
         ]
         for size in typical_sizes:
             # Dispatch = ceil(size / workgroup_size)
@@ -387,7 +402,3 @@ class TestWasmCompatibility:
             assert dispatch <= max_dispatch, (
                 f"Dispatch size {dispatch} for tensor size {size} exceeds limit"
             )
-
-
-# We need this import for the narrowing test
-import math

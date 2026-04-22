@@ -61,4 +61,5 @@ def _ncallbacks(*args: Any, **kwargs: Any) -> int:
     _normalize_no_args("_ncallbacks", args, kwargs)
     return int(_MOLT_ATEXIT_NCALLBACKS())
 
+
 globals().pop("_require_intrinsic", None)

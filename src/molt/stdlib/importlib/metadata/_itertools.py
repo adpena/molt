@@ -37,4 +37,5 @@ def unique_everseen(iterable, key=None):
         seen_keys_add(marker)
         yield element
 
+
 globals().pop("_require_intrinsic", None)

@@ -128,7 +128,16 @@ def _build_eval_command(python_code: str) -> str:
 def test_debug_help_lists_canonical_subcommands(tmp_path: Path) -> None:
     res = _run_cli(["debug", "--help"], cwd=tmp_path)
     assert res.returncode == 0, res.stderr
-    for subcommand in ("repro", "ir", "verify", "trace", "reduce", "bisect", "diff", "perf"):
+    for subcommand in (
+        "repro",
+        "ir",
+        "verify",
+        "trace",
+        "reduce",
+        "bisect",
+        "diff",
+        "perf",
+    ):
         assert subcommand in res.stdout
 
 
@@ -150,7 +159,9 @@ def test_debug_ir_and_verify_help_exist(tmp_path: Path) -> None:
     assert "usage:" in perf_help.stdout.lower()
 
 
-def test_debug_command_writes_manifest_under_tmp_debug_by_default(tmp_path: Path) -> None:
+def test_debug_command_writes_manifest_under_tmp_debug_by_default(
+    tmp_path: Path,
+) -> None:
     source_path = _write_source(tmp_path)
     res = _run_cli(["debug", "ir", str(source_path), "--format", "json"], cwd=tmp_path)
     assert res.returncode == 0, res.stderr
@@ -323,7 +334,9 @@ def test_debug_reduce_reduces_source_with_manifest_oracle(tmp_path: Path) -> Non
     assert payload["status"] == "ok"
     assert payload["failure_class"] is None
     assert payload["data"]["reduction"]["reduced_lines"] == 1
-    reduced_source = _to_abs(payload["data"]["artifacts"]["reduced_source"], cwd=tmp_path)
+    reduced_source = _to_abs(
+        payload["data"]["artifacts"]["reduced_source"], cwd=tmp_path
+    )
     assert reduced_source.is_file()
     assert reduced_source.read_text(encoding="utf-8").strip() == "print('KEEP_MARK')"
 
@@ -501,7 +514,9 @@ def test_debug_trace_can_enable_success_path_assertion(
     seen_env = {}
 
     def fake_capture_json_cli_result(*args, **kwargs):
-        seen_env["assert_no_pending"] = os.environ.get("MOLT_ASSERT_NO_PENDING_ON_SUCCESS")
+        seen_env["assert_no_pending"] = os.environ.get(
+            "MOLT_ASSERT_NO_PENDING_ON_SUCCESS"
+        )
         return 0, {
             "command": "run",
             "status": "ok",

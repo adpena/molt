@@ -5,11 +5,13 @@
 # Use single-condition whiles with explicit if/break for compound exit.
 # NO imports, NO classes, NO comprehensions, NO continue.
 
+
 def _sq_dist(a, b):
     dx = a[0] - b[0]
     dy = a[1] - b[1]
     dz = a[2] - b[2]
     return dx * dx + dy * dy + dz * dz
+
 
 def _isort(indices, pts, axis, lo, hi):
     """Insertion sort indices[lo..hi] by pts[idx][axis].
@@ -27,6 +29,7 @@ def _isort(indices, pts, axis, lo, hi):
                 break
         indices[j + 1] = key_idx
         i = i + 1
+
 
 def build(points):
     """Build KD-tree. Returns [npt, nleft, nright, naxis, root_idx]."""
@@ -85,6 +88,7 @@ def build(points):
                 work.append([lo, mid - 1, depth + 1, nid, 0])
             wsz = wsz + 1
     return [npt, nleft, nright, naxis, root_idx]
+
 
 def nearest(pool, query):
     """Return nearest [x, y, z] to query. Returns [] if empty."""
@@ -145,6 +149,7 @@ def nearest(pool, query):
                     sz = sz + 1
     return best_pt
 
+
 def range_query(pool, query, radius):
     """Return list of [x, y, z] within radius of query."""
     root = pool[4]
@@ -202,6 +207,7 @@ def range_query(pool, query, radius):
                             stk.append(left)
                         sz = sz + 1
     return results
+
 
 # ─── Demo ─────────────────────────────────────────────────────────────────────
 

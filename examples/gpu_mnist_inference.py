@@ -8,6 +8,7 @@ Usage:
     molt run examples/gpu_mnist_inference.py       # interpreted
     molt compile examples/gpu_mnist_inference.py   # compiled (GPU)
 """
+
 from molt.gpu.tensor import Tensor
 from molt.gpu.nn import Linear, ReLU, Sequential, Softmax
 
@@ -22,8 +23,8 @@ def make_fake_digit(digit_type="seven"):
     if digit_type == "seven":
         # Draw a "7": horizontal top bar + diagonal stroke
         for col in range(8, 22):
-            image[2 * 28 + col] = 1.0   # top bar (row 2)
-            image[3 * 28 + col] = 0.8   # top bar (row 3)
+            image[2 * 28 + col] = 1.0  # top bar (row 2)
+            image[3 * 28 + col] = 0.8  # top bar (row 3)
         for row in range(4, 26):
             col = 20 - int((row - 4) * 0.6)
             if 0 <= col < 28:

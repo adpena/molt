@@ -17,6 +17,7 @@ from edgebox.types import Event, EventListener
 # Pattern matching
 # ---------------------------------------------------------------------------
 
+
 def _match_pattern(pattern, event_name):
     """Check whether an event name matches a pattern.
 
@@ -64,6 +65,7 @@ def _match_pattern(pattern, event_name):
 # ---------------------------------------------------------------------------
 # EventBus
 # ---------------------------------------------------------------------------
+
 
 class EventBus:
     """Central event bus for publish/subscribe within a box.
@@ -128,9 +130,11 @@ class EventBus:
             def on_github(box, event):
                 ...
         """
+
         def decorator(fn):
             self.on(pattern, fn, plugin_name=plugin_name, priority=priority)
             return fn
+
         return decorator
 
     def emit(self, box, event):

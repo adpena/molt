@@ -17,10 +17,7 @@ Run: python -m pytest tests/e2e/test_falcon_ocr_targets.py -v
 
 from __future__ import annotations
 
-import json
-import math
 import os
-import struct
 import subprocess
 import sys
 import tempfile
@@ -28,7 +25,9 @@ import time
 
 import pytest
 
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
@@ -44,6 +43,7 @@ from tests.e2e.falcon_ocr_stub_weights import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _molt_runtime_available() -> bool:
     try:
         stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
@@ -53,6 +53,7 @@ def _molt_runtime_available() -> bool:
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
         from molt.gpu import Buffer  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -120,6 +121,7 @@ def _allclose(a: list, b: list, atol: float = 1e-5, rtol: float = 1e-4) -> bool:
 # Tests: CPU target
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skipif(_SKIP_RUNTIME, reason=_RUNTIME_REASON)
 class TestCPUTarget:
     """Verify Falcon-OCR runs correctly on CPU target."""
@@ -136,6 +138,7 @@ class TestCPUTarget:
     def test_cpu_inference_produces_tokens(self):
         """CPU target produces non-empty token output."""
         from tinygrad.device import Device
+
         Device.set("CPU")
 
         from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
@@ -154,6 +157,7 @@ class TestCPUTarget:
     def test_cpu_determinism(self):
         """CPU target is deterministic across runs."""
         from tinygrad.device import Device
+
         Device.set("CPU")
 
         from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
@@ -176,6 +180,7 @@ class TestCPUTarget:
 # Tests: Metal target (macOS only)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skipif(_SKIP_RUNTIME, reason=_RUNTIME_REASON)
 @pytest.mark.skipif(not _is_macos(), reason="Metal requires macOS")
 class TestMetalTarget:
@@ -193,6 +198,7 @@ class TestMetalTarget:
     def test_metal_inference_produces_tokens(self):
         """Metal target produces non-empty token output."""
         from tinygrad.device import Device
+
         Device.set("METAL")
 
         from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
@@ -235,6 +241,7 @@ class TestMetalTarget:
 # ---------------------------------------------------------------------------
 # Tests: MSL source validation (macOS only)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(not _metal_compiler_available(), reason="xcrun metal not available")
 class TestMSLSource:
@@ -336,9 +343,7 @@ kernel void sdpa_single_head(
                 text=True,
                 timeout=30,
             )
-            assert result.returncode == 0, (
-                f"MSL compilation failed:\n{result.stderr}"
-            )
+            assert result.returncode == 0, f"MSL compilation failed:\n{result.stderr}"
         finally:
             os.unlink(msl_path)
 
@@ -346,6 +351,7 @@ kernel void sdpa_single_head(
 # ---------------------------------------------------------------------------
 # Tests: WGSL source validation
 # ---------------------------------------------------------------------------
+
 
 class TestWGSLSource:
     """Validate that rendered WGSL source is syntactically valid."""
@@ -398,9 +404,7 @@ fn rms_norm(@builtin(global_invocation_id) gid: vec3<u32>) {
                 text=True,
                 timeout=30,
             )
-            assert result.returncode == 0, (
-                f"WGSL validation failed:\n{result.stderr}"
-            )
+            assert result.returncode == 0, f"WGSL validation failed:\n{result.stderr}"
         finally:
             os.unlink(wgsl_path)
 
@@ -418,6 +422,7 @@ fn rms_norm(@builtin(global_invocation_id) gid: vec3<u32>) {
 # ---------------------------------------------------------------------------
 # Tests: CUDA source validation
 # ---------------------------------------------------------------------------
+
 
 class TestCUDASource:
     """Validate that rendered CUDA source is syntactically valid."""
@@ -501,16 +506,14 @@ __global__ void rope_1d(
                 text=True,
                 timeout=60,
             )
-            assert result.returncode == 0, (
-                f"CUDA compilation failed:\n{result.stderr}"
-            )
+            assert result.returncode == 0, f"CUDA compilation failed:\n{result.stderr}"
         finally:
             os.unlink(cu_path)
 
     def test_cuda_structure_is_valid(self):
         """CUDA source has required structural elements."""
         cuda = self._make_stub_cuda_kernel()
-        assert '__global__' in cuda
+        assert "__global__" in cuda
         assert 'extern "C"' in cuda
         assert "rsqrtf" in cuda
         assert "__restrict__" in cuda
@@ -519,6 +522,7 @@ __global__ void rope_1d(
 # ---------------------------------------------------------------------------
 # Tests: Cross-target numerical parity
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(_SKIP_RUNTIME, reason=_RUNTIME_REASON)
 class TestCrossTargetParity:
@@ -536,6 +540,7 @@ class TestCrossTargetParity:
     def test_cpu_produces_valid_tokens(self):
         """CPU target produces tokens in valid vocab range."""
         from tinygrad.device import Device
+
         Device.set("CPU")
 
         from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
@@ -549,7 +554,9 @@ class TestCrossTargetParity:
 
         vocab_size = STUB_CONFIG["vocab_size"]
         for t in tokens:
-            assert 0 <= t < vocab_size, f"Token {t} out of vocab range [0, {vocab_size})"
+            assert 0 <= t < vocab_size, (
+                f"Token {t} out of vocab range [0, {vocab_size})"
+            )
 
     def test_inference_timing(self, capsys):
         """Report inference timing for available targets."""
@@ -581,10 +588,10 @@ class TestCrossTargetParity:
             t_metal = time.monotonic() - t0
             results["METAL"] = {"time": t_metal, "tokens": tokens}
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Cross-target timing report")
         for target, data in results.items():
             n = len(data["tokens"])
             tps = n / data["time"] if data["time"] > 0 else 0
             print(f"  {target:8s}: {data['time']:.4f}s  {n} tokens  {tps:.2f} tok/s")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")

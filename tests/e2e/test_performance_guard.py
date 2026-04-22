@@ -13,7 +13,6 @@ These are non-destructive read-only checks against the live deployment.
 import base64
 import io
 import os
-import statistics
 import time
 import unittest
 
@@ -48,8 +47,11 @@ class TestPerformanceGuard(unittest.TestCase):
             latency_ms = (time.time() - start) * 1000
             latencies.append(latency_ms)
             # Health should return 200 or 503 (loading), not 500
-            self.assertIn(resp.status_code, (200, 503),
-                          f"Health returned unexpected status: {resp.status_code}")
+            self.assertIn(
+                resp.status_code,
+                (200, 503),
+                f"Health returned unexpected status: {resp.status_code}",
+            )
             # Must be JSON
             data = resp.json()
             self.assertIn("request_id", data)
@@ -58,15 +60,20 @@ class TestPerformanceGuard(unittest.TestCase):
         latencies.sort()
         p95_idx = int(0.95 * len(latencies))
         p95 = latencies[min(p95_idx, len(latencies) - 1)]
-        print(f"  /health latencies: {[f'{l:.0f}ms' for l in latencies]}, p95={p95:.0f}ms")
-        self.assertLess(p95, 500,
-                        f"/health p95 latency {p95:.0f}ms exceeds 500ms threshold")
+        print(
+            f"  /health latencies: "
+            f"{[f'{latency:.0f}ms' for latency in latencies]}, p95={p95:.0f}ms"
+        )
+        self.assertLess(
+            p95, 500, f"/health p95 latency {p95:.0f}ms exceeds 500ms threshold"
+        )
 
     def test_ocr_ttfb_under_5s(self):
         """POST /ocr with a minimal test image, verify TTFB < 5s."""
         # Generate a minimal 100x100 white PNG
         try:
             from PIL import Image
+
             img = Image.new("RGB", (100, 100), "white")
             buf = io.BytesIO()
             img.save(buf, format="PNG")
@@ -96,16 +103,20 @@ class TestPerformanceGuard(unittest.TestCase):
         print(f"  /ocr TTFB: {ttfb_ms:.0f}ms, status: {resp.status_code}")
 
         # Accept 200 (success) or 503 (model loading) but not 500 (broken)
-        self.assertIn(resp.status_code, (200, 503),
-                      f"OCR returned unexpected status: {resp.status_code}")
+        self.assertIn(
+            resp.status_code,
+            (200, 503),
+            f"OCR returned unexpected status: {resp.status_code}",
+        )
 
         # Verify response is structured JSON with request_id
         data = resp.json()
         self.assertIn("request_id", data)
 
         # TTFB should be under 5 seconds even with cold start
-        self.assertLess(ttfb_ms, 5000,
-                        f"/ocr TTFB {ttfb_ms:.0f}ms exceeds 5000ms threshold")
+        self.assertLess(
+            ttfb_ms, 5000, f"/ocr TTFB {ttfb_ms:.0f}ms exceeds 5000ms threshold"
+        )
 
     def test_wasm_binary_size_under_10mb(self):
         """GET /wasm/falcon-ocr.wasm, verify Content-Length < 10 MB."""
@@ -119,17 +130,20 @@ class TestPerformanceGuard(unittest.TestCase):
         if resp.status_code == 404:
             self.skipTest("WASM binary not deployed to R2 yet")
 
-        self.assertEqual(resp.status_code, 200,
-                         f"WASM endpoint returned {resp.status_code}")
+        self.assertEqual(
+            resp.status_code, 200, f"WASM endpoint returned {resp.status_code}"
+        )
 
         content_length = int(resp.headers.get("Content-Length", "0"))
         max_size = 10 * 1024 * 1024  # 10 MB
 
-        print(f"  /wasm/falcon-ocr.wasm size: {content_length / (1024*1024):.2f} MB")
-        self.assertGreater(content_length, 0,
-                           "WASM binary has zero Content-Length")
-        self.assertLess(content_length, max_size,
-                        f"WASM binary {content_length} bytes exceeds 10 MB limit")
+        print(f"  /wasm/falcon-ocr.wasm size: {content_length / (1024 * 1024):.2f} MB")
+        self.assertGreater(content_length, 0, "WASM binary has zero Content-Length")
+        self.assertLess(
+            content_length,
+            max_size,
+            f"WASM binary {content_length} bytes exceeds 10 MB limit",
+        )
 
     def test_weights_config_under_2kb(self):
         """GET /weights/falcon-ocr-int4/config.json, verify response < 2 KB."""
@@ -143,8 +157,9 @@ class TestPerformanceGuard(unittest.TestCase):
         if resp.status_code == 404:
             self.skipTest("INT4 config not deployed to R2 yet")
 
-        self.assertEqual(resp.status_code, 200,
-                         f"Weights config returned {resp.status_code}")
+        self.assertEqual(
+            resp.status_code, 200, f"Weights config returned {resp.status_code}"
+        )
 
         # Verify it's valid JSON
         data = resp.json()
@@ -155,8 +170,9 @@ class TestPerformanceGuard(unittest.TestCase):
         max_size = 2 * 1024  # 2 KB
 
         print(f"  /weights/falcon-ocr-int4/config.json size: {body_size} bytes")
-        self.assertLess(body_size, max_size,
-                        f"Config response {body_size} bytes exceeds 2 KB limit")
+        self.assertLess(
+            body_size, max_size, f"Config response {body_size} bytes exceeds 2 KB limit"
+        )
 
 
 if __name__ == "__main__":

@@ -5,16 +5,19 @@ formats per OCP Microscaling Formats Specification v1.0.
 """
 
 import math
-import sys
 import os
-import importlib.util
-import types
 
 # Load turbo_quant.py directly, bypassing molt's import system.
 # The MXFP functions use only plain Python (no Tensor/LazyOp), so
 # we can extract them without the runtime being active.
 _tq_path = os.path.join(
-    os.path.dirname(__file__), "..", "src", "molt", "stdlib", "tinygrad", "turbo_quant.py"
+    os.path.dirname(__file__),
+    "..",
+    "src",
+    "molt",
+    "stdlib",
+    "tinygrad",
+    "turbo_quant.py",
 )
 _tq_path = os.path.abspath(_tq_path)
 
@@ -58,6 +61,7 @@ def _max_relative_error(original, reconstructed):
 
 # --- Block size constants ---
 
+
 def test_block_sizes():
     assert MXFP8_BLOCK_SIZE == 16
     assert MXFP4_BLOCK_SIZE == 32
@@ -69,6 +73,7 @@ def test_mantissa_bits():
 
 
 # --- Shared exponent computation ---
+
 
 def test_shared_exponent_zeros():
     block = [0.0] * 16
@@ -105,6 +110,7 @@ def test_shared_exponent_negative_values():
 
 
 # --- MXFP8 quantize/dequantize roundtrip ---
+
 
 def test_mxfp8_roundtrip_zeros():
     data = [0.0] * 16
@@ -187,6 +193,7 @@ def test_mxfp8_large_values():
 
 # --- MXFP4 quantize/dequantize roundtrip ---
 
+
 def test_mxfp4_roundtrip_zeros():
     data = [0.0] * 32
     mantissas, exponents = quantize_mxfp4(data)
@@ -245,6 +252,7 @@ def test_mxfp4_mantissa_range():
 
 # --- Edge cases ---
 
+
 def test_mxfp8_single_element():
     data = [42.0]
     mantissas, exponents = quantize_mxfp8(data)
@@ -280,6 +288,7 @@ def test_quantize_mantissa_clamp():
 
 # --- Symmetry tests ---
 
+
 def test_mxfp8_symmetry():
     """Quantizing -x should give the negative of quantizing x."""
     data_pos = [2.0] * 16
@@ -293,4 +302,5 @@ def test_mxfp8_symmetry():
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

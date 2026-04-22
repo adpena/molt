@@ -29,17 +29,19 @@ def handle_webhook(box, req):
     payload_str = json.dumps(body)
 
     box.db.execute(
-        "INSERT INTO events (pr_id, event_type, actor, payload) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO events (pr_id, event_type, actor, payload) VALUES (?, ?, ?, ?)",
         [pr_id, action, sender, payload_str],
     )
 
     # Emit event so other plugins can react
     from edgebox.types import Event
-    box.emit_event(Event(
-        "github." + action,
-        data={"pr_id": pr_id, "sender": sender, "payload": body},
-        source="github",
-    ))
+
+    box.emit_event(
+        Event(
+            "github." + action,
+            data={"pr_id": pr_id, "sender": sender, "payload": body},
+            source="github",
+        )
+    )
 
     return json.dumps({"ok": True, "event": action, "pr_id": pr_id})
