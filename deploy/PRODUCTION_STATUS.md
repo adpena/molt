@@ -1,6 +1,10 @@
-# Falcon-OCR Production Status
+# Falcon-OCR Deployment Status
 
-Last updated: 2026-04-14
+Last updated: 2026-04-22
+
+This document is a deployment status note, not a guarantee that every listed
+path is production-proven. Claims below are limited to behavior covered by the
+current source contracts and targeted tests.
 
 ## Architecture
 
@@ -8,25 +12,25 @@ Last updated: 2026-04-14
 Browser (test.html / enjoice)
   |
   v
-falcon-ocr-loader.js       -- Browser WASM+GPU inference (primary)
+falcon-ocr-loader.js       -- Browser WASM + optional accelerated compute
   |
-  +-> compute-engine.js     -- Backend detection: WebGPU > WebGL2 > WASM SIMD > scalar
-  +-> webgpu-engine.js      -- Tiled 16x16 matmul compute shaders
-  +-> webgl2-engine.js      -- Fragment shader GPGPU (iOS/older browsers)
+  +-> compute-engine.js     -- Backend selection with fail-closed forced modes
+  +-> webgpu-engine.js      -- WebGPU compute engine
+  +-> webgl2-engine.js      -- WebGL2 compute engine
   +-> webgpu-matmul.js      -- Shared WebGPU matmul kernel
-  +-> speculative-browser.js-- Speculative decoding (draft 4 layers, verify 22)
-  +-> simd-ops-zig/simd.wasm-- WASM SIMD 128-bit intrinsics (Zig, 1.1 KB)
-  +-> simd-ops.wasm         -- WASM SIMD fallback (Rust)
+  +-> speculative-browser.js-- Speculative decoding support when explicitly available
+  +-> simd-ops-zig/simd.wasm-- WASM SIMD artifact
+  +-> simd-ops.wasm         -- Rust WASM SIMD parity artifact
   |
   v
 R2 Storage                  -- WASM binary + INT8 sharded weights + tokenizer
   |
 falcon-ocr.adpena.workers.dev
-  +-> /test                 -- Embedded test page (WebGPU inference)
-  +-> /dashboard            -- Revenue/status dashboard
-  +-> /ocr                  -- Server-side OCR (Workers AI: Gemma 3 12B)
-  +-> /invoice/fill         -- NL invoice fill (Workers AI)
-  +-> /template/extract     -- Template extraction (Workers AI)
+  +-> /test                 -- Browser test page
+  +-> /dashboard            -- Status page
+  +-> /ocr                  -- Explicit backend routing only
+  +-> /invoice/fill         -- NL invoice fill
+  +-> /template/extract     -- Template extraction
   +-> /browser/*            -- Static JS/WASM assets from R2
   +-> /wasm/*               -- WASM binaries from R2
   +-> /weights/*            -- Model weights from R2
@@ -34,53 +38,48 @@ falcon-ocr.adpena.workers.dev
 
 ## Component Status
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Browser test page (/test) | Working | WebGPU/WebGL2/WASM SIMD with automatic fallback |
-| Browser WASM loader | Working | IndexedDB caching, progressive shard download, resume |
-| WebGPU compute engine | Working | Tiled matmul, softmax, RMSNorm, RoPE, add, mul |
-| WebGL2 compute engine | Working | Fragment shader GPGPU fallback |
-| WASM SIMD engine | Working | Zig primary, Rust fallback, scalar last resort |
-| Speculative decoding | Working | 4-layer draft, 22-layer verify, 60-80% acceptance |
-| Tokenizer decoder | Working | BPE byte-level decoder matching HF tokenizer |
-| Workers AI (/ocr) | Working | Gemma 3 12B with retry+fallback chain |
-| Workers AI (/invoice/fill) | Working | NL fill via structured prompting |
-| Workers AI (/template/extract) | Working | Llama 3.2 3B fast path |
-| enjoice integration | Working | falcon-gpu > molt-gpu > falcon-ocr > paddleocr |
-| x402 payment | Working | Bypassed for same-origin enjoice requests |
+| Component | Status | Evidence / contract |
+|-----------|--------|---------------------|
+| Browser test page (/test) | Contracted | Exposes `window.__falconOCR` for Browser Rendering automation and releases `ImageBitmap` previews. |
+| Browser WASM loader | Contracted | Fails closed on unexpected compute backend init errors; preserves token decode signal. |
+| WebGPU/WebGL2 compute engines | Experimental | Backend selection is explicit; forced unavailable backends raise. |
+| WASM SIMD engine | Contracted | Requires real module exports before reporting `wasm-simd`; Rust parity artifact stays under the size gate. |
+| Speculative decoding | Experimental | Only exposed when WebGPU/WebGL2 support is available. No production acceptance-rate claim is made here. |
+| Tokenizer decoders | Contracted | Browser, Cloudflare, enjoice, and tinygrad decoders preserve unknown token IDs or raise on vocab drift. |
+| Worker `/ocr` | Explicit backend routing | Missing tokenizer and GPU proxy failures fail closed; default guidance points clients to configured alternatives. |
+| Worker `/invoice/fill` | Experimental | Workers AI structured prompting path. |
+| Worker `/template/extract` | Experimental | Workers AI template extraction path. |
+| enjoice integration | Contracted bridge | No hard-coded Nemotron endpoint; unknown tokens and whitespace are preserved. |
+| x402 payment | Contracted | Price metadata excludes unverified GPU quality or latency claims. |
 
 ## Browser WASM Inference Path
 
-The browser loader (`falcon-ocr-loader.js`) runs OCR entirely on-device:
+The browser loader runs OCR on-device when assets are available:
 
-1. **GPU detection**: WebGPU > WebGL2 > WASM SIMD > scalar (automatic)
-2. **WASM download**: Streaming compilation from R2, cached in IndexedDB
-3. **Weight download**: Progressive shard-by-shard with per-shard caching
-4. **Weight upload**: GPU memory (WebGPU/WebGL2) or JS heap (WASM/scalar)
-5. **Inference**: WASM handles tokenization/patches, GPU handles matmul/attention
-6. **Token decode**: JS-side BPE decoder from tokenizer.json
+1. Detect compute backend.
+2. Download/compile WASM from R2 or IndexedDB cache.
+3. Download model shards and tokenizer.
+4. Upload weights to the selected compute backend when supported.
+5. Run inference and decode tokens locally.
 
-No image data ever leaves the device.
+Unexpected compute-engine import/init failures raise instead of silently
+reporting a normal WASM backend. Known no-accelerator cases may use the WASM
+path with an explicit fallback reason.
 
-## Workers AI Usage (Clarification)
+## Workers AI Scope
 
-Workers AI is **NOT** used for OCR text extraction (it hallucinates content).
-Workers AI is **only** used for:
-- `/invoice/fill` -- NL invoice field filling from OCR text
-- `/template/extract` -- Template section classification
-- `/ocr/structured` -- Structured data extraction from OCR text
+Workers AI is not claimed as the canonical OCR text extractor in this status
+file. It is used for structured/NL tasks such as invoice filling and template
+classification where those routes are configured. OCR text extraction should be
+validated through the browser/WASM path, explicit GPU proxy path, or a separate
+configured OCR service.
 
-OCR text extraction uses either:
-- Browser WASM+GPU inference (primary, on-device)
-- Server-side CPU inference via `inference-cpu.js` (fallback)
+## Known Limits
 
-## Known Limitations
-
-- **WASM browser path**: The WASM module (`falcon-ocr.wasm`) must be deployed
-  to R2 alongside the model weights. The WASM binary is the molt-compiled
-  inference engine; the current deployment uses a stub that delegates to the
-  JS CPU engine for actual inference.
-- **WASM SIMD in enjoice**: The `simd-ops-zig/simd.wasm` and `simd-ops.wasm`
-  files are not bundled in the enjoice SvelteKit build. The WASM SIMD backend
-  silently falls back to WebGPU/WebGL2/scalar. No user impact.
-- **Speculative decoding**: Available only on WebGPU/WebGL2. Toggle in test page.
+- The browser path depends on correctly deployed WASM, tokenizer, and sharded
+  weights in R2.
+- Nemotron OCR v2 is not a Worker-native runtime here. It requires an explicitly
+  configured GPU service or a separate native/exported runtime path.
+- Browser Rendering GPU automation depends on `window.__falconOCR` becoming ready
+  on `/test`; failures should be surfaced as automation errors, not hidden as
+  successful empty OCR.

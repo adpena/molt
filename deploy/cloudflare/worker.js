@@ -54,13 +54,6 @@ async function getSimdOpsWasm() {
 import { isWorkersAiAvailable } from "./ai-fallback.js";
 import { proxyToGPU, gpuInferenceStatus } from "./gpu-proxy.js";
 
-function isFromBrowser(request, env) {
-  const origin = request.headers.get("Origin");
-  if (!origin) return false;
-  const allowedOrigin = env.CORS_ORIGIN || "https://freeinvoicemaker.app";
-  return origin === allowedOrigin;
-}
-
 // ---------------------------------------------------------------------------
 // Embedded browser test page HTML (serves at /test)
 // JS imports rewritten from relative to /browser/ for R2 serving.

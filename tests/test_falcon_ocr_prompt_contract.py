@@ -527,6 +527,25 @@ def test_cloudflare_worker_nemotron_route_has_no_hardcoded_modal_endpoint() -> N
     assert "GPU inference backend failed" in source
 
 
+def test_cloudflare_worker_defines_browser_origin_helper_once() -> None:
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert source.count("function isFromBrowser(") == 1
+
+
+def test_deploy_production_status_avoids_unverified_working_claims() -> None:
+    source = (ROOT / "deploy" / "PRODUCTION_STATUS.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "| Browser test page (/test) | Working |" not in source
+    assert "| Workers AI (/ocr) | Working |" not in source
+    assert "60-80% acceptance" not in source
+    assert "silently falls back" not in source
+
+
 def test_x402_payment_metadata_has_no_unverified_gpu_quality_claims() -> None:
     source = (ROOT / "deploy" / "cloudflare" / "x402.js").read_text(encoding="utf-8")
 
