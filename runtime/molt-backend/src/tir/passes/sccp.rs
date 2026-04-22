@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::reachability::metadata_preserving_reachable_blocks;
 use super::PassStats;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
@@ -381,7 +382,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // the CFG edge was removed). Removing dead blocks prevents downstream
     // verification from reporting false SSA dominance violations.
     if stats.ops_removed > 0 {
-        let reachable = compute_reachable_blocks(func);
+        let reachable = metadata_preserving_reachable_blocks(func);
         let dead_blocks: Vec<BlockId> = func
             .blocks
             .keys()
@@ -400,44 +401,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     }
 
     stats
-}
-
-/// BFS from entry block to find all reachable blocks.
-fn compute_reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
-    use std::collections::VecDeque;
-
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    let mut queue: VecDeque<BlockId> = VecDeque::new();
-    queue.push_back(func.entry_block);
-    visited.insert(func.entry_block);
-
-    while let Some(bid) = queue.pop_front() {
-        if let Some(block) = func.blocks.get(&bid) {
-            let succs: Vec<BlockId> = match &block.terminator {
-                Terminator::Branch { target, .. } => vec![*target],
-                Terminator::CondBranch {
-                    then_block,
-                    else_block,
-                    ..
-                } => vec![*then_block, *else_block],
-                Terminator::Switch {
-                    cases, default, ..
-                } => {
-                    let mut s = vec![*default];
-                    s.extend(cases.iter().map(|(_, t, _)| *t));
-                    s
-                }
-                Terminator::Return { .. } | Terminator::Unreachable => vec![],
-            };
-            for succ in succs {
-                if visited.insert(succ) {
-                    queue.push_back(succ);
-                }
-            }
-        }
-    }
-
-    visited
 }
 
 /// Try to evaluate a binary/unary op on constant operands.
@@ -663,6 +626,19 @@ mod tests {
         }
     }
 
+    fn make_check_exception(target_label: i64) -> TirOp {
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(target_label));
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs,
+            source_span: None,
+        }
+    }
+
     #[test]
     fn fold_int_addition() {
         // 1 + 2 => 3
@@ -744,6 +720,84 @@ mod tests {
             other => panic!("expected Branch, got {:?}", other),
         }
         assert!(stats.ops_removed > 0);
+    }
+
+    #[test]
+    fn branch_fold_keeps_check_exception_handler_block_reachable() {
+        let mut func = TirFunction::new("test".into(), vec![], TirType::None);
+        func.has_exception_handling = true;
+        let active_id = func.fresh_block();
+        let dead_id = func.fresh_block();
+        let exit_id = func.fresh_block();
+        let handler_id = func.fresh_block();
+        func.label_id_map.insert(handler_id.0, 100);
+
+        let const_true = make_const_bool(0, true);
+        func.next_value = 1;
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(const_true);
+            entry.terminator = Terminator::CondBranch {
+                cond: ValueId(0),
+                then_block: active_id,
+                then_args: vec![],
+                else_block: dead_id,
+                else_args: vec![],
+            };
+        }
+        func.blocks.insert(
+            active_id,
+            TirBlock {
+                id: active_id,
+                args: vec![],
+                ops: vec![make_check_exception(100)],
+                terminator: Terminator::Branch {
+                    target: exit_id,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            dead_id,
+            TirBlock {
+                id: dead_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            exit_id,
+            TirBlock {
+                id: exit_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            handler_id,
+            TirBlock {
+                id: handler_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let stats = run(&mut func);
+
+        assert!(stats.ops_removed > 0);
+        assert!(
+            !func.blocks.contains_key(&dead_id),
+            "constant branch fold should still remove the truly dead normal successor"
+        );
+        assert!(
+            func.blocks.contains_key(&handler_id),
+            "check_exception handler blocks must remain reachable after SCCP branch folding"
+        );
+        assert_eq!(func.label_id_map.get(&handler_id.0), Some(&100));
     }
 
     #[test]

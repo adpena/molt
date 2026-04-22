@@ -13,6 +13,7 @@ pub mod loop_narrow;
 pub mod monomorphize;
 pub mod polyhedral;
 pub mod refcount_elim;
+mod reachability;
 pub mod sccp;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
