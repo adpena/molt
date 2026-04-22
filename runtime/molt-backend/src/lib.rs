@@ -3132,28 +3132,40 @@ impl SimpleBackend {
                 &llvm.module,
             );
 
-            let func_count = ir.functions.len();
-            let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
+            let func_count = ir.functions.iter().filter(|f| !f.is_extern).count();
+            let total_ops: usize = ir
+                .functions
+                .iter()
+                .filter(|f| !f.is_extern)
+                .map(|f| f.ops.len())
+                .sum();
             eprintln!(
                 "MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} total ops)"
             );
             let codegen_start = std::time::Instant::now();
 
-            let tir_funcs: Vec<_> = ir.functions.iter().map(lower_to_tir).collect();
+            let tir_funcs: Vec<_> = ir
+                .functions
+                .iter()
+                .map(|func| (func.is_extern, lower_to_tir(func)))
+                .collect();
             llvm.function_param_types = tir_funcs
                 .iter()
-                .map(|func| (func.name.clone(), func.param_types.clone()))
+                .map(|(_, func)| (func.name.clone(), func.param_types.clone()))
                 .collect();
             llvm.function_return_types = tir_funcs
                 .iter()
-                .map(|func| (func.name.clone(), func.return_type.clone()))
+                .map(|(_, func)| (func.name.clone(), func.return_type.clone()))
                 .collect();
 
-            for tir_func in &tir_funcs {
+            for (_, tir_func) in &tir_funcs {
                 crate::llvm_backend::lowering::declare_tir_function(tir_func, &llvm);
             }
 
-            for tir_func in &tir_funcs {
+            for (is_extern, tir_func) in &tir_funcs {
+                if *is_extern {
+                    continue;
+                }
                 if env_setting("TIR_DUMP").as_deref() == Some("1")
                     || env_setting("MOLT_TIR_DUMP").as_deref() == Some("1")
                 {
@@ -4799,6 +4811,114 @@ mod tests {
             clif.contains("return"),
             "TIR-roundtripped exception function must compile to CLIF:\n{clif}"
         );
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn llvm_backend_keeps_shared_stdlib_partition_external() {
+        let _guard = backend_env_lock().lock().expect("env lock poisoned");
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-llvm-stdlib-extern-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let stdlib_obj = tmp_dir.join("stdlib.o");
+        std::fs::write(&stdlib_obj, b"placeholder").expect("write stdlib marker");
+
+        let prev_backend = std::env::var("MOLT_BACKEND").ok();
+        let prev_stdlib_obj = std::env::var("MOLT_STDLIB_OBJ").ok();
+        let prev_entry_module = std::env::var("MOLT_ENTRY_MODULE").ok();
+        let prev_stdlib_symbols = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok();
+        unsafe {
+            std::env::set_var("MOLT_BACKEND", "llvm");
+            std::env::set_var("MOLT_STDLIB_OBJ", &stdlib_obj);
+            std::env::set_var("MOLT_ENTRY_MODULE", "app");
+            std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
+        }
+
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![
+                        OpIR {
+                            kind: "call".to_string(),
+                            s_value: Some("molt_init_sys".to_string()),
+                            value: Some(0),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_sys".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        let bytes = SimpleBackend::new().compile(ir);
+        let output = tmp_dir.join("out.o");
+        std::fs::write(&output, &bytes).expect("write llvm object");
+        let nm = std::process::Command::new("nm")
+            .args(["-g", output.to_str().expect("utf8 object path")])
+            .output()
+            .expect("run nm");
+        assert!(
+            nm.status.success(),
+            "nm failed: {}",
+            String::from_utf8_lossy(&nm.stderr)
+        );
+        let symbols = String::from_utf8_lossy(&nm.stdout);
+        assert!(
+            symbols
+                .lines()
+                .any(|line| line.contains(" U _molt_init_sys") || line == "                 U molt_init_sys"),
+            "shared stdlib symbol must be an undefined external, got:\n{symbols}"
+        );
+        assert!(
+            !symbols
+                .lines()
+                .any(|line| line.contains(" T _molt_init_sys") || line.contains(" T molt_init_sys")),
+            "LLVM output object must not define shared stdlib symbol, got:\n{symbols}"
+        );
+
+        match prev_backend {
+            Some(value) => unsafe { std::env::set_var("MOLT_BACKEND", value) },
+            None => unsafe { std::env::remove_var("MOLT_BACKEND") },
+        }
+        match prev_stdlib_obj {
+            Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_OBJ", value) },
+            None => unsafe { std::env::remove_var("MOLT_STDLIB_OBJ") },
+        }
+        match prev_entry_module {
+            Some(value) => unsafe { std::env::set_var("MOLT_ENTRY_MODULE", value) },
+            None => unsafe { std::env::remove_var("MOLT_ENTRY_MODULE") },
+        }
+        match prev_stdlib_symbols {
+            Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", value) },
+            None => unsafe { std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
