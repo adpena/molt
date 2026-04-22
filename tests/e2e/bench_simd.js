@@ -142,23 +142,6 @@ async function main() {
     }
 
     // -----------------------------------------------------------------------
-    // Matmul 64x64 — FAST variant (4x16 register blocking)
-    // -----------------------------------------------------------------------
-    if (rust.exports.matmul_f32_fast) {
-        console.log('=== matmul_f32_fast 64x64 ===');
-        const m = 64, k = 64, n = 64;
-        const a = randArr(rng, m * k);
-        const b = randArr(rng, k * n);
-
-        writeF32(rust.memory, REGION_A, a);
-        writeF32(rust.memory, REGION_B, b);
-        const rr = benchmark('Rust matmul_f32_fast 64x64', () => {
-            rust.exports.matmul_f32_fast(REGION_A, REGION_B, REGION_C, m, k, n);
-        }, 50, 5000);
-        printResult(rr);
-    }
-
-    // -----------------------------------------------------------------------
     // Matmul 16x16 (small projection)
     // -----------------------------------------------------------------------
     console.log('=== matmul_f32_tiled 16x16 ===');

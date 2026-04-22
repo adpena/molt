@@ -8,7 +8,7 @@ description = "WASM SIMD vectorized ops for Falcon-OCR inference (Rust source)"
 crate-type = ["cdylib"]
 
 [profile.release]
-opt-level = 2        # Speed-optimized for SIMD matmul (~10.5 us 64x64)
+opt-level = "z"      # Size-optimized parity artifact; hot variants need their own lane.
 lto = true
 codegen-units = 1
 panic = "abort"

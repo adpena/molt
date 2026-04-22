@@ -45,13 +45,12 @@
 | Backend | Size | Notes |
 |---------|------|-------|
 | Zig | 5.4 KB | Primary, smaller binary |
-| Rust | 14.0 KB | Full 4x16 register-blocked matmul_f32_fast |
+| Rust | <5 KB target | Size-optimized shared parity artifact |
 
 ### Benchmark Results (64x64 matmul, Apple Silicon M-series, Node.js V8)
 | Operation | Rust ns/op | Zig ns/op | Winner | Speedup |
 |-----------|-----------|-----------|--------|---------|
 | matmul_f32_tiled 64x64 | ~14,500 | ~36,000 | Rust | 2.5x |
-| matmul_f32_fast 64x64 | ~10,500 | N/A | Rust | -- |
 | matmul_f32_tiled 16x16 | ~240 | ~560 | Rust | 2.3x |
 | softmax_f32_fused 1024 | ~2,250 | ~3,200 | Rust | 1.4x |
 | add_f32 4096 | ~350 | ~980 | Rust | 2.8x |
@@ -61,7 +60,6 @@
 
 ### Optimizations in Rust SIMD
 - **matmul_f32_tiled**: 4x4 register blocking, K-loop unrolled by 4
-- **matmul_f32_fast**: 4x16 register blocking (16 f32x4 accumulators), fully unrolled K-loop by 4, no memset, precomputed row pointers
 - **softmax**: Online 2-pass algorithm (Milakov & Gimelshein 2018), vectorized pass 2
 - **exp2**: 6th-order Cephes minimax polynomial (max relative error ~2.3e-8)
 
