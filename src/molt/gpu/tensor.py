@@ -15,11 +15,9 @@ Usage:
 
 from __future__ import annotations
 
-import array
 import math
 import operator
 import os
-import struct
 import _intrinsics as _molt_intrinsics
 from . import Buffer, alloc, to_device, from_device
 
@@ -52,49 +50,64 @@ def _requested_gpu_backend() -> str | None:
     return backend or None
 
 
-_MOLT_GPU_BUFFER_TO_LIST = _load_optional_intrinsic("molt_gpu_buffer_to_list")
-_MOLT_GPU_TENSOR_FROM_BUFFER = _load_optional_intrinsic("molt_gpu_tensor_from_buffer")
-_MOLT_GPU_TENSOR_FROM_PARTS = _load_optional_intrinsic("molt_gpu_tensor_from_parts")
-_MOLT_GPU_TENSOR_ZEROS = _load_optional_intrinsic("molt_gpu_tensor__zeros")
-_MOLT_GPU_REPEAT_AXIS_CONTIGUOUS = _load_optional_intrinsic(
-    "molt_gpu_repeat_axis_contiguous"
-)
-_MOLT_GPU_LINEAR_CONTIGUOUS = _load_optional_intrinsic("molt_gpu_linear_contiguous")
-_MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS = _load_optional_intrinsic(
-    "molt_gpu_linear_split_last_dim_contiguous"
-)
-_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM = _load_optional_intrinsic(
-    "molt_gpu_tensor__tensor_linear_split_last_dim"
-)
-_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION = _load_optional_intrinsic(
-    "molt_gpu_tensor__tensor_scaled_dot_product_attention"
-)
-_MOLT_GPU_TENSOR_TAKE_ROWS = _load_optional_intrinsic(
-    "molt_gpu_tensor__tensor_take_rows"
-)
-_MOLT_GPU_TENSOR_CONCAT_FIRST_DIM = _load_optional_intrinsic(
-    "molt_gpu_tensor__tensor_concat_first_dim"
-)
-_MOLT_GPU_TENSOR_SCATTER_ROWS = _load_optional_intrinsic(
-    "molt_gpu_tensor__tensor_scatter_rows"
-)
-_MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _load_optional_intrinsic(
-    "molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
-)
-_MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS = _load_optional_intrinsic(
-    "molt_gpu_broadcast_binary_contiguous"
-)
-_MOLT_GPU_MATMUL_CONTIGUOUS = _load_optional_intrinsic("molt_gpu_matmul_contiguous")
-_MOLT_GPU_PERMUTE_CONTIGUOUS = _load_optional_intrinsic("molt_gpu_permute_contiguous")
-_MOLT_GPU_RMS_NORM_LAST_AXIS_CONTIGUOUS = _load_optional_intrinsic(
-    "molt_gpu_rms_norm_last_axis_contiguous"
-)
-_MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS = _load_optional_intrinsic(
-    "molt_gpu_softmax_last_axis_contiguous"
-)
-_MOLT_GPU_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _load_optional_intrinsic(
-    "molt_gpu_squared_relu_gate_interleaved_contiguous"
-)
+_UNRESOLVED = object()
+_MOLT_GPU_BUFFER_TO_LIST = _UNRESOLVED
+_MOLT_GPU_TENSOR_FROM_BUFFER = _UNRESOLVED
+_MOLT_GPU_TENSOR_FROM_PARTS = _UNRESOLVED
+_MOLT_GPU_TENSOR_ZEROS = _UNRESOLVED
+_MOLT_GPU_REPEAT_AXIS_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_LINEAR_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM = _UNRESOLVED
+_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION = _UNRESOLVED
+_MOLT_GPU_TENSOR_TAKE_ROWS = _UNRESOLVED
+_MOLT_GPU_TENSOR_CONCAT_FIRST_DIM = _UNRESOLVED
+_MOLT_GPU_TENSOR_SCATTER_ROWS = _UNRESOLVED
+_MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_MATMUL_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_PERMUTE_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_RMS_NORM_LAST_AXIS_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS = _UNRESOLVED
+_MOLT_GPU_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _UNRESOLVED
+
+
+def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
+    intrinsic = globals().get(cache_name, _UNRESOLVED)
+    if intrinsic is not _UNRESOLVED:
+        return intrinsic
+
+    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
+    if callable(loader):
+        try:
+            intrinsic = loader(intrinsic_name)
+        except RuntimeError as exc:
+            if _runtime_intrinsics_active():
+                raise RuntimeError(
+                    f"intrinsic unavailable: {intrinsic_name}"
+                ) from exc
+        else:
+            if intrinsic is not None:
+                globals()[cache_name] = intrinsic
+                return intrinsic
+
+    require = getattr(_molt_intrinsics, "require_intrinsic", None)
+    if callable(require):
+        try:
+            intrinsic = require(intrinsic_name)
+        except RuntimeError as exc:
+            if _runtime_intrinsics_active():
+                raise RuntimeError(
+                    f"intrinsic unavailable: {intrinsic_name}"
+                ) from exc
+        else:
+            if intrinsic is not None:
+                globals()[cache_name] = intrinsic
+                return intrinsic
+
+    if _runtime_intrinsics_active():
+        raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}")
+    return None
 
 _OP_ADD = 0
 _OP_SUB = 1
@@ -267,14 +280,19 @@ def _preferred_float_format(*tensors: "Tensor") -> str:
 def _binary_result_dtype_and_format(lhs: "Tensor", rhs) -> tuple[type, str]:
     if isinstance(rhs, Tensor):
         if lhs._dtype is float or rhs._dtype is float:
-            float_tensors = tuple(
-                tensor
-                for tensor in (lhs, rhs)
-                if tensor._dtype is float and tensor._buf.element_type is float
-            )
-            result_format = (
-                _preferred_float_format(*float_tensors) if float_tensors else "d"
-            )
+            if lhs.size != 1 and rhs.size == 1 and lhs._dtype is float:
+                result_format = _preferred_float_format(lhs)
+            elif lhs.size == 1 and rhs.size != 1 and rhs._dtype is float:
+                result_format = _preferred_float_format(rhs)
+            else:
+                float_tensors = tuple(
+                    tensor
+                    for tensor in (lhs, rhs)
+                    if tensor._dtype is float and tensor._buf.element_type is float
+                )
+                result_format = (
+                    _preferred_float_format(*float_tensors) if float_tensors else "d"
+                )
             return float, result_format
         return lhs._dtype, lhs._buf.format_char
     if isinstance(rhs, float):
@@ -296,8 +314,11 @@ def _tensor_from_parts(
     shape,
     dtype: type,
 ) -> "Tensor":
-    if _MOLT_GPU_TENSOR_FROM_PARTS is not None:
-        return _MOLT_GPU_TENSOR_FROM_PARTS(
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_TENSOR_FROM_PARTS", "molt_gpu_tensor_from_parts"
+    )
+    if intrinsic is not None:
+        return intrinsic(
             Tensor,
             Buffer,
             data,
@@ -317,18 +338,20 @@ def _tensor_from_parts(
 
 
 def _tensor_from_buffer(buf: Buffer, shape, dtype: type) -> "Tensor":
-    if _MOLT_GPU_TENSOR_FROM_BUFFER is not None:
-        return _MOLT_GPU_TENSOR_FROM_BUFFER(Tensor, buf, shape, dtype)
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor_from_buffer")
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_TENSOR_FROM_BUFFER", "molt_gpu_tensor_from_buffer"
+    )
+    if intrinsic is not None:
+        return intrinsic(Tensor, buf, shape, dtype)
     return Tensor(buf, shape=shape, dtype=dtype)
 
 
 def _buffer_to_list(buf: Buffer, size: int) -> list:
-    if _MOLT_GPU_BUFFER_TO_LIST is not None:
-        return _MOLT_GPU_BUFFER_TO_LIST(buf, size)
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_buffer_to_list")
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_BUFFER_TO_LIST", "molt_gpu_buffer_to_list"
+    )
+    if intrinsic is not None:
+        return intrinsic(buf, size)
     return from_device(buf)[:size]
 
 
@@ -370,8 +393,11 @@ def tensor_linear(x: "Tensor", weight: "Tensor") -> "Tensor":
     if not out_shape:
         out_shape = (out_features,)
 
-    if _MOLT_GPU_LINEAR_CONTIGUOUS is not None:
-        out_bits = _MOLT_GPU_LINEAR_CONTIGUOUS(
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_LINEAR_CONTIGUOUS", "molt_gpu_linear_contiguous"
+    )
+    if intrinsic is not None:
+        out_bits = intrinsic(
             x._buf._data,
             x._buf.format_char,
             weight._buf._data,
@@ -469,8 +495,12 @@ def tensor_linear_split_last_dim(
         result_format = x._buf.format_char
     prefix_shape = x_shape[:-1]
 
-    if _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS is not None:
-        out_parts = _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS(
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS",
+        "molt_gpu_linear_split_last_dim_contiguous",
+    )
+    if intrinsic is not None:
+        out_parts = intrinsic(
             x._buf._data,
             x._buf.format_char,
             weight._buf._data,
@@ -494,13 +524,12 @@ def tensor_linear_split_last_dim(
             for size, part_bits in zip(sizes, out_parts)
         )
 
-    if _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM is not None:
-        return _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM(x, weight, sizes)
-
-    if _runtime_intrinsics_active():
-        raise RuntimeError(
-            "intrinsic unavailable: molt_gpu_tensor__tensor_linear_split_last_dim"
-        )
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM",
+        "molt_gpu_tensor__tensor_linear_split_last_dim",
+    )
+    if intrinsic is not None:
+        return intrinsic(x, weight, sizes)
 
     return tensor_linear(x, weight).split_last_dim(sizes)
 
@@ -547,8 +576,12 @@ def tensor_linear_squared_relu_gate_interleaved(
         result_dtype = x._dtype
         result_format = x._buf.format_char
 
-    if _MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS is not None:
-        out_bits = _MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS(
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS",
+        "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
+    )
+    if intrinsic is not None:
+        out_bits = intrinsic(
             x._buf._data,
             x._buf.format_char,
             weight._buf._data,
@@ -694,8 +727,11 @@ def tensor_permute_dims(x: "Tensor", dims) -> "Tensor":
 
     old_shape = x._shape
     new_shape = tuple(old_shape[dim] for dim in normalized)
-    if _MOLT_GPU_PERMUTE_CONTIGUOUS is not None:
-        out_bits = _MOLT_GPU_PERMUTE_CONTIGUOUS(
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_PERMUTE_CONTIGUOUS", "molt_gpu_permute_contiguous"
+    )
+    if intrinsic is not None:
+        out_bits = intrinsic(
             x._buf._data,
             x._buf.format_char,
             old_shape,
@@ -753,8 +789,12 @@ def tensor_softmax_last_axis(x: "Tensor") -> "Tensor":
     if x.ndim == 0:
         return Tensor(1.0)
 
-    if _MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS is not None:
-        out_bits = _MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS(
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS",
+        "molt_gpu_softmax_last_axis_contiguous",
+    )
+    if intrinsic is not None:
+        out_bits = intrinsic(
             x._buf._data,
             x._buf.format_char,
             x._shape,
@@ -836,11 +876,11 @@ def tensor_take_rows(
     if not isinstance(indices, Tensor):
         indices = Tensor(indices)
 
-    if _MOLT_GPU_TENSOR_TAKE_ROWS is not None:
-        return _MOLT_GPU_TENSOR_TAKE_ROWS(x, indices, allow_negative)
-
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor__tensor_take_rows")
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_TENSOR_TAKE_ROWS", "molt_gpu_tensor__tensor_take_rows"
+    )
+    if intrinsic is not None:
+        return intrinsic(x, indices, allow_negative)
 
     rows = tensor_data_list(indices)
     row_shape = x._shape[1:]
@@ -882,10 +922,13 @@ def tensor_concat_first_dim(tensors) -> "Tensor":
     if first.ndim == 0:
         raise ValueError("concat_first_dim requires tensors with at least 1 dimension")
     tail_shape = first._shape[1:]
-    if len(tensors) == 2 and _MOLT_GPU_TENSOR_CONCAT_FIRST_DIM is not None:
-        return _MOLT_GPU_TENSOR_CONCAT_FIRST_DIM(tensors[0], tensors[1])
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor__tensor_concat_first_dim")
+    if len(tensors) == 2:
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_TENSOR_CONCAT_FIRST_DIM",
+            "molt_gpu_tensor__tensor_concat_first_dim",
+        )
+        if intrinsic is not None:
+            return intrinsic(tensors[0], tensors[1])
     total_rows = 0
     total_bytes = 0
     for tensor in tensors:
@@ -934,10 +977,11 @@ def tensor_scatter_rows(
         raise ValueError("scatter_rows requires matching buffer formats")
     if not isinstance(indices, Tensor):
         indices = Tensor(indices)
-    if _MOLT_GPU_TENSOR_SCATTER_ROWS is not None:
-        return _MOLT_GPU_TENSOR_SCATTER_ROWS(base, indices, updates, allow_negative)
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor__tensor_scatter_rows")
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_TENSOR_SCATTER_ROWS", "molt_gpu_tensor__tensor_scatter_rows"
+    )
+    if intrinsic is not None:
+        return intrinsic(base, indices, updates, allow_negative)
     rows = tensor_data_list(indices)
     if len(rows) != updates._shape[0]:
         raise ValueError(
@@ -1368,12 +1412,7 @@ class Tensor:
                 return float("nan")
         raise ValueError(f"Unsupported binary op code {op_code!r}")
 
-    def _broadcast_op(
-        self,
-        other,
-        op_code: int,
-        _fast=_MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS,
-    ):
+    def _broadcast_op(self, other, op_code: int):
         """Apply a binary op with scalar or tensor broadcasting."""
         if isinstance(other, (int, float)):
             scalar = float(other)
@@ -1393,8 +1432,12 @@ class Tensor:
 
         result_dtype, result_format = _binary_result_dtype_and_format(self, other)
 
-        if _fast is not None:
-            out_bits = _fast(
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS",
+            "molt_gpu_broadcast_binary_contiguous",
+        )
+        if intrinsic is not None:
+            out_bits = intrinsic(
                 a_buf._data,
                 a_buf.format_char,
                 self._shape,
@@ -1617,8 +1660,11 @@ class Tensor:
         else:
             result_format = a._buf.format_char
 
-        if _MOLT_GPU_MATMUL_CONTIGUOUS is not None:
-            out_bits = _MOLT_GPU_MATMUL_CONTIGUOUS(
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_MATMUL_CONTIGUOUS", "molt_gpu_matmul_contiguous"
+        )
+        if intrinsic is not None:
+            out_bits = intrinsic(
                 a._buf._data,
                 a._buf.format_char,
                 a._shape,
@@ -1788,8 +1834,12 @@ class Tensor:
         out_shape = self._shape[:axis] + (
             self._shape[axis] * repeats,
         ) + self._shape[axis + 1:]
-        if _MOLT_GPU_REPEAT_AXIS_CONTIGUOUS is not None:
-            out_bits = _MOLT_GPU_REPEAT_AXIS_CONTIGUOUS(
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_REPEAT_AXIS_CONTIGUOUS",
+            "molt_gpu_repeat_axis_contiguous",
+        )
+        if intrinsic is not None:
+            out_bits = intrinsic(
                 self._buf._data,
                 self._buf.format_char,
                 self._shape,
@@ -1976,7 +2026,11 @@ class Tensor:
         if self.ndim == 0:
             return Tensor(1.0)
 
-        if axis == self.ndim - 1 and _MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS is not None:
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS",
+            "molt_gpu_softmax_last_axis_contiguous",
+        )
+        if axis == self.ndim - 1 and intrinsic is not None:
             return tensor_softmax_last_axis(self)
 
         if axis == self.ndim - 1 and _runtime_intrinsics_active():
@@ -2081,8 +2135,12 @@ class Tensor:
             result_dtype = float
             result_format = "d"
 
-        if _MOLT_GPU_RMS_NORM_LAST_AXIS_CONTIGUOUS is not None:
-            out_bits = _MOLT_GPU_RMS_NORM_LAST_AXIS_CONTIGUOUS(
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_RMS_NORM_LAST_AXIS_CONTIGUOUS",
+            "molt_gpu_rms_norm_last_axis_contiguous",
+        )
+        if intrinsic is not None:
+            out_bits = intrinsic(
                 self._buf._data,
                 self._buf.format_char,
                 self._shape,
@@ -2135,8 +2193,12 @@ class Tensor:
             result_dtype = float
             result_format = "d"
 
-        if _MOLT_GPU_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS is not None:
-            out_bits = _MOLT_GPU_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS(
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS",
+            "molt_gpu_squared_relu_gate_interleaved_contiguous",
+        )
+        if intrinsic is not None:
+            out_bits = intrinsic(
                 self._buf._data,
                 self._buf.format_char,
                 self._shape,
@@ -2428,11 +2490,13 @@ def tensor_scaled_dot_product_attention(
     ):
         return cache.attention(q, scale=scale, mask=mask)
 
-    if (
-        _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION is not None
-        and _requested_gpu_backend() in {"webgpu", "metal"}
-    ):
-        return _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION(q, k, v, mask, scale)
+    if _requested_gpu_backend() in {"webgpu", "metal"}:
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION",
+            "molt_gpu_tensor__tensor_scaled_dot_product_attention",
+        )
+        if intrinsic is not None:
+            return intrinsic(q, k, v, mask, scale)
 
     scores = (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * scale
     if mask is not None:
@@ -2444,10 +2508,11 @@ def zeros(*shape, dtype=float) -> Tensor:
     """Create a zero-filled tensor."""
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
-    if _MOLT_GPU_TENSOR_ZEROS is not None:
-        return _MOLT_GPU_TENSOR_ZEROS(shape, dtype)
-    if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor__zeros")
+    intrinsic = _resolve_optional_intrinsic(
+        "_MOLT_GPU_TENSOR_ZEROS", "molt_gpu_tensor__zeros"
+    )
+    if intrinsic is not None:
+        return intrinsic(shape, dtype)
     size = _product(shape)
     return Tensor([0.0] * size, shape=shape, dtype=dtype)
 
