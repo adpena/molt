@@ -35,7 +35,11 @@ impl Drop for GilThreadRegistrationGuard {
     fn drop(&mut self) {
         let _ = GIL_THREAD_REGISTERED.try_with(|registered| {
             if registered.replace(false) {
-                GIL_THREAD_COUNT.fetch_sub(1, AtomicOrdering::AcqRel);
+                let _ = GIL_THREAD_COUNT.fetch_update(
+                    AtomicOrdering::AcqRel,
+                    AtomicOrdering::Acquire,
+                    |count| count.checked_sub(1),
+                );
             }
         });
     }

@@ -142,21 +142,19 @@ pub extern "C" fn molt_trace_exit() -> u64 {
                 .as_deref(),
             Some("1")
         ) && exception_pending(_py)
-        {
-            if let Some((file, line, func, _, _)) =
+            && let Some((file, line, func, _, _)) =
                 crate::builtins::exceptions::frame_stack_top_info(_py)
-            {
-                let exc_bits = molt_exception_last();
-                let kind_bits = molt_exception_kind(exc_bits);
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                    .unwrap_or_else(|| "<exc>".to_string());
-                eprintln!(
-                    "molt trace_exit pending kind={} frame={} file={} line={}",
-                    kind, func, file, line
-                );
-                if !obj_from_bits(exc_bits).is_none() {
-                    dec_ref_bits(_py, exc_bits);
-                }
+        {
+            let exc_bits = molt_exception_last();
+            let kind_bits = molt_exception_kind(exc_bits);
+            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+                .unwrap_or_else(|| "<exc>".to_string());
+            eprintln!(
+                "molt trace_exit pending kind={} frame={} file={} line={}",
+                kind, func, file, line
+            );
+            if !obj_from_bits(exc_bits).is_none() {
+                dec_ref_bits(_py, exc_bits);
             }
         }
         frame_stack_pop(_py);
@@ -1016,10 +1014,26 @@ fn molt_call_func_direct(
 /// `TYPE_ID_FUNCTION` with matching arity before reaching here.
 /// Invalid fn_ptr causes a segfault or stack corruption.
 #[inline(always)]
+fn runtime_or_legacy_target(fn_ptr: u64) -> *const () {
+    runtime_callable_target_ptr(fn_ptr).unwrap_or({
+        #[cfg(not(miri))]
+        {
+            fn_ptr as usize as *const ()
+        }
+        #[cfg(miri)]
+        {
+            std::ptr::null()
+        }
+    })
+}
+
+#[inline(always)]
 unsafe fn direct_call_0(fn_ptr: u64) -> u64 {
     unsafe {
         // SAFETY: fn_ptr validated by probe_simple_func as 0-arity function pointer.
-        let f: extern "C" fn() -> u64 = std::mem::transmute(fn_ptr as usize);
+        let target = runtime_or_legacy_target(fn_ptr);
+        assert!(!target.is_null(), "runtime callable target missing");
+        let f: extern "C" fn() -> u64 = std::mem::transmute(target);
         f()
     }
 }
@@ -1035,7 +1049,9 @@ unsafe fn direct_call_0(fn_ptr: u64) -> u64 {
 unsafe fn direct_call_1(fn_ptr: u64, a0: u64) -> u64 {
     unsafe {
         // SAFETY: fn_ptr validated by probe_simple_func as 1-arity function pointer.
-        let f: extern "C" fn(u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+        let target = runtime_or_legacy_target(fn_ptr);
+        assert!(!target.is_null(), "runtime callable target missing");
+        let f: extern "C" fn(u64) -> u64 = std::mem::transmute(target);
         f(a0)
     }
 }
@@ -1051,7 +1067,9 @@ unsafe fn direct_call_1(fn_ptr: u64, a0: u64) -> u64 {
 unsafe fn direct_call_2(fn_ptr: u64, a0: u64, a1: u64) -> u64 {
     unsafe {
         // SAFETY: fn_ptr validated by probe_simple_func as 2-arity function pointer.
-        let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+        let target = runtime_or_legacy_target(fn_ptr);
+        assert!(!target.is_null(), "runtime callable target missing");
+        let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(target);
         f(a0, a1)
     }
 }
@@ -1067,7 +1085,9 @@ unsafe fn direct_call_2(fn_ptr: u64, a0: u64, a1: u64) -> u64 {
 unsafe fn direct_call_3(fn_ptr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     unsafe {
         // SAFETY: fn_ptr validated by probe_simple_func as 3-arity function pointer.
-        let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+        let target = runtime_or_legacy_target(fn_ptr);
+        assert!(!target.is_null(), "runtime callable target missing");
+        let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(target);
         f(a0, a1, a2)
     }
 }

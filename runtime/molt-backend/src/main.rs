@@ -1684,17 +1684,21 @@ fn main() -> io::Result<()> {
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
 
+    #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
     let wasm_link_flag = args.iter().any(|arg| arg == "--wasm-link");
+    #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
     let wasm_data_base = args
         .iter()
         .position(|arg| arg == "--wasm-data-base")
         .and_then(|idx| args.get(idx + 1))
         .and_then(|raw| raw.parse::<u32>().ok());
+    #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
     let wasm_table_base = args
         .iter()
         .position(|arg| arg == "--wasm-table-base")
         .and_then(|idx| args.get(idx + 1))
         .and_then(|raw| raw.parse::<u32>().ok());
+    #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
     let wasm_split_runtime_runtime_table_min = args
         .iter()
         .position(|arg| arg == "--wasm-split-runtime-runtime-table-min")
@@ -1842,7 +1846,7 @@ fn main() -> io::Result<()> {
     } else {
         BackendOutputKind::Native
     };
-    let output_file = resolve_backend_output_path(output_path.as_deref(), output_kind);
+    let output_file = resolve_backend_output_path(output_path, output_kind);
     ensure_output_parent_dir(output_file).map_err(|err| {
         io::Error::new(
             err.kind(),
@@ -2174,8 +2178,10 @@ mod tests {
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
     use std::io::Cursor;
     use std::io::Write;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn daemon_cache_get_bytes_updates_lru_without_cloning() {
@@ -2631,6 +2637,9 @@ mod tests {
 
     #[test]
     fn relocatable_linker_binary_prefers_override_then_env() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let prior_molt_linker = std::env::var("MOLT_LINKER").ok();
         let prior_ld = std::env::var("LD").ok();
         let prior_cc = std::env::var("CC").ok();
@@ -2722,6 +2731,9 @@ mod tests {
 
     #[test]
     fn resolved_batch_size_limit_defaults_and_zero_disable_count_cap() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let prior = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
 
         unsafe {
@@ -2956,6 +2968,9 @@ mod tests {
 
     #[test]
     fn daemon_native_without_stdlib_obj_keeps_full_ir() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut ir = SimpleIR {
             functions: vec![
                 FunctionIR {
@@ -3045,6 +3060,9 @@ mod tests {
 
     #[test]
     fn daemon_request_with_env_preserves_user_entry_object() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp_dir = std::env::temp_dir().join(format!(
             "molt-daemon-request-env-{}-{}",
             std::process::id(),
@@ -3198,6 +3216,9 @@ mod tests {
 
     #[test]
     fn daemon_request_env_clears_omitted_stdlib_module_symbols() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         unsafe {
             std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"stale\"]");
             std::env::set_var("MOLT_ENTRY_MODULE", "stale_entry");
@@ -3310,21 +3331,31 @@ mod tests {
             if fields.len() < 2 {
                 return false;
             }
-            let sym = fields.last().copied().unwrap_or_default().trim_start_matches('_');
-            sym == "demo__molt_module_chunk_1"
-                && fields[fields.len().saturating_sub(2)] == "T"
+            let sym = fields
+                .last()
+                .copied()
+                .unwrap_or_default()
+                .trim_start_matches('_');
+            sym == "demo__molt_module_chunk_1" && fields[fields.len().saturating_sub(2)] == "T"
         });
         let has_undefined_chunk = text.lines().any(|line| {
             let fields: Vec<&str> = line.split_whitespace().collect();
             if fields.len() != 2 {
                 return false;
             }
-            let sym = fields.last().copied().unwrap_or_default().trim_start_matches('_');
+            let sym = fields
+                .last()
+                .copied()
+                .unwrap_or_default()
+                .trim_start_matches('_');
             sym == "demo__molt_module_chunk_1" && fields[0] == "U"
         });
 
         assert!(has_defined_chunk, "expected defined chunk symbol:\n{text}");
-        assert!(!has_undefined_chunk, "unexpected undefined chunk symbol:\n{text}");
+        assert!(
+            !has_undefined_chunk,
+            "unexpected undefined chunk symbol:\n{text}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }

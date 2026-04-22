@@ -16,11 +16,10 @@ use crate::{
 use crate::MoltObject;
 #[cfg(target_arch = "wasm32")]
 use crate::{
-    inc_ref_bits,
-    molt_call_indirect0, molt_call_indirect1, molt_call_indirect2, molt_call_indirect3,
-    molt_call_indirect4, molt_call_indirect5, molt_call_indirect6, molt_call_indirect7,
-    molt_call_indirect8, molt_call_indirect9, molt_call_indirect10, molt_call_indirect11,
-    molt_call_indirect12, molt_call_indirect13,
+    inc_ref_bits, molt_call_indirect0, molt_call_indirect1, molt_call_indirect2,
+    molt_call_indirect3, molt_call_indirect4, molt_call_indirect5, molt_call_indirect6,
+    molt_call_indirect7, molt_call_indirect8, molt_call_indirect9, molt_call_indirect10,
+    molt_call_indirect11, molt_call_indirect12, molt_call_indirect13,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -89,10 +88,9 @@ fn can_use_fixed_arity_wasm_trampoline(fn_ptr: u64, tramp_ptr: u64) -> bool {
 unsafe fn normalized_function_trampoline_ptr(func_ptr: *mut u8, fn_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        crate::builtins::functions::normalize_runtime_trampoline_ptr(
-            fn_ptr,
-            unsafe { function_trampoline_ptr(func_ptr) },
-        )
+        crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, unsafe {
+            function_trampoline_ptr(func_ptr)
+        })
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -106,7 +104,18 @@ unsafe fn normalized_function_trampoline_ptr(func_ptr: *mut u8, fn_ptr: u64) -> 
 unsafe fn function_call_target_or_legacy_ptr(func_ptr: *mut u8, fn_ptr: u64) -> *const () {
     let target = unsafe { function_call_target_ptr(func_ptr) };
     if target.is_null() {
-        fn_ptr as usize as *const ()
+        if let Some(runtime_target) = runtime_callable_target_ptr(fn_ptr) {
+            runtime_target
+        } else {
+            #[cfg(not(miri))]
+            {
+                fn_ptr as usize as *const ()
+            }
+            #[cfg(miri)]
+            {
+                std::ptr::null()
+            }
+        }
     } else {
         target
     }
@@ -417,8 +426,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                     molt_call_indirect1(
                         fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
-                    )
-                        as u64
+                    ) as u64
                 } else {
                     if is_void_wasm_call1_target(fn_ptr) {
                         // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
@@ -637,8 +645,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
                             "[molt call_function_obj0] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} target={target} closure_bits={closure_bits}"
                         );
                     }
-                    molt_call_indirect0(fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr))
-                        as u64
+                    molt_call_indirect0(fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr)) as u64
                 } else {
                     // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
                     // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
@@ -2490,8 +2497,7 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
 mod tests {
     use super::{
         enforce_no_pending_on_success, fixed_arity_call_target_ptr,
-        fixed_arity_trampoline_target_ptr,
-        should_force_trampoline_for_fixed_arity_call,
+        fixed_arity_trampoline_target_ptr, should_force_trampoline_for_fixed_arity_call,
     };
     use molt_obj_model::MoltObject;
     use std::sync::Once;
@@ -2544,7 +2550,9 @@ mod tests {
 
     #[test]
     fn fixed_arity_call_policy_uses_trampoline_when_present() {
-        assert!(should_force_trampoline_for_fixed_arity_call(293, 4097, false));
+        assert!(should_force_trampoline_for_fixed_arity_call(
+            293, 4097, false
+        ));
     }
 
     #[test]
@@ -2558,7 +2566,9 @@ mod tests {
 
     #[test]
     fn fixed_arity_call_policy_keeps_task_trampolines_on_vector_path() {
-        assert!(should_force_trampoline_for_fixed_arity_call(293, 4097, true));
+        assert!(should_force_trampoline_for_fixed_arity_call(
+            293, 4097, true
+        ));
     }
 
     fn spawn_child(test_name: &str, envs: &[(&str, &str)]) -> std::process::Output {
@@ -2573,6 +2583,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri does not support spawning child test processes")]
     fn assert_no_pending_on_success_traps_stale_exception() {
         if std::env::var("MOLT_ASSERT_CHILD").as_deref() == Ok("1") {
             return;

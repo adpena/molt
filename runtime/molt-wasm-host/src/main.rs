@@ -413,12 +413,9 @@ fn resolve_wasm_path(arg: Option<String>) -> Result<PathBuf> {
 fn resolve_linked_path(wasm_path: &Path) -> Option<PathBuf> {
     let env_path = env::var("MOLT_WASM_LINKED_PATH").ok().map(PathBuf::from);
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    for candidate in linked_path_candidates(wasm_path, env_path, &cwd) {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
+    linked_path_candidates(wasm_path, env_path, &cwd)
+        .into_iter()
+        .find(|candidate| candidate.exists())
 }
 
 fn wasm_path_candidates(
@@ -430,10 +427,10 @@ fn wasm_path_candidates(
     if let Some(path) = arg {
         candidates.push(path);
     }
-    if let Some(path) = env_path {
-        if !candidates.iter().any(|candidate| candidate == &path) {
-            candidates.push(path);
-        }
+    if let Some(path) = env_path
+        && !candidates.iter().any(|candidate| candidate == &path)
+    {
+        candidates.push(path);
     }
     let canonical = cwd.join("dist").join("output.wasm");
     if !candidates.iter().any(|candidate| candidate == &canonical) {

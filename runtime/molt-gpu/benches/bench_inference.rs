@@ -17,10 +17,6 @@
 use std::time::Instant;
 
 use molt_gpu::device::cpu::interpret;
-use molt_gpu::dtype::DType;
-use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
-use molt_gpu::shapetracker::ShapeTracker;
 
 const DIM: usize = 64;
 const HEADS: usize = 4;
@@ -48,7 +44,9 @@ fn pseudo_random_f32(seed: usize, count: usize) -> Vec<f32> {
     let mut vals = Vec::with_capacity(count);
     let mut state = seed as u64 ^ 0xDEADBEEF;
     for _ in 0..count {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let bits = ((state >> 32) as u32) & 0x7FFFFF;
         // Generate values in [-0.1, 0.1] for stable forward passes
         let val = (bits as f32 / 0x7FFFFF as f32) * 0.2 - 0.1;
@@ -119,19 +117,18 @@ fn softmax_rows(x: &[u8], rows: usize, cols: usize) -> Vec<u8> {
 
 /// Transformer weights for one layer.
 struct LayerWeights {
-    wq: Vec<u8>,  // (DIM, DIM)
-    wk: Vec<u8>,  // (DIM, DIM)
-    wv: Vec<u8>,  // (DIM, DIM)
-    wo: Vec<u8>,  // (DIM, DIM)
-    w1: Vec<u8>,  // (DIM, FF_DIM)  — gate projection
-    w2: Vec<u8>,  // (FF_DIM, DIM)  — down projection
-    w3: Vec<u8>,  // (DIM, FF_DIM)  — up projection
+    wq: Vec<u8>, // (DIM, DIM)
+    wk: Vec<u8>, // (DIM, DIM)
+    wv: Vec<u8>, // (DIM, DIM)
+    wo: Vec<u8>, // (DIM, DIM)
+    w1: Vec<u8>, // (DIM, FF_DIM)  — gate projection
+    w2: Vec<u8>, // (FF_DIM, DIM)  — down projection
+    w3: Vec<u8>, // (DIM, FF_DIM)  — up projection
 }
 
 /// Full model weights.
 struct ModelWeights {
     layers: Vec<LayerWeights>,
-    final_norm_unused: Vec<u8>, // placeholder
     output_proj: Vec<u8>, // (DIM, DIM) — final projection
 }
 
@@ -139,7 +136,7 @@ fn init_weights() -> ModelWeights {
     let mut layers = Vec::new();
     for l in 0..LAYERS {
         layers.push(LayerWeights {
-            wq: f32_to_bytes(&pseudo_random_f32(l * 7 + 0, DIM * DIM)),
+            wq: f32_to_bytes(&pseudo_random_f32(l * 7, DIM * DIM)),
             wk: f32_to_bytes(&pseudo_random_f32(l * 7 + 1, DIM * DIM)),
             wv: f32_to_bytes(&pseudo_random_f32(l * 7 + 2, DIM * DIM)),
             wo: f32_to_bytes(&pseudo_random_f32(l * 7 + 3, DIM * DIM)),
@@ -150,7 +147,6 @@ fn init_weights() -> ModelWeights {
     }
     ModelWeights {
         layers,
-        final_norm_unused: f32_to_bytes(&pseudo_random_f32(99, DIM)),
         output_proj: f32_to_bytes(&pseudo_random_f32(100, DIM * DIM)),
     }
 }
@@ -256,13 +252,19 @@ fn forward(x: &[u8], weights: &ModelWeights) -> Vec<u8> {
 
 fn main() {
     println!("# Micro-Transformer Inference Benchmark (CPU)\n");
-    println!("Architecture: {} layers, dim={}, heads={}, head_dim={}, ff_dim={}, seq_len={}",
-        LAYERS, DIM, HEADS, HEAD_DIM, FF_DIM, SEQ_LEN);
+    println!(
+        "Architecture: {} layers, dim={}, heads={}, head_dim={}, ff_dim={}, seq_len={}",
+        LAYERS, DIM, HEADS, HEAD_DIM, FF_DIM, SEQ_LEN
+    );
 
     // Parameter count
     let params_per_layer = 4 * DIM * DIM + 3 * DIM * FF_DIM;
     let total_params = params_per_layer * LAYERS + DIM * DIM;
-    println!("Parameters: {} ({:.2} KB)\n", total_params, total_params as f64 * 4.0 / 1024.0);
+    println!(
+        "Parameters: {} ({:.2} KB)\n",
+        total_params,
+        total_params as f64 * 4.0 / 1024.0
+    );
 
     // Initialize
     let weights = init_weights();
@@ -316,10 +318,19 @@ fn main() {
     println!("|--------------------------|----------------|");
     println!("| Single pass (avg)        | {:>10.2} us  |", avg_single_us);
     println!("| 10-pass amortized (avg)  | {:>10.2} us  |", avg_batch_us);
-    println!("| Tokens/sec (single)      | {:>10.0}     |", tokens_per_sec_single);
-    println!("| Tokens/sec (amortized)   | {:>10.0}     |", tokens_per_sec_batch);
+    println!(
+        "| Tokens/sec (single)      | {:>10.0}     |",
+        tokens_per_sec_single
+    );
+    println!(
+        "| Tokens/sec (amortized)   | {:>10.0}     |",
+        tokens_per_sec_batch
+    );
     println!("| GFLOPS (single pass)     | {:>10.3}     |", gflops_single);
-    println!("| FLOPs/pass               | {:>10.0}     |", flops_per_pass);
+    println!(
+        "| FLOPs/pass               | {:>10.0}     |",
+        flops_per_pass
+    );
 
     // Verify output is not NaN/Inf (sanity check)
     let output = forward(&input, &weights);
@@ -330,7 +341,13 @@ fn main() {
     println!("\n## Sanity Check\n");
     println!("| Check        | Result |");
     println!("|--------------|--------|");
-    println!("| NaN-free     | {}  |", if !has_nan { "PASS" } else { "FAIL" });
-    println!("| Inf-free     | {}  |", if !has_inf { "PASS" } else { "FAIL" });
+    println!(
+        "| NaN-free     | {}  |",
+        if !has_nan { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "| Inf-free     | {}  |",
+        if !has_inf { "PASS" } else { "FAIL" }
+    );
     println!("| Max |output| | {:.6} |", max_abs);
 }

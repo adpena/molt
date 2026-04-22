@@ -189,16 +189,10 @@ pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
         .map(|(idx, _sym, _import, _arity)| base + RESERVED_WASM_RUNTIME_CALLABLE_BASE + idx)
 }
 
+#[cfg(target_arch = "wasm32")]
 #[inline]
 pub(crate) fn normalize_runtime_callable_ptr(fn_ptr: u64) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        return reserved_wasm_runtime_callable_ptr(fn_ptr).unwrap_or(fn_ptr);
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_ptr
-    }
+    reserved_wasm_runtime_callable_ptr(fn_ptr).unwrap_or(fn_ptr)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -246,6 +240,7 @@ pub(crate) fn reserved_wasm_runtime_trampoline_ptr(fn_ptr: u64) -> Option<u64> {
 
 #[inline]
 pub(crate) fn normalize_runtime_trampoline_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
+    let _ = fn_ptr;
     #[cfg(target_arch = "wasm32")]
     {
         return reserved_wasm_runtime_trampoline_ptr(fn_ptr).unwrap_or(tramp_ptr);
@@ -262,6 +257,7 @@ pub(crate) fn runtime_callable_represents_symbol(
     tramp_ptr: u64,
     symbol_fn_ptr: u64,
 ) -> bool {
+    let _ = tramp_ptr;
     if fn_ptr == symbol_fn_ptr {
         return true;
     }
@@ -345,6 +341,7 @@ pub(crate) fn alloc_runtime_function_obj(
     arity: u64,
 ) -> *mut u8 {
     let fn_key = canonicalize_runtime_callable_key(fn_ptr);
+    #[cfg(not(miri))]
     if fn_key == fn_ptr && fn_ptr != 0 {
         let raw_target = fn_ptr as usize as *const ();
         let mut guard = native_callable_targets().lock().unwrap();
@@ -4532,6 +4529,7 @@ fn molt_func_new_builtin_raw_impl(
     arity: u64,
 ) -> u64 {
     let fn_key = canonicalize_runtime_callable_key(fn_ptr);
+    #[cfg(not(miri))]
     if fn_key == fn_ptr && fn_ptr != 0 {
         let raw_target = fn_ptr as usize as *const ();
         let mut guard = native_callable_targets().lock().unwrap();

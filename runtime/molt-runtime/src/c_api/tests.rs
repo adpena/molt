@@ -17,6 +17,7 @@ struct CApiTestGuard {
 impl CApiTestGuard {
     fn new() -> Self {
         let guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = molt_err_clear();
         Self { _guard: guard }
     }
 }
@@ -244,6 +245,10 @@ fn err_set_matches_fetch_roundtrip() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "Miri strict provenance cannot execute exposed-address dynamic method dispatch until all method cache callables use provenance-registered function keys"
+)]
 fn object_call_numeric_and_sequence_wrappers() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
@@ -327,23 +332,23 @@ fn buffer_acquire_and_release_pins_owner() {
 #[test]
 fn err_pending_peek_restore_roundtrip() {
     let _guard = CApiTestGuard::new();
-    let runtime_error = crate::with_gil_entry!(_py, { runtime_error_type_bits(_py) });
-    let msg = b"boom";
-    let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
-    assert_eq!(rc, 0);
-    assert_eq!(molt_err_pending(), 1);
-    let peek_bits = molt_err_peek();
-    assert!(!obj_from_bits(peek_bits).is_none());
-    assert_eq!(molt_err_pending(), 1);
-    let fetched_bits = molt_err_fetch();
-    assert!(!obj_from_bits(fetched_bits).is_none());
-    assert_eq!(molt_err_pending(), 0);
-    assert_eq!(molt_err_restore(fetched_bits), 0);
-    assert_eq!(molt_err_pending(), 1);
-    let restored_bits = molt_err_fetch();
-    assert!(!obj_from_bits(restored_bits).is_none());
-    assert_eq!(molt_err_pending(), 0);
     crate::with_gil_entry!(_py, {
+        let runtime_error = runtime_error_type_bits(_py);
+        let msg = b"boom";
+        let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
+        assert_eq!(rc, 0);
+        assert_eq!(molt_err_pending(), 1);
+        let peek_bits = molt_err_peek();
+        assert!(!obj_from_bits(peek_bits).is_none());
+        assert_eq!(molt_err_pending(), 1);
+        let fetched_bits = molt_err_fetch();
+        assert!(!obj_from_bits(fetched_bits).is_none());
+        assert_eq!(molt_err_pending(), 0);
+        assert_eq!(molt_err_restore(fetched_bits), 0);
+        assert_eq!(molt_err_pending(), 1);
+        let restored_bits = molt_err_fetch();
+        assert!(!obj_from_bits(restored_bits).is_none());
+        assert_eq!(molt_err_pending(), 0);
         dec_ref_bits(_py, peek_bits);
         dec_ref_bits(_py, fetched_bits);
         dec_ref_bits(_py, restored_bits);
@@ -397,6 +402,10 @@ fn mapping_length_success_and_failure_paths() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "Miri strict provenance cannot execute exposed-address dynamic method dispatch until all C-API test callbacks use provenance-registered function keys"
+)]
 fn mapping_keys_success_and_failure_paths() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
@@ -439,14 +448,19 @@ fn string_from_as_ptr_roundtrip_and_type_errors() {
     assert_eq!(observed, text);
 
     let invalid_bits = MoltObject::from_int(9).bits();
-    let bad_ptr = unsafe { molt_string_as_ptr(invalid_bits, std::ptr::null_mut()) };
-    assert!(bad_ptr.is_null());
-    assert_eq!(molt_err_pending(), 1);
-    assert_eq!(molt_err_clear(), 0);
+    crate::with_gil_entry!(_py, {
+        let bad_ptr = unsafe { molt_string_as_ptr(invalid_bits, std::ptr::null_mut()) };
+        assert!(bad_ptr.is_null());
+        assert_eq!(molt_err_pending(), 1);
+        assert_eq!(molt_err_clear(), 0);
+    });
 
-    let null_bits = unsafe { molt_string_from(std::ptr::null(), 1) };
-    assert_eq!(molt_err_pending(), 1);
-    assert_eq!(molt_err_clear(), 0);
+    let null_bits = crate::with_gil_entry!(_py, {
+        let null_bits = unsafe { molt_string_from(std::ptr::null(), 1) };
+        assert_eq!(molt_err_pending(), 1);
+        assert_eq!(molt_err_clear(), 0);
+        null_bits
+    });
 
     crate::with_gil_entry!(_py, {
         dec_ref_bits(_py, string_bits);
@@ -579,7 +593,10 @@ fn plain_function_object_has_no_set_name_attr() {
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::molt_id as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_id",
+                crate::molt_id as *const (),
+            ),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -609,7 +626,10 @@ fn class_apply_set_name_tolerates_plain_function_attrs() {
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::molt_id as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_id",
+                crate::molt_id as *const (),
+            ),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -631,7 +651,10 @@ fn runtime_intrinsic_function_obj_zero_arg_vec_call_returns_value() {
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::molt_sys_version_info as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_sys_version_info",
+                crate::molt_sys_version_info as *const (),
+            ),
             0,
         );
         assert!(!func_ptr.is_null());
@@ -654,7 +677,10 @@ fn runtime_intrinsic_function_obj_zero_arg_indirect_call_returns_value() {
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::molt_sys_version_info as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_sys_version_info",
+                crate::molt_sys_version_info as *const (),
+            ),
             0,
         );
         assert!(!func_ptr.is_null());
@@ -679,7 +705,10 @@ fn call_bind_ic_hits_bound_direct_function_method() {
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            c_api_test_bound_identity as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_bound_identity",
+                c_api_test_bound_identity as *const (),
+            ),
             2,
         );
         assert!(!func_ptr.is_null());
@@ -724,7 +753,10 @@ fn call_bind_ic_hits_simple_object_call_bound_function() {
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            c_api_test_bound_identity as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_bound_identity",
+                c_api_test_bound_identity as *const (),
+            ),
             2,
         );
         assert!(!func_ptr.is_null());
@@ -761,7 +793,10 @@ fn runtime_intrinsic_function_obj_zero_arg_fastcall_returns_value() {
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::molt_sys_version_info as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_sys_version_info",
+                crate::molt_sys_version_info as *const (),
+            ),
             0,
         );
         assert!(!func_ptr.is_null());
@@ -813,7 +848,10 @@ fn intrinsic_resolver_function_obj_indirect_call_returns_callable() {
     crate::with_gil_entry!(_py, {
         let resolver_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::intrinsics::registry::molt_intrinsic_resolve as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "crate::intrinsics::registry::molt_intrinsic_resolve",
+                crate::intrinsics::registry::molt_intrinsic_resolve as *const (),
+            ),
             1,
         );
         assert!(!resolver_ptr.is_null());
@@ -848,7 +886,10 @@ fn runtime_intrinsic_module_import_fast_call_returns_module() {
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::molt_module_import as *const () as usize as u64,
+            crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_module_import",
+                crate::molt_module_import as *const (),
+            ),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -892,9 +933,11 @@ fn scalar_handle_helpers_roundtrip() {
     assert_eq!(molt_float_as_f64(float_bits), 3.5);
     assert_eq!(molt_float_as_f64(int_bits), -42.0);
 
-    assert_eq!(molt_int_as_i64(float_bits), -1);
-    assert_eq!(molt_err_pending(), 1);
-    assert_eq!(molt_err_clear(), 0);
+    crate::with_gil_entry!(_py, {
+        assert_eq!(molt_int_as_i64(float_bits), -1);
+        assert_eq!(molt_err_pending(), 1);
+        assert_eq!(molt_err_clear(), 0);
+    });
 
     crate::with_gil_entry!(_py, {
         dec_ref_bits(_py, true_bits);
@@ -1006,10 +1049,12 @@ fn array_constructors_roundtrip() {
         dec_ref_bits(_py, dict_bits);
     });
 
-    let null_tuple_bits = unsafe { molt_tuple_from_array(std::ptr::null::<MoltHandle>(), 1) };
-    assert!(obj_from_bits(null_tuple_bits).is_none());
-    assert_eq!(molt_err_pending(), 1);
-    assert_eq!(molt_err_clear(), 0);
+    crate::with_gil_entry!(_py, {
+        let null_tuple_bits = unsafe { molt_tuple_from_array(std::ptr::null::<MoltHandle>(), 1) };
+        assert!(obj_from_bits(null_tuple_bits).is_none());
+        assert_eq!(molt_err_pending(), 1);
+        assert_eq!(molt_err_clear(), 0);
+    });
 }
 
 #[test]

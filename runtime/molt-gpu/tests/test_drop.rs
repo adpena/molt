@@ -172,8 +172,8 @@ fn test_arena_lifecycle_stats() {
     assert!(hwm_gen0 > 0);
 
     // Write data to verify it's usable
-    arena.write(&a1, &vec![0xAA; 100]);
-    arena.write(&a2, &vec![0xBB; 200]);
+    arena.write(&a1, &[0xAA; 100]);
+    arena.write(&a2, &[0xBB; 200]);
 
     // Verify data before reset
     let s1 = arena.slice(&a1);
@@ -197,7 +197,7 @@ fn test_arena_lifecycle_stats() {
 
     // Fragmentation should be computable
     let frag = arena.fragmentation();
-    assert!(frag >= 0.0 && frag <= 1.0);
+    assert!((0.0..=1.0).contains(&frag));
 
     // Stats snapshot
     let stats = arena.stats();

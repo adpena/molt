@@ -11,6 +11,7 @@ pub(crate) enum InitArgPolicy {
     SkipObjectInit,
 }
 
+#[allow(dead_code)]
 #[inline]
 pub(crate) unsafe fn callable_function_addr(bits: Option<u64>) -> Option<u64> {
     unsafe {
