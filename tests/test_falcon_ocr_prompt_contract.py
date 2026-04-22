@@ -94,7 +94,7 @@ def test_browser_wasm_fallback_uses_official_plain_prompt() -> None:
     plain_prompt = _official_prompt_ids()["plain"]
 
     assert "new Int32Array([1])" not in source
-    assert f"new Int32Array(FALCON_OCR_PLAIN_PROMPT_IDS)" in source
+    assert "new Int32Array(FALCON_OCR_PLAIN_PROMPT_IDS)" in source
     for token_id in plain_prompt:
         assert str(token_id) in source
 
@@ -498,6 +498,17 @@ def test_cloudflare_worker_gpu_backend_rejects_unconfigured_proxy() -> None:
     assert result["status"] == 501
     assert result["payload"]["error"] == "GPU inference not configured"
     assert "required" in result["payload"]["detail"]
+
+
+def test_cloudflare_worker_nemotron_route_has_no_hardcoded_modal_endpoint() -> None:
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'useBackend === "nemotron"' in source
+    assert "adpena--nemotron-ocr-ocr-endpoint.modal.run" not in source
+    assert "28x faster" not in source
+    assert "configured GPU service endpoint" in source
 
 
 def test_enjoice_migration_doc_points_at_worker_wasm_and_tokenizer_artifacts() -> None:
