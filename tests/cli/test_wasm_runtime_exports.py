@@ -7,6 +7,37 @@ from molt._wasm_runtime_exports import (
 from molt.cli import _backend_codegen_env_digest
 
 
+RUNTIME_OWNED_GPU_MODULES = {
+    "molt.gpu",
+    "molt.gpu.tensor",
+    "molt.gpu.kv_cache",
+    "molt.gpu.interop",
+}
+
+RUNTIME_OWNED_GPU_EXPORTS = {
+    "molt_gpu_kernel_launch",
+    "molt_gpu_tensor_from_parts",
+    "molt_gpu_linear_contiguous",
+    "molt_gpu_linear_split_last_dim_contiguous",
+    "molt_gpu_tensor__tensor_linear_split_last_dim",
+    "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
+    "molt_gpu_permute_contiguous",
+    "molt_gpu_softmax_last_axis_contiguous",
+    "molt_gpu_tensor__tensor_concat_first_dim",
+    "molt_gpu_tensor__tensor_scatter_rows",
+    "molt_gpu_broadcast_binary_contiguous",
+    "molt_gpu_matmul_contiguous",
+    "molt_gpu_repeat_axis_contiguous",
+    "molt_gpu_rms_norm_last_axis_contiguous",
+    "molt_gpu_squared_relu_gate_interleaved_contiguous",
+    "molt_gpu_tensor__tensor_scaled_dot_product_attention",
+    "molt_gpu_tensor__zeros",
+    "molt_gpu_turboquant_attention_packed",
+    "molt_gpu_interop_decode_f16_bytes_to_f32",
+    "molt_gpu_interop_decode_bf16_bytes_to_f32",
+}
+
+
 def test_wasm_runtime_import_names_include_ssl_and_set_surface() -> None:
     names = set(wasm_runtime_import_names())
     assert "set_update" in names
@@ -81,6 +112,22 @@ def test_wasm_runtime_dynamic_export_names_reports_runtime_owned_gpu_intrinsics(
     assert "molt_gpu_linear_contiguous" in names
     assert "molt_gpu_tensor__tensor_scaled_dot_product_attention" in names
     assert "molt_gpu_turboquant_attention_packed" in names
+
+
+def test_wasm_runtime_dynamic_export_names_cover_all_runtime_owned_gpu_intrinsics() -> None:
+    names = set(wasm_runtime_dynamic_export_names(RUNTIME_OWNED_GPU_MODULES))
+
+    assert names == RUNTIME_OWNED_GPU_EXPORTS
+
+
+def test_wasm_runtime_export_link_args_cover_all_runtime_owned_gpu_intrinsics() -> None:
+    flags = wasm_runtime_export_link_args(
+        {"runtime_init"},
+        resolved_modules=RUNTIME_OWNED_GPU_MODULES,
+    )
+
+    for name in sorted(RUNTIME_OWNED_GPU_EXPORTS):
+        assert f" -C link-arg=--export-if-defined={name}" in flags
 
 
 def test_wasm_runtime_export_link_args_keeps_host_runtime_exports_in_minimal_mode() -> None:
