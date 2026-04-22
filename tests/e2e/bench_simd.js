@@ -3,6 +3,9 @@
 // Profiles matmul, softmax, add, exp2, rms_norm, reduce_sum across
 // both implementations with realistic sizes (Falcon-OCR inference shapes).
 //
+// Stable machine-readable summary marker:
+//   @@SIMD_BENCH_JSON@@ {"version":1,...}
+//
 // Run: node tests/e2e/bench_simd.js
 
 'use strict';
@@ -14,6 +17,14 @@ const { performance } = require('perf_hooks');
 const ROOT = path.resolve(__dirname, '../..');
 const RUST_WASM = path.join(ROOT, 'deploy/browser/simd-ops-rs/target/wasm32-unknown-unknown/release/simd_ops.wasm');
 const ZIG_WASM = path.join(ROOT, 'deploy/browser/simd-ops-zig/simd.wasm');
+const REQUIRED_SHARED_EXPORTS = [
+    'add_f32',
+    'exp2_f32',
+    'matmul_f32_tiled',
+    'reduce_sum_f32',
+    'rms_norm_f32',
+    'softmax_f32_fused',
+];
 
 async function loadModule(wasmPath) {
     const bytes = fs.readFileSync(wasmPath);
@@ -26,6 +37,29 @@ async function loadModule(wasmPath) {
     }
     const mem = instance.exports.memory || memory;
     return { exports: instance.exports, memory: mem };
+}
+
+function functionExports(exports) {
+    return Object.keys(exports).filter(key => typeof exports[key] === 'function');
+}
+
+function validateSharedExports(rust, zig) {
+    const rustFunctions = new Set(functionExports(rust.exports));
+    const zigFunctions = new Set(functionExports(zig.exports));
+    const missing = {
+        rust: REQUIRED_SHARED_EXPORTS.filter(name => !rustFunctions.has(name)),
+        zig: REQUIRED_SHARED_EXPORTS.filter(name => !zigFunctions.has(name)),
+    };
+    if (missing.rust.length || missing.zig.length) {
+        throw new Error(
+            `Missing required shared exports: rust=[${missing.rust.join(', ')}], zig=[${missing.zig.join(', ')}]`
+        );
+    }
+    return {
+        required: REQUIRED_SHARED_EXPORTS.slice(),
+        rust: functionExports(rust.exports),
+        zig: functionExports(zig.exports),
+    };
 }
 
 function writeF32(memory, offset, arr) {
@@ -76,6 +110,7 @@ async function main() {
     console.log('Loading WASM modules...\n');
     const rust = await loadModule(RUST_WASM);
     const zig = await loadModule(ZIG_WASM);
+    const sharedExports = validateSharedExports(rust, zig);
     const rng = xorshift32(42);
 
     const results = [];
@@ -273,6 +308,15 @@ async function main() {
     // -----------------------------------------------------------------------
     // Summary: compare Rust vs Zig for each pair
     // -----------------------------------------------------------------------
+    const benchSummary = {
+        version: 1,
+        sharedExports,
+        benchmarks: results,
+        binarySize: {
+            rustBytes: fs.statSync(RUST_WASM).size,
+            zigBytes: fs.statSync(ZIG_WASM).size,
+        },
+    };
     console.log('\n=== SUMMARY ===');
     console.log('Operation'.padEnd(40) + 'Rust ns/op'.padStart(12) + 'Zig ns/op'.padStart(12) + 'Winner'.padStart(10) + 'Speedup'.padStart(10));
     console.log('-'.repeat(84));
@@ -295,11 +339,12 @@ async function main() {
 
     // Binary size comparison
     console.log('\n=== BINARY SIZE ===');
-    const rustSize = fs.statSync(RUST_WASM).size;
-    const zigSize = fs.statSync(ZIG_WASM).size;
+    const rustSize = benchSummary.binarySize.rustBytes;
+    const zigSize = benchSummary.binarySize.zigBytes;
     console.log(`  Rust: ${(rustSize / 1024).toFixed(1)} KB`);
     console.log(`  Zig:  ${(zigSize / 1024).toFixed(1)} KB`);
     console.log(`  Ratio: Zig is ${(rustSize / zigSize).toFixed(1)}x smaller`);
+    console.log(`@@SIMD_BENCH_JSON@@ ${JSON.stringify(benchSummary)}`);
 }
 
 main().catch(err => {
