@@ -781,7 +781,18 @@ class PaddleOCRRecognizer:
         Args:
             onnx_bytes: Raw bytes of the ONNX model file.
             charset_text: Content of the dictionary file (one char per line).
-                         PP-OCRv4 uses 6623 characters + blank token.
+                         Each line maps directly to an output index.
+                         Index 0 is treated as CTC blank by the decoder.
+                         PaddleOCR convention: model output dim = len(dict_lines) + 1
+                         (blank at index 0, dict entries at indices 1..N).
+
+        PaddleOCR charset convention:
+            The dict file contains N character entries (one per line).  Empty
+            lines are preserved as space characters.  The model's CTC output
+            dimension equals N + 1, where index 0 is the CTC blank token and
+            indices 1..N correspond to dict lines 1..N.  A trailing space
+            entry is appended if not already present, matching PaddleOCR's
+            CTCLabelDecode behavior.
         """
         count = self.weights.load_onnx(onnx_bytes)
         self._loaded = count > 0
@@ -790,15 +801,26 @@ class PaddleOCRRecognizer:
         self._interpreter = OnnxInterpreter()
         self._interpreter.load_model(onnx_bytes)
 
-        # Parse charset: one character per line, blank token (index 0) is implicit
-        self.charset = [""]  # index 0 = CTC blank
-        for line in charset_text.strip().split("\n"):
+        # Parse charset following PaddleOCR's CTCLabelDecode convention:
+        # 1. Each line in the dict file is one character (empty line = space)
+        # 2. Strip the trailing empty line produced by a final newline
+        # 3. Append a space entry if not already present
+        # 4. Prepend blank at index 0
+        # Result: charset[0] = "" (CTC blank), charset[1..N] = dict entries
+        lines = charset_text.split("\n")
+        # Remove trailing empty line from final newline (not a real entry)
+        if lines and lines[-1] == "":
+            lines.pop()
+        # Each line is a character; empty lines become space
+        dict_chars: list[str] = []
+        for line in lines:
             ch = line.strip()
-            if ch:
-                self.charset.append(ch)
-        # Append space if not present
-        if " " not in self.charset:
-            self.charset.append(" ")
+            dict_chars.append(ch if ch else " ")
+        # PaddleOCR appends space if not present
+        if " " not in dict_chars:
+            dict_chars.append(" ")
+        # Blank at index 0 (CTC convention)
+        self.charset = [""] + dict_chars
 
     def load_onnx_weights(self, onnx_bytes: bytes, charset_text: str = "") -> None:
         """Alias for load() — loads recognizer weights from raw ONNX bytes."""
@@ -903,25 +925,69 @@ class PaddleOCR:
 
     All computation decomposes to tinygrad's 26 primitives, enabling
     compilation through molt to WebGPU, WASM, native, or LLVM backends.
+
+    i18n: The ``language`` parameter selects which recognizer model and
+    character dictionary to use.  The detector and classifier are
+    language-agnostic (shared across all languages).
+
+    Supported languages:
+      'en'           — English/Latin (PP-OCRv4, 437-char dict)
+      'ch'           — Chinese Simplified (PP-OCRv4, 6623-char dict)
+      'ch_cht'       — Chinese Traditional (8419-char dict)
+      'ja'           — Japanese (4397-char dict)
+      'ko'           — Korean (3687-char dict)
+      'latin'        — Latin script (184-char dict)
+      'cyrillic'     — Cyrillic script (162-char dict)
+      'devanagari'   — Devanagari script (166-char dict)
+      'arabic'       — Arabic script (161-char dict)
+      'multilingual' — PPOCRv5 combined (18382-char dict)
     """
 
-    __slots__ = ("detector", "classifier", "recognizer")
+    # Language registry: maps language code to dict filename and recognizer
+    # model name.  The detector (ch_PP-OCRv4_det) is language-agnostic.
+    # Recognizer models vary per language; the dict MUST match the model's
+    # output dimension.
+    SUPPORTED_LANGUAGES: dict[str, dict[str, str]] = {
+        "en":           {"dict": "en_ppocr_dict.txt",  "rec_model": "en_PP-OCRv4_rec"},
+        "ch":           {"dict": "ppocr_keys_v1.txt",  "rec_model": "ch_PP-OCRv4_rec"},
+        "ch_cht":       {"dict": "chinese_cht_dict.txt", "rec_model": "ch_cht_PP-OCRv4_rec"},
+        "ja":           {"dict": "japan_dict.txt",     "rec_model": "ja_PP-OCRv4_rec"},
+        "ko":           {"dict": "korean_dict.txt",    "rec_model": "ko_PP-OCRv4_rec"},
+        "latin":        {"dict": "latin_dict.txt",     "rec_model": "latin_PP-OCRv4_rec"},
+        "cyrillic":     {"dict": "cyrillic_dict.txt",  "rec_model": "cyrillic_PP-OCRv4_rec"},
+        "devanagari":   {"dict": "devanagari_dict.txt", "rec_model": "devanagari_PP-OCRv4_rec"},
+        "arabic":       {"dict": "arabic_dict.txt",    "rec_model": "arabic_PP-OCRv4_rec"},
+        "multilingual": {"dict": "ppocrv5_dict.txt",  "rec_model": "multi_PP-OCRv5_rec"},
+    }
 
-    def __init__(self) -> None:
+    __slots__ = ("detector", "classifier", "recognizer", "language")
+
+    def __init__(self, language: str = "en") -> None:
+        if language not in self.SUPPORTED_LANGUAGES:
+            raise ValueError(
+                f"Unsupported language '{language}'. "
+                f"Supported: {sorted(self.SUPPORTED_LANGUAGES)}"
+            )
+        self.language = language
         self.detector = PaddleOCRDetector()
         self.classifier = PaddleOCRClassifier()
         self.recognizer = PaddleOCRRecognizer()
 
     def load_detector(self, onnx_bytes: bytes) -> None:
-        """Load text detector ONNX weights."""
+        """Load text detector ONNX weights (language-agnostic)."""
         self.detector.load(onnx_bytes)
 
     def load_classifier(self, onnx_bytes: bytes) -> None:
-        """Load direction classifier ONNX weights."""
+        """Load direction classifier ONNX weights (language-agnostic)."""
         self.classifier.load(onnx_bytes)
 
     def load_recognizer(self, onnx_bytes: bytes, charset_text: str) -> None:
-        """Load text recognizer ONNX weights and character dictionary."""
+        """Load text recognizer ONNX weights and character dictionary.
+
+        The charset_text must match the language's dict file.  Use
+        ``SUPPORTED_LANGUAGES[self.language]['dict']`` to look up which
+        dict file to load.
+        """
         self.recognizer.load(onnx_bytes, charset_text)
 
     def preprocess(self, image: Tensor) -> Tensor:
@@ -1063,7 +1129,8 @@ class PaddleOCR:
 def load_paddleocr(detector_path: str = None, classifier_path: str = None,
                    recognizer_path: str = None, charset_path: str = None,
                    detector_bytes: bytes = None, classifier_bytes: bytes = None,
-                   recognizer_bytes: bytes = None, charset_text: str = None) -> PaddleOCR:
+                   recognizer_bytes: bytes = None, charset_text: str = None,
+                   language: str = "en") -> PaddleOCR:
     """Create a fully loaded PaddleOCR instance.
 
     Accepts either file paths or raw bytes for each component.
@@ -1071,17 +1138,19 @@ def load_paddleocr(detector_path: str = None, classifier_path: str = None,
     Args:
         detector_path: Path to ch_PP-OCRv4_det.onnx
         classifier_path: Path to ch_ppocr_mobile_v2.0_cls_infer.onnx
-        recognizer_path: Path to ch_PP-OCRv4_rec.onnx
-        charset_path: Path to ppocrv5_dict.txt
+        recognizer_path: Path to the language-specific recognizer ONNX model
+        charset_path: Path to the language-specific character dictionary
         detector_bytes: Raw bytes of detector ONNX
         classifier_bytes: Raw bytes of classifier ONNX
         recognizer_bytes: Raw bytes of recognizer ONNX
         charset_text: Character set as string (one char per line)
+        language: Language code ('en', 'ch', 'ja', 'ko', etc.).
+                 See PaddleOCR.SUPPORTED_LANGUAGES for full list.
 
     Returns:
         Configured PaddleOCR instance ready for inference.
     """
-    ocr = PaddleOCR()
+    ocr = PaddleOCR(language=language)
 
     if detector_path:
         with open(detector_path, "rb") as f:

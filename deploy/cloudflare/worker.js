@@ -170,6 +170,18 @@ const TEST_HTML = `<!DOCTYPE html>
 
     <div class="controls">
         <input type="file" id="image-input" accept="image/*" disabled>
+        <select id="language" style="background:#222;color:#e0e0e0;padding:8px;border:1px solid #444;border-radius:4px;font-size:0.85em;">
+            <option value="en">English</option>
+            <option value="ch">Chinese (Simplified)</option>
+            <option value="ch_cht">Chinese (Traditional)</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="latin">Latin</option>
+            <option value="cyrillic">Cyrillic</option>
+            <option value="devanagari">Devanagari</option>
+            <option value="arabic">Arabic</option>
+            <option value="multilingual">Multilingual</option>
+        </select>
         <label>
             <input type="checkbox" id="speculative-toggle">
             Speculative decoding
@@ -1329,6 +1341,30 @@ export default {
       return new Response(obj.body, { status: 200, headers });
     }
 
+    // PaddleOCR assets: WASM binary and i18n character dictionaries from R2.
+    // Public-read — inference runs client-side, not on this Worker.
+    if (request.method === "GET" && path.startsWith("/models/paddleocr/")) {
+      const key = path.slice(1); // strip leading "/" -> "models/paddleocr/..."
+      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
+      if (!obj) {
+        return new Response(
+          JSON.stringify({ error: "Not found", key, request_id: rid }),
+          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
+        );
+      }
+      let contentType = "application/octet-stream";
+      if (key.endsWith(".txt")) contentType = "text/plain; charset=utf-8";
+      else if (key.endsWith(".wasm")) contentType = "application/wasm";
+      else if (key.endsWith(".onnx")) contentType = "application/octet-stream";
+      const headers = {
+        ...cors,
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=86400, immutable",
+        "Content-Length": String(obj.size),
+      };
+      return new Response(obj.body, { status: 200, headers });
+    }
+
     if (request.method === "GET" && path === "/tokenizer.json") {
       const key = "models/falcon-ocr/tokenizer.json";
       const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
@@ -1519,14 +1555,36 @@ export default {
 
     // PaddleOCR via ONNX — 16 MB total, fits in Workers memory.
     // Compiled through molt tinygrad: the showcase demo for the compiler.
+    // Supports multi-language inference via language-specific recognizer + dict.
     if (path === "/ocr/paddle-molt" && request.method === "POST") {
       return new Response(JSON.stringify({
         engine: "paddleocr-molt",
         status: "loading",
         models: {
-          detector: { name: "ch_PP-OCRv4_det", size_mb: 4.7, constants: 342, status: "available" },
+          detector: { name: "ch_PP-OCRv4_det", size_mb: 4.7, constants: 342, status: "available", note: "language-agnostic" },
           recognizer: { name: "ch_PP-OCRv4_rec", size_mb: 10.8, constants: 406, status: "available" },
-          classifier: { name: "ch_ppocr_mobile_v2.0_cls", size_mb: 0.6, constants: 308, status: "available" },
+          classifier: { name: "ch_ppocr_mobile_v2.0_cls", size_mb: 0.6, constants: 308, status: "available", note: "language-agnostic" },
+        },
+        wasm: {
+          url: "/wasm/paddleocr.wasm",
+          size_mb: 10.3,
+          status: "available",
+        },
+        i18n: {
+          supported_languages: {
+            en:           { dict: "en_ppocr_dict.txt",    charset_size: 437, rec_model: "en_PP-OCRv4_rec" },
+            ch:           { dict: "ppocr_keys_v1.txt",    charset_size: 6623, rec_model: "ch_PP-OCRv4_rec" },
+            ch_cht:       { dict: "chinese_cht_dict.txt", charset_size: 8419, rec_model: "ch_cht_PP-OCRv4_rec" },
+            ja:           { dict: "japan_dict.txt",       charset_size: 4397, rec_model: "ja_PP-OCRv4_rec" },
+            ko:           { dict: "korean_dict.txt",      charset_size: 3687, rec_model: "ko_PP-OCRv4_rec" },
+            latin:        { dict: "latin_dict.txt",       charset_size: 184,  rec_model: "latin_PP-OCRv4_rec" },
+            cyrillic:     { dict: "cyrillic_dict.txt",    charset_size: 162,  rec_model: "cyrillic_PP-OCRv4_rec" },
+            devanagari:   { dict: "devanagari_dict.txt",  charset_size: 166,  rec_model: "devanagari_PP-OCRv4_rec" },
+            arabic:       { dict: "arabic_dict.txt",      charset_size: 161,  rec_model: "arabic_PP-OCRv4_rec" },
+            multilingual: { dict: "ppocrv5_dict.txt",    charset_size: 18382, rec_model: "multi_PP-OCRv5_rec" },
+          },
+          dicts_url: "/models/paddleocr/dicts/",
+          default_language: "en",
         },
         total_size_mb: 16.1,
         pipeline: [
@@ -1534,7 +1592,7 @@ export default {
           "tinygrad 26 primitives -> molt compiler -> WebGPU/WASM/native",
           "DBNet detector -> direction classifier -> SVTRv2 recognizer -> CTC decode",
         ],
-        note: "PaddleOCR compiled through molt tinygrad — the showcase demo",
+        note: "PaddleOCR compiled through molt tinygrad — i18n-ready with 10 language dicts",
         request_id: rid,
       }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
     }
