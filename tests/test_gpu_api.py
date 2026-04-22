@@ -916,8 +916,10 @@ def test_tensor_take_rows_rejects_out_of_range_indices():
 
     t = Tensor([[1.0, 2.0], [3.0, 4.0]])
 
-    with pytest.raises(IndexError, match="out of range"):
-        t.take_rows(Tensor([2]))
+    with pytest.raises(
+        IndexError, match=r"Index 2 out of range for axis 0 with size 2"
+    ):
+        t.take_rows(Tensor([2.0]))
 
 
 def test_tensor_take_rows_uses_portable_row_copy_when_intrinsic_present(monkeypatch):
@@ -1599,6 +1601,18 @@ def test_tensor_scatter_rows_preserves_f32_layout():
     assert out._buf.format_char == "f"
     assert out._buf.itemsize == 4
     assert from_device(out._buf) == [7.0, 8.0, 0.0, 0.0, 9.0, 10.0]
+
+
+def test_tensor_scatter_rows_rejects_out_of_range_indices_with_integer_message():
+    from molt.gpu.tensor import Tensor, tensor_scatter_rows
+
+    base = Tensor([[0.0, 0.0], [1.0, 1.0]])
+    updates = Tensor([[7.0, 8.0]])
+
+    with pytest.raises(
+        IndexError, match=r"Index 2 out of range for axis 0 with size 2"
+    ):
+        tensor_scatter_rows(base, Tensor([2.0]), updates)
 
 
 def test_tensor_gather_and_scatter_methods_cover_falcon_axis0_patterns():
