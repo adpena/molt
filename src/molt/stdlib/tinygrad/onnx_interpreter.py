@@ -682,6 +682,7 @@ def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     kernel_shape = _get_attr_ints(attrs, "kernel_shape", [1, 1])
     strides = _get_attr_ints(attrs, "strides", [1, 1])
     pads = _get_attr_ints(attrs, "pads", [0, 0, 0, 0])
+    count_include_pad = _get_attr_int(attrs, "count_include_pad", 0)
     kh, kw = kernel_shape[0], kernel_shape[1]
     sh, sw = strides[0], strides[1]
     pad_top, pad_left = pads[0], pads[1]
@@ -707,6 +708,7 @@ def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
             for oy in range(oh):
                 for ox in range(ow):
                     s = 0.0
+                    valid_count = 0
                     for fy in range(kh):
                         for fx in range(kw):
                             iy = oy * sh + fy - pad_top
@@ -714,8 +716,10 @@ def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
                             if 0 <= iy < h and 0 <= ix < w:
                                 idx = bn * (c * h * w) + ch * (h * w) + iy * w + ix
                                 s += flat[idx]
+                                valid_count += 1
                     out_idx = bn * (c * oh * ow) + ch * (oh * ow) + oy * ow + ox
-                    result[out_idx] = s / pool_area
+                    denom = pool_area if count_include_pad else valid_count
+                    result[out_idx] = s / denom if denom else 0.0
 
     return [_make_tensor(result, (n, c, oh, ow))]
 
