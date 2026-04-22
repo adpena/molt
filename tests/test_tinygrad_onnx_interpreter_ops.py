@@ -179,3 +179,25 @@ def test_onnx_slice_honors_negative_steps() -> None:
 
         assert out.shape == (2,)
         assert onnx._realize_floats(out) == [4.0, 2.0]
+
+
+def test_onnx_resize_honors_align_corners_for_nearest() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([10.0, 20.0, 30.0], (1, 1, 3, 1))
+
+        out = onnx._op_resize(
+            [
+                x,
+                None,
+                None,
+                onnx._make_int_tensor([1, 1, 4, 1], (4,)),
+            ],
+            {
+                "mode": "nearest",
+                "coordinate_transformation_mode": "align_corners",
+            },
+        )[0]
+
+        assert out.shape == (1, 1, 4, 1)
+        assert onnx._realize_floats(out) == [10.0, 20.0, 20.0, 30.0]
