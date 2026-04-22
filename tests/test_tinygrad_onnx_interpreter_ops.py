@@ -139,3 +139,43 @@ def test_onnx_interpreter_rejects_unimplemented_declared_outputs() -> None:
 
         with pytest.raises(ValueError, match="produced 1 outputs for 2 declared"):
             interp.run({})
+
+
+def test_onnx_slice_honors_positive_steps() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([float(i) for i in range(12)], (3, 4))
+
+        out = onnx._op_slice(
+            [
+                x,
+                onnx._make_int_tensor([0, 0], (2,)),
+                onnx._make_int_tensor([3, 4], (2,)),
+                onnx._make_int_tensor([0, 1], (2,)),
+                onnx._make_int_tensor([2, 2], (2,)),
+            ],
+            {},
+        )[0]
+
+        assert out.shape == (2, 2)
+        assert onnx._realize_floats(out) == [0.0, 2.0, 8.0, 10.0]
+
+
+def test_onnx_slice_honors_negative_steps() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([float(i) for i in range(6)], (6,))
+
+        out = onnx._op_slice(
+            [
+                x,
+                onnx._make_int_tensor([4], (1,)),
+                onnx._make_int_tensor([0], (1,)),
+                onnx._make_int_tensor([0], (1,)),
+                onnx._make_int_tensor([-2], (1,)),
+            ],
+            {},
+        )[0]
+
+        assert out.shape == (2,)
+        assert onnx._realize_floats(out) == [4.0, 2.0]
