@@ -139,7 +139,7 @@
 
         const ocr = new FalconOCR({
             wasmUrl: 'https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm',
-            weightsVariant: 'falcon-ocr-int4',
+            weightsVariant: 'falcon-ocr-int8',
             onProgress: (phase, pct, detail) => {
                 const msg = detail?.message || detail?.phase || '';
                 status.textContent = `[${phase}] ${pct}% ${msg}`;

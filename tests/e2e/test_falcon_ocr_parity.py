@@ -47,29 +47,26 @@ KL_THRESH = 1e-6  # KL divergence threshold for softmax distributions
 
 
 # ---------------------------------------------------------------------------
-# Helper: check if molt runtime is importable
+# Helper: check if the Falcon OCR runtime path is importable
 # ---------------------------------------------------------------------------
 
-def _molt_runtime_available() -> bool:
-    """Check if the molt runtime modules are importable."""
+def _falcon_ocr_runtime_available() -> bool:
+    """Check if the Falcon OCR runtime modules are importable."""
     try:
         stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        saved = list(sys.path)
         if stdlib_path not in sys.path:
             sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
         from molt.gpu import Buffer, alloc  # noqa: F401
+        from molt.stdlib.tinygrad.examples import falcon_ocr  # noqa: F401
         return True
-    except ImportError:
+    except (ImportError, ModuleNotFoundError, RuntimeError):
         return False
-    finally:
-        pass  # Keep path modifications -- they are needed for tests
 
-
-_SKIP_RUNTIME = not _molt_runtime_available()
-_RUNTIME_REASON = "molt runtime not importable (Buffer/alloc unavailable)"
+_SKIP_RUNTIME = not _falcon_ocr_runtime_available()
+_RUNTIME_REASON = "Falcon OCR runtime path not importable"
 
 
 # ---------------------------------------------------------------------------
@@ -654,11 +651,12 @@ class TestFullInferenceParity:
         init(weights, config)
         tokens_b = ocr_tokens(32, 32, image, [10, 20, 30], max_new_tokens=5)
 
-        # With random weights, different prompts should yield different outputs
-        # (not guaranteed but overwhelmingly likely with stub weights)
-        # We just verify both produce output without asserting inequality
         assert isinstance(tokens_a, list)
         assert isinstance(tokens_b, list)
+        assert tokens_a != tokens_b, (
+            "Different prompts should not collapse to the same token sequence: "
+            f"{tokens_a} == {tokens_b}"
+        )
 
 
 # ---------------------------------------------------------------------------

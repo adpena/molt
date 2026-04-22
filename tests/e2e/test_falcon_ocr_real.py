@@ -135,59 +135,6 @@ class TestWeightLoading:
 
 
 # ---------------------------------------------------------------------------
-# Test: forward pass (stub — requires full molt runtime)
-# ---------------------------------------------------------------------------
-
-
-class TestForwardPass:
-    """Tests that a forward pass produces valid output.
-
-    These tests require the full molt tinygrad runtime to be functional.
-    They are structured to work once the runtime supports Falcon-OCR end-to-end.
-    """
-
-    def _molt_tinygrad_available(self) -> bool:
-        """Check if molt tinygrad Tensor API is importable."""
-        try:
-            stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
-            if stdlib_path not in sys.path:
-                sys.path.insert(0, stdlib_path)
-            import tinygrad.tensor  # noqa: F401
-            return True
-        except (ImportError, ModuleNotFoundError):
-            return False
-
-    @pytest.mark.skipif(
-        True,  # Will be updated when molt runtime supports Falcon-OCR
-        reason="Full molt tinygrad runtime not yet available for Falcon-OCR inference",
-    )
-    def test_forward_produces_valid_logits(self, safetensors_path, test_image):
-        """Forward pass produces logits with correct shape and finite values."""
-        # This test will be activated when the full inference pipeline is ready.
-        # Expected structure:
-        #   model = FalconOCR.from_safetensors(safetensors_path)
-        #   logits = model.forward(test_image)
-        #   assert logits.shape[0] == 1  # batch
-        #   assert logits.shape[-1] == model.config.vocab_size
-        #   assert all(math.isfinite(v) for v in logits.flatten())
-        pass
-
-    @pytest.mark.skipif(
-        True,
-        reason="Full molt tinygrad runtime not yet available for Falcon-OCR inference",
-    )
-    def test_greedy_decode_produces_text(self, safetensors_path, test_image):
-        """Greedy decoding produces non-empty text output."""
-        # Expected structure:
-        #   model = FalconOCR.from_safetensors(safetensors_path)
-        #   tokens = model.greedy_decode(test_image, max_tokens=16)
-        #   text = model.tokenizer.decode(tokens)
-        #   assert len(text) > 0
-        #   assert isinstance(text, str)
-        pass
-
-
-# ---------------------------------------------------------------------------
 # Test: performance measurements
 # ---------------------------------------------------------------------------
 
