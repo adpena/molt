@@ -581,18 +581,27 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
       typeof exports.molt_traceback_format_exc === 'function' &&
       typeof exports.molt_dec_ref_obj === 'function'
     ) {
-      const tbBits = exports.molt_traceback_format_exc(0n);
-      if (tbBits && tbBits !== 0n) {
-        try {
-          const formatted = readRuntimeStringBits(instance, tbBits);
-          if (formatted) {
-            const trimmed = formatted.trimEnd();
-            if (trimmed && trimmed !== 'NoneType: None') {
-              return `Unhandled Molt exception:\n${trimmed}`;
+      let tbBits = 0n;
+      try {
+        tbBits = exports.molt_traceback_format_exc(0n);
+        if (tbBits && tbBits !== 0n) {
+          try {
+            const formatted = readRuntimeStringBits(instance, tbBits);
+            if (formatted) {
+              const trimmed = formatted.trimEnd();
+              if (trimmed && trimmed !== 'NoneType: None') {
+                return `Unhandled Molt exception:\n${trimmed}`;
+              }
             }
+          } finally {
+            exports.molt_dec_ref_obj(tbBits);
           }
-        } finally {
-          exports.molt_dec_ref_obj(tbBits);
+        }
+      } catch (err) {
+        if (traceRun) {
+          console.error(
+            `[molt wasm] traceback formatting failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
     }
