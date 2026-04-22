@@ -1,31 +1,36 @@
-# World's First: Compiled Tinygrad to WASM with WebGPU Inference
+# Molt Tinygrad WASM/WebGPU Claim Ledger
 
-## What we built
-The first-ever AOT compilation of tinygrad tensor operations to WebAssembly,
-with browser-side GPU inference via WebGPU compute shaders.
+This note tracks the current Molt + tinygrad browser-inference claim as an
+internal evidence checklist. It is not a public priority claim and should not be
+used as marketing copy without independent prior-art review and benchmark data.
 
-## Why this is unprecedented
-1. tinygrad has never been AOT-compiled (always Python runtime)
-2. tinygrad has never run in a browser
-3. tinygrad has never generated WebGPU compute shaders for browser inference
-4. No one has compiled a tinygrad-based model to WASM and deployed it to production
+## Current Working Claim
 
-## The stack
-- 26 tinygrad-conformant primitives (Rust, molt-gpu crate)
-- 7 shader renderers (MSL, WGSL, GLSL, CUDA, HIP, OpenCL, MIL)
-- AOT Python -> WASM compilation (molt compiler)
-- WebGPU compute dispatch in browser
-- Production deployment on Cloudflare Workers
+Molt is building an AOT Python/tinygrad path that can lower selected tensor
+programs to WebAssembly and browser GPU backends. The current repo has source
+contracts for Falcon-OCR browser artifacts, WebGPU/WebGL2/WASM-SIMD backend
+selection, tokenizer behavior, and Cloudflare deployment boundaries.
 
-## Production use case
-Falcon-OCR (300M param) document OCR running in the browser via
-compiled tinygrad tensor operations dispatched to the user's GPU.
+## Evidence To Maintain
 
-## Comparison
-| Framework | AOT Compiled | Browser | WebGPU | Production |
-|-----------|-------------|---------|--------|-----------|
-| PyTorch | No | No | No | Server only |
-| TensorFlow.js | No (JIT) | Yes | Yes | Yes |
-| ONNX Runtime Web | No (runtime) | Yes | Yes | Yes |
-| tinygrad | No | No | No | openpilot only |
-| **molt + tinygrad** | **Yes** | **Yes** | **Yes** | **Yes** |
+- Reproducible build command for the relevant tinygrad/Falcon-OCR program.
+- Browser runtime contract tests for WASM, tokenizer, weights, and backend
+  selection.
+- End-to-end quality and latency results with dated hardware/browser versions.
+- Prior-art review for tinygrad, ONNX Runtime Web, TensorFlow.js, WebNN, TVM,
+  IREE, Pyodide, and browser WebGPU ML runtimes.
+
+## Non-Claims
+
+Until the evidence above exists in this repository, do not claim:
+
+- first-ever AOT tinygrad compilation;
+- first tinygrad browser runtime;
+- production superiority over ONNX Runtime Web, TensorFlow.js, or Pyodide;
+- production readiness of a specific Falcon-OCR browser deployment.
+
+## Status
+
+Treat this as a research and verification checklist. Move a claim into product
+or public documentation only after it has a reproducible command, benchmark
+artifact, source provenance, and dated review note.
