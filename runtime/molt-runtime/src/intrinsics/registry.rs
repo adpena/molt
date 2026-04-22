@@ -3,7 +3,7 @@ use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
     alloc_string, builtin_classes, dec_ref_bits, dict_get_in_place, dict_set_in_place,
     inc_ref_bits, module_dict_bits, obj_from_bits, object_set_class_bits, object_type_id,
-    raise_exception, string_bytes, string_len,
+    raise_exception, runtime_state, string_bytes, string_len,
 };
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
@@ -11,12 +11,6 @@ const REGISTRY_NAME: &str = "_molt_intrinsics";
 const LOOKUP_HELPER_NAME: &str = "_molt_intrinsic_lookup";
 const STRICT_FLAG: &str = "_molt_intrinsics_strict";
 const RUNTIME_FLAG: &str = "_molt_runtime";
-
-/// Pointer to the builtins module, stored so the lazy resolver can locate the
-/// intrinsics registry dict without re-traversing the module hierarchy.
-/// Uses `AtomicPtr` so that concurrent calls on native multi-threaded targets
-/// cannot race on the null check (on wasm32 single-threaded atomics are no-ops).
-static BUILTINS_MODULE_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Per-app intrinsic manifest for WASM tree shaking.
 static INTRINSIC_MANIFEST_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
@@ -105,23 +99,19 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     set_dict_bool(_py, dict_ptr, STRICT_FLAG, true);
     set_dict_bool(_py, dict_ptr, RUNTIME_FLAG, true);
 
-    // Store builtins module pointer for the lazy resolver (native only).
-    // AtomicPtr ensures thread safety on native multi-threaded targets.
+    // Store a runtime-owned module pointer for the lazy resolver.  This must
+    // live in RuntimeState, not a process-global, because tests and embedders
+    // can tear down and re-initialize runtime state in-process.
     //
-    // Only set BUILTINS_MODULE_PTR once.  Previous code swapped it on every
-    // molt_module_new, which dec-ref'd the prior module.  On native builds the
-    // dec-ref cascaded into a use-after-free: the "builtins" module was freed
-    // when the next module (e.g. _sitebuiltins) overwrote the pointer, but
-    // the module cache still held (now-dangling) bits for "builtins", causing
-    // "module attribute access expects module, got type_id=..." on every
-    // subsequent MODULE_GET_ATTR.
-    //
-    // The lazy resolver only needs *some* module's __intrinsics__ registry
-    // dict to cache resolved intrinsics; it does not matter which module.
-    // Locking to the first one avoids the refcount imbalance entirely.
-    let prev = BUILTINS_MODULE_PTR.load(Ordering::Acquire);
+    // Only set the anchor once per RuntimeState.  Previous code swapped it on
+    // every molt_module_new, which dec-ref'd the prior module.  On native
+    // builds the dec-ref cascaded into a use-after-free: the "builtins" module
+    // was freed when the next module (e.g. _sitebuiltins) overwrote the pointer,
+    // but the module cache still held (now-dangling) bits for "builtins".
+    let registry_module = &runtime_state(_py).intrinsic_registry_module;
+    let prev = registry_module.load(Ordering::Acquire);
     if prev.is_null() {
-        BUILTINS_MODULE_PTR.store(module_ptr, Ordering::Release);
+        registry_module.store(module_ptr, Ordering::Release);
         inc_ref_bits(_py, MoltObject::from_ptr(module_ptr).bits());
     }
 
@@ -432,18 +422,30 @@ fn cache_resolved_intrinsic(
     canonical_name: &str,
     func_bits: u64,
 ) {
-    let builtins_ptr = BUILTINS_MODULE_PTR.load(Ordering::Acquire);
+    let builtins_ptr = runtime_state(_py)
+        .intrinsic_registry_module
+        .load(Ordering::Acquire);
     if builtins_ptr.is_null() {
         return;
+    }
+    unsafe {
+        if object_type_id(builtins_ptr) != TYPE_ID_MODULE {
+            return;
+        }
     }
     let dict_bits = unsafe { module_dict_bits(builtins_ptr) };
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
         return;
     };
+    unsafe {
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+    }
     let reg_key_ptr = alloc_string(_py, REGISTRY_NAME.as_bytes());
     if reg_key_ptr.is_null() {
         return;
-    }
+    };
     let reg_key_bits = MoltObject::from_ptr(reg_key_ptr).bits();
     let reg_opt = unsafe { dict_get_in_place(_py, dict_ptr, reg_key_bits) };
     dec_ref_bits(_py, reg_key_bits);
@@ -453,6 +455,11 @@ fn cache_resolved_intrinsic(
     let Some(registry_ptr) = obj_from_bits(reg_bits).as_ptr() else {
         return;
     };
+    unsafe {
+        if object_type_id(registry_ptr) != TYPE_ID_DICT {
+            return;
+        }
+    }
     set_intrinsic_entry(_py, registry_ptr, canonical_name, func_bits);
     if requested_name != canonical_name {
         set_intrinsic_entry(_py, registry_ptr, requested_name, func_bits);
@@ -560,18 +567,16 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     dec_ref_bits(_py, name_bits);
 }
 
-/// Reset all one-shot globals in the intrinsic registry.
+/// Reset process-wide one-shot globals in the intrinsic registry.
 ///
-/// Called by `molt_runtime_reset_for_testing` to clear dangling pointers
-/// after runtime shutdown.  Without this, `BUILTINS_MODULE_PTR` holds a
-/// dangling pointer to the destroyed builtins module and `MANIFEST_SET`
-/// prevents re-setting the manifest on the next init.
+/// Called by `molt_runtime_reset_for_testing` after runtime shutdown so a
+/// same-process re-init can install a fresh manifest. The module/cache anchor
+/// is stored on `RuntimeState`, so dropping the state is sufficient to clear it.
 #[cfg(test)]
 pub(crate) fn reset_for_testing() {
     MANIFEST_SET.store(false, Ordering::SeqCst);
     INTRINSIC_MANIFEST_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
     INTRINSIC_MANIFEST_LEN.store(0, Ordering::SeqCst);
-    BUILTINS_MODULE_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
 }
 
 // Expose internals for testing.
@@ -705,7 +710,9 @@ mod tests {
 
     #[test]
     fn register_intrinsics_module_exports_public_helpers() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::with_gil_entry!(_py, {
             register_intrinsics_module(_py);
 
@@ -724,10 +731,7 @@ mod tests {
                 crate::molt_get_attr_name(module_bits, runtime_active_name_bits);
             assert!(obj_from_bits(runtime_active_bits).as_ptr().is_some());
             let runtime_active_out = molt_runtime_active_runtime();
-            assert_eq!(
-                crate::is_truthy(_py, obj_from_bits(runtime_active_out)),
-                true
-            );
+            assert!(crate::is_truthy(_py, obj_from_bits(runtime_active_out)));
 
             let load_name_ptr = alloc_string(_py, b"load_intrinsic");
             let load_name_bits = MoltObject::from_ptr(load_name_ptr).bits();
@@ -791,6 +795,10 @@ mod tests {
     /// execution.  We reset the flag at the start (safe in test-only code)
     /// so the test is idempotent even if other tests ran first.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "molt_set_intrinsic_manifest stores a wasm linear-memory address represented as u64; native Miri strict provenance cannot model this wasm-only pointer contract"
+    )]
     fn manifest_one_shot_guard() {
         // Reset globals so this test is self-contained.
         test_manifest_set().store(false, Ordering::SeqCst);

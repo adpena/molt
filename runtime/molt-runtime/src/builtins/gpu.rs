@@ -1,11 +1,18 @@
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+
 use crate::{
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE,
-    TYPE_ID_TYPE,
-    alloc_bytearray, alloc_bytes, alloc_tuple, attr_name_bits_from_bytes, bytes_data, bytes_len,
-    dec_ref_bits, molt_call_bind, molt_exception_clear, molt_exception_kind, molt_exception_last,
-    obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
-    to_i64,
+    TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_tuple, attr_name_bits_from_bytes, bytes_data,
+    bytes_len, dec_ref_bits, molt_call_bind, molt_exception_clear, molt_exception_kind,
+    molt_exception_last, obj_from_bits, object_type_id, raise_exception, seq_vec_ref,
+    string_obj_to_owned, to_f64, to_i64,
 };
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
+use serde_json::Value as JsonValue;
 use std::cell::RefCell;
 #[cfg(any(
     target_arch = "wasm32",
@@ -13,12 +20,6 @@ use std::cell::RefCell;
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(any(
-    target_arch = "wasm32",
-    all(target_os = "macos", feature = "molt_gpu_metal"),
-    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
-))]
-use serde_json::Value as JsonValue;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
 use std::sync::{Arc as WgpuArc, Mutex as WgpuMutex};
 
@@ -27,12 +28,12 @@ use metal::{
     Buffer as MetalBuffer, CommandQueue, CompileOptions, ComputePipelineState, Device, Library,
     MTLResourceOptions, MTLSize, NSUInteger,
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+use pollster;
 #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
 use std::sync::Arc;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
 use wgpu;
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
-use pollster;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum ScalarFormat {
@@ -113,6 +114,7 @@ fn trace_gpu_thread_id_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_THREAD_ID").as_deref() == Ok("1"))
 }
 
+#[allow(dead_code)]
 fn trace_gpu_backend_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_BACKEND").as_deref() == Ok("1"))
@@ -121,11 +123,7 @@ fn trace_gpu_backend_enabled() -> bool {
 fn requested_gpu_backend() -> Option<String> {
     let raw = std::env::var("MOLT_GPU_BACKEND").ok()?;
     let name = raw.trim().to_ascii_lowercase();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn decode_f16_to_f32_bits(bits: u16) -> u32 {
@@ -156,7 +154,7 @@ fn decode_f16_to_f32_bits(bits: u16) -> u32 {
 }
 
 fn decode_f16_payload_to_f32_bytes(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
-    if raw.len() % 2 != 0 {
+    if !raw.len().is_multiple_of(2) {
         return Err("F16 payload length must be even");
     }
     let mut out = Vec::with_capacity((raw.len() / 2) * 4);
@@ -168,7 +166,7 @@ fn decode_f16_payload_to_f32_bytes(raw: &[u8]) -> Result<Vec<u8>, &'static str> 
 }
 
 fn decode_bf16_payload_to_f32_bytes(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
-    if raw.len() % 2 != 0 {
+    if !raw.len().is_multiple_of(2) {
         return Err("BF16 payload length must be even");
     }
     let mut out = Vec::with_capacity((raw.len() / 2) * 4);
@@ -258,13 +256,17 @@ unsafe fn try_object_attr_bits(
     Ok(Some(out))
 }
 
-unsafe fn gpu_kernel_callable_bits(_py: &crate::PyToken<'_>, launcher_bits: u64) -> Result<u64, u64> {
+unsafe fn gpu_kernel_callable_bits(
+    _py: &crate::PyToken<'_>,
+    launcher_bits: u64,
+) -> Result<u64, u64> {
     if let Some(func_bits) = unsafe { try_object_attr_bits(_py, launcher_bits, b"_func")? } {
         return Ok(func_bits);
     }
     Ok(launcher_bits)
 }
 
+#[allow(dead_code)]
 unsafe fn gpu_kernel_descriptor_bits(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,
@@ -319,10 +321,12 @@ impl RuntimeWebGpuDevice {
         source: &str,
     ) -> Result<WgpuArc<RuntimeWebGpuPipeline>, String> {
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(source.into()),
-        });
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
         if let Some(err) = pollster::block_on(scope.pop()) {
             return Err(err.to_string());
         }
@@ -363,7 +367,11 @@ impl RuntimeWebGpuDevice {
         self.queue.write_buffer(buffer, 0, data);
     }
 
-    fn copy_from_buffer(&self, buffer: &wgpu::Buffer, size_bytes: usize) -> Result<Vec<u8>, String> {
+    fn copy_from_buffer(
+        &self,
+        buffer: &wgpu::Buffer,
+        size_bytes: usize,
+    ) -> Result<Vec<u8>, String> {
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("runtime_webgpu_staging"),
             size: size_bytes as u64,
@@ -383,7 +391,8 @@ impl RuntimeWebGpuDevice {
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|err| err.to_string())?;
-        rx.recv().map_err(|_| "map channel dropped".to_string())?
+        rx.recv()
+            .map_err(|_| "map channel dropped".to_string())?
             .map_err(|err| err.to_string())?;
         let mapped = slice.get_mapped_range();
         let mut out = vec![0u8; size_bytes];
@@ -545,7 +554,8 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
                 .get("args")
                 .and_then(JsonValue::as_array)
                 .map(|items| {
-                    items.iter()
+                    items
+                        .iter()
                         .map(|item| {
                             item.as_str()
                                 .map(ToString::to_string)
@@ -558,8 +568,14 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
             Ok(RuntimeKernelOp {
                 kind,
                 args,
-                out: op.get("out").and_then(JsonValue::as_str).map(ToString::to_string),
-                var: op.get("var").and_then(JsonValue::as_str).map(ToString::to_string),
+                out: op
+                    .get("out")
+                    .and_then(JsonValue::as_str)
+                    .map(ToString::to_string),
+                var: op
+                    .get("var")
+                    .and_then(JsonValue::as_str)
+                    .map(ToString::to_string),
                 value: op.get("value").and_then(JsonValue::as_i64),
             })
         })
@@ -620,7 +636,8 @@ fn kernel_arg_from_bits(
         }
         let maybe_data_bits = unsafe { try_object_attr_bits(_py, bits, b"_data")? };
         if let Some(data_bits) = maybe_data_bits {
-            let format_bits = unsafe { object_attr_bits(_py, bits, b"_format_char", "_format_char")? };
+            let format_bits =
+                unsafe { object_attr_bits(_py, bits, b"_format_char", "_format_char")? };
             let size_bits = unsafe { object_attr_bits(_py, bits, b"_size", "_size")? };
             let format = string_obj_to_owned(obj_from_bits(format_bits)).ok_or_else(|| {
                 raise_exception::<u64>(_py, "TypeError", "buffer format must be a string")
@@ -661,7 +678,9 @@ fn metal_scalar_type_for_buffer(format: &str) -> Result<(&'static str, usize), S
     match format {
         "f" | "d" => Ok(("float", 4)),
         "q" => Ok(("int64_t", 8)),
-        _ => Err(format!("unsupported buffer format for metal backend: {format}")),
+        _ => Err(format!(
+            "unsupported buffer format for metal backend: {format}"
+        )),
     }
 }
 
@@ -701,7 +720,9 @@ fn buffer_host_bytes_for_gpu_compute(
             }
             Ok(out)
         }
-        other => Err(format!("unsupported buffer format for metal backend: {other}")),
+        other => Err(format!(
+            "unsupported buffer format for metal backend: {other}"
+        )),
     }
 }
 
@@ -757,8 +778,12 @@ fn buffer_host_bytes_for_webgpu_compute(
 ) -> Result<Vec<u8>, String> {
     let view = bytes_like_view(_py, arg.data_bits, "_data")
         .map_err(|_| "buffer _data must be bytes-like".to_string())?;
-    let format = scalar_format_from_text(arg.original_format.as_str())
-        .ok_or_else(|| format!("unsupported buffer format for webgpu backend: {}", arg.original_format))?;
+    let format = scalar_format_from_text(arg.original_format.as_str()).ok_or_else(|| {
+        format!(
+            "unsupported buffer format for webgpu backend: {}",
+            arg.original_format
+        )
+    })?;
     bytes_like_view_to_webgpu_bytes(view, format)
 }
 
@@ -776,7 +801,10 @@ fn copy_gpu32_output_back_to_buffer(
         raise_exception::<u64>(
             _py,
             "RuntimeError",
-            &format!("unsupported buffer format for gpu output: {}", arg.original_format),
+            &format!(
+                "unsupported buffer format for gpu output: {}",
+                arg.original_format
+            ),
         )
     })?;
     let rebuilt = rebuild_host_bytes_from_gpu32_output(_py, format, arg.size, gpu_output)?;
@@ -927,7 +955,9 @@ fn render_metal_source(
             }
             "const" => {
                 if let Some(out) = op.out.as_ref() {
-                    let value = op.value.ok_or_else(|| "const op missing value".to_string())?;
+                    let value = op
+                        .value
+                        .ok_or_else(|| "const op missing value".to_string())?;
                     exprs.insert(out.clone(), value.to_string());
                 }
             }
@@ -1007,7 +1037,9 @@ fn webgpu_scalar_type_for_buffer(format: &str) -> Result<&'static str, String> {
     match format {
         "f" | "d" => Ok("f32"),
         "q" => Ok("i32"),
-        _ => Err(format!("unsupported buffer format for webgpu backend: {format}")),
+        _ => Err(format!(
+            "unsupported buffer format for webgpu backend: {format}"
+        )),
     }
 }
 
@@ -1022,7 +1054,9 @@ fn render_webgpu_source(
 ) -> Result<(String, Vec<String>, Vec<String>, Vec<String>), String> {
     let mut write_buffers = BTreeSet::new();
     for op in &desc.ops {
-        if op.kind == "store_index" && let Some(name) = op.args.first() {
+        if op.kind == "store_index"
+            && let Some(name) = op.args.first()
+        {
             write_buffers.insert(name.clone());
         }
     }
@@ -1095,7 +1129,9 @@ fn render_webgpu_source(
             }
             "const" => {
                 if let Some(out) = op.out.as_ref() {
-                    let value = op.value.ok_or_else(|| "const op missing value".to_string())?;
+                    let value = op
+                        .value
+                        .ok_or_else(|| "const op missing value".to_string())?;
                     exprs.insert(out.clone(), value.to_string());
                 }
             }
@@ -1161,7 +1197,12 @@ fn render_webgpu_source(
         source.push_str("    }\n");
     }
     source.push_str("}\n");
-    Ok((source, buffer_names, scalar_names, write_buffers.into_iter().collect()))
+    Ok((
+        source,
+        buffer_names,
+        scalar_names,
+        write_buffers.into_iter().collect(),
+    ))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1590,7 +1631,8 @@ fn expand_attention_mask_to_webgpu_bytes(
                         k_idx * mask_strides[3]
                     });
                     let value = unsafe {
-                        (mask.buffer.data_view.ptr.add(mask_index * 4) as *const f32).read_unaligned()
+                        (mask.buffer.data_view.ptr.add(mask_index * 4) as *const f32)
+                            .read_unaligned()
                     };
                     let out_index = ((b * heads + h) * seq_q + q_idx) * seq_k + k_idx;
                     out[out_index * 4..(out_index + 1) * 4].copy_from_slice(&value.to_le_bytes());
@@ -1629,7 +1671,11 @@ impl RuntimeMetalDevice {
         })
     }
 
-    fn compile_pipeline(&self, name: &str, source: &str) -> Result<Arc<RuntimeMetalPipeline>, String> {
+    fn compile_pipeline(
+        &self,
+        name: &str,
+        source: &str,
+    ) -> Result<Arc<RuntimeMetalPipeline>, String> {
         let options = CompileOptions::new();
         let library = self
             .device
@@ -1718,7 +1764,7 @@ fn try_dispatch_metal_kernel(
                 _py,
                 "RuntimeError",
                 "metal gpu backend requires __molt_gpu_descriptor__ metadata",
-            ))
+            ));
         }
         Err(err) => return Err(err),
     };
@@ -1726,7 +1772,11 @@ fn try_dispatch_metal_kernel(
         raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
     })?;
     let descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
-        raise_exception::<u64>(_py, "RuntimeError", &format!("invalid gpu kernel descriptor: {msg}"))
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &format!("invalid gpu kernel descriptor: {msg}"),
+        )
     })?;
     let arg_bits = unsafe { crate::call::bind::callargs_positional_snapshot(_py, builder_bits) }?;
     if arg_bits.len() != descriptor.params.len() {
@@ -1742,7 +1792,11 @@ fn try_dispatch_metal_kernel(
     }
     let (source, buffer_names, scalar_names, output_buffers) =
         render_metal_source(&descriptor, &args_map).map_err(|msg| {
-            raise_exception::<u64>(_py, "RuntimeError", &format!("metal kernel render failed: {msg}"))
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                &format!("metal kernel render failed: {msg}"),
+            )
         })?;
     let device = RuntimeMetalDevice::new()
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
@@ -1754,11 +1808,14 @@ fn try_dispatch_metal_kernel(
     let mut buffer_index_map: BTreeMap<String, usize> = BTreeMap::new();
     for name in &buffer_names {
         let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
-            return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "expected buffer arg",
+            ));
         };
-        let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf).map_err(|msg| {
-            raise_exception::<u64>(_py, "RuntimeError", &msg)
-        })?;
+        let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf)
+            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
         let metal_buf = device.alloc_buffer(host_bytes.len());
         if !host_bytes.is_empty() {
             device.copy_to_buffer(&metal_buf, &host_bytes);
@@ -1768,9 +1825,8 @@ fn try_dispatch_metal_kernel(
     }
     for name in &scalar_names {
         let arg = args_map.get(name).expect("scalar arg missing");
-        let (_, scalar_bytes) = metal_scalar_type_for_arg(arg).map_err(|msg| {
-            raise_exception::<u64>(_py, "RuntimeError", &msg)
-        })?;
+        let (_, scalar_bytes) = metal_scalar_type_for_arg(arg)
+            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
         let metal_buf = device.alloc_buffer(scalar_bytes.len().max(1));
         if !scalar_bytes.is_empty() {
             device.copy_to_buffer(&metal_buf, &scalar_bytes);
@@ -1783,7 +1839,8 @@ fn try_dispatch_metal_kernel(
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
 
     for name in &output_buffers {
-        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("output buffer missing") else {
+        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("output buffer missing")
+        else {
             continue;
         };
         let buffer_idx = *buffer_index_map.get(name).expect("buffer index missing");
@@ -1796,7 +1853,7 @@ fn try_dispatch_metal_kernel(
                     _py,
                     "RuntimeError",
                     &format!("unsupported output buffer format for metal backend: {other}"),
-                ))
+                ));
             }
         };
         let gpu_output = device.copy_from_buffer(&owned_buffers[buffer_idx], output_size);
@@ -1844,7 +1901,7 @@ fn try_dispatch_webgpu_kernel(
                 _py,
                 "RuntimeError",
                 "webgpu backend requires __molt_gpu_descriptor__ metadata",
-            ))
+            ));
         }
         Err(err) => return Err(err),
     };
@@ -1852,7 +1909,11 @@ fn try_dispatch_webgpu_kernel(
         raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
     })?;
     let descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
-        raise_exception::<u64>(_py, "RuntimeError", &format!("invalid gpu kernel descriptor: {msg}"))
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &format!("invalid gpu kernel descriptor: {msg}"),
+        )
     })?;
     let arg_bits = unsafe { crate::call::bind::callargs_positional_snapshot(_py, builder_bits) }?;
     if arg_bits.len() != descriptor.params.len() {
@@ -1868,7 +1929,11 @@ fn try_dispatch_webgpu_kernel(
     }
     let (source, buffer_names, scalar_names, output_buffers) =
         render_webgpu_source(&descriptor, &args_map, threads as u32).map_err(|msg| {
-            raise_exception::<u64>(_py, "RuntimeError", &format!("webgpu kernel render failed: {msg}"))
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                &format!("webgpu kernel render failed: {msg}"),
+            )
         })?;
     let device = RuntimeWebGpuDevice::new()
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
@@ -1880,11 +1945,14 @@ fn try_dispatch_webgpu_kernel(
     let mut buffer_index_map: BTreeMap<String, usize> = BTreeMap::new();
     for name in &buffer_names {
         let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
-            return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "expected buffer arg",
+            ));
         };
-        let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf).map_err(|msg| {
-            raise_exception::<u64>(_py, "RuntimeError", &msg)
-        })?;
+        let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf)
+            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
         let (_, gpu_buf) = device.alloc_buffer(host_bytes.len().max(1));
         if !host_bytes.is_empty() {
             device.copy_to_buffer(&gpu_buf, &host_bytes);
@@ -1906,7 +1974,8 @@ fn try_dispatch_webgpu_kernel(
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
 
     for name in &output_buffers {
-        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("output buffer missing") else {
+        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("output buffer missing")
+        else {
             continue;
         };
         let buffer_idx = *buffer_index_map.get(name).expect("buffer index missing");
@@ -1919,7 +1988,7 @@ fn try_dispatch_webgpu_kernel(
                     _py,
                     "RuntimeError",
                     &format!("unsupported output buffer format for webgpu backend: {other}"),
-                ))
+                ));
             }
         };
         let gpu_output = device
@@ -1951,7 +2020,7 @@ fn try_dispatch_webgpu_kernel(
                 _py,
                 "RuntimeError",
                 "webgpu backend requires __molt_gpu_descriptor__ metadata",
-            ))
+            ));
         }
         Err(err) => return Err(err),
     };
@@ -1993,7 +2062,11 @@ fn try_dispatch_webgpu_kernel(
 
     for name in &buffer_names {
         let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
-            return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "expected buffer arg",
+            ));
         };
         let bytes = buffer_host_bytes_for_webgpu_compute(_py, buf)
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
@@ -2302,17 +2375,23 @@ pub extern "C" fn molt_gpu_thread_id() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_block_id() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_int(current_gpu_launch_context().block_id).bits() })
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_int(current_gpu_launch_context().block_id).bits()
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_block_dim() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_int(current_gpu_launch_context().block_dim).bits() })
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_int(current_gpu_launch_context().block_dim).bits()
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_grid_dim() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_int(current_gpu_launch_context().grid_dim).bits() })
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_int(current_gpu_launch_context().grid_dim).bits()
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2546,7 +2625,7 @@ unsafe fn aligned_f32_slice_mut<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut 
     Some(unsafe { std::slice::from_raw_parts_mut(ptr as *mut f32, len) })
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 #[inline]
 unsafe fn load_f32x4_bytes_unaligned(ptr: *const u8) -> core::arch::aarch64::float32x4_t {
     use core::arch::{aarch64::float32x4_t, asm};
@@ -2562,7 +2641,7 @@ unsafe fn load_f32x4_bytes_unaligned(ptr: *const u8) -> core::arch::aarch64::flo
     out
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 #[inline]
 unsafe fn load_f32_bytes_unaligned(ptr: *const u8) -> f32 {
     use core::arch::asm;
@@ -2578,7 +2657,7 @@ unsafe fn load_f32_bytes_unaligned(ptr: *const u8) -> f32 {
     out
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 #[inline]
 unsafe fn store_f32_bytes_unaligned(ptr: *mut u8, value: f32) {
     use core::arch::asm;
@@ -2592,7 +2671,7 @@ unsafe fn store_f32_bytes_unaligned(ptr: *mut u8, value: f32) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 #[inline]
 unsafe fn linear_dot_ptrs_unaligned(
     x_row_ptr: *const u8,
@@ -2624,7 +2703,7 @@ unsafe fn linear_dot_ptrs_unaligned(
     sum
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 #[inline]
 unsafe fn linear_dot4_unaligned(
     x_ptr: *const u8,
@@ -2753,7 +2832,7 @@ unsafe fn linear_dot4_unaligned(
     unsafe { linear_dot_ptrs_unaligned(x_row_ptr, w_row_ptr, in_features) }
 }
 
-#[cfg(all(target_arch = "aarch64", test))]
+#[cfg(all(target_arch = "aarch64", not(miri), test))]
 #[inline]
 unsafe fn linear_dot4_rows_ptrs_unaligned(
     x_row_ptr: *const u8,
@@ -2812,7 +2891,7 @@ unsafe fn linear_dot4_rows_ptrs_unaligned(
     [sum0, sum1, sum2, sum3]
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 #[inline]
 unsafe fn linear_rows4_store_ptrs_unaligned(
     x_row_ptr: *const u8,
@@ -3007,7 +3086,7 @@ unsafe fn linear_rows4_store_ptrs_unaligned(
     }
 }
 
-#[cfg(all(target_arch = "aarch64", test))]
+#[cfg(all(target_arch = "aarch64", not(miri), test))]
 #[inline]
 unsafe fn linear_dot4_rows_unaligned(
     x_ptr: *const u8,
@@ -3026,7 +3105,7 @@ unsafe fn linear_dot4_rows_unaligned(
     unsafe { linear_dot4_rows_ptrs_unaligned(x_row_ptr, row_ptrs, in_features) }
 }
 
-#[cfg(all(target_arch = "aarch64", test))]
+#[cfg(all(target_arch = "aarch64", not(miri), test))]
 #[inline]
 unsafe fn linear_dot4_gate_up_interleaved_ptrs_unaligned(
     x_row_ptr: *const u8,
@@ -3117,7 +3196,7 @@ unsafe fn linear_dot4_gate_up_interleaved_ptrs_unaligned(
     )
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 #[inline]
 unsafe fn linear_gate_up4_store_ptrs_unaligned(
     x_row_ptr: *const u8,
@@ -3441,7 +3520,7 @@ unsafe fn linear_gate_up4_store_ptrs_unaligned(
 
 #[cfg(all(
     any(
-        target_arch = "aarch64",
+        all(target_arch = "aarch64", not(miri)),
         target_arch = "x86_64",
         all(target_arch = "wasm32", target_feature = "simd128")
     ),
@@ -3486,7 +3565,7 @@ unsafe fn linear_gate_up4_store_unaligned(
     }
 }
 
-#[cfg(all(target_arch = "aarch64", test))]
+#[cfg(all(target_arch = "aarch64", not(miri), test))]
 #[inline]
 unsafe fn linear_dot4_gate_up_interleaved_unaligned(
     x_ptr: *const u8,
@@ -3521,9 +3600,9 @@ unsafe fn linear_dot4_gate_up_interleaved_unaligned(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-#[cfg(target_arch = "aarch64")]
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 unsafe fn linear_gate_up8_store_group_unaligned(
     x_row_ptr: *const u8,
     weight_group_ptr: *const u8,
@@ -3708,7 +3787,7 @@ unsafe fn linear_gate_up8_store_group_unaligned(
     }
 }
 
-#[cfg(all(target_arch = "aarch64", test))]
+#[cfg(all(target_arch = "aarch64", not(miri), test))]
 #[inline]
 unsafe fn linear_gate_up8_store_unaligned(
     x_ptr: *const u8,
@@ -3733,7 +3812,7 @@ unsafe fn linear_gate_up8_store_unaligned(
     }
 }
 
-#[cfg(all(target_arch = "aarch64", test))]
+#[cfg(all(target_arch = "aarch64", not(miri), test))]
 #[inline]
 unsafe fn linear_dot8_gate_up_interleaved_ptrs_unaligned(
     x_row_ptr: *const u8,
@@ -3802,7 +3881,7 @@ unsafe fn linear_dot8_gate_up_interleaved_ptrs_unaligned(
     (gate_sum, up_sum)
 }
 
-#[cfg(all(target_arch = "aarch64", test))]
+#[cfg(all(target_arch = "aarch64", not(miri), test))]
 #[inline]
 unsafe fn linear_dot8_gate_up_interleaved_unaligned(
     x_ptr: *const u8,
@@ -3915,11 +3994,10 @@ unsafe fn linear_rows_f32(
                 out_idx += 1;
             }
         }
-        return;
     }
 
     #[cfg(any(
-        target_arch = "aarch64",
+        all(target_arch = "aarch64", not(miri)),
         target_arch = "x86_64",
         all(target_arch = "wasm32", target_feature = "simd128")
     ))]
@@ -3962,11 +4040,10 @@ unsafe fn linear_rows_f32(
                 out_idx += 1;
             }
         }
-        return;
     }
 
     #[cfg(not(any(
-        target_arch = "aarch64",
+        all(target_arch = "aarch64", not(miri)),
         target_arch = "x86_64",
         all(target_arch = "wasm32", target_feature = "simd128")
     )))]
@@ -4028,7 +4105,7 @@ unsafe fn linear_rows_f32(
 }
 
 #[cfg(any(
-    target_arch = "aarch64",
+    all(target_arch = "aarch64", not(miri)),
     target_arch = "x86_64",
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
@@ -4087,7 +4164,7 @@ unsafe fn linear_split_last_dim_f32(
 }
 
 #[cfg(not(any(
-    target_arch = "aarch64",
+    all(target_arch = "aarch64", not(miri)),
     target_arch = "x86_64",
     all(target_arch = "wasm32", target_feature = "simd128")
 )))]
@@ -4197,10 +4274,9 @@ unsafe fn linear_squared_relu_gate_interleaved_f32(
                 hidden_idx += 1;
             }
         }
-        return;
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
     {
         let row_stride_bytes = in_features * 4;
         let pair_stride_bytes = row_stride_bytes * 2;
@@ -4265,7 +4341,6 @@ unsafe fn linear_squared_relu_gate_interleaved_f32(
                 hidden_idx += 1;
             }
         }
-        return;
     }
 
     #[cfg(any(
@@ -4326,7 +4401,7 @@ unsafe fn linear_squared_relu_gate_interleaved_f32(
     }
 
     #[cfg(not(any(
-        target_arch = "aarch64",
+        all(target_arch = "aarch64", not(miri)),
         target_arch = "x86_64",
         all(target_arch = "wasm32", target_feature = "simd128")
     )))]
@@ -5271,14 +5346,16 @@ fn decode_mask_value(
     let k = if mask_shape[3] == 1 { 0 } else { key_index };
     let elem_index =
         b * mask_strides[0] + h * mask_strides[1] + q * mask_strides[2] + k * mask_strides[3];
-    read_float_buffer_value(mask_view.buffer.data_view, mask_view.buffer.format, elem_index)
+    read_float_buffer_value(
+        mask_view.buffer.data_view,
+        mask_view.buffer.format,
+        elem_index,
+    )
 }
 
 fn read_float_buffer_value(view: ByteView, format: ScalarFormat, index: usize) -> f32 {
     match format {
-        ScalarFormat::F32 => unsafe {
-            (view.ptr.add(index * 4) as *const f32).read_unaligned()
-        },
+        ScalarFormat::F32 => unsafe { (view.ptr.add(index * 4) as *const f32).read_unaligned() },
         ScalarFormat::F64 => unsafe {
             (view.ptr.add(index * 8) as *const f64).read_unaligned() as f32
         },
@@ -5290,7 +5367,7 @@ fn read_float_buffer_value(view: ByteView, format: ScalarFormat, index: usize) -
 
 fn read_tensor_value_4d(
     tensor: &TensorRuntimeView,
-    shape: &[usize],
+    _shape: &[usize],
     strides: &[usize],
     a: usize,
     b: usize,
@@ -5326,11 +5403,15 @@ fn write_float_buffer_value(out: &mut [u8], format: ScalarFormat, index: usize, 
     }
 }
 
-fn kv_head_index(query_heads: usize, kv_heads: usize, query_head_index: usize) -> Result<usize, ()> {
+fn kv_head_index(
+    query_heads: usize,
+    kv_heads: usize,
+    query_head_index: usize,
+) -> Result<usize, ()> {
     if query_heads == kv_heads {
         return Ok(query_head_index);
     }
-    if query_heads < kv_heads || query_heads % kv_heads != 0 {
+    if query_heads < kv_heads || !query_heads.is_multiple_of(kv_heads) {
         return Err(());
     }
     Ok(query_head_index / (query_heads / kv_heads))
@@ -5888,13 +5969,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
         if trace_take_rows {
             eprintln!(
                 "molt gpu take_rows x_shape={:?} indices_shape={:?} row_count={} row_size={} width={} x_size={} x_bytes={}",
-                x_shape,
-                indices_shape,
-                row_count,
-                row_size,
-                width,
-                x.buffer.size,
-                expected_bytes
+                x_shape, indices_shape, row_count, row_size, width, x.buffer.size, expected_bytes
             );
         }
         if x.buffer.data_view.len < expected_bytes {
@@ -6020,11 +6095,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: 
             );
         }
         if a_shape.len() != b_shape.len() {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "concat_first_dim rank mismatch",
-            );
+            return raise_exception::<_>(_py, "ValueError", "concat_first_dim rank mismatch");
         }
         if a_shape[1..] != b_shape[1..] {
             return raise_exception::<_>(
@@ -6100,8 +6171,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
     allow_negative_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let trace_scatter_rows =
-            std::env::var("MOLT_TRACE_GPU_SCATTER_ROWS").as_deref() == Ok("1");
+        let trace_scatter_rows = std::env::var("MOLT_TRACE_GPU_SCATTER_ROWS").as_deref() == Ok("1");
         let (base, base_shape) = match unsafe { tensor_runtime_view(_py, base_bits, "base") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6122,11 +6192,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             return raise_exception::<_>(_py, "ValueError", "scatter_rows rank mismatch");
         }
         if base_shape[1..] != updates_shape[1..] {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "scatter_rows trailing shape mismatch",
-            );
+            return raise_exception::<_>(_py, "ValueError", "scatter_rows trailing shape mismatch");
         }
         if base.buffer.format != updates.buffer.format {
             return raise_exception::<_>(
@@ -6171,7 +6237,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             );
         };
         let row_shape = &base_shape[1..];
-        let row_size = if row_shape.is_empty() { 1 } else { product(row_shape) };
+        let row_size = if row_shape.is_empty() {
+            1
+        } else {
+            product(row_shape)
+        };
         let width = row_size * base.buffer.format.itemsize();
         let base_required = base.buffer.size * base.buffer.format.itemsize();
         let updates_required = updates.buffer.size * updates.buffer.format.itemsize();
@@ -6209,7 +6279,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
                 allow_negative
             );
         }
-        let base_src = unsafe { std::slice::from_raw_parts(base.buffer.data_view.ptr, base_required) };
+        let base_src =
+            unsafe { std::slice::from_raw_parts(base.buffer.data_view.ptr, base_required) };
         let updates_src =
             unsafe { std::slice::from_raw_parts(updates.buffer.data_view.ptr, updates_required) };
         let mut out = base_src.to_vec();
@@ -6527,30 +6598,33 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         #[cfg(target_arch = "wasm32")]
         if requested_gpu_backend().as_deref() == Some("webgpu") {
             let browser_result: Result<u64, u64> = (|| {
-                let q_bytes = bytes_like_view_to_webgpu_bytes(q.buffer.data_view, ScalarFormat::F32)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-                let k_bytes = bytes_like_view_to_webgpu_bytes(k.buffer.data_view, ScalarFormat::F32)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-                let v_bytes = bytes_like_view_to_webgpu_bytes(v.buffer.data_view, ScalarFormat::F32)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-                let (mask_bytes, has_mask_i32) = if let Some((mask, mask_shape, mask_strides)) = &mask_info
-                {
-                    (
-                        expand_attention_mask_to_webgpu_bytes(
-                            mask,
-                            mask_shape.as_slice(),
-                            mask_strides.as_slice(),
-                            batch,
-                            heads,
-                            seq_q,
-                            seq_k,
+                let q_bytes =
+                    bytes_like_view_to_webgpu_bytes(q.buffer.data_view, ScalarFormat::F32)
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let k_bytes =
+                    bytes_like_view_to_webgpu_bytes(k.buffer.data_view, ScalarFormat::F32)
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let v_bytes =
+                    bytes_like_view_to_webgpu_bytes(v.buffer.data_view, ScalarFormat::F32)
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let (mask_bytes, has_mask_i32) =
+                    if let Some((mask, mask_shape, mask_strides)) = &mask_info {
+                        (
+                            expand_attention_mask_to_webgpu_bytes(
+                                mask,
+                                mask_shape.as_slice(),
+                                mask_strides.as_slice(),
+                                batch,
+                                heads,
+                                seq_q,
+                                seq_k,
+                            )
+                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                            1i32,
                         )
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
-                        1i32,
-                    )
-                } else {
-                    (vec![0u8; 4], 0i32)
-                };
+                    } else {
+                        (vec![0u8; 4], 0i32)
+                    };
                 let mut out_webgpu = vec![0u8; out_elems * 4];
                 let batch_bytes = i32::try_from(batch)
                     .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32"))?
@@ -6567,25 +6641,26 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                 let dim_bytes = i32::try_from(dim)
                     .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32"))?
                     .to_le_bytes();
-                let value_dim_bytes = i32::try_from(value_dim).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "value_dim exceeds i32")
-                })?
-                .to_le_bytes();
+                let value_dim_bytes = i32::try_from(value_dim)
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, "OverflowError", "value_dim exceeds i32")
+                    })?
+                    .to_le_bytes();
                 let scale_bytes = scale.to_le_bytes();
                 let has_mask_bytes = has_mask_i32.to_le_bytes();
                 let workgroup_size = 64u32;
                 let grid = if out_elems == 0 {
                     0
                 } else {
-                    u32::try_from((out_elems + workgroup_size as usize - 1) / workgroup_size as usize)
-                        .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "attention grid exceeds u32")
-                        })?
+                    u32::try_from(
+                        (out_elems + workgroup_size as usize - 1) / workgroup_size as usize,
+                    )
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, "OverflowError", "attention grid exceeds u32")
+                    })?
                 };
-                let source = render_webgpu_attention_source(
-                    "scaled_dot_product_attention",
-                    workgroup_size,
-                );
+                let source =
+                    render_webgpu_attention_source("scaled_dot_product_attention", workgroup_size);
                 dispatch_browser_webgpu_bindings(
                     _py,
                     source.as_str(),
@@ -6823,9 +6898,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if q_shape.len() != 4
-            || !matches!(q.buffer.format, ScalarFormat::F32 | ScalarFormat::F64)
-        {
+        if q_shape.len() != 4 || !matches!(q.buffer.format, ScalarFormat::F32 | ScalarFormat::F64) {
             return raise_exception::<_>(
                 _py,
                 "ValueError",
@@ -6895,8 +6968,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         let Some(codec_name) = attr_name_bits_from_bytes(_py, b"codec") else {
             return raise_exception::<_>(_py, "RuntimeError", "failed to intern codec attribute");
         };
-        let Some(runtime_mse_signs_name) =
-            attr_name_bits_from_bytes(_py, b"_runtime_mse_signs")
+        let Some(runtime_mse_signs_name) = attr_name_bits_from_bytes(_py, b"_runtime_mse_signs")
         else {
             return raise_exception::<_>(
                 _py,
@@ -6904,8 +6976,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 "failed to intern _runtime_mse_signs attribute",
             );
         };
-        let Some(runtime_qjl_signs_name) =
-            attr_name_bits_from_bytes(_py, b"_runtime_qjl_signs")
+        let Some(runtime_qjl_signs_name) = attr_name_bits_from_bytes(_py, b"_runtime_qjl_signs")
         else {
             return raise_exception::<_>(
                 _py,
@@ -6914,19 +6985,35 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         };
         let Some(mse_rotation_name) = attr_name_bits_from_bytes(_py, b"mse_rotation") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern mse_rotation attribute");
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern mse_rotation attribute",
+            );
         };
         let Some(qjl_rotation_name) = attr_name_bits_from_bytes(_py, b"qjl_rotation") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern qjl_rotation attribute");
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern qjl_rotation attribute",
+            );
         };
         let Some(signs_name) = attr_name_bits_from_bytes(_py, b"signs") else {
             return raise_exception::<_>(_py, "RuntimeError", "failed to intern signs attribute");
         };
         let Some(key_vectors_name) = attr_name_bits_from_bytes(_py, b"_key_vectors") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern _key_vectors attribute");
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern _key_vectors attribute",
+            );
         };
         let Some(value_vectors_name) = attr_name_bits_from_bytes(_py, b"_value_vectors") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern _value_vectors attribute");
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern _value_vectors attribute",
+            );
         };
         let Some(runtime_key_mse_rows_name) =
             attr_name_bits_from_bytes(_py, b"_runtime_key_mse_weight_rows")
@@ -6955,8 +7042,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 "failed to intern _runtime_key_residual_scale_rows attribute",
             );
         };
-        let Some(runtime_value_rows_name) =
-            attr_name_bits_from_bytes(_py, b"_runtime_value_rows")
+        let Some(runtime_value_rows_name) = attr_name_bits_from_bytes(_py, b"_runtime_value_rows")
         else {
             return raise_exception::<_>(
                 _py,
@@ -6971,13 +7057,25 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             return raise_exception::<_>(_py, "RuntimeError", "failed to intern _batch attribute");
         };
         let Some(mse_weights_name) = attr_name_bits_from_bytes(_py, b"mse_weights") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern mse_weights attribute");
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern mse_weights attribute",
+            );
         };
         let Some(residual_signs_name) = attr_name_bits_from_bytes(_py, b"residual_signs") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern residual_signs attribute");
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern residual_signs attribute",
+            );
         };
         let Some(residual_scale_name) = attr_name_bits_from_bytes(_py, b"residual_scale") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern residual_scale attribute");
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern residual_scale attribute",
+            );
         };
 
         let k_cache_bits = crate::molt_getattr_builtin(k_bits, kv_cache_name, missing);
@@ -7017,54 +7115,67 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             crate::molt_getattr_builtin(k_cache_bits, runtime_mse_signs_name, missing);
         let runtime_qjl_signs_bits =
             crate::molt_getattr_builtin(k_cache_bits, runtime_qjl_signs_name, missing);
-        let (mse_signs, qjl_signs) = if runtime_mse_signs_bits != missing && runtime_qjl_signs_bits != missing {
-            let (mse_signs_tensor, mse_signs_shape) =
-                match unsafe { tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs") } {
+        let (mse_signs, qjl_signs) =
+            if runtime_mse_signs_bits != missing && runtime_qjl_signs_bits != missing {
+                let (mse_signs_tensor, mse_signs_shape) = match unsafe {
+                    tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs")
+                } {
                     Ok(value) => value,
                     Err(bits) => return bits,
                 };
-            let (qjl_signs_tensor, qjl_signs_shape) =
-                match unsafe { tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs") } {
+                let (qjl_signs_tensor, qjl_signs_shape) = match unsafe {
+                    tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs")
+                } {
                     Ok(value) => value,
                     Err(bits) => return bits,
                 };
-            if mse_signs_shape != vec![dim] || qjl_signs_shape != vec![dim] {
-                return raise_exception::<_>(
+                if mse_signs_shape != vec![dim] || qjl_signs_shape != vec![dim] {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "turboquant runtime sign shadow tensors do not match query head dimension",
+                    );
+                }
+                let mut mse = vec![0.0f32; dim];
+                let mut qjl = vec![0.0f32; dim];
+                for dim_index in 0..dim {
+                    mse[dim_index] = read_float_buffer_value(
+                        mse_signs_tensor.buffer.data_view,
+                        mse_signs_tensor.buffer.format,
+                        dim_index,
+                    );
+                    qjl[dim_index] = read_float_buffer_value(
+                        qjl_signs_tensor.buffer.data_view,
+                        qjl_signs_tensor.buffer.format,
+                        dim_index,
+                    );
+                }
+                (mse, qjl)
+            } else {
+                let codec_bits = require_attr_bits(_py, k_cache_bits, codec_name, "codec")
+                    .unwrap_or_else(|bits| bits);
+                let mse = match decode_rotation_signs_from_codec(
                     _py,
-                    "ValueError",
-                    "turboquant runtime sign shadow tensors do not match query head dimension",
-                );
-            }
-            let mut mse = vec![0.0f32; dim];
-            let mut qjl = vec![0.0f32; dim];
-            for dim_index in 0..dim {
-                mse[dim_index] = read_float_buffer_value(
-                    mse_signs_tensor.buffer.data_view,
-                    mse_signs_tensor.buffer.format,
-                    dim_index,
-                );
-                qjl[dim_index] = read_float_buffer_value(
-                    qjl_signs_tensor.buffer.data_view,
-                    qjl_signs_tensor.buffer.format,
-                    dim_index,
-                );
-            }
-            (mse, qjl)
-        } else {
-            let codec_bits =
-                require_attr_bits(_py, k_cache_bits, codec_name, "codec").unwrap_or_else(|bits| return bits);
-            let mse =
-                match decode_rotation_signs_from_codec(_py, codec_bits, mse_rotation_name, signs_name, "mse_rotation") {
+                    codec_bits,
+                    mse_rotation_name,
+                    signs_name,
+                    "mse_rotation",
+                ) {
                     Ok(value) => value,
                     Err(bits) => return bits,
                 };
-            let qjl =
-                match decode_rotation_signs_from_codec(_py, codec_bits, qjl_rotation_name, signs_name, "qjl_rotation") {
+                let qjl = match decode_rotation_signs_from_codec(
+                    _py,
+                    codec_bits,
+                    qjl_rotation_name,
+                    signs_name,
+                    "qjl_rotation",
+                ) {
                     Ok(value) => value,
                     Err(bits) => return bits,
                 };
-            (mse, qjl)
-        };
+                (mse, qjl)
+            };
         if mse_signs.len() != dim || qjl_signs.len() != dim {
             return raise_exception::<_>(
                 _py,
@@ -7122,13 +7233,25 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             }
             let expected = [batch, query_heads, query_seq, usize::MAX];
             if mask_shape[0] != 1 && mask_shape[0] != expected[0] {
-                return raise_exception::<_>(_py, "ValueError", "turboquant attention mask batch mismatch");
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "turboquant attention mask batch mismatch",
+                );
             }
             if mask_shape[1] != 1 && mask_shape[1] != expected[1] {
-                return raise_exception::<_>(_py, "ValueError", "turboquant attention mask head mismatch");
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "turboquant attention mask head mismatch",
+                );
             }
             if mask_shape[2] != 1 && mask_shape[2] != expected[2] {
-                return raise_exception::<_>(_py, "ValueError", "turboquant attention mask query mismatch");
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "turboquant attention mask query mismatch",
+                );
             }
             Some((mask, mask_shape.clone(), strides(&mask_shape)))
         };
@@ -7165,15 +7288,27 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     }
                     .map_err(|bits| bits)?;
                     let (key_mse, key_mse_shape) = unsafe {
-                        tensor_runtime_view(_py, runtime_key_mse_bits, "_runtime_key_mse_weight_rows")
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_mse_bits,
+                            "_runtime_key_mse_weight_rows",
+                        )
                     }
                     .map_err(|bits| bits)?;
                     let (key_sign, key_sign_shape) = unsafe {
-                        tensor_runtime_view(_py, runtime_key_sign_bits, "_runtime_key_residual_sign_rows")
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_sign_bits,
+                            "_runtime_key_residual_sign_rows",
+                        )
                     }
                     .map_err(|bits| bits)?;
                     let (key_scale, key_scale_shape) = unsafe {
-                        tensor_runtime_view(_py, runtime_key_scale_bits, "_runtime_key_residual_scale_rows")
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_scale_bits,
+                            "_runtime_key_residual_scale_rows",
+                        )
                     }
                     .map_err(|bits| bits)?;
                     let (value_rows, value_rows_shape) = unsafe {
@@ -7221,9 +7356,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     for batch_index in 0..batch {
                         for query_head_index in 0..query_heads {
                             for query_index in 0..query_seq {
-                                let q_base =
-                                    ((batch_index * query_heads + query_head_index) * q_stride)
-                                        + query_index * dim;
+                                let q_base = ((batch_index * query_heads + query_head_index)
+                                    * q_stride)
+                                    + query_index * dim;
                                 for dim_index in 0..dim {
                                     query_row[dim_index] = read_float_buffer_value(
                                         q.buffer.data_view,
@@ -7231,10 +7366,14 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                         q_base + dim_index,
                                     );
                                 }
-                                let rotated_q =
-                                    hadamard_apply_with_signs(query_row.as_slice(), mse_signs.as_slice());
-                                let query_sketch =
-                                    hadamard_apply_with_signs(query_row.as_slice(), qjl_signs.as_slice());
+                                let rotated_q = hadamard_apply_with_signs(
+                                    query_row.as_slice(),
+                                    mse_signs.as_slice(),
+                                );
+                                let query_sketch = hadamard_apply_with_signs(
+                                    query_row.as_slice(),
+                                    qjl_signs.as_slice(),
+                                );
                                 for dim_index in 0..dim {
                                     write_float_buffer_value(
                                         rotated_q_bytes.as_mut_slice(),
@@ -7256,7 +7395,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let query_pair_len = q_total * 4;
                     let mut query_pair_bytes = vec![0u8; query_pair_len * 2];
                     query_pair_bytes[..query_pair_len].copy_from_slice(rotated_q_bytes.as_slice());
-                    query_pair_bytes[query_pair_len..].copy_from_slice(query_sketch_bytes.as_slice());
+                    query_pair_bytes[query_pair_len..]
+                        .copy_from_slice(query_sketch_bytes.as_slice());
                     let key_mse_bytes = bytes_like_view_to_webgpu_bytes(
                         key_mse.buffer.data_view,
                         key_mse.buffer.format,
@@ -7277,43 +7417,55 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         value_rows.buffer.format,
                     )
                     .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-                    let (mask_bytes, has_mask_i32): (Vec<u8>, i32) = if let Some((mask, mask_shape, mask_strides)) = &mask_info
-                    {
-                        (
-                            expand_attention_mask_to_webgpu_bytes(
-                                mask,
-                                mask_shape.as_slice(),
-                                mask_strides.as_slice(),
-                                batch,
-                                query_heads,
-                                query_seq,
-                                seq_k,
+                    let (mask_bytes, has_mask_i32): (Vec<u8>, i32) =
+                        if let Some((mask, mask_shape, mask_strides)) = &mask_info {
+                            (
+                                expand_attention_mask_to_webgpu_bytes(
+                                    mask,
+                                    mask_shape.as_slice(),
+                                    mask_strides.as_slice(),
+                                    batch,
+                                    query_heads,
+                                    query_seq,
+                                    seq_k,
+                                )
+                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                                1i32,
                             )
-                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
-                            1i32,
-                        )
-                    } else {
-                        (vec![0u8; 4], 0i32)
-                    };
+                        } else {
+                            (vec![0u8; 4], 0i32)
+                        };
                     let out_elems = batch * query_heads * query_seq * dim;
                     let mut out_gpu = vec![0u8; out_elems * 4];
                     let batch_bytes = i32::try_from(batch)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32")
+                        })?
                         .to_le_bytes();
                     let query_heads_bytes = i32::try_from(query_heads)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32")
+                        })?
                         .to_le_bytes();
                     let kv_heads_bytes = i32::try_from(kv_heads)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32")
+                        })?
                         .to_le_bytes();
                     let seq_q_bytes = i32::try_from(query_seq)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32")
+                        })?
                         .to_le_bytes();
                     let seq_k_bytes = i32::try_from(seq_k)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32")
+                        })?
                         .to_le_bytes();
                     let dim_bytes = i32::try_from(dim)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32")
+                        })?
                         .to_le_bytes();
                     let scale_bytes = scale.to_le_bytes();
                     let has_mask_bytes = has_mask_i32.to_le_bytes();
@@ -7330,14 +7482,16 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let grid = if out_elems == 0 {
                         0
                     } else {
-                        u32::try_from((out_elems + workgroup_size as usize - 1) / workgroup_size as usize)
-                            .map_err(|_| {
-                                raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "turboquant attention grid exceeds u32",
-                                )
-                            })?
+                        u32::try_from(
+                            (out_elems + workgroup_size as usize - 1) / workgroup_size as usize,
+                        )
+                        .map_err(|_| {
+                            raise_exception::<u64>(
+                                _py,
+                                "OverflowError",
+                                "turboquant attention grid exceeds u32",
+                            )
+                        })?
                     };
 
                     let device = RuntimeWebGpuDevice::new()
@@ -7461,15 +7615,27 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     }
                     .map_err(|bits| bits)?;
                     let (key_mse, key_mse_shape) = unsafe {
-                        tensor_runtime_view(_py, runtime_key_mse_bits, "_runtime_key_mse_weight_rows")
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_mse_bits,
+                            "_runtime_key_mse_weight_rows",
+                        )
                     }
                     .map_err(|bits| bits)?;
                     let (key_sign, key_sign_shape) = unsafe {
-                        tensor_runtime_view(_py, runtime_key_sign_bits, "_runtime_key_residual_sign_rows")
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_sign_bits,
+                            "_runtime_key_residual_sign_rows",
+                        )
                     }
                     .map_err(|bits| bits)?;
                     let (key_scale, key_scale_shape) = unsafe {
-                        tensor_runtime_view(_py, runtime_key_scale_bits, "_runtime_key_residual_scale_rows")
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_scale_bits,
+                            "_runtime_key_residual_scale_rows",
+                        )
                     }
                     .map_err(|bits| bits)?;
                     let (value_rows, value_rows_shape) = unsafe {
@@ -7517,9 +7683,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     for batch_index in 0..batch {
                         for query_head_index in 0..query_heads {
                             for query_index in 0..query_seq {
-                                let q_base =
-                                    ((batch_index * query_heads + query_head_index) * q_stride)
-                                        + query_index * dim;
+                                let q_base = ((batch_index * query_heads + query_head_index)
+                                    * q_stride)
+                                    + query_index * dim;
                                 for dim_index in 0..dim {
                                     query_row[dim_index] = read_float_buffer_value(
                                         q.buffer.data_view,
@@ -7527,10 +7693,14 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                         q_base + dim_index,
                                     );
                                 }
-                                let rotated_q =
-                                    hadamard_apply_with_signs(query_row.as_slice(), mse_signs.as_slice());
-                                let query_sketch =
-                                    hadamard_apply_with_signs(query_row.as_slice(), qjl_signs.as_slice());
+                                let rotated_q = hadamard_apply_with_signs(
+                                    query_row.as_slice(),
+                                    mse_signs.as_slice(),
+                                );
+                                let query_sketch = hadamard_apply_with_signs(
+                                    query_row.as_slice(),
+                                    qjl_signs.as_slice(),
+                                );
                                 for dim_index in 0..dim {
                                     write_float_buffer_value(
                                         rotated_q_bytes.as_mut_slice(),
@@ -7571,43 +7741,55 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                     let q_rotated_bytes = rotated_q_bytes;
                     let q_sketch_bytes = query_sketch_bytes;
-                    let (mask_bytes, has_mask_i32): (Vec<u8>, i32) = if let Some((mask, mask_shape, mask_strides)) = &mask_info
-                    {
-                        (
-                            expand_attention_mask_to_webgpu_bytes(
-                                mask,
-                                mask_shape.as_slice(),
-                                mask_strides.as_slice(),
-                                batch,
-                                query_heads,
-                                query_seq,
-                                seq_k,
+                    let (mask_bytes, has_mask_i32): (Vec<u8>, i32) =
+                        if let Some((mask, mask_shape, mask_strides)) = &mask_info {
+                            (
+                                expand_attention_mask_to_webgpu_bytes(
+                                    mask,
+                                    mask_shape.as_slice(),
+                                    mask_strides.as_slice(),
+                                    batch,
+                                    query_heads,
+                                    query_seq,
+                                    seq_k,
+                                )
+                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                                1i32,
                             )
-                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
-                            1i32,
-                        )
-                    } else {
-                        (vec![0u8; 4], 0i32)
-                    };
+                        } else {
+                            (vec![0u8; 4], 0i32)
+                        };
                     let out_elems = batch * query_heads * query_seq * dim;
                     let mut out_gpu = vec![0u8; out_elems * 4];
                     let batch_bytes = i32::try_from(batch)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32")
+                        })?
                         .to_le_bytes();
                     let query_heads_bytes = i32::try_from(query_heads)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32")
+                        })?
                         .to_le_bytes();
                     let kv_heads_bytes = i32::try_from(kv_heads)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32")
+                        })?
                         .to_le_bytes();
                     let seq_q_bytes = i32::try_from(query_seq)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32")
+                        })?
                         .to_le_bytes();
                     let seq_k_bytes = i32::try_from(seq_k)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32")
+                        })?
                         .to_le_bytes();
                     let dim_bytes = i32::try_from(dim)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32")
+                        })?
                         .to_le_bytes();
                     let scale_bytes = scale.to_le_bytes();
                     let has_mask_bytes = has_mask_i32.to_le_bytes();
@@ -7617,7 +7799,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let pipeline = device
                         .compile_pipeline(
                             "turboquant_attention_packed",
-                            &render_metal_turboquant_attention_source("turboquant_attention_packed"),
+                            &render_metal_turboquant_attention_source(
+                                "turboquant_attention_packed",
+                            ),
                         )
                         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
 
@@ -7724,24 +7908,42 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 && runtime_qjl_signs_bits != missing
             {
                 let browser_result: Result<u64, u64> = (|| {
-                    let (mse_signs_tensor, mse_signs_shape) =
-                        unsafe { tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs") }
-                            .map_err(|bits| bits)?;
-                    let (qjl_signs_tensor, qjl_signs_shape) =
-                        unsafe { tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs") }
-                            .map_err(|bits| bits)?;
-                    let (key_mse, key_mse_shape) =
-                        unsafe { tensor_runtime_view(_py, runtime_key_mse_bits, "_runtime_key_mse_weight_rows") }
-                            .map_err(|bits| bits)?;
-                    let (key_sign, key_sign_shape) =
-                        unsafe { tensor_runtime_view(_py, runtime_key_sign_bits, "_runtime_key_residual_sign_rows") }
-                            .map_err(|bits| bits)?;
-                    let (key_scale, key_scale_shape) =
-                        unsafe { tensor_runtime_view(_py, runtime_key_scale_bits, "_runtime_key_residual_scale_rows") }
-                            .map_err(|bits| bits)?;
-                    let (value_rows, value_rows_shape) =
-                        unsafe { tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows") }
-                            .map_err(|bits| bits)?;
+                    let (mse_signs_tensor, mse_signs_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (qjl_signs_tensor, qjl_signs_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_mse, key_mse_shape) = unsafe {
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_mse_bits,
+                            "_runtime_key_mse_weight_rows",
+                        )
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_sign, key_sign_shape) = unsafe {
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_sign_bits,
+                            "_runtime_key_residual_sign_rows",
+                        )
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_scale, key_scale_shape) = unsafe {
+                        tensor_runtime_view(
+                            _py,
+                            runtime_key_scale_bits,
+                            "_runtime_key_residual_scale_rows",
+                        )
+                    }
+                    .map_err(|bits| bits)?;
+                    let (value_rows, value_rows_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows")
+                    }
+                    .map_err(|bits| bits)?;
                     if mse_signs_shape != vec![dim]
                         || qjl_signs_shape != vec![dim]
                         || key_mse_shape.len() != 4
@@ -7783,9 +7985,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     for batch_index in 0..batch {
                         for query_head_index in 0..query_heads {
                             for query_index in 0..query_seq {
-                                let q_base =
-                                    ((batch_index * query_heads + query_head_index) * q_stride)
-                                        + query_index * dim;
+                                let q_base = ((batch_index * query_heads + query_head_index)
+                                    * q_stride)
+                                    + query_index * dim;
                                 for dim_index in 0..dim {
                                     query_row[dim_index] = read_float_buffer_value(
                                         q.buffer.data_view,
@@ -7793,10 +7995,14 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                         q_base + dim_index,
                                     );
                                 }
-                                let rotated_q =
-                                    hadamard_apply_with_signs(query_row.as_slice(), mse_signs.as_slice());
-                                let query_sketch =
-                                    hadamard_apply_with_signs(query_row.as_slice(), qjl_signs.as_slice());
+                                let rotated_q = hadamard_apply_with_signs(
+                                    query_row.as_slice(),
+                                    mse_signs.as_slice(),
+                                );
+                                let query_sketch = hadamard_apply_with_signs(
+                                    query_row.as_slice(),
+                                    qjl_signs.as_slice(),
+                                );
                                 for dim_index in 0..dim {
                                     write_float_buffer_value(
                                         rotated_q_bytes.as_mut_slice(),
@@ -7818,7 +8024,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let query_pair_len = q_total * 4;
                     let mut query_pair_bytes = vec![0u8; query_pair_len * 2];
                     query_pair_bytes[..query_pair_len].copy_from_slice(rotated_q_bytes.as_slice());
-                    query_pair_bytes[query_pair_len..].copy_from_slice(query_sketch_bytes.as_slice());
+                    query_pair_bytes[query_pair_len..]
+                        .copy_from_slice(query_sketch_bytes.as_slice());
                     let key_mse_bytes = bytes_like_view_to_webgpu_bytes(
                         key_mse.buffer.data_view,
                         key_mse.buffer.format,
@@ -7839,43 +8046,55 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         value_rows.buffer.format,
                     )
                     .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-                    let (mask_bytes, has_mask_i32) = if let Some((mask, mask_shape, mask_strides)) = &mask_info
-                    {
-                        (
-                            expand_attention_mask_to_webgpu_bytes(
-                                mask,
-                                mask_shape.as_slice(),
-                                mask_strides.as_slice(),
-                                batch,
-                                query_heads,
-                                query_seq,
-                                seq_k,
+                    let (mask_bytes, has_mask_i32) =
+                        if let Some((mask, mask_shape, mask_strides)) = &mask_info {
+                            (
+                                expand_attention_mask_to_webgpu_bytes(
+                                    mask,
+                                    mask_shape.as_slice(),
+                                    mask_strides.as_slice(),
+                                    batch,
+                                    query_heads,
+                                    query_seq,
+                                    seq_k,
+                                )
+                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                                1i32,
                             )
-                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
-                            1i32,
-                        )
-                    } else {
-                        (vec![0u8; 4], 0i32)
-                    };
+                        } else {
+                            (vec![0u8; 4], 0i32)
+                        };
                     let out_elems = batch * query_heads * query_seq * dim;
                     let mut out_webgpu = vec![0u8; out_elems * 4];
                     let batch_bytes = i32::try_from(batch)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32")
+                        })?
                         .to_le_bytes();
                     let query_heads_bytes = i32::try_from(query_heads)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32")
+                        })?
                         .to_le_bytes();
                     let kv_heads_bytes = i32::try_from(kv_heads)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32")
+                        })?
                         .to_le_bytes();
                     let seq_q_bytes = i32::try_from(query_seq)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32")
+                        })?
                         .to_le_bytes();
                     let seq_k_bytes = i32::try_from(seq_k)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32")
+                        })?
                         .to_le_bytes();
                     let dim_bytes = i32::try_from(dim)
-                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32"))?
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32")
+                        })?
                         .to_le_bytes();
                     let scale_bytes = scale.to_le_bytes();
                     let has_mask_bytes = has_mask_i32.to_le_bytes();
@@ -7892,14 +8111,16 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let grid = if out_elems == 0 {
                         0
                     } else {
-                        u32::try_from((out_elems + workgroup_size as usize - 1) / workgroup_size as usize)
-                            .map_err(|_| {
-                                raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "turboquant attention grid exceeds u32",
-                                )
-                            })?
+                        u32::try_from(
+                            (out_elems + workgroup_size as usize - 1) / workgroup_size as usize,
+                        )
+                        .map_err(|_| {
+                            raise_exception::<u64>(
+                                _py,
+                                "OverflowError",
+                                "turboquant attention grid exceeds u32",
+                            )
+                        })?
                     };
                     let source = render_webgpu_turboquant_attention_source(
                         "turboquant_attention_packed",
@@ -7958,26 +8179,38 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 };
             }
 
-            let (key_mse, key_mse_shape) =
-                match unsafe { tensor_runtime_view(_py, runtime_key_mse_bits, "_runtime_key_mse_weight_rows") } {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
-            let (key_sign, key_sign_shape) =
-                match unsafe { tensor_runtime_view(_py, runtime_key_sign_bits, "_runtime_key_residual_sign_rows") } {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
-            let (key_scale, key_scale_shape) =
-                match unsafe { tensor_runtime_view(_py, runtime_key_scale_bits, "_runtime_key_residual_scale_rows") } {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
-            let (value_rows, value_rows_shape) =
-                match unsafe { tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows") } {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
+            let (key_mse, key_mse_shape) = match unsafe {
+                tensor_runtime_view(_py, runtime_key_mse_bits, "_runtime_key_mse_weight_rows")
+            } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            let (key_sign, key_sign_shape) = match unsafe {
+                tensor_runtime_view(
+                    _py,
+                    runtime_key_sign_bits,
+                    "_runtime_key_residual_sign_rows",
+                )
+            } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            let (key_scale, key_scale_shape) = match unsafe {
+                tensor_runtime_view(
+                    _py,
+                    runtime_key_scale_bits,
+                    "_runtime_key_residual_scale_rows",
+                )
+            } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            let (value_rows, value_rows_shape) = match unsafe {
+                tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows")
+            } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
             if key_mse_shape.len() != 4
                 || key_sign_shape.len() != 4
                 || key_scale_shape.len() != 3
@@ -8016,7 +8249,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
 
             for batch_index in 0..batch {
                 for query_head_index in 0..query_heads {
-                    let kv_head_index = match kv_head_index(query_heads, kv_heads, query_head_index) {
+                    let kv_head_index = match kv_head_index(query_heads, kv_heads, query_head_index)
+                    {
                         Ok(value) => value,
                         Err(()) => {
                             return raise_exception::<_>(
@@ -8027,8 +8261,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         }
                     };
                     for query_index in 0..query_seq {
-                        let q_base =
-                            ((batch_index * query_heads + query_head_index) * q_stride) + query_index * dim;
+                        let q_base = ((batch_index * query_heads + query_head_index) * q_stride)
+                            + query_index * dim;
                         let mut query_row = vec![0.0f32; dim];
                         for dim_index in 0..dim {
                             query_row[dim_index] = read_float_buffer_value(
@@ -8131,7 +8365,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             }
                         }
 
-                        let out_base = ((batch_index * query_heads + query_head_index) * out_stride)
+                        let out_base = ((batch_index * query_heads + query_head_index)
+                            * out_stride)
                             + query_index * dim;
                         for dim_index in 0..dim {
                             write_float_buffer_value(
@@ -8196,22 +8431,25 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             return tensor_bits;
         }
 
-        let key_batches_bits = match require_attr_bits(_py, k_cache_bits, key_vectors_name, "_key_vectors") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let value_batches_bits = match require_attr_bits(_py, k_cache_bits, value_vectors_name, "_value_vectors") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        let key_batches_bits =
+            match require_attr_bits(_py, k_cache_bits, key_vectors_name, "_key_vectors") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let value_batches_bits =
+            match require_attr_bits(_py, k_cache_bits, value_vectors_name, "_value_vectors") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
         let key_batches = match decode_u64_sequence_bits(_py, key_batches_bits, "_key_vectors") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let value_batches = match decode_u64_sequence_bits(_py, value_batches_bits, "_value_vectors") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        let value_batches =
+            match decode_u64_sequence_bits(_py, value_batches_bits, "_value_vectors") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
         if key_batches.len() != batch || value_batches.len() != batch {
             return raise_exception::<_>(
                 _py,
@@ -8227,11 +8465,16 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         let out_stride = query_seq * dim;
 
         for batch_index in 0..batch {
-            let key_heads = match decode_u64_sequence_bits(_py, key_batches[batch_index], "key head list") {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
-            let value_heads = match decode_u64_sequence_bits(_py, value_batches[batch_index], "value head list") {
+            let key_heads =
+                match decode_u64_sequence_bits(_py, key_batches[batch_index], "key head list") {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+            let value_heads = match decode_u64_sequence_bits(
+                _py,
+                value_batches[batch_index],
+                "value head list",
+            ) {
                 Ok(value) => value,
                 Err(bits) => return bits,
             };
@@ -8254,11 +8497,19 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         );
                     }
                 };
-                let key_rows = match decode_u64_sequence_bits(_py, key_heads[kv_head_index], "encoded key rows") {
+                let key_rows = match decode_u64_sequence_bits(
+                    _py,
+                    key_heads[kv_head_index],
+                    "encoded key rows",
+                ) {
                     Ok(value) => value,
                     Err(bits) => return bits,
                 };
-                let value_rows = match decode_u64_sequence_bits(_py, value_heads[kv_head_index], "encoded value rows") {
+                let value_rows = match decode_u64_sequence_bits(
+                    _py,
+                    value_heads[kv_head_index],
+                    "encoded value rows",
+                ) {
                     Ok(value) => value,
                     Err(bits) => return bits,
                 };
@@ -8272,8 +8523,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 let seq_k = key_rows.len();
 
                 for query_index in 0..query_seq {
-                    let q_base =
-                        ((batch_index * query_heads + query_head_index) * q_stride) + query_index * dim;
+                    let q_base = ((batch_index * query_heads + query_head_index) * q_stride)
+                        + query_index * dim;
                     let mut query_row = vec![0.0f32; dim];
                     for dim_index in 0..dim {
                         query_row[dim_index] = read_float_buffer_value(
@@ -8282,21 +8533,28 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             q_base + dim_index,
                         );
                     }
-                    let rotated_query = hadamard_apply_with_signs(query_row.as_slice(), mse_signs.as_slice());
-                    let query_sketch = hadamard_apply_with_signs(query_row.as_slice(), qjl_signs.as_slice());
+                    let rotated_query =
+                        hadamard_apply_with_signs(query_row.as_slice(), mse_signs.as_slice());
+                    let query_sketch =
+                        hadamard_apply_with_signs(query_row.as_slice(), qjl_signs.as_slice());
 
                     let mut logits = vec![0.0f32; seq_k];
                     let mut max_logit = f32::NEG_INFINITY;
                     for (row_index, &encoded_bits) in key_rows.iter().enumerate() {
-                        let mse_bits =
-                            match require_attr_bits(_py, encoded_bits, mse_weights_name, "mse_weights") {
-                                Ok(value) => value,
-                                Err(bits) => return bits,
-                            };
-                        let mse_weights = match decode_float_sequence_bits(_py, mse_bits, "mse_weights") {
+                        let mse_bits = match require_attr_bits(
+                            _py,
+                            encoded_bits,
+                            mse_weights_name,
+                            "mse_weights",
+                        ) {
                             Ok(value) => value,
                             Err(bits) => return bits,
                         };
+                        let mse_weights =
+                            match decode_float_sequence_bits(_py, mse_bits, "mse_weights") {
+                                Ok(value) => value,
+                                Err(bits) => return bits,
+                            };
                         let residual_sign_bits = match require_attr_bits(
                             _py,
                             encoded_bits,
@@ -8323,17 +8581,18 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             Ok(value) => value,
                             Err(bits) => return bits,
                         };
-                        let residual_scale = if let Some(value) = to_f64(obj_from_bits(residual_scale_bits)) {
-                            value as f32
-                        } else if let Some(value) = to_i64(obj_from_bits(residual_scale_bits)) {
-                            value as f32
-                        } else {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "residual_scale must be numeric",
-                            );
-                        };
+                        let residual_scale =
+                            if let Some(value) = to_f64(obj_from_bits(residual_scale_bits)) {
+                                value as f32
+                            } else if let Some(value) = to_i64(obj_from_bits(residual_scale_bits)) {
+                                value as f32
+                            } else {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "TypeError",
+                                    "residual_scale must be numeric",
+                                );
+                            };
                         if mse_weights.len() != dim || residual_signs.len() != dim {
                             return raise_exception::<_>(
                                 _py,
@@ -8360,7 +8619,13 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                     "turboquant attention mask key width mismatch",
                                 );
                             }
-                            score += decode_mask_value(mask, batch_index, query_head_index, query_index, row_index);
+                            score += decode_mask_value(
+                                mask,
+                                batch_index,
+                                query_head_index,
+                                query_index,
+                                row_index,
+                            );
                         }
                         logits[row_index] = score;
                         if logits[row_index] > max_logit {
@@ -8381,15 +8646,20 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
 
                     let mut out_row = vec![0.0f32; dim];
                     for (row_index, &encoded_bits) in value_rows.iter().enumerate() {
-                        let mse_bits =
-                            match require_attr_bits(_py, encoded_bits, mse_weights_name, "mse_weights") {
-                                Ok(value) => value,
-                                Err(bits) => return bits,
-                            };
-                        let mse_weights = match decode_float_sequence_bits(_py, mse_bits, "mse_weights") {
+                        let mse_bits = match require_attr_bits(
+                            _py,
+                            encoded_bits,
+                            mse_weights_name,
+                            "mse_weights",
+                        ) {
                             Ok(value) => value,
                             Err(bits) => return bits,
                         };
+                        let mse_weights =
+                            match decode_float_sequence_bits(_py, mse_bits, "mse_weights") {
+                                Ok(value) => value,
+                                Err(bits) => return bits,
+                            };
                         let residual_sign_bits = match require_attr_bits(
                             _py,
                             encoded_bits,
@@ -8416,24 +8686,30 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             Ok(value) => value,
                             Err(bits) => return bits,
                         };
-                        let residual_scale = if let Some(value) = to_f64(obj_from_bits(residual_scale_bits)) {
-                            value as f32
-                        } else if let Some(value) = to_i64(obj_from_bits(residual_scale_bits)) {
-                            value as f32
-                        } else {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "residual_scale must be numeric",
-                            );
-                        };
-                        let base = hadamard_invert_with_signs(mse_weights.as_slice(), mse_signs.as_slice());
+                        let residual_scale =
+                            if let Some(value) = to_f64(obj_from_bits(residual_scale_bits)) {
+                                value as f32
+                            } else if let Some(value) = to_i64(obj_from_bits(residual_scale_bits)) {
+                                value as f32
+                            } else {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "TypeError",
+                                    "residual_scale must be numeric",
+                                );
+                            };
+                        let base = hadamard_invert_with_signs(
+                            mse_weights.as_slice(),
+                            mse_signs.as_slice(),
+                        );
                         let residual_rot: Vec<f32> = residual_signs
                             .iter()
                             .map(|value| *value * residual_scale)
                             .collect();
-                        let residual =
-                            hadamard_invert_with_signs(residual_rot.as_slice(), qjl_signs.as_slice());
+                        let residual = hadamard_invert_with_signs(
+                            residual_rot.as_slice(),
+                            qjl_signs.as_slice(),
+                        );
                         let weight = probs[row_index] / exp_sum;
                         for dim_index in 0..dim {
                             out_row[dim_index] += weight * (base[dim_index] + residual[dim_index]);
@@ -8906,8 +9182,9 @@ pub extern "C" fn molt_gpu_linear_contiguous(
                 let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
                     .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                 let mut out_webgpu = vec![0u8; outer * out_features * 4];
-                let outer_i32 = i32::try_from(outer)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32"))?;
+                let outer_i32 = i32::try_from(outer).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32")
+                })?;
                 let in_features_i32 = i32::try_from(in_features).map_err(|_| {
                     raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
                 })?;
@@ -9091,8 +9368,9 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
                 let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
                     .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                 let mut out_webgpu = vec![0u8; outer * out_features * 4];
-                let outer_i32 = i32::try_from(outer)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32"))?;
+                let outer_i32 = i32::try_from(outer).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32")
+                })?;
                 let in_features_i32 = i32::try_from(in_features).map_err(|_| {
                     raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
                 })?;
@@ -9338,20 +9616,22 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
                 let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
                     .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                 let mut out_webgpu = vec![0u8; outer * hidden * 4];
-                let outer_i32 = i32::try_from(outer)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32"))?;
+                let outer_i32 = i32::try_from(outer).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32")
+                })?;
                 let in_features_i32 = i32::try_from(in_features).map_err(|_| {
                     raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
                 })?;
-                let hidden_i32 = i32::try_from(hidden)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "hidden exceeds i32"))?;
+                let hidden_i32 = i32::try_from(hidden).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "hidden exceeds i32")
+                })?;
                 let outer_bytes = outer_i32.to_le_bytes();
                 let in_features_bytes = in_features_i32.to_le_bytes();
                 let hidden_bytes = hidden_i32.to_le_bytes();
                 let workgroup_size = 64u32;
-                let total_threads = outer
-                    .checked_mul(hidden)
-                    .ok_or_else(|| raise_exception::<u64>(_py, "OverflowError", "gpu gate thread count overflow"))?;
+                let total_threads = outer.checked_mul(hidden).ok_or_else(|| {
+                    raise_exception::<u64>(_py, "OverflowError", "gpu gate thread count overflow")
+                })?;
                 let grid = if total_threads == 0 {
                     0
                 } else {
@@ -10245,17 +10525,6 @@ pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_arch = "aarch64")]
-    use super::{
-        linear_dot4_gate_up_interleaved_unaligned, linear_dot4_rows_unaligned,
-        linear_dot8_gate_up_interleaved_unaligned, linear_gate_up8_store_unaligned,
-    };
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        all(target_arch = "wasm32", target_feature = "simd128")
-    ))]
-    use super::{linear_gate_up4_store_unaligned, linear_rows4_store_ptrs_unaligned};
     use super::{
         decode_bf16_payload_to_f32_bytes, decode_f16_payload_to_f32_bytes,
         molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list, molt_gpu_linear_contiguous,
@@ -10263,10 +10532,21 @@ mod tests {
         molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
         molt_gpu_repeat_axis_contiguous, molt_gpu_rms_norm_last_axis_contiguous,
         molt_gpu_rope_apply_contiguous, molt_gpu_softmax_last_axis_contiguous,
-        molt_gpu_squared_relu_gate_interleaved_contiguous,
-        molt_gpu_tensor__tensor_data_list, molt_gpu_tensor__tensor_linear,
-        molt_gpu_tensor__tensor_reshape_view, molt_gpu_tensor__zeros, molt_gpu_tensor_from_parts,
+        molt_gpu_squared_relu_gate_interleaved_contiguous, molt_gpu_tensor__tensor_data_list,
+        molt_gpu_tensor__tensor_linear, molt_gpu_tensor__tensor_reshape_view,
+        molt_gpu_tensor__zeros, molt_gpu_tensor_from_parts,
     };
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
+    use super::{
+        linear_dot4_gate_up_interleaved_unaligned, linear_dot4_rows_unaligned,
+        linear_dot8_gate_up_interleaved_unaligned, linear_gate_up8_store_unaligned,
+    };
+    #[cfg(any(
+        all(target_arch = "aarch64", not(miri)),
+        target_arch = "x86_64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ))]
+    use super::{linear_gate_up4_store_unaligned, linear_rows4_store_ptrs_unaligned};
     use crate::{
         MoltObject, alloc_bytes, alloc_class_obj, alloc_string, alloc_tuple,
         attr_name_bits_from_bytes, builtin_classes, bytes_data, bytes_len, dec_ref_bits,
@@ -10393,7 +10673,7 @@ mod tests {
         assert!(!crate::exception_pending(_py));
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
     #[test]
     fn linear_dot4_rows_unaligned_matches_scalar_rows() {
         let x = [1.5f32, -2.0, 0.5, 3.0, -1.0, 4.0];
@@ -10432,7 +10712,7 @@ mod tests {
     }
 
     #[cfg(any(
-        target_arch = "aarch64",
+        all(target_arch = "aarch64", not(miri)),
         target_arch = "x86_64",
         all(target_arch = "wasm32", target_feature = "simd128")
     ))]
@@ -10448,7 +10728,7 @@ mod tests {
         x_bytes.extend_from_slice(&f32_bytes(&x));
         let mut weight_bytes = vec![0u8, 0u8, 0u8];
         weight_bytes.extend_from_slice(&f32_bytes(&weights));
-        let mut out_bytes = vec![0u8; 4 * 4 + 1];
+        let mut out_bytes = [0u8; 4 * 4 + 1];
 
         unsafe {
             linear_rows4_store_ptrs_unaligned(
@@ -10492,7 +10772,7 @@ mod tests {
     }
 
     #[cfg(any(
-        target_arch = "aarch64",
+        all(target_arch = "aarch64", not(miri)),
         target_arch = "x86_64",
         all(target_arch = "wasm32", target_feature = "simd128")
     ))]
@@ -10509,7 +10789,7 @@ mod tests {
         x_bytes.extend_from_slice(&f32_bytes(&x));
         let mut weight_bytes = vec![0u8];
         weight_bytes.extend_from_slice(&f32_bytes(&weights));
-        let mut out_bytes = vec![0u8; 4 * 4 + 3];
+        let mut out_bytes = [0u8; 4 * 4 + 3];
 
         unsafe {
             linear_gate_up4_store_unaligned(
@@ -10552,7 +10832,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
     #[test]
     fn linear_dot4_gate_up_interleaved_unaligned_matches_scalar_rows() {
         let x = [0.25f32, -1.0, 2.5, 0.5, -0.75, 1.25];
@@ -10603,7 +10883,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
     #[test]
     fn linear_dot8_gate_up_interleaved_unaligned_matches_scalar_rows() {
         let x = [0.5f32, -1.0, 1.5, 2.0, -0.25, 0.75];
@@ -10657,7 +10937,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
     #[test]
     fn linear_gate_up8_store_unaligned_matches_reference_outputs() {
         let x = [0.5f32, -1.0, 1.5, 2.0, -0.25, 0.75];
@@ -10674,7 +10954,7 @@ mod tests {
         x_bytes.extend_from_slice(&f32_bytes(&x));
         let mut weight_bytes = vec![0u8, 0u8, 0u8];
         weight_bytes.extend_from_slice(&f32_bytes(&weights));
-        let mut out_bytes = vec![0u8; 8 * 4 + 3];
+        let mut out_bytes = [0u8; 8 * 4 + 3];
 
         unsafe {
             linear_gate_up8_store_unaligned(

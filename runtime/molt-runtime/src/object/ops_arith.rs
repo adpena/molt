@@ -1,5 +1,6 @@
 // Arithmetic, bitwise, and percent-format operations.
 // Split from ops.rs for compilation-unit size reduction.
+#![allow(clippy::items_after_test_module)]
 
 use crate::*;
 use molt_obj_model::MoltObject;

@@ -1531,7 +1531,9 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return false;
     }
     if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-        let class_name = unsafe { crate::string_obj_to_owned(obj_from_bits(layout::class_name_bits(class_ptr))) };
+        let class_name = unsafe {
+            crate::string_obj_to_owned(obj_from_bits(layout::class_name_bits(class_ptr)))
+        };
         if class_bits == crate::builtin_classes(py).traceback
             || class_name.as_deref() == Some("traceback")
             || class_bits == crate::builtin_classes(py).frame
@@ -2328,7 +2330,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             let should_pool = matches!(
                 type_id,
                 TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
-            ) && object_pool_put(py, total_size, header_ptr as *mut u8);
+            ) && !cfg!(miri)
+                && object_pool_put(py, total_size, header_ptr as *mut u8);
             if should_pool {
                 return;
             }
@@ -2376,6 +2379,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "object pooling is disabled under Miri to avoid intentional retained pool allocations being reported as leaks"
+    )]
     fn object_pool_reuses_object_allocations() {
         let _guard = crate::TEST_MUTEX
             .lock()
@@ -2389,6 +2396,7 @@ mod tests {
             let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
             assert_eq!(ptr1, ptr2);
             unsafe { dec_ref_ptr(_py, ptr2) };
+            drain_pool(_py, total_size);
         });
     }
 

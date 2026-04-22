@@ -134,8 +134,7 @@ fn trace_bad_module_name_arg(_py: &PyToken<'_>, where_: &str, bits: u64) {
     let obj = obj_from_bits(bits);
     let type_name = type_name(_py, obj);
     let rendered = format_obj_str(_py, obj);
-    if let Some((file, line, func, _, _)) = crate::builtins::exceptions::frame_stack_top_info(_py)
-    {
+    if let Some((file, line, func, _, _)) = crate::builtins::exceptions::frame_stack_top_info(_py) {
         eprintln!(
             "molt bad module name where={} type={} value={} frame={} file={} line={}",
             where_, type_name, rendered, func, file, line
@@ -763,10 +762,11 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
             module_bits
         };
         dec_ref_bits(_py, name_key_bits);
-        if module_bits_are_module_like(result_bits) && exception_pending(_py) {
-            if !clear_pending_missing_import_exception(_py) {
-                return MoltObject::none().bits();
-            }
+        if module_bits_are_module_like(result_bits)
+            && exception_pending(_py)
+            && !clear_pending_missing_import_exception(_py)
+        {
+            return MoltObject::none().bits();
         }
         result_bits
     })
@@ -4076,32 +4076,31 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
             // but code that fetches the class via MODULE_GET_ATTR on the
             // overwritten module gets a new, incompatible type object.  This
             // causes `super(type, obj)` failures and isinstance mismatches.
-            if let Some(&existing) = guard.get(&name) {
-                if existing != 0
-                    && !obj_from_bits(existing).is_none()
-                    && existing != module_bits
-                {
-                    if trace_cache {
-                        eprintln!(
-                            "module cache set: {name} SKIPPED (already cached as 0x{existing:x})"
-                        );
-                    }
-                    // Still need to sync sys.modules, but use the EXISTING bits.
-                    // Do NOT dec_ref module_bits — the caller still holds a local
-                    // reference and will populate the orphan module (harmlessly).
-                    // The WASM function's epilogue releases its locals normally.
-                    let sys_bits_out = guard.get("sys").copied();
-                    return if let Some(sys_bits) = sys_bits_out
-                        && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
-                    {
-                        unsafe {
-                            dict_set_in_place(_py, modules_ptr, name_bits, existing);
-                        }
-                        existing
-                    } else {
-                        existing
-                    };
+            if let Some(&existing) = guard.get(&name)
+                && existing != 0
+                && !obj_from_bits(existing).is_none()
+                && existing != module_bits
+            {
+                if trace_cache {
+                    eprintln!(
+                        "module cache set: {name} SKIPPED (already cached as 0x{existing:x})"
+                    );
                 }
+                // Still need to sync sys.modules, but use the EXISTING bits.
+                // Do NOT dec_ref module_bits — the caller still holds a local
+                // reference and will populate the orphan module (harmlessly).
+                // The WASM function's epilogue releases its locals normally.
+                let sys_bits_out = guard.get("sys").copied();
+                return if let Some(sys_bits) = sys_bits_out
+                    && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
+                {
+                    unsafe {
+                        dict_set_in_place(_py, modules_ptr, name_bits, existing);
+                    }
+                    existing
+                } else {
+                    existing
+                };
             }
             if let Some(old) = guard.insert(name, module_bits) {
                 dec_ref_bits(_py, old);

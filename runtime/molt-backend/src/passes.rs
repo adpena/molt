@@ -2784,7 +2784,7 @@ mod tests {
                 value: Some(i),
                 ..OpIR::default()
             });
-            ops.push(make_const_int(&format!("v{i}"), i as i64));
+            ops.push(make_const_int(&format!("v{i}"), i));
             ops.push(OpIR {
                 kind: "check_exception".to_string(),
                 value: Some(32),
@@ -2982,7 +2982,7 @@ mod tests {
                 value: Some(i),
                 ..OpIR::default()
             });
-            ops.push(make_const_int(&format!("v{i}"), i as i64));
+            ops.push(make_const_int(&format!("v{i}"), i));
         }
         ops.push(make_op("ret_void"));
 

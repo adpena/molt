@@ -1,4 +1,5 @@
 //! Formatting, repr, and string conversion — extracted from ops.rs.
+#![allow(clippy::items_after_test_module)]
 
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -643,12 +644,8 @@ unsafe fn try_subclass_str_or_repr_override(
         if class_bits == 0 || class_bits == builtin_class_bits {
             return None;
         }
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return None;
-        };
-        let Some(base_ptr) = obj_from_bits(builtin_class_bits).as_ptr() else {
-            return None;
-        };
+        let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+        let base_ptr = obj_from_bits(builtin_class_bits).as_ptr()?;
         if object_type_id(class_ptr) != TYPE_ID_TYPE || object_type_id(base_ptr) != TYPE_ID_TYPE {
             return None;
         }

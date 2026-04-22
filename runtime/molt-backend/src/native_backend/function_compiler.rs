@@ -877,8 +877,7 @@ fn preanalyze_function_ir(
                 | "is_truthy" | "is" | "not" => bool_like_vars.insert(out.clone()),
                 "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
                 | "floordiv" | "mod" | "bit_and" | "bit_or" | "bit_xor" | "lshift" | "rshift"
-                | "shl" | "shr"
-                | "neg" | "abs" | "invert" | "builtin_abs" => {
+                | "shl" | "shr" | "neg" | "abs" | "invert" | "builtin_abs" => {
                     match infer_scalar_lane(
                         op,
                         &int_like_vars,
@@ -1335,7 +1334,7 @@ impl SimpleBackend {
         let mut already_decrefed: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
 
-        let mut scrub_tracked_roots =
+        let scrub_tracked_roots =
             |roots: &BTreeSet<String>,
              tracked_vars: &mut Vec<String>,
              tracked_obj_vars: &mut Vec<String>,
@@ -14609,8 +14608,8 @@ impl SimpleBackend {
                 }
                 "exception_enter_handler" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let captured =
-                        var_get(&mut builder, &vars, &args[0]).expect("Captured exception not found");
+                    let captured = var_get(&mut builder, &vars, &args[0])
+                        .expect("Captured exception not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -14627,8 +14626,8 @@ impl SimpleBackend {
                 }
                 "exception_resolve_captured" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let captured =
-                        var_get(&mut builder, &vars, &args[0]).expect("Captured exception not found");
+                    let captured = var_get(&mut builder, &vars, &args[0])
+                        .expect("Captured exception not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -18763,8 +18762,8 @@ impl SimpleBackend {
                         })
                         .cloned()
                         .collect();
-                    let mut rebind_label_join_state = |builder: &mut FunctionBuilder,
-                                                       raw_int_shadow_vals: &mut BTreeMap<
+                    let rebind_label_join_state = |builder: &mut FunctionBuilder,
+                                                   raw_int_shadow_vals: &mut BTreeMap<
                         String,
                         Value,
                     >| {
@@ -19125,9 +19124,11 @@ impl SimpleBackend {
             }
             if !is_block_filled && loop_depth == 0 && builder.current_block() == Some(entry_block) {
                 let cleanup_skip = match op.kind.as_str() {
-                    "call_func" | "call_bind" | "call_indirect" | "invoke_ffi" => {
-                        op.args.as_ref().and_then(|args| args.first()).map(String::as_str)
-                    }
+                    "call_func" | "call_bind" | "call_indirect" | "invoke_ffi" => op
+                        .args
+                        .as_ref()
+                        .and_then(|args| args.first())
+                        .map(String::as_str),
                     _ => None,
                 };
                 let cleanup = drain_cleanup_entry_tracked(
@@ -20195,7 +20196,7 @@ mod tests {
 
     #[test]
     fn materialize_label_block_defines_unreached_forward_label() {
-        let mut sig = Signature::new(CallConv::SystemV);
+        let sig = Signature::new(CallConv::SystemV);
         let mut func = Function::with_name_signature(UserFuncName::default(), sig);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);

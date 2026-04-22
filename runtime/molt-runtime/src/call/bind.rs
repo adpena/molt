@@ -19,9 +19,9 @@ use crate::{
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
     class_attr_lookup_raw_mro, class_dict_bits, class_layout_version_bits, class_name_bits,
     class_name_for_error, code_argcount, code_filename_bits, code_name_bits, dec_ref_bits,
-    dict_del_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order, dict_pop_method,
-    dict_setdefault_method, dict_update_apply, dict_update_method, dict_update_set_in_place,
-    dict_update_set_via_store, exception_class_bits, exception_pending,
+    dict_del_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order,
+    dict_pop_method, dict_setdefault_method, dict_update_apply, dict_update_method,
+    dict_update_set_in_place, dict_update_set_via_store, exception_class_bits, exception_pending,
     exception_type_bits_from_name, function_arity, function_attr_bits, function_closure_bits,
     function_fn_ptr, function_name_bits, function_trampoline_ptr, generic_alias_origin_bits,
     has_capability, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
@@ -138,8 +138,17 @@ fn disable_call_bind_ic_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_DISABLE_CALL_BIND_IC").as_deref() == Ok("1"))
 }
 
-fn callargs_builder_map() -> &'static Mutex<HashMap<usize, usize>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+#[derive(Copy, Clone)]
+struct CallArgsPtr(*mut CallArgs);
+
+// CallArgs allocations are owned by the runtime object they are attached to
+// and protected by the GIL-like runtime lock. The registry only preserves
+// pointer provenance for lookups from object payload addresses.
+unsafe impl Send for CallArgsPtr {}
+unsafe impl Sync for CallArgsPtr {}
+
+fn callargs_builder_map() -> &'static Mutex<HashMap<usize, CallArgsPtr>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, CallArgsPtr>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -153,7 +162,7 @@ pub(crate) fn note_callargs_alloc(builder_ptr: *mut u8, args_ptr: *mut CallArgs)
         callargs_builder_map()
             .lock()
             .unwrap()
-            .insert(builder_ptr as usize, args_ptr as usize);
+            .insert(builder_ptr as usize, CallArgsPtr(args_ptr));
     }
     if args_ptr.is_null() {
         return;
@@ -192,15 +201,20 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
 ) -> Result<u64, u64> {
     let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
-        return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs builder"));
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "invalid callargs builder",
+        ));
     }
     if unsafe { object_type_id(builder_ptr) } != TYPE_ID_CALLARGS {
-        return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs builder"));
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "invalid callargs builder",
+        ));
     }
-    let args_ptr = match unsafe { require_callargs_ptr(_py, builder_ptr) } {
-        Ok(ptr) => ptr,
-        Err(err) => return Err(err),
-    };
+    let args_ptr = unsafe { require_callargs_ptr(_py, builder_ptr) }?;
     let args = unsafe { &*args_ptr };
     let clone_bits = molt_callargs_new(
         MoltObject::from_int(args.pos.len() as i64).bits(),
@@ -226,18 +240,20 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
     Ok(clone_bits)
 }
 
+#[allow(dead_code)]
 pub(crate) unsafe fn callargs_positional_snapshot(
     _py: &PyToken<'_>,
     builder_bits: u64,
 ) -> Result<Vec<u64>, u64> {
     let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
-        return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs builder"));
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "invalid callargs builder",
+        ));
     }
-    let args_ptr = match unsafe { require_callargs_ptr(_py, builder_ptr) } {
-        Ok(ptr) => ptr,
-        Err(err) => return Err(err),
-    };
+    let args_ptr = unsafe { require_callargs_ptr(_py, builder_ptr) }?;
     let args = unsafe { &*args_ptr };
     if !args.kw_names.is_empty() {
         return Err(raise_exception::<_>(
@@ -1028,7 +1044,8 @@ unsafe fn build_class_from_args(
             if object_type_id(namespace_ptr) != TYPE_ID_DICT {
                 return Ok(());
             }
-            for key in [b"__classdictcell__".as_slice()] {
+            {
+                let key = b"__classdictcell__".as_slice();
                 let Some(key_bits) = attr_name_bits_from_bytes(_py, key) else {
                     return Err(MoltObject::none().bits());
                 };
@@ -1189,7 +1206,7 @@ unsafe fn build_class_from_args(
             return MoltObject::none().bits();
         }
 
-        if !dispatch_init_subclass_hooks(_py, &bases_vec, class_bits, &kw_names, &kw_values) {
+        if !dispatch_init_subclass_hooks(_py, &bases_vec, class_bits, kw_names, kw_values) {
             if bases_owned {
                 dec_ref_bits(_py, bases_tuple_bits);
             }
@@ -1212,7 +1229,7 @@ pub(crate) unsafe fn callargs_ptr(ptr: *mut u8) -> *mut CallArgs {
         .unwrap()
         .get(&(ptr as usize))
         .copied()
-        .map_or(std::ptr::null_mut(), |raw| raw as *mut CallArgs)
+        .map_or(std::ptr::null_mut(), |raw| raw.0)
 }
 
 unsafe fn require_callargs_ptr(
