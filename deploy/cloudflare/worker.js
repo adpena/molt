@@ -866,8 +866,8 @@ async function ensureModelLoaded(env) {
     }
 
     // Load tokenizer from R2 for server-side token-to-text decoding.
-    // Non-fatal: if tokenizer is unavailable, responses return empty text
-    // and the browser-side tokenizer handles decoding.
+    // OCR text responses fail closed when token IDs cannot be decoded; token-only
+    // endpoints remain available for callers that own decoding.
     if (!cachedTokenizer && env.WEIGHTS) {
       try {
         const tokObj = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr/tokenizer.json");
