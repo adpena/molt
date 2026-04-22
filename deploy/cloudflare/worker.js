@@ -363,7 +363,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <div class="metric"><span>x402 price per OCR</span><span>$0.001</span></div>
         <div class="metric"><span>GPU service cost per OCR</span><span>configured externally</span></div>
         <div class="metric"><span>Margin per request</span><span class="status-warn">not estimated</span></div>
-        <div class="metric"><span>Daily requests</span><span><input id="daily-req" type="number" value="100" style="width:60px;background:#222;color:#fff;border:1px solid #444;padding:2px 4px;text-align:right"> </span></div>
+        <div class="metric"><span>Daily requests</span><span><input id="daily-req" type="number" value="100" style="width:72px;background:#222;color:#fff;border:1px solid #444;padding:6px 8px;text-align:right;font-size:16px;border-radius:4px;min-height:44px" inputmode="numeric"> </span></div>
         <div class="metric"><span>Monthly revenue</span><span class="status-ok" id="monthly-rev">$3.00</span></div>
         <div class="metric"><span>Monthly cost</span><span id="monthly-cost">configured externally</span></div>
         <div class="metric"><span>Monthly profit</span><span class="status-warn" id="monthly-profit">not estimated</span></div>
