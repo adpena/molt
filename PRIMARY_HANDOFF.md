@@ -2,27 +2,69 @@
 
 This file is the canonical fast resume point for continuing Molt development on `main`.
 
-Last updated: 2026-04-20
+Last updated: 2026-04-22
 
 ## Current State
 
 - Repo: `/Users/adpena/Projects/molt`
 - Branch: `main`
-- Current HEAD at handoff time: `2fa35f83`
+- Current HEAD at handoff time: `9fe653df`
 - Remote status observed: `HEAD -> main, origin/main, origin/HEAD`
-- Active local work at handoff time: this handoff consolidation file is staged.
+- Active local work at handoff time: none; working tree was clean after
+  `9fe653df` was pushed to `origin/main`.
 - Active implementation lane: Molt GPU/tinygrad/Falcon-OCR WASM compilation, Cloudflare deployment, and enjoice OCR integration.
 - Disk pressure has been remediated enough to continue implementation work.
 
 Recent commits in the active lane:
 
 ```text
+9fe653df fix: clear rust clippy and strict provenance miri failures
+d2667a38 docs: add OCR engine comparison benchmark with e2e verification
+85341ff9 feat: PaddleOCR-molt ONNX ops validation and R2 deployment
+f5a60c7a fix: harden ONNX shape op validation
+4e476ab1 fix: preserve ONNX Identity graph outputs
 2fa35f83 docs: update SUPPORT_TEAM.md - WASM compilation works, remaining items
 f708fc72 feat: Falcon-OCR WASM compilation succeeds (13.4 MB, 4 MB gzipped)
 0b20e15c fix: eliminate dead blocks after SCCP branch folding to prevent false SSA dominance violations
 ac875a30 feat: register GPU primitive intrinsics for WASM compilation
 1bc24a58 fix: restore x402 enforcement on Workers AI fast path
 ```
+
+## Latest Local Verification
+
+The 2026-04-22 Rust safety tranche landed in `9fe653df` and was pushed to
+`origin/main`. Fresh local evidence from that tranche:
+
+```text
+cargo test --workspace --all-targets --quiet
+cargo clippy --workspace --all-targets -- -D warnings
+MIRIFLAGS='-Zmiri-strict-provenance -Zmiri-disable-isolation' cargo +nightly miri test -p molt-lang-obj-model
+MIRIFLAGS='-Zmiri-strict-provenance -Zmiri-disable-isolation' cargo +nightly miri test -p molt-runtime --lib
+```
+
+Results:
+
+- full Rust workspace `--all-targets` test gate: pass
+- Clippy with `-D warnings`: pass
+- strict-provenance Miri object-model gate: pass
+- strict-provenance Miri runtime-lib gate: pass (`358` passed, `27`
+  ignored for documented Miri limitations such as wasm linear-memory pointer
+  contracts, process-spawn tests, object-pool retention, and remaining
+  exposed-address dynamic callback dispatch cases)
+
+Important fixes in that tranche:
+
+- runtime callable targets now preserve strict-provenance paths for generated
+  intrinsic resolution
+- intrinsic registry cache anchoring moved onto `RuntimeState` instead of a
+  process-global module pointer
+- CPython ABI static type initialization is one-shot to remove test-harness
+  races
+- GIL live-thread accounting no longer underflows when test reset races with
+  TLS teardown
+- C API tests keep pending-exception assertions within one GIL-protected error
+  sequence
+- obsolete backend GPU tests for removed modules/features were deleted
 
 ## Canonical Handoff Policy
 
@@ -87,7 +129,9 @@ The current work is no longer primarily disk cleanup. The main product lane is:
   - optimize binary size toward `< 2 MB` gzipped
   - wire into browser WebGPU/offline inference path
 
-These claims are current handoff context, but the R2 object and runtime execution were not independently verified during this handoff consolidation. Verify before making deployment claims.
+These claims are current handoff context, but the R2 object and runtime
+execution were not independently verified during this handoff consolidation or
+the 2026-04-22 Rust safety tranche. Verify before making deployment claims.
 
 ## Highest Priority Next Work
 
@@ -105,8 +149,11 @@ These claims are current handoff context, but the R2 object and runtime executio
 
 3. Reconcile deployment docs.
    - `SUPPORT_TEAM.md` says the full Falcon-OCR WASM build now succeeds.
-   - `docs/deployment/DEPLOYMENT_LOG.md` still contains older "WASM binary not found / not yet built" blocker text from 2026-04-14.
-   - Consolidate docs so there is one current deployment truth.
+   - `docs/deployment/DEPLOYMENT_LOG.md` now has a 2026-04-22 current-state
+     note, but still retains historical 2026-04-14 deployment entries below.
+   - Keep future deployment claims separated by proof point: build, R2 upload,
+     instantiation, weight/config load, token return, and browser/enjoice
+     integration.
 
 4. Continue enjoice integration work.
    - Use `docs/integration/enjoice-ocr-migration.md` and `deploy/enjoice/INTEGRATION_PR.md`.

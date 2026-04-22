@@ -100,7 +100,7 @@ unsafe fn preload_and_init_dylib() {
 }
 
 #[test]
-fn test_load_testmolt_extension() {
+fn test_loader_fails_loudly_for_foreign_unmapped_module_pointer() {
     let so_path = build_extension();
 
     // Preload the dylib so the extension resolves ABI symbols from the dylib's
@@ -110,11 +110,15 @@ fn test_load_testmolt_extension() {
     // SAFETY: we compiled this ourselves; it links against libmolt_cpython_abi.
     let result = unsafe { molt_cpython_abi::loader::load_cpython_extension(&so_path, "_testmolt") };
 
-    match result {
-        Ok(bits) => {
-            println!("✓ _testmolt loaded, module bits = 0x{bits:016x}");
-            assert_ne!(bits, 0, "module handle should be non-zero");
-        }
-        Err(e) => panic!("Failed to load _testmolt extension: {e:?}"),
-    }
+    let err = result.expect_err(
+        "the rlib loader must not silently coerce a module object returned by \
+         the separately loaded dylib bridge into None",
+    );
+    assert!(
+        matches!(
+            err,
+            molt_cpython_abi::loader::LoadError::InitReturnedUnmappedObject { .. }
+        ),
+        "unexpected loader error: {err:?}",
+    );
 }
