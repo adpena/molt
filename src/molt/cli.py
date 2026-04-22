@@ -19690,6 +19690,18 @@ def _prepare_non_native_build_result(
                 "shared_memory_initial_pages": shared_memory_initial_pages,
                 "shared_table_initial": shared_table_initial,
                 "wasm_table_base": effective_wasm_table_base,
+                "abi": {
+                    "runtime_imports": {
+                        "module": "molt_runtime",
+                        "names": sorted(app_runtime_import_signatures),
+                        "signatures": app_runtime_import_signatures,
+                        "result_kinds": app_runtime_import_result_kinds,
+                    },
+                    "table_refs": {
+                        "app": app_table_ref_signatures,
+                        "runtime": runtime_table_ref_signatures,
+                    },
+                },
                 "modules": {
                     "runtime": {
                         "path": "molt_runtime.wasm",
