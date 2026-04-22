@@ -11,6 +11,9 @@
 
 ### New files (copy from `deploy/enjoice/`)
 
+`deploy/enjoice/` is the canonical Molt-side handoff source. The target paths
+below are the downstream enjoice app paths.
+
 | File | Target path in enjoice | Description |
 |------|----------------------|-------------|
 | `falcon-ocr-molt.ts` | `site/src/lib/ocr/falcon-ocr-molt.ts` | WASM session manager: loads WASM binary, streams weights from R2/CDN, runs inference, decodes tokens |

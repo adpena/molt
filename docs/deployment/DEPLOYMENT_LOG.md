@@ -9,10 +9,14 @@
 - Deployed Worker version: `1713fc1a-7ff5-4c15-874a-472ef55ef834`
 
 ### enjoice OCR Integration
-- Copied molt OCR integration files into enjoice at `site/src/lib/ocr/molt/`:
-  - `falcon-ocr-molt.ts` -- WASM session management and image preprocessing
-  - `ocr-backend-molt.ts` -- MoltOcrBackend class with WebGPU detection
-  - `capabilities.ts` -- Browser/GPU capability detection
+- Canonical Molt handoff files live in this repository under `deploy/enjoice/`.
+  They are copied into the downstream enjoice app under `site/src/lib/ocr/`:
+  - `deploy/enjoice/falcon-ocr-molt.ts` -> `site/src/lib/ocr/falcon-ocr-molt.ts`
+    -- WASM session management and image preprocessing
+  - `deploy/enjoice/ocr-backend-molt.ts` -> `site/src/lib/ocr/ocr-backend-molt.ts`
+    -- MoltOcrBackend class with WebGPU detection
+  - `deploy/enjoice/capabilities-update.ts` -> `site/src/lib/ocr/capabilities-update.ts`
+    -- Browser/GPU capability detection
 - Updated `site/src/lib/ocr/index.ts`:
   - Added `molt-gpu` as highest-priority backend in the auto-selection chain
   - Hits `https://falcon-ocr.adpena.workers.dev/ocr` for Workers AI inference
@@ -47,9 +51,9 @@
 - `deploy/cloudflare/x402.js` -- added Origin-based browser bypass
 
 ### Files Changed (enjoice)
-- `site/src/lib/ocr/molt/falcon-ocr-molt.ts` -- NEW
-- `site/src/lib/ocr/molt/ocr-backend-molt.ts` -- NEW
-- `site/src/lib/ocr/molt/capabilities.ts` -- NEW
+- `site/src/lib/ocr/falcon-ocr-molt.ts` -- NEW, copied from `deploy/enjoice/falcon-ocr-molt.ts`
+- `site/src/lib/ocr/ocr-backend-molt.ts` -- NEW, copied from `deploy/enjoice/ocr-backend-molt.ts`
+- `site/src/lib/ocr/capabilities-update.ts` -- NEW, copied from `deploy/enjoice/capabilities-update.ts`
 - `site/src/lib/ocr/index.ts` -- added molt-gpu backend + extractTemplateFromScan
 - `site/src/components/invoice/ScanButton.tsx` -- template-from-scan button
 
