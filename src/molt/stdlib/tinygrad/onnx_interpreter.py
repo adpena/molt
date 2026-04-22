@@ -683,21 +683,20 @@ def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     strides = _get_attr_ints(attrs, "strides", [1, 1])
     pads = _get_attr_ints(attrs, "pads", [0, 0, 0, 0])
     count_include_pad = _get_attr_int(attrs, "count_include_pad", 0)
+    ceil_mode = bool(_get_attr_int(attrs, "ceil_mode", 0))
     kh, kw = kernel_shape[0], kernel_shape[1]
-    sh, sw = strides[0], strides[1]
+    sh = strides[0]
+    sw = strides[1] if len(strides) > 1 else sh
     pad_top, pad_left = pads[0], pads[1]
-    # pads[2], pads[3] are bottom, right
+    pad_bottom = pads[2] if len(pads) > 2 else pad_top
+    pad_right = pads[3] if len(pads) > 3 else pad_left
 
     import tinygrad.realize
     flat = tinygrad.realize.realize(x.lazydata)
     n, c, h, w = x.shape
 
-    # Apply padding
-    h_padded = h + pads[0] + pads[2]
-    w_padded = w + pads[1] + pads[3]
-
-    oh = (h_padded - kh) // sh + 1
-    ow = (w_padded - kw) // sw + 1
+    oh = _pool_output_dim(h, kh, sh, 1, pad_top, pad_bottom, ceil_mode)
+    ow = _pool_output_dim(w, kw, sw, 1, pad_left, pad_right, ceil_mode)
 
     out_size = n * c * oh * ow
     result = [0.0] * out_size
