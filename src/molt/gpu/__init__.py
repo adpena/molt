@@ -59,16 +59,6 @@ def _resolve_optional_intrinsic(name: str, cache_name: str):
             globals()[cache_name] = value
             return value
 
-    runtime_active = getattr(_molt_intrinsics, "runtime_active", None)
-    if callable(runtime_active) and runtime_active():
-        require = getattr(_molt_intrinsics, "require_intrinsic", None)
-        if callable(require):
-            value = require(name)
-            if callable(value):
-                globals()[cache_name] = value
-                return value
-        raise RuntimeError(f"intrinsic unavailable: {name}")
-
     return None
 
 
