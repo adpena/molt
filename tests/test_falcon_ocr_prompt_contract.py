@@ -283,6 +283,160 @@ def test_cloudflare_worker_rate_limit_uses_durable_object_not_kv_counter() -> No
     assert 'new_sqlite_classes = ["RateLimiter"]' in wrangler
 
 
+def test_gpu_proxy_requires_supported_https_provider() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for Cloudflare GPU proxy tests")
+    script = """
+      const proxy = await import('./deploy/cloudflare/gpu-proxy.js');
+      const states = [
+        proxy.gpuInferenceStatus({}),
+        proxy.gpuInferenceStatus({
+          GPU_INFERENCE_URL: 'http://gpu.invalid/predict',
+          GPU_INFERENCE_KEY: 'secret',
+          GPU_INFERENCE_PROVIDER: 'runpod'
+        }),
+        proxy.gpuInferenceStatus({
+          GPU_INFERENCE_URL: 'https://gpu.invalid/predict',
+          GPU_INFERENCE_KEY: 'secret',
+          GPU_INFERENCE_PROVIDER: 'unknown'
+        }),
+        proxy.gpuInferenceStatus({
+          GPU_INFERENCE_URL: 'https://gpu.invalid/predict',
+          GPU_INFERENCE_KEY: 'secret',
+          GPU_INFERENCE_PROVIDER: 'runpod'
+        }),
+      ];
+      process.stdout.write(JSON.stringify(states));
+    """
+    run = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=str(ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    missing, http_url, bad_provider, ok = json.loads(run.stdout)
+    assert missing["configured"] is False
+    assert "required" in missing["error"]
+    assert http_url["configured"] is False
+    assert "https" in http_url["error"]
+    assert bad_provider["configured"] is False
+    assert "Unsupported" in bad_provider["error"]
+    assert ok == {
+        "configured": True,
+        "provider": "runpod",
+        "endpoint": "gpu.invalid",
+    }
+
+
+def test_cloudflare_worker_gpu_backend_route_uses_proxy_contract() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for Cloudflare Worker GPU route tests")
+    script = """
+      const workerModule = await import('./deploy/cloudflare/worker.js');
+      const fetchCalls = [];
+      globalThis.fetch = async (url, init) => {
+        fetchCalls.push({
+          url: String(url),
+          method: init.method,
+          auth: init.headers.Authorization,
+          body: JSON.parse(init.body)
+        });
+        return new Response(JSON.stringify({ output: { text: 'GPU OCR' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      };
+      const env = {
+        CORS_ORIGIN: 'https://freeinvoicemaker.app',
+        GPU_INFERENCE_URL: 'https://gpu.example.invalid/run',
+        GPU_INFERENCE_KEY: 'secret-token',
+        GPU_INFERENCE_PROVIDER: 'runpod',
+        RATE_LIMITER: {
+          idFromName(name) { return name; },
+          get(_id) { return { fetch: async () => new Response('{}', { status: 200 }) }; }
+        }
+      };
+      const request = new Request('https://falcon-ocr.adpena.workers.dev/ocr', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://freeinvoicemaker.app',
+          'Content-Type': 'application/json',
+          'X-Use-Backend': 'gpu'
+        },
+        body: JSON.stringify({ image: 'abc123', max_tokens: 7, category: 'table' })
+      });
+      const response = await workerModule.default.fetch(request, env, { waitUntil() {} });
+      process.stdout.write('\\nRESULT:' + JSON.stringify({
+        status: response.status,
+        payload: await response.json(),
+        fetchCalls
+      }) + '\\nENDRESULT\\n');
+    """
+    run = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=str(ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(run.stdout.split('RESULT:')[-1].split('ENDRESULT')[0].strip())
+    assert result["status"] == 200
+    assert result["payload"]["text"] == "GPU OCR"
+    assert result["payload"]["backend"] == "gpu-runpod"
+    assert result["fetchCalls"] == [
+        {
+            "url": "https://gpu.example.invalid/run",
+            "method": "POST",
+            "auth": "Bearer secret-token",
+            "body": {
+                "input": {
+                    "image": "abc123",
+                    "category": "table",
+                    "max_tokens": 7,
+                }
+            },
+        }
+    ]
+
+
+def test_cloudflare_worker_gpu_backend_rejects_unconfigured_proxy() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for Cloudflare Worker GPU route tests")
+    script = """
+      const workerModule = await import('./deploy/cloudflare/worker.js');
+      const env = {
+        CORS_ORIGIN: 'https://freeinvoicemaker.app',
+        RATE_LIMITER: {
+          idFromName(name) { return name; },
+          get(_id) { return { fetch: async () => new Response('{}', { status: 200 }) }; }
+        }
+      };
+      const request = new Request('https://falcon-ocr.adpena.workers.dev/ocr', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://freeinvoicemaker.app',
+          'Content-Type': 'application/json',
+          'X-Use-Backend': 'gpu'
+        },
+        body: JSON.stringify({ image: 'abc123' })
+      });
+      const response = await workerModule.default.fetch(request, env, { waitUntil() {} });
+      process.stdout.write('\\nRESULT:' + JSON.stringify({ status: response.status, payload: await response.json() }) + '\\nENDRESULT\\n');
+    """
+    run = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=str(ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(run.stdout.split('RESULT:')[-1].split('ENDRESULT')[0].strip())
+    assert result["status"] == 501
+    assert result["payload"]["error"] == "GPU inference not configured"
+    assert "required" in result["payload"]["detail"]
+
+
 def test_enjoice_migration_doc_points_at_worker_wasm_and_tokenizer_artifacts() -> None:
     source = (ROOT / "docs" / "integration" / "enjoice-ocr-migration.md").read_text(
         encoding="utf-8"
