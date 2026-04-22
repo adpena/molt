@@ -679,6 +679,7 @@ def _op_global_avg_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor
 def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     """AveragePool with kernel_shape, strides, pads."""
     x = inputs[0]
+    auto_pad = _get_attr_string(attrs, "auto_pad", "NOTSET")
     kernel_shape = _get_attr_ints(attrs, "kernel_shape", [1, 1])
     strides = _get_attr_ints(attrs, "strides", [1, 1])
     pads = _get_attr_ints(attrs, "pads", [0, 0, 0, 0])
@@ -687,13 +688,22 @@ def _op_average_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     kh, kw = kernel_shape[0], kernel_shape[1]
     sh = strides[0]
     sw = strides[1] if len(strides) > 1 else sh
-    pad_top, pad_left = pads[0], pads[1]
-    pad_bottom = pads[2] if len(pads) > 2 else pad_top
-    pad_right = pads[3] if len(pads) > 3 else pad_left
 
     import tinygrad.realize
     flat = tinygrad.realize.realize(x.lazydata)
     n, c, h, w = x.shape
+    pad_top, pad_left, pad_bottom, pad_right = _pool_resolve_pads(
+        auto_pad=auto_pad,
+        input_h=h,
+        input_w=w,
+        kh=kh,
+        kw=kw,
+        sh=sh,
+        sw=sw,
+        dh=1,
+        dw=1,
+        pads=pads,
+    )
 
     oh = _pool_output_dim(h, kh, sh, 1, pad_top, pad_bottom, ceil_mode)
     ow = _pool_output_dim(w, kw, sw, 1, pad_left, pad_right, ceil_mode)
@@ -743,6 +753,45 @@ def _pool_output_dim(
     return max(out, 0)
 
 
+def _pool_resolve_pads(
+    *,
+    auto_pad: str,
+    input_h: int,
+    input_w: int,
+    kh: int,
+    kw: int,
+    sh: int,
+    sw: int,
+    dh: int,
+    dw: int,
+    pads: list[int],
+) -> tuple[int, int, int, int]:
+    pad_top = pads[0] if len(pads) > 0 else 0
+    pad_left = pads[1] if len(pads) > 1 else pad_top
+    pad_bottom = pads[2] if len(pads) > 2 else pad_top
+    pad_right = pads[3] if len(pads) > 3 else pad_left
+    if auto_pad == "NOTSET":
+        return pad_top, pad_left, pad_bottom, pad_right
+    if auto_pad == "VALID":
+        return 0, 0, 0, 0
+    if auto_pad not in ("SAME_UPPER", "SAME_LOWER"):
+        raise ValueError(f"Unsupported pool auto_pad={auto_pad!r}")
+
+    eff_kh = (kh - 1) * dh + 1
+    eff_kw = (kw - 1) * dw + 1
+    oh_same = (input_h + sh - 1) // sh
+    ow_same = (input_w + sw - 1) // sw
+    total_h = max((oh_same - 1) * sh + eff_kh - input_h, 0)
+    total_w = max((ow_same - 1) * sw + eff_kw - input_w, 0)
+    if auto_pad == "SAME_UPPER":
+        pad_top = total_h // 2
+        pad_left = total_w // 2
+    else:
+        pad_top = (total_h + 1) // 2
+        pad_left = (total_w + 1) // 2
+    return pad_top, pad_left, total_h - pad_top, total_w - pad_left
+
+
 def _op_max_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     """MaxPool over NCHW tensors with ONNX pads, strides, and dilations."""
     x = inputs[0]
@@ -767,32 +816,20 @@ def _op_max_pool(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     sw = strides[1] if len(strides) > 1 else sh
     dh = dilations[0]
     dw = dilations[1] if len(dilations) > 1 else dh
-    pad_top = pads[0] if len(pads) > 0 else 0
-    pad_left = pads[1] if len(pads) > 1 else pad_top
-    pad_bottom = pads[2] if len(pads) > 2 else pad_top
-    pad_right = pads[3] if len(pads) > 3 else pad_left
 
     n, c, h, w = x.shape
-    if auto_pad != "NOTSET":
-        eff_kh = (kh - 1) * dh + 1
-        eff_kw = (kw - 1) * dw + 1
-        if auto_pad == "VALID":
-            pad_top = pad_left = pad_bottom = pad_right = 0
-        elif auto_pad in ("SAME_UPPER", "SAME_LOWER"):
-            oh_same = (h + sh - 1) // sh
-            ow_same = (w + sw - 1) // sw
-            total_h = max((oh_same - 1) * sh + eff_kh - h, 0)
-            total_w = max((ow_same - 1) * sw + eff_kw - w, 0)
-            if auto_pad == "SAME_UPPER":
-                pad_top = total_h // 2
-                pad_left = total_w // 2
-            else:
-                pad_top = (total_h + 1) // 2
-                pad_left = (total_w + 1) // 2
-            pad_bottom = total_h - pad_top
-            pad_right = total_w - pad_left
-        else:
-            raise ValueError(f"Unsupported MaxPool auto_pad={auto_pad!r}")
+    pad_top, pad_left, pad_bottom, pad_right = _pool_resolve_pads(
+        auto_pad=auto_pad,
+        input_h=h,
+        input_w=w,
+        kh=kh,
+        kw=kw,
+        sh=sh,
+        sw=sw,
+        dh=dh,
+        dw=dw,
+        pads=pads,
+    )
 
     oh = _pool_output_dim(h, kh, sh, dh, pad_top, pad_bottom, ceil_mode)
     ow = _pool_output_dim(w, kw, sw, dw, pad_left, pad_right, ceil_mode)
