@@ -209,6 +209,23 @@ def test_onnx_interpreter_rejects_unimplemented_declared_outputs() -> None:
             interp.run({})
 
 
+def test_onnx_interpreter_identity_elimination_rewrites_graph_outputs() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        interp = onnx.OnnxInterpreter()
+        interp._values = {"x": onnx._make_tensor([1.0], (1,))}
+        interp._graph_nodes = [
+            {"op_type": "Identity", "inputs": ["x"], "outputs": ["y"], "attrs": {}}
+        ]
+        interp._output_names = ["y"]
+
+        interp._eliminate_identity()
+        outputs = interp.run({})
+
+        assert list(outputs) == ["y"]
+        assert onnx._realize_floats(outputs["y"]) == [1.0]
+
+
 def test_onnx_slice_honors_positive_steps() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]

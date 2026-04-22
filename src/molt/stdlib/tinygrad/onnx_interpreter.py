@@ -83,6 +83,7 @@ class OnnxInterpreter:
         self._graph_nodes: list[dict] = []
         self._input_names: list[str] = []
         self._output_names: list[str] = []
+        self._output_aliases: dict[str, str] = {}
         self._op_profile: dict[str, list[float]] = {}  # op_type -> [elapsed_ms, ...]
 
     def load_model(self, onnx_bytes: bytes) -> None:
@@ -155,7 +156,12 @@ class OnnxInterpreter:
                 if name:
                     values[name] = tensor
 
-        return {name: values[name] for name in self._output_names if name in values}
+        outputs: dict[str, Tensor] = {}
+        for name in self._output_names:
+            value_name = name if name in values else self._output_aliases.get(name, name)
+            if value_name in values:
+                outputs[name] = values[value_name]
+        return outputs
 
     def profile_summary(self) -> str:
         """Return a formatted summary of per-op profiling data.
@@ -338,6 +344,9 @@ class OnnxInterpreter:
         # Rewrite all remaining nodes' inputs
         for node in new_nodes:
             node["inputs"] = [rewire.get(n, n) for n in node["inputs"]]
+        for name in self._output_names:
+            if name in rewire:
+                self._output_aliases[name] = rewire[name]
 
         self._graph_nodes = new_nodes
 
