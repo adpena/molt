@@ -24,9 +24,43 @@ def _load_optional_intrinsic(name: str):
     return None
 
 
-_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED = _load_optional_intrinsic(
-    "molt_gpu_turboquant_attention_packed"
-)
+_UNRESOLVED = object()
+_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED = _UNRESOLVED
+
+
+def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
+    intrinsic = globals().get(cache_name, _UNRESOLVED)
+    if intrinsic is not _UNRESOLVED:
+        return intrinsic
+
+    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
+    if callable(loader):
+        try:
+            intrinsic = loader(intrinsic_name)
+        except RuntimeError:
+            intrinsic = None
+        else:
+            if intrinsic is not None:
+                globals()[cache_name] = intrinsic
+                return intrinsic
+
+    require = getattr(_molt_intrinsics, "require_intrinsic", None)
+    if callable(require):
+        runtime_active = getattr(_molt_intrinsics, "runtime_active", None)
+        try:
+            intrinsic = require(intrinsic_name)
+        except RuntimeError:
+            if callable(runtime_active) and runtime_active():
+                raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}")
+        else:
+            if intrinsic is not None:
+                globals()[cache_name] = intrinsic
+                return intrinsic
+
+    runtime_active = getattr(_molt_intrinsics, "runtime_active", None)
+    if callable(runtime_active) and runtime_active():
+        raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}")
+    return None
 
 
 def _validate_projected_tensor(name: str, tensor: Tensor) -> None:
@@ -379,8 +413,12 @@ class TurboQuantAttentionKVCache:
             self._invalidate_runtime_shadow_rows()
 
     def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
-        if _MOLT_GPU_TURBOQUANT_ATTENTION_PACKED is not None:
-            return _MOLT_GPU_TURBOQUANT_ATTENTION_PACKED(
+        intrinsic = _resolve_optional_intrinsic(
+            "_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED",
+            "molt_gpu_turboquant_attention_packed",
+        )
+        if callable(intrinsic):
+            return intrinsic(
                 q,
                 self.keys(),
                 self.values(),

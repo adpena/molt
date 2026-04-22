@@ -198,11 +198,79 @@ def test_kernel_launcher_uses_backend_intrinsic_when_available(monkeypatch):
     assert gpu.from_device(c) == [0.0, 0.0, 0.0, 0.0]
 
 
+def test_kernel_launcher_resolves_backend_intrinsic_lazily(monkeypatch):
+    import molt.gpu as gpu
+
+    executed = []
+    calls = []
+
+    @gpu.kernel
+    def vector_add(a, b, c, n):
+        executed.append("ran")
+        tid = gpu.thread_id()
+        if tid < n:
+            c[tid] = a[tid] + b[tid]
+
+    def fake_launch(func, grid, threads, args):
+        calls.append((func.__name__, grid, threads, len(args)))
+
+    def fake_load(name):
+        assert name == "molt_gpu_kernel_launch"
+        return fake_launch
+
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", fake_load)
+
+    a = gpu.to_device([1.0])
+    b = gpu.to_device([2.0])
+    c = gpu.alloc(1, float)
+    vector_add[1, 1](a, b, c, 1)
+
+    assert calls == [("vector_add", 1, 1, 4)]
+    assert executed == []
+    assert gpu.from_device(c) == [0.0]
+
+
+def test_kernel_launcher_runtime_active_missing_intrinsic_fails_closed(monkeypatch):
+    import molt.gpu as gpu
+
+    executed = []
+
+    @gpu.kernel
+    def vector_add(a, b, c, n):
+        executed.append("ran")
+        tid = gpu.thread_id()
+        if tid < n:
+            c[tid] = a[tid] + b[tid]
+
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: True)
+    monkeypatch.setattr(
+        gpu._molt_intrinsics,
+        "require_intrinsic",
+        lambda name: (_ for _ in ()).throw(
+            RuntimeError(f"intrinsic unavailable: {name}")
+        ),
+    )
+
+    a = gpu.to_device([1.0])
+    b = gpu.to_device([2.0])
+    c = gpu.alloc(1, float)
+
+    with pytest.raises(RuntimeError, match="molt_gpu_kernel_launch"):
+        vector_add[1, 1](a, b, c, 1)
+
+    assert executed == []
+
+
 def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
     import molt.gpu as gpu
 
     original_thread_id = gpu.thread_id
     monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: False)
 
     @gpu.kernel
     def explode():
