@@ -13,7 +13,7 @@ All of the following have been built, tested, and validated on this machine.
 - [x] **4 research papers implemented** -- FlashAttention-2, PagedAttention, EAGLE speculative decoding, SWA
 - [x] **Tiered KV cache** -- hot/warm/cold tiers with eviction policies
 - [x] **WASM compilation** -- `cargo check --target wasm32-unknown-unknown` passes
-- [x] **Cloudflare Worker code** -- worker.js, ocr_api.js, x402.js, monitoring.js, worker-bundle.js
+- [x] **Cloudflare Worker code** -- worker.js, ocr_api.js, x402.js, monitoring.js
 - [x] **x402 payment middleware** -- payment verification, rate limiting, receipt validation
 - [x] **Monitoring and logging** -- structured logging, request tracing, error reporting
 - [x] **Deployment scripts** -- deploy.sh, upload_weights.sh, pre_deploy_check.sh, load_test.sh
@@ -22,7 +22,7 @@ All of the following have been built, tested, and validated on this machine.
 - [x] **Enjoice integration TypeScript** -- client SDK and component code
 - [x] **MCP tool definition** -- deploy/mcp/ocr_tool.json
 - [x] **wrangler.toml** -- Cloudflare Workers config with R2, KV, smart placement
-- [x] **Pre-deploy check** -- 10/10 checks passing (tests, clippy, WASM, JS syntax, no stale markers, bundle, scripts, wrangler config, MCP, git state)
+- [x] **Pre-deploy check** -- checks passing for tests, clippy, WASM, JS syntax, no stale markers, scripts, wrangler config, MCP, and git state
 - [x] **Stress tests** -- adversarial inputs (empty/single/1M-element tensors, extreme floats, subnormals, NaN propagation, inf arithmetic, 6D+ ShapeTracker, 25-op fused chains, constant folding)
 - [x] **Concurrency tests** -- 4-thread parallel compute, arena under concurrent alloc/reset, compile cache contention, concurrent write/read
 - [x] **Error handling tests** -- alloc(0), oversized copy_in, empty/invalid compile source, zero-grid exec, copy_out truncation, zero-size buffer ops

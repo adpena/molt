@@ -45,7 +45,7 @@ fi
 # 4. Worker JS syntax (all files)
 echo -n "4. Worker JS syntax: "
 JS_ERRORS=0
-for js_file in deploy/cloudflare/worker.js deploy/cloudflare/ocr_api.js deploy/cloudflare/x402.js deploy/cloudflare/monitoring.js deploy/cloudflare/worker-bundle.js; do
+for js_file in deploy/cloudflare/worker.js deploy/cloudflare/ocr_api.js deploy/cloudflare/x402.js deploy/cloudflare/monitoring.js; do
     if [ -f "$js_file" ]; then
         if ! node --check "$js_file" 2>/dev/null; then
             echo ""
@@ -71,13 +71,13 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-# 6. Worker bundle exists
-echo -n "6. Worker bundle exists: "
+# 6. No stale generated Worker bundle
+echo -n "6. No stale Worker bundle: "
 if [ -f deploy/cloudflare/worker-bundle.js ]; then
-    echo "PASS"
-else
     echo "FAIL"
     ERRORS=$((ERRORS + 1))
+else
+    echo "PASS"
 fi
 
 # 7. Deploy scripts are executable
