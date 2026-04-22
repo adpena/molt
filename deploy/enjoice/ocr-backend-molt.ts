@@ -6,6 +6,21 @@
  *     (offline, private — no image data leaves the device).
  *   - Fallback: PaddleOCR via the Worker endpoint.
  *
+ * OCR engine selection priority:
+ *   1. Falcon-OCR WebGPU (browser, complex docs) — if WebGPU available
+ *   2. Falcon-OCR WASM SIMD (browser, no GPU) — if WASM SIMD available
+ *   3. Nemotron v2 (server, batch processing) — explicit configured endpoint only
+ *   4. PaddleOCR (browser, last resort) — product integration must configure it
+ *
+ * Nemotron v2 status:
+ *   - 3-stage pipeline: detector (182 MB) + recognizer (25-145 MB) + relational (9 MB)
+ *   - No pre-exported ONNX available; PyTorch .pth weights only
+ *   - ONNX export requires custom converter for all 3 stages
+ *   - Too large for Workers in the current PyTorch/CUDA form; requires a GPU service
+ *     or a separate exported/native runtime path before production use.
+ *   - English variant: detector 182 MB + recognizer 25 MB + relational 9 MB = 216 MB
+ *   - Multilingual variant: detector 182 MB + recognizer 145 MB + relational 9 MB = 336 MB
+ *
  * Implements the OcrBackend interface expected by site/src/lib/ocr/index.ts.
  * Handles WebGPU detection, graceful fallback, and TTFB measurement.
  *
@@ -25,6 +40,65 @@ import {
 
 // Browser-side Falcon-OCR WASM loader for offline inference
 import type { FalconOCR as FalconOCRLoader } from "../browser/falcon-ocr-loader.js";
+
+// --------------------------------------------------------------------------
+// Dual-engine OCR selector
+// --------------------------------------------------------------------------
+
+/**
+ * Available OCR engines in priority order.
+ *
+ * - falcon-ocr-webgpu: Falcon-OCR with WebGPU compute (fastest browser path)
+ * - falcon-ocr-wasm: Falcon-OCR with WASM SIMD (browser, no GPU required)
+ * - nemotron-v2: Nemotron OCR v2 server-side, explicit configured endpoint only
+ * - paddle-ocr: PaddleOCR integration supplied by the product app
+ */
+export type OcrEngine =
+  | "falcon-ocr-webgpu"
+  | "falcon-ocr-wasm"
+  | "nemotron-v2"
+  | "paddle-ocr";
+
+/**
+ * Select the best available OCR engine for the current environment.
+ *
+ * Detection order:
+ *   1. WebGPU available -> falcon-ocr-webgpu
+ *   2. WebAssembly available -> falcon-ocr-wasm
+ *   3. Neither -> paddle-ocr (server-side fallback)
+ *
+ * Nemotron v2 is not auto-selected; it requires explicit opt-in via
+ * `forceEngine: "nemotron-v2"` because it routes to an external GPU
+ * service (Modal) and incurs network latency + cost.
+ */
+export function selectOcrEngine(forceEngine?: OcrEngine): OcrEngine {
+  if (forceEngine) return forceEngine;
+  if (typeof navigator !== "undefined" && "gpu" in navigator) return "falcon-ocr-webgpu";
+  if (typeof WebAssembly !== "undefined") return "falcon-ocr-wasm";
+  return "paddle-ocr";
+}
+
+/**
+ * Check if Nemotron v2 server-side OCR is reachable.
+ *
+ * Pings a caller-provided endpoint. There is intentionally no default URL:
+ * a live Nemotron service must be configured explicitly by the product app.
+ */
+export async function isNemotronAvailable(endpoint: string): Promise<boolean> {
+  if (!endpoint) return false;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(endpoint, {
+      method: "HEAD",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return res.ok || res.status === 405; // 405 = endpoint exists but HEAD not allowed
+  } catch {
+    return false;
+  }
+}
 
 // --------------------------------------------------------------------------
 // Types matching enjoice's OcrBackend interface
