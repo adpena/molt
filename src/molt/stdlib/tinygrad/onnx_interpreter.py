@@ -1274,6 +1274,9 @@ def _op_resize(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     if len(inputs) >= 4 and inputs[3] is not None:
         sizes = _realize_ints(inputs[3])
 
+    if scales is not None and sizes is not None:
+        raise ValueError("Resize cannot specify both scales and sizes")
+
     if sizes:
         target_shape = tuple(sizes)
     elif scales:
