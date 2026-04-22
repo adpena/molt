@@ -746,6 +746,20 @@ class PaddleOCRClassifier:
 # SVTRv2 Text Recognizer
 # ---------------------------------------------------------------------------
 
+def _ctc_rows_are_probabilities(flat: list[float], timesteps: int, vocab: int) -> bool:
+    """Return True when every CTC row is already a probability distribution."""
+    if timesteps <= 0 or vocab <= 0:
+        return False
+    tol = 1e-4
+    for step in range(timesteps):
+        row = flat[step * vocab:(step + 1) * vocab]
+        if any(value < -tol or value > 1.0 + tol for value in row):
+            return False
+        if abs(sum(row) - 1.0) > tol:
+            return False
+    return True
+
+
 class PaddleOCRRecognizer:
     """SVTRv2 text recognizer — reads text from cropped regions.
 
@@ -860,18 +874,29 @@ class PaddleOCRRecognizer:
         """CTC greedy decode: argmax -> remove blanks and duplicates.
 
         Args:
-            logits: [1, T, vocab_size] raw logits (pre-softmax or post-softmax).
+            logits: [1, T, vocab_size] raw logits or already-normalized
+                probabilities. Probability rows are used directly; raw rows
+                are converted with a stable local softmax.
 
         Returns:
             (decoded_text, average_confidence)
         """
+        import math
         import tinygrad.realize
 
-        # Apply softmax to get probabilities
-        probs = logits.softmax(axis=-1)
-        flat = tinygrad.realize.realize(probs.lazydata)
-
         _, t, vocab = logits.shape
+        flat = tinygrad.realize.realize(logits.lazydata)
+        if _ctc_rows_are_probabilities(flat, t, vocab):
+            probs = flat
+        else:
+            probs = []
+            for step in range(t):
+                row = flat[step * vocab:(step + 1) * vocab]
+                max_val = max(row)
+                exps = [math.exp(v - max_val) for v in row]
+                total = sum(exps)
+                probs.extend(v / total for v in exps)
+
         chars: list[str] = []
         confidences: list[float] = []
         prev_idx = -1
@@ -879,9 +904,9 @@ class PaddleOCRRecognizer:
         for step in range(t):
             # Find argmax for this timestep
             best_idx = 0
-            best_prob = flat[step * vocab]
+            best_prob = probs[step * vocab]
             for v in range(1, vocab):
-                p = flat[step * vocab + v]
+                p = probs[step * vocab + v]
                 if p > best_prob:
                     best_prob = p
                     best_idx = v
