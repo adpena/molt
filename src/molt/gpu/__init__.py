@@ -47,6 +47,31 @@ def _load_optional_intrinsic(name: str):
     return None
 
 
+def _resolve_optional_intrinsic(name: str, cache_name: str):
+    cached = globals().get(cache_name)
+    if callable(cached):
+        return cached
+
+    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
+    if callable(loader):
+        value = loader(name)
+        if callable(value):
+            globals()[cache_name] = value
+            return value
+
+    runtime_active = getattr(_molt_intrinsics, "runtime_active", None)
+    if callable(runtime_active) and runtime_active():
+        require = getattr(_molt_intrinsics, "require_intrinsic", None)
+        if callable(require):
+            value = require(name)
+            if callable(value):
+                globals()[cache_name] = value
+                return value
+        raise RuntimeError(f"intrinsic unavailable: {name}")
+
+    return None
+
+
 class Buffer:
     """GPU buffer handle. Created via gpu.to_device() or gpu.alloc()."""
 
@@ -226,7 +251,10 @@ class _KernelLauncher:
         """
         grid = self._grid or 256
         threads = self._threads or 256
-        backend_launch = _MOLT_GPU_KERNEL_LAUNCH
+        backend_launch = _resolve_optional_intrinsic(
+            "molt_gpu_kernel_launch",
+            "_MOLT_GPU_KERNEL_LAUNCH",
+        )
         if callable(backend_launch) and getattr(self._func, "__molt_gpu_kernel__", False):
             return backend_launch(self._func, grid, threads, args)
 
