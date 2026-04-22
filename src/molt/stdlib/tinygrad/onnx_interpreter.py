@@ -6,9 +6,9 @@ tinygrad primitive compositions.  This is more powerful than hand-coding
 any single model architecture because it works for ANY ONNX model —
 PaddleOCR v3/v4/v5, ResNet, MobileNet, BERT, etc.
 
-Supported op set (28 ops — covers PaddleOCR detector + recognizer):
+Supported op set (29 ops — covers PaddleOCR detector + recognizer):
   Arithmetic:  Add, Sub, Mul, Div, Pow, Sqrt, Sigmoid, Relu, Clip,
-               HardSigmoid, Softmax
+               HardSigmoid, HardSwish, Softmax
   Reduction:   ReduceMean, GlobalAveragePool, AveragePool
   Convolution: Conv (with groups), ConvTranspose
   Linear:      MatMul
@@ -83,6 +83,7 @@ class OnnxInterpreter:
         self._graph_nodes: list[dict] = []
         self._input_names: list[str] = []
         self._output_names: list[str] = []
+        self._op_profile: dict[str, list[float]] = {}  # op_type -> [elapsed_ms, ...]
 
     def load_model(self, onnx_bytes: bytes) -> None:
         """Parse ONNX model and prepare for execution.
@@ -99,16 +100,23 @@ class OnnxInterpreter:
                 "ONNX graph execution requires the 'onnx' package. "
                 "The built-in raw parser is weight-only and cannot execute graphs."
             ) from exc
+        self.optimize_graph()
 
-    def run(self, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
+    def run(self, inputs: dict[str, Tensor], profile: bool = False) -> dict[str, Tensor]:
         """Execute the ONNX graph with the given input tensors.
 
         Args:
             inputs: Map of input name -> Tensor (e.g. {"x": image_tensor}).
+            profile: If True, collect per-op timing in self._op_profile.
 
         Returns:
             Map of output name -> Tensor.
         """
+        import time as _time
+
+        if profile:
+            self._op_profile.clear()
+
         values = dict(self._values)  # start with constants
         values.update(inputs)
 
@@ -126,13 +134,206 @@ class OnnxInterpreter:
                 else:
                     input_tensors.append(None)
 
+            if profile:
+                t0 = _time.perf_counter()
+
             outputs = op_func(input_tensors, node["attrs"])
+
+            if profile:
+                elapsed_ms = (_time.perf_counter() - t0) * 1000.0
+                if op_type not in self._op_profile:
+                    self._op_profile[op_type] = []
+                self._op_profile[op_type].append(elapsed_ms)
 
             for name, tensor in zip(node["outputs"], outputs):
                 if name:
                     values[name] = tensor
 
         return {name: values[name] for name in self._output_names if name in values}
+
+    def profile_summary(self) -> str:
+        """Return a formatted summary of per-op profiling data.
+
+        Call run(inputs, profile=True) first to populate timing data.
+        """
+        if not self._op_profile:
+            return "No profiling data. Call run(inputs, profile=True) first."
+
+        lines = ["Op Type          Count   Total(ms)  Mean(ms)  % Total"]
+        lines.append("-" * 60)
+
+        total_ms = sum(sum(times) for times in self._op_profile.values())
+        entries = []
+        for op_type, times in self._op_profile.items():
+            total_op = sum(times)
+            entries.append((op_type, len(times), total_op, total_op / len(times)))
+
+        entries.sort(key=lambda e: -e[2])  # sort by total time descending
+
+        for op_type, count, total_op, mean_op in entries:
+            pct = (total_op / total_ms * 100.0) if total_ms > 0 else 0.0
+            lines.append(f"{op_type:<17s} {count:>4d}   {total_op:>9.2f}  {mean_op:>8.3f}  {pct:>6.1f}%")
+
+        lines.append("-" * 60)
+        lines.append(f"{'TOTAL':<17s} {sum(len(t) for t in self._op_profile.values()):>4d}   {total_ms:>9.2f}")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Graph optimizations
+    # ------------------------------------------------------------------
+
+    def optimize_graph(self) -> None:
+        """Apply graph-level optimizations before execution.
+
+        Currently implemented:
+          - Fold BatchNormalization into preceding Conv (eliminates BN entirely)
+          - Eliminate Identity nodes
+        """
+        self._fold_batchnorm()
+        self._eliminate_identity()
+
+    def _fold_batchnorm(self) -> None:
+        """Fold Conv -> BatchNormalization pairs into a single Conv.
+
+        For each BatchNormalization whose sole input comes from a Conv output,
+        fuse the BN parameters (gamma, beta, mean, var) into the Conv weight
+        and bias, then remove the BN node.
+
+        new_weight = weight * (gamma / sqrt(var + eps))   [per output channel]
+        new_bias   = (old_bias - mean) * (gamma / sqrt(var + eps)) + beta
+        """
+        import tinygrad.realize
+
+        # Build output->node index
+        output_to_idx: dict[str, int] = {}
+        for i, node in enumerate(self._graph_nodes):
+            for o in node["outputs"]:
+                if o:
+                    output_to_idx[o] = i
+
+        # Track which BN nodes to remove and which Conv nodes to update
+        remove_indices: set[int] = set()
+
+        for bn_idx, node in enumerate(self._graph_nodes):
+            if node["op_type"] != "BatchNormalization":
+                continue
+
+            bn_input = node["inputs"][0]
+            if bn_input not in output_to_idx:
+                continue
+
+            conv_idx = output_to_idx[bn_input]
+            conv_node = self._graph_nodes[conv_idx]
+            if conv_node["op_type"] != "Conv":
+                continue
+
+            # Get BN parameters: scale(gamma), bias(beta), mean, var
+            bn_scale_name = node["inputs"][1] if len(node["inputs"]) > 1 else None
+            bn_bias_name = node["inputs"][2] if len(node["inputs"]) > 2 else None
+            bn_mean_name = node["inputs"][3] if len(node["inputs"]) > 3 else None
+            bn_var_name = node["inputs"][4] if len(node["inputs"]) > 4 else None
+
+            if not all(n and n in self._values for n in [bn_scale_name, bn_bias_name, bn_mean_name, bn_var_name]):
+                continue
+
+            bn_gamma = self._values[bn_scale_name]
+            bn_beta = self._values[bn_bias_name]
+            bn_mean = self._values[bn_mean_name]
+            bn_var = self._values[bn_var_name]
+            eps = _get_attr_float(node["attrs"], "epsilon", 1e-5)
+
+            # Get Conv weight and optional bias
+            conv_weight_name = conv_node["inputs"][1] if len(conv_node["inputs"]) > 1 else None
+            conv_bias_name = conv_node["inputs"][2] if len(conv_node["inputs"]) > 2 else None
+
+            if not conv_weight_name or conv_weight_name not in self._values:
+                continue
+
+            conv_weight = self._values[conv_weight_name]
+            conv_bias = self._values[conv_bias_name] if conv_bias_name and conv_bias_name in self._values else None
+
+            # Realize all parameters to flat lists
+            gamma_data = list(tinygrad.realize.realize(bn_gamma.lazydata))
+            beta_data = list(tinygrad.realize.realize(bn_beta.lazydata))
+            mean_data = list(tinygrad.realize.realize(bn_mean.lazydata))
+            var_data = list(tinygrad.realize.realize(bn_var.lazydata))
+            w_data = list(tinygrad.realize.realize(conv_weight.lazydata))
+
+            c_out = bn_gamma.shape[0]
+            # Weight shape: (C_out, C_in_per_group, kH, kW) — total elements per channel
+            elems_per_channel = len(w_data) // c_out
+
+            if conv_bias is not None:
+                b_data = list(tinygrad.realize.realize(conv_bias.lazydata))
+            else:
+                b_data = [0.0] * c_out
+
+            # Compute fused parameters
+            new_w = [0.0] * len(w_data)
+            new_b = [0.0] * c_out
+
+            for oc in range(c_out):
+                # scale = gamma / sqrt(var + eps)
+                scale = gamma_data[oc] / (var_data[oc] + eps) ** 0.5
+                # new_weight[oc] = weight[oc] * scale
+                base = oc * elems_per_channel
+                for j in range(elems_per_channel):
+                    new_w[base + j] = w_data[base + j] * scale
+                # new_bias = (old_bias - mean) * scale + beta
+                new_b[oc] = (b_data[oc] - mean_data[oc]) * scale + beta_data[oc]
+
+            # Replace conv weight and bias in values
+            self._values[conv_weight_name] = _make_tensor(new_w, conv_weight.shape)
+
+            # Ensure conv node has a bias input
+            fused_bias_name = conv_bias_name
+            if fused_bias_name is None or fused_bias_name not in self._values:
+                fused_bias_name = f"_fused_bias_{conv_idx}"
+                # Extend conv inputs to include bias
+                while len(conv_node["inputs"]) < 3:
+                    conv_node["inputs"].append("")
+                conv_node["inputs"][2] = fused_bias_name
+            self._values[fused_bias_name] = _make_tensor(new_b, (c_out,))
+
+            # Rewire: BN output now comes from Conv
+            bn_output = node["outputs"][0] if node["outputs"] else None
+            if bn_output:
+                conv_node["outputs"][0] = bn_output
+                # Update output_to_idx so later BN nodes can find the rewired Conv
+                output_to_idx[bn_output] = conv_idx
+
+            remove_indices.add(bn_idx)
+
+        # Remove folded BN nodes (iterate in reverse to preserve indices)
+        if remove_indices:
+            self._graph_nodes = [n for i, n in enumerate(self._graph_nodes) if i not in remove_indices]
+
+    def _eliminate_identity(self) -> None:
+        """Remove Identity nodes by rewiring their input to their output."""
+        new_nodes = []
+        # Map: identity output name -> identity input name
+        rewire: dict[str, str] = {}
+
+        for node in self._graph_nodes:
+            if node["op_type"] == "Identity":
+                inp = node["inputs"][0] if node["inputs"] else ""
+                out = node["outputs"][0] if node["outputs"] else ""
+                if inp and out:
+                    # Follow chains: if inp was itself rewired, use final target
+                    while inp in rewire:
+                        inp = rewire[inp]
+                    rewire[out] = inp
+                continue
+            new_nodes.append(node)
+
+        if not rewire:
+            return
+
+        # Rewrite all remaining nodes' inputs
+        for node in new_nodes:
+            node["inputs"] = [rewire.get(n, n) for n in node["inputs"]]
+
+        self._graph_nodes = new_nodes
 
     # ------------------------------------------------------------------
     # Model loading
@@ -403,6 +604,20 @@ def _op_hard_sigmoid(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     # clip(alpha*x + beta, 0, 1) = relu(alpha*x + beta) - relu(alpha*x + beta - 1)
     ax_b = x * alpha + beta
     return [ax_b.relu() + (ax_b + (-1.0)).relu() * (-1.0)]
+
+
+def _op_hard_swish(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
+    """HardSwish: x * clip(x/6 + 0.5, 0, 1) = x * HardSigmoid(x, alpha=1/6, beta=0.5).
+
+    Used extensively in MobileNetV3-based PaddleOCR recognizers.
+    """
+    x = inputs[0]
+    # HardSigmoid with alpha=1/6, beta=0.5: clip(x/6 + 0.5, 0, 1)
+    alpha = 1.0 / 6.0
+    beta = 0.5
+    ax_b = x * alpha + beta
+    hs = ax_b.relu() + (ax_b + (-1.0)).relu() * (-1.0)  # clip(ax_b, 0, 1)
+    return [x * hs]
 
 
 def _op_softmax(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
@@ -931,6 +1146,7 @@ _OP_DISPATCH: dict[str, object] = {
     "Sigmoid": _op_sigmoid,
     "Clip": _op_clip,
     "HardSigmoid": _op_hard_sigmoid,
+    "HardSwish": _op_hard_swish,
     "Softmax": _op_softmax,
     "ReduceMean": _op_reduce_mean,
     "GlobalAveragePool": _op_global_avg_pool,
