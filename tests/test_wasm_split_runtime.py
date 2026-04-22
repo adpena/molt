@@ -1695,6 +1695,21 @@ class TestManifestJson:
             pytest.skip("manifest.json not produced")
         return json.loads(manifest.read_text())
 
+    def _read_worker(self, split_build_a):
+        out_dir, result = split_build_a
+        if result.returncode != 0:
+            pytest.skip("build failed")
+        worker = out_dir / "worker.js"
+        if not worker.exists():
+            pytest.skip("worker.js not produced")
+        return worker.read_text()
+
+    @staticmethod
+    def _worker_json_const(worker_js: str, name: str):
+        match = re.search(rf"^\s*const {re.escape(name)} = (.+);$", worker_js, re.M)
+        assert match is not None, f"worker.js missing {name}"
+        return json.loads(match.group(1))
+
     def test_version(self, split_build_a):
         data = self._read_manifest(split_build_a)
         assert data["version"] == 2
@@ -1742,6 +1757,51 @@ class TestManifestJson:
         data = self._read_manifest(split_build_a)
         expected = data["modules"]["runtime"]["size"] + data["modules"]["app"]["size"]
         assert data["total_size"] == expected
+
+    def test_runtime_import_abi_matches_app_wasm(self, split_build_a):
+        out_dir, result = split_build_a
+        if result.returncode != 0:
+            pytest.skip("build failed")
+        app_wasm = out_dir / "app.wasm"
+        if not app_wasm.exists():
+            pytest.skip("app.wasm not produced")
+        expected_signatures = cli._wasm_import_function_signatures(
+            app_wasm, module_name="molt_runtime"
+        )
+        expected_result_kinds = cli._wasm_import_function_result_kinds(
+            app_wasm, module_name="molt_runtime"
+        )
+        if not expected_signatures:
+            pytest.skip("wasm-objdump unavailable or app has no runtime imports")
+
+        abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
+
+        assert abi["module"] == "molt_runtime"
+        assert abi["names"] == sorted(expected_signatures)
+        assert abi["signatures"] == expected_signatures
+        assert abi["result_kinds"] == expected_result_kinds
+
+    def test_runtime_import_abi_matches_worker_maps(self, split_build_a):
+        manifest_abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
+        worker_js = self._read_worker(split_build_a)
+
+        assert manifest_abi["signatures"] == self._worker_json_const(
+            worker_js, "runtimeImportSignatures"
+        )
+        assert manifest_abi["result_kinds"] == self._worker_json_const(
+            worker_js, "runtimeImportResultKinds"
+        )
+
+    def test_table_ref_abi_matches_worker_maps(self, split_build_a):
+        manifest_abi = self._read_manifest(split_build_a)["abi"]["table_refs"]
+        worker_js = self._read_worker(split_build_a)
+
+        assert manifest_abi["app"] == self._worker_json_const(
+            worker_js, "appTableRefSignatures"
+        )
+        assert manifest_abi["runtime"] == self._worker_json_const(
+            worker_js, "runtimeTableRefSignatures"
+        )
 
 
 @pytest.mark.slow
