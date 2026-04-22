@@ -1,25 +1,39 @@
-# ONNX Baseline for Falcon-OCR
+# ONNX Baseline Plan for Falcon-OCR
 
-## Why ONNX as baseline
-- Mature runtime (onnxruntime-web has WebGPU backend since 2024)
-- Proven browser deployment (used by Transformers.js)
-- Known performance characteristics
-- Quality benchmark: ONNX output = reference output
+**Date:** 2026-04-21
 
-## Deployment path
-1. Export Falcon-OCR to ONNX (export-onnx.py in enjoice)
-2. Quantize to INT8/FP16 (quantize.py in enjoice)
-3. Load in browser via onnxruntime-web
-4. Compare speed and quality against molt-compiled tinygrad
+This is a baseline plan, not benchmark evidence. The goal is to compare a
+Molt/tinygrad browser path against a conventional ONNX Runtime Web path with the
+same model, prompts, tokenizer, image preprocessing, and evaluation corpus.
 
-## What molt must beat
-- ONNX Runtime Web WebGPU: estimated 5-20 tok/s on M1
-- ONNX INT8 model size: ~300 MB (or ~150 MB FP16)
-- Quality: same as PyTorch reference (ONNX is lossless export)
+## Why ONNX Is A Useful Baseline
 
-## How molt can beat ONNX
-- Kernel fusion (ONNX Runtime does some, molt does aggressive fusion)
-- Custom WebGPU kernels (our WGSL shaders are hand-optimized)
-- Speculative decoding (ONNX Runtime doesn't support this)
-- Tiered KV cache (ONNX Runtime has basic KV cache)
-- Tree-shaked binary (ONNX includes all ops, molt only includes used ops)
+- ONNX Runtime Web has mature browser deployment paths, including WebGPU support.
+- ONNX gives a common graph interchange target for comparing model conversion,
+  quantization, startup, memory, and inference latency.
+- A successful ONNX export can act as a reference lane only after parity against
+  the source model has been measured.
+
+## Required Baseline Work
+
+1. Export Falcon-OCR to ONNX with a documented script and pinned dependencies.
+2. Validate numerics against the source model on fixed image/prompt fixtures.
+3. Quantize with documented INT8/FP16 settings and measure quality deltas.
+4. Run ONNX Runtime Web in browser with dated browser/hardware versions.
+5. Compare Molt against ONNX on the same corpus and metrics.
+
+## Metrics
+
+- Model artifact size and compressed transfer size.
+- Cold start, warm start, and first-token latency.
+- Tokens/sec or pages/sec, depending on the benchmark task.
+- Peak browser memory and GPU memory where observable.
+- OCR quality metrics: CER/WER/NED, table extraction accuracy, and structured
+  invoice field F1.
+
+## Non-Claims
+
+Do not claim that Molt beats ONNX, that ONNX is lossless, or that a specific
+throughput is expected until this file links to measured artifacts. Any future
+performance table should include command lines, commit SHA, browser version,
+hardware, and input corpus details.
