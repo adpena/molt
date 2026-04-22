@@ -8,6 +8,9 @@
 //
 // Exit code 0 = all tests pass (bit-identical).
 // Exit code 1 = at least one mismatch found.
+//
+// Stable machine-readable summary marker:
+//   @@SIMD_DIFF_JSON@@ {"version":1,...}
 
 'use strict';
 
@@ -109,9 +112,19 @@ function xorshift32(seed) {
 let totalTests = 0;
 let passedTests = 0;
 let failedTests = 0;
+let activeGroup = null;
+const caseResults = [];
 
 function report(name, result) {
     totalTests++;
+    const entry = {
+        group: activeGroup,
+        name,
+        passed: result.pass,
+        mismatchCount: result.mismatches.length,
+        mismatches: result.mismatches,
+    };
+    caseResults.push(entry);
     if (result.pass) {
         passedTests++;
         console.log(`  PASS  ${name}`);
@@ -170,6 +183,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: add_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'add_f32';
     console.log('--- add_f32 ---');
     for (const n of [1, 4, 7, 16, 63, 256, 1024]) {
         const a = randArr(n);
@@ -191,6 +205,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: mul_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'mul_f32';
     console.log('--- mul_f32 ---');
     for (const n of [1, 4, 7, 16, 256]) {
         const a = randArr(n);
@@ -211,6 +226,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: neg_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'neg_f32';
     console.log('--- neg_f32 ---');
     for (const n of [1, 4, 7, 16, 256]) {
         const a = randArr(n);
@@ -228,6 +244,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: sqrt_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'sqrt_f32';
     console.log('--- sqrt_f32 ---');
     for (const n of [1, 4, 7, 16, 256]) {
         const a = randArrPos(n);
@@ -245,6 +262,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: reciprocal_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'reciprocal_f32';
     console.log('--- reciprocal_f32 ---');
     for (const n of [1, 4, 7, 16, 256]) {
         const a = randArrPos(n, 0.1, 100);
@@ -262,6 +280,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: max_f32 (with NaN propagation)
     // -----------------------------------------------------------------------
+    activeGroup = 'max_f32';
     console.log('--- max_f32 ---');
     for (const n of [1, 4, 7, 16, 256]) {
         const a = randArr(n);
@@ -282,6 +301,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: exp2_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'exp2_f32';
     console.log('--- exp2_f32 ---');
     for (const n of [1, 4, 7, 16, 256]) {
         const a = randArr(n, -10, 10);
@@ -299,6 +319,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: reduce_sum_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'reduce_sum_f32';
     console.log('--- reduce_sum_f32 ---');
     for (const n of [1, 4, 7, 16, 256]) {
         const a = randArr(n);
@@ -327,6 +348,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: reduce_max_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'reduce_max_f32';
     console.log('--- reduce_max_f32 ---');
     for (const n of [1, 4, 7, 16, 256]) {
         const a = randArr(n);
@@ -355,6 +377,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: softmax_f32_fused
     // -----------------------------------------------------------------------
+    activeGroup = 'softmax_f32_fused';
     console.log('--- softmax_f32_fused ---');
     for (const n of [1, 4, 7, 16, 64, 256]) {
         const a = randArr(n, -5, 5);
@@ -372,6 +395,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: matmul_f32_tiled
     // -----------------------------------------------------------------------
+    activeGroup = 'matmul_f32_tiled';
     console.log('--- matmul_f32_tiled ---');
     for (const [m, k, n] of [[4, 4, 4], [8, 8, 8], [5, 7, 3], [16, 16, 16], [1, 1, 1], [64, 64, 64]]) {
         const a = randArr(m * k);
@@ -393,6 +417,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: rms_norm_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'rms_norm_f32';
     console.log('--- rms_norm_f32 ---');
     for (const n of [4, 7, 16, 64, 256]) {
         const a = randArr(n);
@@ -415,6 +440,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Test: rope_f32
     // -----------------------------------------------------------------------
+    activeGroup = 'rope_f32';
     console.log('--- rope_f32 ---');
     for (const n of [4, 8, 16, 64]) {
         const q = randArr(n);
@@ -440,6 +466,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Adversarial inputs: NaN, inf, -0.0, subnormals
     // -----------------------------------------------------------------------
+    activeGroup = 'adversarial_inputs';
     console.log('--- adversarial inputs ---');
     {
         const edges = new Float32Array([
@@ -487,6 +514,7 @@ async function main() {
     // -----------------------------------------------------------------------
     // Determinism test: same inputs 100 times, verify all outputs identical
     // -----------------------------------------------------------------------
+    activeGroup = 'determinism';
     console.log('--- determinism (100 runs) ---');
     {
         const n = 64;
@@ -541,8 +569,47 @@ async function main() {
     // -----------------------------------------------------------------------
     // Summary
     // -----------------------------------------------------------------------
+    const groupedResults = [];
+    const groupIndex = new Map();
+    for (const entry of caseResults) {
+        let group = groupIndex.get(entry.group);
+        if (!group) {
+            group = {
+                name: entry.group,
+                caseCount: 0,
+                passed: 0,
+                failed: 0,
+                cases: [],
+            };
+            groupIndex.set(entry.group, group);
+            groupedResults.push(group);
+        }
+        group.caseCount++;
+        if (entry.passed) {
+            group.passed++;
+        } else {
+            group.failed++;
+        }
+        group.cases.push({
+            name: entry.name,
+            passed: entry.passed,
+            mismatchCount: entry.mismatchCount,
+            mismatches: entry.passed ? [] : entry.mismatches,
+        });
+    }
+    const summary = {
+        version: 1,
+        summary: {
+            total: totalTests,
+            passed: passedTests,
+            failed: failedTests,
+        },
+        groups: groupedResults,
+        results: caseResults,
+    };
     console.log('');
     console.log(`=== RESULTS: ${passedTests}/${totalTests} passed, ${failedTests} failed ===`);
+    console.log(`@@SIMD_DIFF_JSON@@ ${JSON.stringify(summary)}`);
     process.exit(failedTests > 0 ? 1 : 0);
 }
 
