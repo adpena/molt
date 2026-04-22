@@ -45,27 +45,106 @@ from tinygrad.dtypes import dtypes
 # ---------------------------------------------------------------------------
 
 class OnnxWeightParser:
-    """Extract named float32 weight tensors from an ONNX model file.
+    """Extract named weight tensors from an ONNX model file.
 
-    ONNX graph.initializer contains TensorProto messages. Each has:
-      - name (field 1, string)
-      - dims (field 2, repeated int64)
-      - data_type (field 3, int32) — 1=float32
-      - raw_data (field 13, bytes) — little-endian float32 payload
+    PaddleOCR ONNX models store weights as Constant graph nodes (not
+    graph.initializer). Each Constant node has an output name and a
+    TensorProto ``value`` attribute containing dims, data_type, and the
+    payload in either ``float_data``, ``int64_data``, ``int32_data``, or
+    ``raw_data``.
 
-    We parse the top-level ModelProto -> GraphProto -> initializer chain
-    using raw protobuf wire format decoding. No external dependencies.
+    ONNX data_type mapping:
+      1 = float32, 6 = int32, 7 = int64, 11 = double
+
+    Strategy:
+      1. Try ``onnx`` library (fast, reliable, handles all edge cases).
+      2. Fall back to a minimal protobuf wire-format parser that handles
+         both ``graph.initializer`` *and* Constant-node extraction without
+         any external dependency.
     """
 
+    # ONNX data_type enum → (struct format char, element byte size)
+    _DTYPE_MAP: dict[int, tuple[str, int]] = {
+        1: ("f", 4),    # FLOAT
+        6: ("i", 4),    # INT32
+        7: ("q", 8),    # INT64
+        11: ("d", 8),   # DOUBLE
+    }
+
     @staticmethod
-    def parse(data: bytes) -> dict[str, tuple[tuple[int, ...], list[float]]]:
-        """Parse ONNX bytes into {name: (shape, flat_float_list)}."""
-        weights: dict[str, tuple[tuple[int, ...], list[float]]] = {}
+    def parse(data: bytes) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
+        """Parse ONNX bytes → {name: (shape, data_type, flat_values)}.
+
+        ``data_type`` follows ONNX convention (1=float32, 6=int32, 7=int64).
+        ``flat_values`` is a list of float for dtype 1/11 or list of int for
+        dtype 6/7.
+        """
+        try:
+            return OnnxWeightParser._parse_with_onnx(data)
+        except Exception:
+            return OnnxWeightParser._parse_raw_protobuf(data)
+
+    # ------------------------------------------------------------------
+    # Strategy 1: onnx library (preferred)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_with_onnx(data: bytes) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
+        import onnx
+        from onnx import numpy_helper
+        import numpy as np
+
+        model = onnx.load_from_string(data)
+        weights: dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]] = {}
+
+        # 1. graph.initializer (standard location)
+        for init in model.graph.initializer:
+            arr = numpy_helper.to_array(init)
+            dtype_code = init.data_type
+            shape = tuple(int(d) for d in init.dims)
+            if dtype_code in (1, 11):
+                values: list[float] | list[int] = arr.astype(np.float32).flatten().tolist()
+            elif dtype_code in (6, 7):
+                values = arr.flatten().tolist()
+            else:
+                values = arr.astype(np.float32).flatten().tolist()
+                dtype_code = 1
+            weights[init.name] = (shape, dtype_code, values)
+
+        # 2. Constant nodes (PaddleOCR stores weights here)
+        for node in model.graph.node:
+            if node.op_type != "Constant":
+                continue
+            if not node.output:
+                continue
+            name = node.output[0]
+            for attr in node.attribute:
+                if attr.name == "value" and attr.t is not None:
+                    t = attr.t
+                    shape = tuple(int(d) for d in t.dims) if t.dims else ()
+                    dtype_code = t.data_type
+                    arr = numpy_helper.to_array(t)
+                    if dtype_code in (1, 11):
+                        values = arr.astype(np.float32).flatten().tolist()
+                    elif dtype_code in (6, 7):
+                        values = arr.flatten().tolist()
+                    else:
+                        values = arr.astype(np.float32).flatten().tolist()
+                        dtype_code = 1
+                    weights[name] = (shape, dtype_code, values)
+
+        return weights
+
+    # ------------------------------------------------------------------
+    # Strategy 2: raw protobuf (no dependencies)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_raw_protobuf(data: bytes) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
+        weights: dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]] = {}
+
         graph_bytes = OnnxWeightParser._extract_field(data, field_num=7, wire_type=2)
         if graph_bytes is None:
             return weights
 
-        # Extract all initializer entries (field 5, length-delimited)
         offset = 0
         while offset < len(graph_bytes):
             field_num, wire_type, value, new_offset = OnnxWeightParser._read_field(
@@ -74,20 +153,80 @@ class OnnxWeightParser:
             if new_offset is None:
                 break
             offset = new_offset
+
+            # field 5 = initializer (TensorProto)
             if field_num == 5 and wire_type == 2:
-                # This is a TensorProto
-                name, shape, floats = OnnxWeightParser._parse_tensor_proto(value)
-                if name and floats is not None:
-                    weights[name] = (shape, floats)
+                name, shape, dtype_code, vals = OnnxWeightParser._parse_tensor_proto(value)
+                if name and vals is not None:
+                    weights[name] = (shape, dtype_code, vals)
+
+            # field 1 = node (NodeProto) — look for Constant ops
+            if field_num == 1 and wire_type == 2:
+                cname, cshape, cdtype, cvals = OnnxWeightParser._parse_constant_node(value)
+                if cname and cvals is not None:
+                    weights[cname] = (cshape, cdtype, cvals)
+
         return weights
 
     @staticmethod
-    def _parse_tensor_proto(data: bytes) -> tuple[str, tuple[int, ...], list[float] | None]:
+    def _parse_constant_node(data: bytes) -> tuple[str, tuple[int, ...], int, list[float] | list[int] | None]:
+        """Parse a NodeProto looking for Constant op with value attribute."""
+        op_type = ""
+        output_name = ""
+        tensor_data: tuple[str, tuple[int, ...], int, list[float] | list[int] | None] | None = None
+
+        offset = 0
+        while offset < len(data):
+            fn, wt, value, new_offset = OnnxWeightParser._read_field(data, offset)
+            if new_offset is None:
+                break
+            offset = new_offset
+            if fn == 4 and wt == 2:  # op_type
+                op_type = value.decode("utf-8", errors="replace")
+            elif fn == 2 and wt == 2:  # output
+                output_name = value.decode("utf-8", errors="replace")
+            elif fn == 5 and wt == 2:  # attribute
+                # Parse AttributeProto for name="value", type=TENSOR(4)
+                attr_name, attr_tensor = OnnxWeightParser._parse_attribute(value)
+                if attr_name == "value" and attr_tensor is not None:
+                    tensor_data = attr_tensor
+
+        if op_type != "Constant" or not output_name or tensor_data is None:
+            return "", (), 0, None
+
+        _, shape, dtype_code, vals = tensor_data
+        return output_name, shape, dtype_code, vals
+
+    @staticmethod
+    def _parse_attribute(data: bytes) -> tuple[str, tuple[str, tuple[int, ...], int, list[float] | list[int] | None] | None]:
+        """Parse AttributeProto. Returns (attr_name, tensor_data_or_None)."""
+        attr_name = ""
+        tensor_bytes: bytes | None = None
+
+        offset = 0
+        while offset < len(data):
+            fn, wt, value, new_offset = OnnxWeightParser._read_field(data, offset)
+            if new_offset is None:
+                break
+            offset = new_offset
+            if fn == 1 and wt == 2:  # name
+                attr_name = value.decode("utf-8", errors="replace")
+            elif fn == 4 and wt == 2:  # t (TensorProto)
+                tensor_bytes = value
+
+        if attr_name == "value" and tensor_bytes is not None:
+            return attr_name, OnnxWeightParser._parse_tensor_proto(tensor_bytes)
+        return attr_name, None
+
+    @staticmethod
+    def _parse_tensor_proto(data: bytes) -> tuple[str, tuple[int, ...], int, list[float] | list[int] | None]:
         name = ""
         dims: list[int] = []
         data_type = 0
         raw_data: bytes | None = None
         float_data: list[float] = []
+        int64_data: list[int] = []
+        int32_data: list[int] = []
 
         offset = 0
         while offset < len(data):
@@ -102,33 +241,47 @@ class OnnxWeightParser:
             elif field_num == 2 and wire_type == 0:
                 dims.append(value)
             elif field_num == 2 and wire_type == 2:
-                # packed repeated int64
                 dims.extend(OnnxWeightParser._decode_packed_varints(value))
             elif field_num == 3 and wire_type == 0:
                 data_type = value
             elif field_num == 4 and wire_type == 2:
-                # packed repeated float (float_data field)
                 count = len(value) // 4
                 float_data = list(struct.unpack(f"<{count}f", value[:count * 4]))
             elif field_num == 4 and wire_type == 5:
-                # individual float32
                 float_data.append(struct.unpack("<f", value)[0])
+            elif field_num == 7 and wire_type == 2:
+                # packed repeated int64 (int64_data)
+                count = len(value) // 8
+                int64_data = list(struct.unpack(f"<{count}q", value[:count * 8]))
+            elif field_num == 7 and wire_type == 0:
+                int64_data.append(value)
+            elif field_num == 8 and wire_type == 2:
+                # packed repeated int32 (int32_data, field 8 in some versions)
+                count = len(value) // 4
+                int32_data = list(struct.unpack(f"<{count}i", value[:count * 4]))
             elif field_num == 13 and wire_type == 2:
                 raw_data = value
 
-        # Only support float32 (type 1) for now
-        if data_type != 1 and data_type != 0:
-            return name, tuple(dims), None
+        shape = tuple(dims)
+        dtype_info = OnnxWeightParser._DTYPE_MAP.get(data_type)
 
-        if raw_data is not None:
-            count = len(raw_data) // 4
-            floats = list(struct.unpack(f"<{count}f", raw_data[:count * 4]))
-        elif float_data:
-            floats = float_data
-        else:
-            return name, tuple(dims), None
+        if raw_data is not None and dtype_info is not None:
+            fmt_char, elem_size = dtype_info
+            count = len(raw_data) // elem_size
+            vals: list[float] | list[int] = list(struct.unpack(f"<{count}{fmt_char}", raw_data[:count * elem_size]))
+            return name, shape, data_type, vals
 
-        return name, tuple(dims), floats
+        if data_type in (1, 11) and float_data:
+            return name, shape, data_type, float_data
+        if data_type == 7 and int64_data:
+            return name, shape, data_type, int64_data
+        if data_type == 6 and int32_data:
+            return name, shape, data_type, int32_data
+        # Fallback: try float_data for unknown/zero dtype
+        if float_data:
+            return name, shape, data_type or 1, float_data
+
+        return name, shape, data_type, None
 
     @staticmethod
     def _extract_field(data: bytes, field_num: int, wire_type: int) -> bytes | None:
@@ -214,15 +367,28 @@ class WeightStore:
         self._tensors: dict[str, Tensor] = {}
 
     def load_onnx(self, data: bytes) -> int:
-        """Load weights from ONNX bytes. Returns count of tensors loaded."""
+        """Load weights from ONNX bytes. Returns count of tensors loaded.
+
+        Handles float32 (dtype 1), int32 (dtype 6), and int64 (dtype 7)
+        tensors. Integer tensors are stored as-is — they are typically
+        shape/index constants used by Reshape, Slice, etc.
+        """
         parsed = OnnxWeightParser.parse(data)
         count = 0
-        for name, (shape, floats) in parsed.items():
+        for name, (shape, dtype_code, values) in parsed.items():
             if not shape:
-                shape = (len(floats),)
+                shape = (len(values),)
             from tinygrad.lazy import LazyOp, LazyBuffer
-            op = LazyOp("LOAD", (), dtype=dtypes.float32, shape=shape)
-            buf = LazyBuffer(op, dtypes.float32, shape, data=floats)
+            if dtype_code in (6, 7):
+                # Integer constant (shape params, indices, etc.)
+                # Store as int64 for shape operations
+                dt = dtypes.int64 if dtype_code == 7 else dtypes.int32
+                op = LazyOp("LOAD", (), dtype=dt, shape=shape)
+                buf = LazyBuffer(op, dt, shape, data=values)
+            else:
+                # Float32 (default)
+                op = LazyOp("LOAD", (), dtype=dtypes.float32, shape=shape)
+                buf = LazyBuffer(op, dtypes.float32, shape, data=values)
             self._tensors[name] = Tensor(buf)
             count += 1
         return count
@@ -408,6 +574,10 @@ class PaddleOCRDetector:
         """Load detector weights from ONNX file bytes."""
         count = self.weights.load_onnx(onnx_bytes)
         self._loaded = count > 0
+
+    def load_onnx_weights(self, onnx_bytes: bytes) -> None:
+        """Alias for load() — loads detector weights from raw ONNX bytes."""
+        self.load(onnx_bytes)
 
     def forward(self, image: Tensor) -> Tensor:
         """Run text detection.
@@ -627,7 +797,7 @@ class PaddleOCRRecognizer:
         self.charset: list[str] = []
         self._loaded = False
 
-    def load(self, onnx_bytes: bytes, charset_text: str) -> None:
+    def load(self, onnx_bytes: bytes, charset_text: str = "") -> None:
         """Load recognizer weights and character set.
 
         Args:
@@ -637,6 +807,10 @@ class PaddleOCRRecognizer:
         """
         count = self.weights.load_onnx(onnx_bytes)
         self._loaded = count > 0
+
+    def load_onnx_weights(self, onnx_bytes: bytes, charset_text: str = "") -> None:
+        """Alias for load() — loads recognizer weights from raw ONNX bytes."""
+        self.load(onnx_bytes, charset_text)
 
         # Parse charset: one character per line, blank token (index 0) is implicit
         self.charset = [""]  # index 0 = CTC blank
