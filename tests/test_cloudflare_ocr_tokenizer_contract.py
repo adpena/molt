@@ -57,3 +57,33 @@ def test_cloudflare_ocr_token_decode_uses_tokenizer() -> None:
     )
 
     assert result["text"] == "4:5:6"
+
+
+def test_cloudflare_tokenizer_decode_preserves_edge_whitespace() -> None:
+    result = _run_ocr_api_script(
+        """
+        const { TokenizerDecoder } = await import('./deploy/cloudflare/tokenizer.js');
+        const tokenizer = new TokenizerDecoder(
+          new Map([
+            [1, '  lead'],
+            [2, 'mid'],
+            [3, 'trail  '],
+            [4, '   '],
+          ]),
+          new Set()
+        );
+        process.stdout.write(JSON.stringify({
+          leading: tokenizer.decode([1]),
+          trailing: tokenizer.decode([3]),
+          whitespace_only: tokenizer.decode([4]),
+          combined: tokenizer.decode([1, 2, 3])
+        }));
+        """
+    )
+
+    assert result == {
+        "leading": "  lead",
+        "trailing": "trail  ",
+        "whitespace_only": "   ",
+        "combined": "  leadmidtrail  ",
+    }

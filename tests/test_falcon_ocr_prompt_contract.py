@@ -509,6 +509,18 @@ def test_cloudflare_worker_nemotron_route_has_no_hardcoded_modal_endpoint() -> N
     assert "adpena--nemotron-ocr-ocr-endpoint.modal.run" not in source
     assert "28x faster" not in source
     assert "configured GPU service endpoint" in source
+    assert "Modal GPU cost per OCR" not in source
+    assert "$0.0007 profit" not in source
+    assert "GPU inference backend returned no result" in source
+    assert "GPU inference backend failed" in source
+
+
+def test_x402_payment_metadata_has_no_unverified_gpu_quality_claims() -> None:
+    source = (ROOT / "deploy" / "cloudflare" / "x402.js").read_text(encoding="utf-8")
+
+    assert "price_usd" in source
+    assert "GPU bfloat16 (highest quality)" not in source
+    assert "~1s inference on A10G" not in source
 
 
 def test_enjoice_migration_doc_points_at_worker_wasm_and_tokenizer_artifacts() -> None:

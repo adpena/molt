@@ -102,10 +102,7 @@ export class TokenizerDecoder {
         pieces.push(`[UNK:${id}]`);
       }
     }
-    return pieces
-      .join("")
-      .replace(/\u2581/g, " ") // sentencepiece space marker -> space
-      .trim();
+    return pieces.join("").replace(/\u2581/g, " "); // sentencepiece space marker -> space
   }
 
   /**
@@ -128,9 +125,6 @@ export class TokenizerDecoder {
         pieces.push(`[UNK:${filtered[i]}]`);
       }
     }
-    return pieces
-      .join("")
-      .replace(/\u2581/g, " ")
-      .trim();
+    return pieces.join("").replace(/\u2581/g, " ");
   }
 }
