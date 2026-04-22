@@ -43,6 +43,7 @@ Usage (Polars-style):
 from . import Buffer, to_device
 from . import ops
 import math
+from typing import Any
 
 
 class Series:
@@ -76,11 +77,21 @@ class Series:
     def __len__(self):
         return self._size
 
+    def _numeric_buffer(self) -> Buffer:
+        if self._buffer is None:
+            raise TypeError("Series has no numeric buffer")
+        return self._buffer
+
+    def _string_values(self) -> list[Any]:
+        if self._str_data is None:
+            raise TypeError("Series has no string data")
+        return self._str_data
+
     def __getitem__(self, idx):
         if isinstance(idx, int):
             if self._str_data is not None:
                 return self._str_data[idx]
-            return self._buffer[idx]
+            return self._numeric_buffer()[idx]
         elif isinstance(idx, Series):
             # Boolean indexing
             return self._filter_by_mask(idx)
@@ -95,14 +106,16 @@ class Series:
             ]
             return Series(self.name, filtered)
         else:
-            filtered = [self._buffer[i] for i in range(self._size) if mask._get_bool(i)]
+            buffer = self._numeric_buffer()
+            filtered = [buffer[i] for i in range(self._size) if mask._get_bool(i)]
             return Series(self.name, filtered, dtype=self._dtype)
 
     def _slice(self, s: slice) -> "Series":
         indices = range(*s.indices(self._size))
         if self._str_data is not None:
             return Series(self.name, [self._str_data[i] for i in indices])
-        return Series(self.name, [self._buffer[i] for i in indices], dtype=self._dtype)
+        buffer = self._numeric_buffer()
+        return Series(self.name, [buffer[i] for i in indices], dtype=self._dtype)
 
     def _get_bool(self, idx):
         if self._buffer is not None:
@@ -131,11 +144,14 @@ class Series:
 
     def _compare(self, other, op):
         if isinstance(other, (int, float)):
-            result = [op(self._buffer[i], other) for i in range(self._size)]
+            buffer = self._numeric_buffer()
+            result = [op(buffer[i], other) for i in range(self._size)]
         elif isinstance(other, str) and self._str_data is not None:
             result = [op(self._str_data[i], other) for i in range(self._size)]
         elif isinstance(other, Series):
-            result = [op(self._buffer[i], other._buffer[i]) for i in range(self._size)]
+            buffer = self._numeric_buffer()
+            other_buffer = other._numeric_buffer()
+            result = [op(buffer[i], other_buffer[i]) for i in range(self._size)]
         else:
             raise TypeError(f"Cannot compare with {type(other)}")
         return Series(f"{self.name}_cmp", result, dtype=float)
@@ -154,10 +170,12 @@ class Series:
         return self._arith(other, lambda a, b: a / b if b != 0 else float("inf"), "div")
 
     def _arith(self, other, op, name):
+        buffer = self._numeric_buffer()
         if isinstance(other, (int, float)):
-            result = [op(self._buffer[i], float(other)) for i in range(self._size)]
+            result = [op(buffer[i], float(other)) for i in range(self._size)]
         elif isinstance(other, Series):
-            result = [op(self._buffer[i], other._buffer[i]) for i in range(self._size)]
+            other_buffer = other._numeric_buffer()
+            result = [op(buffer[i], other_buffer[i]) for i in range(self._size)]
         else:
             raise TypeError(f"Cannot compute with {type(other)}")
         return Series(f"{self.name}_{name}", result, dtype=self._dtype)
@@ -175,20 +193,21 @@ class Series:
 
     def min(self):
         if self._buffer is None:
-            return min(self._str_data)
+            return min(self._string_values())
         return ops.reduce(self._buffer, "min")
 
     def max(self):
         if self._buffer is None:
-            return max(self._str_data)
+            return max(self._string_values())
         return ops.reduce(self._buffer, "max")
 
     def count(self):
         return self._size
 
     def std(self):
+        buffer = self._numeric_buffer()
         m = self.mean()
-        variance = sum((self._buffer[i] - m) ** 2 for i in range(self._size)) / max(
+        variance = sum((buffer[i] - m) ** 2 for i in range(self._size)) / max(
             self._size - 1, 1
         )
         return math.sqrt(variance)
@@ -197,8 +216,9 @@ class Series:
         if self._str_data is not None:
             return Series(self.name, list(dict.fromkeys(self._str_data)))
         seen = []
+        buffer = self._numeric_buffer()
         for i in range(self._size):
-            v = self._buffer[i]
+            v = buffer[i]
             if v not in seen:
                 seen.append(v)
         return Series(self.name, seen, dtype=self._dtype)
@@ -209,14 +229,19 @@ class Series:
     def value_counts(self):
         counts = {}
         for i in range(self._size):
-            val = self._str_data[i] if self._str_data is not None else self._buffer[i]
+            val = (
+                self._str_data[i]
+                if self._str_data is not None
+                else self._numeric_buffer()[i]
+            )
             counts[val] = counts.get(val, 0) + 1
         return counts
 
     def to_list(self):
         if self._str_data is not None:
             return list(self._str_data)
-        return [self._buffer[i] for i in range(self._size)]
+        buffer = self._numeric_buffer()
+        return [buffer[i] for i in range(self._size)]
 
     def head(self, n=5):
         return self[:n]

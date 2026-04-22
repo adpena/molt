@@ -23,17 +23,14 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use molt_gpu::device::cpu::CpuDevice;
-use molt_gpu::device::{Allocator, DeviceBuffer};
+use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
 use molt_gpu::fuse;
 use molt_gpu::lazy::{DeviceBufferRef, LazyOp};
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{FusedKernel};
+use molt_gpu::render::FusedKernel;
 use molt_gpu::schedule;
 use molt_gpu::shapetracker::ShapeTracker;
-use molt_gpu::device::cpu::interpret;
-
-use crate::{MoltObject, PyToken, raise_exception};
 
 // ============================================================================
 // Thread-local tensor store
@@ -79,7 +76,9 @@ fn store_tensor(tensor: PrimitiveTensor) -> u64 {
 fn with_tensor<R>(handle: u64, f: impl FnOnce(&PrimitiveTensor) -> R) -> Option<R> {
     TENSOR_STORE.with(|store| {
         let store = store.borrow();
-        store.get(handle as usize).and_then(|slot| slot.as_ref().map(|t| f(t)))
+        store
+            .get(handle as usize)
+            .and_then(|slot| slot.as_ref().map(f))
     })
 }
 
@@ -87,7 +86,9 @@ fn with_tensor<R>(handle: u64, f: impl FnOnce(&PrimitiveTensor) -> R) -> Option<
 fn with_tensor_mut<R>(handle: u64, f: impl FnOnce(&mut PrimitiveTensor) -> R) -> Option<R> {
     TENSOR_STORE.with(|store| {
         let mut store = store.borrow_mut();
-        store.get_mut(handle as usize).and_then(|slot| slot.as_mut().map(f))
+        store
+            .get_mut(handle as usize)
+            .and_then(|slot| slot.as_mut().map(f))
     })
 }
 
@@ -103,8 +104,14 @@ fn with_tensor_mut<R>(handle: u64, f: impl FnOnce(&mut PrimitiveTensor) -> R) ->
 /// `shape_len`: number of dimensions
 ///
 /// Returns a tensor handle (u64).
+///
+/// # Safety
+///
+/// `data_ptr` must point to `data_len` contiguous initialized `f32` values and
+/// `shape_ptr` must point to `shape_len` contiguous initialized `usize` values
+/// for the duration of this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_create_tensor(
+pub unsafe extern "C" fn molt_gpu_prim_create_tensor(
     data_ptr: *const f32,
     data_len: usize,
     shape_ptr: *const usize,
@@ -154,11 +161,13 @@ pub extern "C" fn molt_gpu_prim_create_tensor(
 /// `shape_len`: number of dimensions
 ///
 /// Returns a tensor handle.
+///
+/// # Safety
+///
+/// `shape_ptr` must point to `shape_len` contiguous initialized `usize` values
+/// for the duration of this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_zeros(
-    shape_ptr: *const usize,
-    shape_len: usize,
-) -> u64 {
+pub unsafe extern "C" fn molt_gpu_prim_zeros(shape_ptr: *const usize, shape_len: usize) -> u64 {
     if shape_ptr.is_null() {
         return u64::MAX;
     }
@@ -203,7 +212,8 @@ pub extern "C" fn molt_gpu_prim_realize(handle: u64) -> u64 {
     let (lazy, shape, dtype) = match TENSOR_STORE.with(|store| {
         let store = store.borrow();
         store.get(handle as usize).and_then(|slot| {
-            slot.as_ref().map(|t| (t.lazy.clone(), t.shape.clone(), t.dtype))
+            slot.as_ref()
+                .map(|t| (t.lazy.clone(), t.shape.clone(), t.dtype))
         })
     }) {
         Some(v) => v,
@@ -297,7 +307,7 @@ fn collect_leaf_data(node: &Arc<LazyOp>) -> Vec<u8> {
     // Leaf nodes should have their data stored in the tensor store.
     // For now, return empty; the tensor store lookup happens at a higher level.
     match node.as_ref() {
-        LazyOp::Buffer { buf, dtype, st } => {
+        LazyOp::Buffer { buf: _, dtype, st } => {
             vec![0u8; st.numel() * dtype.size_bytes()]
         }
         _ => Vec::new(),
@@ -323,12 +333,11 @@ fn collect_leaves_recursive(
                 TENSOR_STORE.with(|store| {
                     let store = store.borrow();
                     for slot in store.iter().flatten() {
-                        if let LazyOp::Buffer { buf: ref b, .. } = *slot.lazy {
-                            if b.id == buf.id {
-                                if let Some(ref data) = slot.data {
-                                    return data.clone();
-                                }
-                            }
+                        if let LazyOp::Buffer { buf: ref b, .. } = *slot.lazy
+                            && b.id == buf.id
+                            && let Some(ref data) = slot.data
+                        {
+                            return data.clone();
                         }
                     }
                     vec![0u8; st.numel() * dtype.size_bytes()]
@@ -359,11 +368,7 @@ fn collect_leaves_recursive(
 ///
 /// Returns the number of elements written, or u64::MAX on failure.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_read_data(
-    handle: u64,
-    out_ptr: *mut f32,
-    out_len: usize,
-) -> u64 {
+pub extern "C" fn molt_gpu_prim_read_data(handle: u64, out_ptr: *mut f32, out_len: usize) -> u64 {
     if out_ptr.is_null() {
         return u64::MAX;
     }
@@ -446,12 +451,11 @@ pub extern "C" fn molt_gpu_prim_unary(op_code: u32, src_handle: u64) -> u64 {
         None => return u64::MAX,
     };
 
-    let (lazy, shape, dtype) = match with_tensor(src_handle, |t| {
-        (t.lazy.clone(), t.shape.clone(), t.dtype)
-    }) {
-        Some(v) => v,
-        None => return u64::MAX,
-    };
+    let (lazy, _shape, dtype) =
+        match with_tensor(src_handle, |t| (t.lazy.clone(), t.shape.clone(), t.dtype)) {
+            Some(v) => v,
+            None => return u64::MAX,
+        };
 
     let new_lazy = Arc::new(LazyOp::Unary { op, src: lazy });
     let new_shape = new_lazy.shape();
@@ -481,7 +485,10 @@ pub extern "C" fn molt_gpu_prim_binary(op_code: u32, lhs_handle: u64, rhs_handle
         None => return u64::MAX,
     };
 
-    let out_dtype = if matches!(op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+    let out_dtype = if matches!(
+        op,
+        PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+    ) {
         DType::Bool
     } else {
         lhs.2
@@ -552,14 +559,17 @@ pub extern "C" fn molt_gpu_prim_reduce(op_code: u32, src_handle: u64, axis: usiz
         None => return u64::MAX,
     };
 
-    let (lazy, _shape, dtype) = match with_tensor(src_handle, |t| {
-        (t.lazy.clone(), t.shape.clone(), t.dtype)
-    }) {
-        Some(v) => v,
-        None => return u64::MAX,
-    };
+    let (lazy, _shape, dtype) =
+        match with_tensor(src_handle, |t| (t.lazy.clone(), t.shape.clone(), t.dtype)) {
+            Some(v) => v,
+            None => return u64::MAX,
+        };
 
-    let new_lazy = Arc::new(LazyOp::Reduce { op, src: lazy, axis });
+    let new_lazy = Arc::new(LazyOp::Reduce {
+        op,
+        src: lazy,
+        axis,
+    });
     let new_shape = new_lazy.shape();
 
     store_tensor(PrimitiveTensor {
@@ -578,11 +588,7 @@ pub extern "C" fn molt_gpu_prim_reduce(op_code: u32, src_handle: u64, axis: usiz
 ///
 /// Returns the number of dimensions, or u64::MAX on failure.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_shape(
-    handle: u64,
-    out_ptr: *mut usize,
-    out_len: usize,
-) -> u64 {
+pub extern "C" fn molt_gpu_prim_shape(handle: u64, out_ptr: *mut usize, out_len: usize) -> u64 {
     if out_ptr.is_null() {
         return u64::MAX;
     }
@@ -599,10 +605,7 @@ pub extern "C" fn molt_gpu_prim_shape(
 /// Get the number of elements in a tensor.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
-    with_tensor(handle, |t| {
-        t.shape.iter().product::<usize>() as u64
-    })
-    .unwrap_or(0)
+    with_tensor(handle, |t| t.shape.iter().product::<usize>() as u64).unwrap_or(0)
 }
 
 /// Query the current device name.
@@ -611,16 +614,18 @@ pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_device() -> u32 {
     #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
-    { return 1; }
+    {
+        return 1;
+    }
     #[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
-    { return 2; }
+    {
+        return 2;
+    }
     0 // CPU
 }
 
 /// Get the number of live tensors in the store (for debugging/testing).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_tensor_count() -> u64 {
-    TENSOR_STORE.with(|store| {
-        store.borrow().iter().filter(|s| s.is_some()).count() as u64
-    })
+    TENSOR_STORE.with(|store| store.borrow().iter().filter(|s| s.is_some()).count() as u64)
 }

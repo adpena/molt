@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-try:
-    from _intrinsics import require_intrinsic as _require_intrinsic
-except (ImportError, TypeError, RuntimeError):
-    # _intrinsics may not be available during early bootstrap or WASM builds.
-    def _require_intrinsic(name):  # type: ignore[misc]
-        raise RuntimeError(f"intrinsic {name!r} not available (bootstrap)")
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 def cast(_tp, value):  # type: ignore[override]

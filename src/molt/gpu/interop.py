@@ -209,7 +209,7 @@ def _load_safetensor_entry(data: bytes, data_start: int, meta: dict):
     return Tensor(values, shape=shape)
 
 
-def load_safetensors_bytes(data: bytes) -> dict:
+def load_safetensors_bytes(data: bytes) -> _SafeTensorMap:
     """Load weights from an in-memory .safetensors blob."""
     header_len = struct.unpack_from("<Q", data, 0)[0]
     if header_len > len(data) - 8:
@@ -222,7 +222,7 @@ def load_safetensors_bytes(data: bytes) -> dict:
     return _SafeTensorMap(data, data_start, entries)
 
 
-def load_safetensors(path: str) -> dict:
+def load_safetensors(path: str) -> _SafeTensorMap:
     """Load weights from a .safetensors file."""
     with open(path, "rb") as f:
         return load_safetensors_bytes(f.read())

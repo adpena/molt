@@ -261,7 +261,7 @@ class MaxPool2d:
         stride: stride of the pooling window (default: kernel_size)
     """
 
-    def __init__(self, kernel_size: int, stride: int = None):
+    def __init__(self, kernel_size: int, stride: int | None = None):
         self.kernel_size = (
             kernel_size
             if isinstance(kernel_size, tuple)
@@ -310,7 +310,7 @@ class MaxPool2d:
 class AvgPool2d:
     """2D average pooling layer."""
 
-    def __init__(self, kernel_size: int, stride: int = None):
+    def __init__(self, kernel_size: int, stride: int | None = None):
         self.kernel_size = (
             kernel_size
             if isinstance(kernel_size, tuple)
@@ -379,6 +379,8 @@ class BatchNorm1d:
     def __call__(self, x: Tensor) -> Tensor:
         if self.running_mean is None:
             return x  # Not initialized — identity
+        if self.running_var is None:
+            raise RuntimeError("BatchNorm running_var is not initialized")
 
         data = x._data_list()
         mean = self.running_mean._data_list()
