@@ -142,6 +142,69 @@ def test_browser_loader_defaults_point_at_worker_artifacts() -> None:
     }
 
 
+def test_wasm_simd_engine_requires_real_module_exports() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser compute-engine tests")
+    script = """
+      const originalCompile = WebAssembly.compile;
+      const originalInstantiate = WebAssembly.instantiate;
+      const originalFetch = globalThis.fetch;
+      const { ComputeEngine } = await import('./deploy/browser/compute-engine.js');
+      async function run(exports) {
+        let fetches = 0;
+        globalThis.fetch = async () => {
+          fetches += 1;
+          return new Response(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]), { status: 200 });
+        };
+        WebAssembly.compile = async () => ({});
+        WebAssembly.instantiate = async () => ({ exports });
+        try {
+          const engine = await ComputeEngine.create({ forceBackend: 'wasm-simd' });
+          return { ok: true, backend: engine.backendName, fetches };
+        } catch (err) {
+          return { ok: false, message: err.message, fetches };
+        } finally {
+          WebAssembly.compile = originalCompile;
+          WebAssembly.instantiate = originalInstantiate;
+          globalThis.fetch = originalFetch;
+        }
+      }
+      const memory = new WebAssembly.Memory({ initial: 1 });
+      const complete = await run({
+        memory,
+        matmul_f32() {},
+        softmax_f32() {},
+        rms_norm_f32() {},
+        add_f32() {},
+        mul_f32() {},
+      });
+      const missing = await run({ memory, matmul_f32() {} });
+      process.stdout.write(JSON.stringify({ complete, missing }));
+    """
+    run = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=str(ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(run.stdout)
+    assert result["complete"]["ok"] is True
+    assert result["complete"]["backend"] == "wasm-simd"
+    assert result["missing"]["ok"] is False
+    assert "WASM SIMD requested but not available" in result["missing"]["message"]
+
+
+def test_wasm_simd_engine_source_does_not_report_simd_without_instance() -> None:
+    source = (ROOT / "deploy" / "browser" / "compute-engine.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "return this.#simdAvailable ? 'wasm-simd' : 'scalar'" not in source
+    assert "return 'scalar';" in source
+    assert "WASM SIMD module missing exports" in source
+
+
 def test_browser_tokenizer_decoder_uses_byte_level_bpe() -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for Falcon-OCR JS tokenizer tests")
