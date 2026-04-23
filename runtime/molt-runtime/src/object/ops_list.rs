@@ -21,10 +21,42 @@ enum SortError {
     Exception,
 }
 
-/// Public entry point for promoting `TYPE_ID_LIST_BOOL` to `TYPE_ID_LIST`.
-/// Called from `ops.rs` for slice getitem and other cross-module paths.
-pub(crate) unsafe fn promote_list_bool_public(_py: &PyToken<'_>, ptr: *mut u8) {
-    unsafe { promote_list_bool_to_list(_py, ptr) }
+#[inline]
+pub(crate) unsafe fn promote_specialized_list_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe {
+        match object_type_id(ptr) {
+            TYPE_ID_LIST_INT => promote_list_int_to_list(_py, ptr),
+            TYPE_ID_LIST_BOOL => promote_list_bool_to_list(_py, ptr),
+            _ => {}
+        }
+    }
+}
+
+/// Promote a `TYPE_ID_LIST_INT` object to a regular `TYPE_ID_LIST` in-place.
+///
+/// Converts the compact i64 storage to a `Vec<u64>` of NaN-boxed ints and
+/// rewrites the header type_id. After promotion, all standard list operations
+/// work without specialized code paths.
+pub(crate) unsafe fn promote_list_int_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_LIST_INT {
+            return;
+        }
+        let int_storage_ptr = crate::object::layout::list_int_storage_ptr(ptr);
+        if int_storage_ptr.is_null() {
+            return;
+        }
+        let int_storage = *Box::from_raw(int_storage_ptr);
+        let int_vec = int_storage.into_vec();
+        let mut boxed_vec: Vec<u64> = Vec::with_capacity(int_vec.len());
+        for raw in int_vec {
+            boxed_vec.push(MoltObject::from_int(raw).bits());
+        }
+        let vec_ptr = Box::into_raw(Box::new(boxed_vec));
+        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        let header = header_from_obj_ptr(ptr);
+        (*header).type_id = TYPE_ID_LIST;
+    }
 }
 
 /// Promote a `TYPE_ID_LIST_BOOL` object to a regular `TYPE_ID_LIST` in-place.
@@ -37,7 +69,7 @@ pub(crate) unsafe fn promote_list_bool_public(_py: &PyToken<'_>, ptr: *mut u8) {
 ///
 /// # Safety
 /// Caller must hold the GIL.  `ptr` must point to a valid object data area.
-unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
+pub(crate) unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         if object_type_id(ptr) != TYPE_ID_LIST_BOOL {
             return;
@@ -70,10 +102,7 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
         let obj = obj_from_bits(list_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
-                // Promote list_bool to regular list before mutation.
-                if object_type_id(ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, ptr);
-                }
+                promote_specialized_list_to_list(_py, ptr);
                 if object_type_id(ptr) == TYPE_ID_LIST {
                     let elems = seq_vec(ptr);
                     elems.push(val_bits);
@@ -97,9 +126,7 @@ pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
         let index_obj = obj_from_bits(index_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, ptr);
-                }
+                promote_specialized_list_to_list(_py, ptr);
                 if object_type_id(ptr) == TYPE_ID_LIST {
                     let len = list_len(ptr) as i64;
                     if len == 0 {
@@ -142,9 +169,7 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
-                if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, list_ptr);
-                }
+                promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) != TYPE_ID_LIST {
                     return MoltObject::none().bits();
                 }
@@ -271,9 +296,7 @@ pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u6
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
-                if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, list_ptr);
-                }
+                promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
                     let len = list_len(list_ptr) as i64;
                     let mut idx = index_i64_from_obj(
@@ -339,9 +362,7 @@ pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
-                if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, list_ptr);
-                }
+                promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
                     let snapshot = list_snapshot(_py, list_ptr);
                     let mut matched_idx = None;
@@ -385,9 +406,7 @@ pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
-                if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, list_ptr);
-                }
+                promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
                     let elems = seq_vec(list_ptr);
                     for &elem in elems.iter() {
@@ -411,7 +430,7 @@ pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u
         };
         unsafe {
             let tid = object_type_id(list_ptr);
-            if tid != TYPE_ID_LIST && tid != TYPE_ID_LIST_BOOL {
+            if tid != TYPE_ID_LIST && tid != TYPE_ID_LIST_BOOL && tid != TYPE_ID_LIST_INT {
                 // For TYPE_ID_OBJECT (user-defined subclasses), verify
                 // the class actually inherits from list via MRO check.
                 if tid == crate::object::TYPE_ID_OBJECT {
@@ -466,6 +485,21 @@ pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
                     *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) = storage_ptr;
                     return MoltObject::from_ptr(out_ptr).bits();
                 }
+                if object_type_id(list_ptr) == TYPE_ID_LIST_INT {
+                    let elems = crate::object::layout::list_int_vec_ref(list_ptr);
+                    let new_vec: Vec<i64> = elems.iter().copied().collect();
+                    let storage_ptr = crate::object::layout::ListIntStorage::from_vec(new_vec);
+                    let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
+                        + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
+                        + std::mem::size_of::<u64>();
+                    let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_INT);
+                    if out_ptr.is_null() {
+                        drop((*Box::from_raw(storage_ptr)).into_vec());
+                        return MoltObject::none().bits();
+                    }
+                    *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
+                    return MoltObject::from_ptr(out_ptr).bits();
+                }
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
                     let elems = seq_vec_ref(list_ptr);
                     let out_ptr = alloc_list(_py, elems.as_slice());
@@ -486,9 +520,7 @@ pub extern "C" fn molt_list_reverse(list_bits: u64) -> u64 {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
-                if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, list_ptr);
-                }
+                promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
                     let elems = seq_vec(list_ptr);
                     elems.reverse();
@@ -506,9 +538,7 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
-                if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, list_ptr);
-                }
+                promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) != TYPE_ID_LIST {
                     return MoltObject::none().bits();
                 }
@@ -610,9 +640,7 @@ pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "list.__add__ expects list");
         };
         unsafe {
-            if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
-                promote_list_bool_to_list(_py, list_ptr);
-            }
+            promote_specialized_list_to_list(_py, list_ptr);
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, "TypeError", "list.__add__ expects list");
             }
@@ -625,8 +653,8 @@ pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", &msg);
             };
             let other_tid = object_type_id(other_ptr);
-            if other_tid == TYPE_ID_LIST_BOOL {
-                promote_list_bool_to_list(_py, other_ptr);
+            if other_tid == TYPE_ID_LIST_BOOL || other_tid == TYPE_ID_LIST_INT {
+                promote_specialized_list_to_list(_py, other_ptr);
             }
             if object_type_id(other_ptr) != TYPE_ID_LIST {
                 let msg = format!(
@@ -661,6 +689,7 @@ pub extern "C" fn molt_list_mul_method(list_bits: u64, count_bits: u64) -> u64 {
         unsafe {
             if object_type_id(list_ptr) != TYPE_ID_LIST
                 && object_type_id(list_ptr) != TYPE_ID_LIST_BOOL
+                && object_type_id(list_ptr) != TYPE_ID_LIST_INT
             {
                 return raise_exception::<_>(_py, "TypeError", "list.__mul__ expects list");
             }
@@ -1010,9 +1039,7 @@ pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
         let list_obj = obj_from_bits(list_bits);
         if let Some(ptr) = list_obj.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, ptr);
-                }
+                promote_specialized_list_to_list(_py, ptr);
                 if object_type_id(ptr) == TYPE_ID_LIST {
                     let mut count = 0i64;
                     let mut idx = 0usize;
@@ -1051,9 +1078,7 @@ pub extern "C" fn molt_list_index_range(
         let list_obj = obj_from_bits(list_bits);
         if let Some(ptr) = list_obj.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_LIST_BOOL {
-                    promote_list_bool_to_list(_py, ptr);
-                }
+                promote_specialized_list_to_list(_py, ptr);
                 if object_type_id(ptr) == TYPE_ID_LIST {
                     let len = list_len(ptr) as i64;
                     let missing = missing_bits(_py);
