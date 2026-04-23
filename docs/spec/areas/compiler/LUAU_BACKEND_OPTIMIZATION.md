@@ -66,6 +66,8 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | `str.splitlines` | Direct CR/LF loop with optional keepends | Correct for admitted ASCII line-break subset |
 | `str.replace` | Escaped plain-pattern `string.gsub` with optional count limit | Correct for admitted replace subset |
 | `str.partition` / `str.rpartition` | Direct plain search and tuple table construction | Correct for admitted partition subset |
+| `str.removeprefix` / `str.removesuffix` | String attribute closures for current frontend indirect-call path | Correct for admitted string subset |
+| ASCII string predicates | String attribute closures using byte-range tests | Target-limited to ASCII fast path |
 | `dict.popitem` | `pairs` loop with empty-dict guard | Correct empty-dict `KeyError`; order follows Luau table iteration |
 | Dict literal `{}` | `{[k1]=v1, ...}` keyed table | Optimal |
 | Set `set()` | `{}` table (values as keys mapped to `true`) | Correct |
