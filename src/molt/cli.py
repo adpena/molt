@@ -1481,7 +1481,7 @@ class _PreparedBackendRuntimeContext:
     runtime_wasm: Path | None
     runtime_reloc_wasm: Path | None
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool]
-    ensure_runtime_wasm_reloc: Callable[[], bool]
+    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool]
     cache_setup: _BackendCacheSetup
     cache_hit: bool
     cache_hit_tier: str | None
@@ -18047,7 +18047,9 @@ def _prepare_backend_runtime_context(
             required_exports=required_exports,
         )
 
-    def ensure_runtime_wasm_reloc() -> bool:
+    def ensure_runtime_wasm_reloc(
+        required_exports: set[str] | frozenset[str] | None = None,
+    ) -> bool:
         return _ensure_runtime_wasm_artifact(
             runtime_state,
             reloc=True,
@@ -18059,6 +18061,7 @@ def _prepare_backend_runtime_context(
             freestanding=is_wasm_freestanding,
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
+            required_exports=required_exports,
         )
 
     return _PreparedBackendRuntimeContext(
@@ -18099,7 +18102,7 @@ def _prepare_backend_dispatch(
     json_output: bool,
     backend_daemon_config_digest: str | None,
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
-    ensure_runtime_wasm_reloc: Callable[[], bool],
+    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
     resolved_modules: set[str] | frozenset[str] | None,
     warnings: list[str],
 ) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
@@ -18801,7 +18804,7 @@ def _prepare_backend_compile(
     entry_module: str,
     resolved_modules: frozenset[str],
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
-    ensure_runtime_wasm_reloc: Callable[[], bool],
+    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
     artifacts_root: Path,
     ir: Mapping[str, Any],
     _ensure_backend_ir_bytes: Callable[[], bytes],
@@ -19491,7 +19494,7 @@ def _prepare_non_native_build_result(
     runtime_wasm: Path | None,
     runtime_reloc_wasm: Path | None,
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
-    ensure_runtime_wasm_reloc: Callable[[], bool],
+    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
     runtime_cargo_profile: str,
     molt_root: Path,
     split_runtime: bool = False,
@@ -19525,6 +19528,9 @@ def _prepare_non_native_build_result(
         _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
         staged_runtime_wasm: Path | None = None
         if linked:
+            required_runtime_exports = _collect_wasm_module_import_names(
+                output_wasm, "molt_runtime"
+            )
             structural_error = _validate_wasm_structural(output_wasm)
             if structural_error is not None:
                 return None, _fail(
@@ -19533,7 +19539,7 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
-            if not ensure_runtime_wasm_reloc():
+            if not ensure_runtime_wasm_reloc(required_runtime_exports):
                 return None, _fail(
                     "Runtime wasm build failed",
                     json_output,
@@ -19549,9 +19555,6 @@ def _prepare_non_native_build_result(
                 resolved_linked_output = output_wasm.with_name("output_linked.wasm")
             if resolved_linked_output.parent != Path("."):
                 resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
-            required_runtime_exports = _collect_wasm_module_import_names(
-                output_wasm, "molt_runtime"
-            )
             if not is_wasm_freestanding:
                 if runtime_wasm is None:
                     return None, _fail(
@@ -19559,7 +19562,7 @@ def _prepare_non_native_build_result(
                         json_output,
                         command="build",
                     )
-                if not ensure_runtime_wasm_shared(None):
+                if not ensure_runtime_wasm_shared(required_runtime_exports):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
