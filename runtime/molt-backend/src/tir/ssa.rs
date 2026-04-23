@@ -1460,8 +1460,9 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "del_index" => OpCode::DelIndex,
         "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind"
         | "call_function" | "call_guarded" | "invoke_ffi" => OpCode::Call,
-        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim"
-        | "gpu_barrier" => OpCode::Call,
+        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => {
+            OpCode::Call
+        }
         "call_method" => OpCode::CallMethod,
         "call_builtin" | "builtin_print" | "print" => OpCode::CallBuiltin,
         "box" | "box_from_raw_int" => OpCode::BoxVal,

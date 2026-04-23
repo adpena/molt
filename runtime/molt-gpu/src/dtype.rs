@@ -69,7 +69,15 @@ impl DType {
     /// Whether this is a floating-point type.
     #[inline(always)]
     pub fn is_float(self) -> bool {
-        matches!(self, Self::Float16 | Self::BFloat16 | Self::Float32 | Self::Float64 | Self::MxFP8 | Self::MxFP4)
+        matches!(
+            self,
+            Self::Float16
+                | Self::BFloat16
+                | Self::Float32
+                | Self::Float64
+                | Self::MxFP8
+                | Self::MxFP4
+        )
     }
 
     /// Whether this is a signed integer type.
@@ -79,7 +87,10 @@ impl DType {
 
     /// Whether this is an unsigned integer type (including Bool).
     pub fn is_unsigned_int(self) -> bool {
-        matches!(self, Self::Bool | Self::UInt8 | Self::UInt16 | Self::UInt32 | Self::UInt64)
+        matches!(
+            self,
+            Self::Bool | Self::UInt8 | Self::UInt16 | Self::UInt32 | Self::UInt64
+        )
     }
 
     /// Whether this is any integer type.
@@ -173,8 +184,8 @@ impl DType {
     pub fn wgsl_type(self) -> &'static str {
         match self {
             Self::Bool => "bool",
-            Self::Int8 => "i32",   // WGSL has no 8-bit types; narrow to i32
-            Self::Int16 => "i32",  // WGSL has no 16-bit int; narrow to i32
+            Self::Int8 => "i32",  // WGSL has no 8-bit types; narrow to i32
+            Self::Int16 => "i32", // WGSL has no 16-bit int; narrow to i32
             Self::Int32 => "i32",
             Self::Int64 => "i32",  // narrowed by narrow_webgpu
             Self::UInt8 => "u32",  // WGSL has no 8-bit types; narrow to u32
@@ -184,7 +195,7 @@ impl DType {
             Self::Float16 => "f16",
             Self::BFloat16 => "f32", // WGSL has no bf16; narrow to f32
             Self::Float32 => "f32",
-            Self::Float64 => "f32",  // narrowed by narrow_webgpu
+            Self::Float64 => "f32", // narrowed by narrow_webgpu
             // MXFP stored as u32 in WGSL (packed bytes); dequantized in kernel.
             Self::MxFP8 | Self::MxFP4 => "u32",
         }
@@ -239,7 +250,10 @@ impl DType {
             Self::Int32 => "int",
             Self::UInt32 => "uint",
             Self::Float32 => "float",
-            _ => unreachable!("narrow_webgl2 should have reduced all types to f32/i32/u32/bool, got {:?}", narrowed),
+            _ => unreachable!(
+                "narrow_webgl2 should have reduced all types to f32/i32/u32/bool, got {:?}",
+                narrowed
+            ),
         }
     }
 
@@ -264,7 +278,7 @@ impl DType {
     /// `narrow_opencl`. BFloat16 will panic as it must be narrowed first.
     pub fn opencl_type(self) -> &'static str {
         match self {
-            Self::Bool => "int",     // OpenCL kernels use int for boolean values
+            Self::Bool => "int", // OpenCL kernels use int for boolean values
             Self::Int8 => "char",
             Self::Int16 => "short",
             Self::Int32 => "int",
@@ -274,7 +288,9 @@ impl DType {
             Self::UInt32 => "uint",
             Self::UInt64 => "ulong",
             Self::Float16 => "half",
-            Self::BFloat16 => panic!("BFloat16 must be narrowed to Float32 before OpenCL type mapping"),
+            Self::BFloat16 => {
+                panic!("BFloat16 must be narrowed to Float32 before OpenCL type mapping")
+            }
             Self::Float32 => "float",
             Self::Float64 => "double",
             // MXFP stored as uchar; dequantized in kernel body.

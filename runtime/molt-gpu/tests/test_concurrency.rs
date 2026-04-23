@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::thread;
 
 use molt_gpu::device::arena::{Arena, ArenaConfig};
-use molt_gpu::device::cpu::CpuDevice;
 use molt_gpu::device::cpu::interpret;
+use molt_gpu::device::cpu::CpuDevice;
 use molt_gpu::device::{Allocator, Compiler};
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
@@ -49,7 +49,10 @@ fn test_concurrent_cpu_device_independent_compute() {
                         op: PrimitiveOp::Add,
                         srcs: vec![
                             FusedSrc::Buf(1),
-                            FusedSrc::Const { val: addend as f64, dtype: DType::Float32 },
+                            FusedSrc::Const {
+                                val: addend as f64,
+                                dtype: DType::Float32,
+                            },
                         ],
                         dst_dtype: DType::Float32,
                     }],
@@ -69,7 +72,8 @@ fn test_concurrent_cpu_device_independent_compute() {
                     ],
                     grid: [n as u32, 1, 1],
                     local: [1, 1, 1],
-                    spec: None, vectorize_width: 1,
+                    spec: None,
+                    vectorize_width: 1,
                 };
 
                 let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&input)];
@@ -81,7 +85,8 @@ fn test_concurrent_cpu_device_independent_compute() {
                 let data = vec![0xABu8; 1024];
                 dev.copy_in(&buf, &data).expect("copy_in should succeed");
                 let mut out = vec![0u8; 1024];
-                dev.copy_out(&buf, &mut out).expect("copy_out should succeed");
+                dev.copy_out(&buf, &mut out)
+                    .expect("copy_out should succeed");
                 assert_eq!(out, data, "copy_out should match copy_in");
                 dev.free(buf).expect("free should succeed");
 
@@ -193,7 +198,10 @@ fn test_arena_concurrent_alloc_and_reset() {
     // Arena should be in a consistent state
     let stats = arena.stats();
     assert!(stats.pool_size > 0);
-    assert!(stats.generation > 0, "at least one reset should have occurred");
+    assert!(
+        stats.generation > 0,
+        "at least one reset should have occurred"
+    );
 }
 
 // =============================================================================
@@ -288,7 +296,10 @@ fn test_concurrent_different_kernel_shapes() {
                         op: PrimitiveOp::Mul,
                         srcs: vec![
                             FusedSrc::Buf(1),
-                            FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
+                            FusedSrc::Const {
+                                val: 2.0,
+                                dtype: DType::Float32,
+                            },
                         ],
                         dst_dtype: DType::Float32,
                     }],
@@ -308,7 +319,8 @@ fn test_concurrent_different_kernel_shapes() {
                     ],
                     grid: [n as u32, 1, 1],
                     local: [1, 1, 1],
-                    spec: None, vectorize_width: 1,
+                    spec: None,
+                    vectorize_width: 1,
                 };
 
                 let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&input)];

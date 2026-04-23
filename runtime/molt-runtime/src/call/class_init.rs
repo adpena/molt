@@ -179,11 +179,9 @@ pub(crate) unsafe fn alloc_instance_for_default_object_new(
 ) -> u64 {
     unsafe {
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        if let Some(inst_bits) = crate::object::builders::alloc_dataclass_for_class_ptr(
-            _py,
-            class_ptr,
-            class_bits,
-        ) {
+        if let Some(inst_bits) =
+            crate::object::builders::alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits)
+        {
             return inst_bits;
         }
         alloc_instance_for_class(_py, class_ptr)

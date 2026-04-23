@@ -3,20 +3,20 @@
 //! Each backend implements all three traits. The separation provides
 //! distinct ownership semantics (buffers vs programs vs execution state).
 
-pub mod arena;
-#[cfg(target_os = "macos")]
-pub mod metal;
-pub mod cpu;
-#[cfg(feature = "wasm-backend")]
-pub mod wasm_cpu;
-#[cfg(feature = "webgpu-backend")]
-pub mod webgpu;
-#[cfg(feature = "webgl2-backend")]
-pub mod webgl2;
-#[cfg(feature = "opencl-backend")]
-pub mod opencl;
 #[cfg(feature = "ane-backend")]
 pub mod ane;
+pub mod arena;
+pub mod cpu;
+#[cfg(target_os = "macos")]
+pub mod metal;
+#[cfg(feature = "opencl-backend")]
+pub mod opencl;
+#[cfg(feature = "wasm-backend")]
+pub mod wasm_cpu;
+#[cfg(feature = "webgl2-backend")]
+pub mod webgl2;
+#[cfg(feature = "webgpu-backend")]
+pub mod webgpu;
 
 /// Opaque GPU buffer handle backed by a device-specific implementation.
 #[derive(Debug)]

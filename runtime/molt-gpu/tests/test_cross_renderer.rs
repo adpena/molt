@@ -10,15 +10,13 @@
 
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-};
-use molt_gpu::render::msl::MslRenderer;
-use molt_gpu::render::wgsl::WgslRenderer;
 use molt_gpu::render::cuda::CudaRenderer;
-use molt_gpu::render::hip::HipRenderer;
 use molt_gpu::render::glsl::GlslRenderer;
+use molt_gpu::render::hip::HipRenderer;
+use molt_gpu::render::msl::MslRenderer;
 use molt_gpu::render::opencl::OpenClRenderer;
+use molt_gpu::render::wgsl::WgslRenderer;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
 use molt_gpu::shapetracker::ShapeTracker;
 
 /// All 6 renderers with their names.
@@ -29,7 +27,10 @@ fn all_renderers() -> Vec<(&'static str, Box<dyn Renderer>)> {
         ("GLSL", Box::new(GlslRenderer) as Box<dyn Renderer>),
         ("CUDA", Box::new(CudaRenderer) as Box<dyn Renderer>),
         ("HIP", Box::new(HipRenderer) as Box<dyn Renderer>),
-        ("OpenCL", Box::new(OpenClRenderer { has_fp64: false }) as Box<dyn Renderer>),
+        (
+            "OpenCL",
+            Box::new(OpenClRenderer { has_fp64: false }) as Box<dyn Renderer>,
+        ),
     ]
 }
 
@@ -58,7 +59,8 @@ fn make_reduce_sum_kernel(n: usize, reduce_size: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -86,7 +88,8 @@ fn make_reduce_max_kernel(n: usize, reduce_size: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -136,7 +139,8 @@ fn make_elementwise_chain_kernel(n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -177,7 +181,8 @@ fn make_exp2_mul_kernel(n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -188,7 +193,13 @@ fn make_fused_softmax_kernel(n: usize, reduce_size: usize) -> FusedKernel {
             // v0 = buf1 - 5.0 (subtract max)
             FusedOp {
                 op: PrimitiveOp::Sub,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: 5.0, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: 5.0,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             // v1 = exp2(v0)
@@ -220,7 +231,8 @@ fn make_fused_softmax_kernel(n: usize, reduce_size: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -242,12 +254,15 @@ fn test_cross_all_renderers_produce_output() {
             assert!(
                 !source.is_empty(),
                 "{} renderer produced empty output for {} kernel",
-                renderer_name, kernel_name,
+                renderer_name,
+                kernel_name,
             );
             assert!(
                 source.len() > 50,
                 "{} renderer produced suspiciously short output ({} bytes) for {} kernel",
-                renderer_name, source.len(), kernel_name,
+                renderer_name,
+                source.len(),
+                kernel_name,
             );
         }
     }
@@ -268,14 +283,17 @@ fn test_cross_all_renderers_contain_entry_point() {
 
     for (renderer_name, renderer) in all_renderers() {
         let source = renderer.render(&kernel);
-        let entry = expected_entries.iter()
+        let entry = expected_entries
+            .iter()
             .find(|(name, _)| *name == renderer_name)
             .map(|(_, entry)| *entry)
             .unwrap();
         assert!(
             source.contains(entry),
             "{} renderer missing entry point '{}' in:\n{}",
-            renderer_name, entry, source,
+            renderer_name,
+            entry,
+            source,
         );
     }
 }
@@ -292,7 +310,8 @@ fn test_cross_all_renderers_have_bounds_check() {
             assert!(
                 source.contains("64") || source.contains("gid"),
                 "{} renderer missing bounds check or element count in:\n{}",
-                renderer_name, source,
+                renderer_name,
+                source,
             );
         }
     }
@@ -310,7 +329,8 @@ fn test_cross_reduce_renderers_contain_accumulator() {
             assert!(
                 source.contains("acc"),
                 "{} renderer missing accumulator 'acc' for reduce kernel in:\n{}",
-                renderer_name, source,
+                renderer_name,
+                source,
             );
         }
     }
@@ -331,14 +351,17 @@ fn test_cross_renderers_correct_math_ops() {
 
     for (renderer_name, renderer) in all_renderers() {
         let source = renderer.render(&kernel);
-        let pattern = exp2_patterns.iter()
+        let pattern = exp2_patterns
+            .iter()
             .find(|(name, _)| *name == renderer_name)
             .map(|(_, p)| *p)
             .unwrap();
         assert!(
             source.contains(pattern),
             "{} renderer missing exp2 pattern '{}' in:\n{}",
-            renderer_name, pattern, source,
+            renderer_name,
+            pattern,
+            source,
         );
     }
 }
@@ -353,13 +376,29 @@ fn test_cross_renderers_type_narrowing() {
             dst_dtype: DType::Float64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     for (renderer_name, renderer) in all_renderers() {
@@ -372,19 +411,32 @@ fn test_cross_renderers_type_narrowing() {
             }
             "GLSL" => {
                 // GLSL narrows f64 to float (f32)
-                assert!(source.contains("float"), "GLSL should narrow Float64 to float");
+                assert!(
+                    source.contains("float"),
+                    "GLSL should narrow Float64 to float"
+                );
             }
             "MSL" => {
                 // Metal narrows f64 to float
-                assert!(source.contains("float"), "MSL should narrow Float64 to float");
+                assert!(
+                    source.contains("float"),
+                    "MSL should narrow Float64 to float"
+                );
             }
             "CUDA" | "HIP" => {
                 // CUDA/HIP support f64 natively
-                assert!(source.contains("double"), "{} should use double for Float64", renderer_name);
+                assert!(
+                    source.contains("double"),
+                    "{} should use double for Float64",
+                    renderer_name
+                );
             }
             "OpenCL" => {
                 // OpenCL with has_fp64=false narrows to float
-                assert!(source.contains("float"), "OpenCL (no fp64) should narrow to float");
+                assert!(
+                    source.contains("float"),
+                    "OpenCL (no fp64) should narrow to float"
+                );
             }
             _ => {}
         }
@@ -433,16 +485,28 @@ fn test_cross_renderers_language_specific_headers() {
         let source = renderer.render(&kernel);
         match renderer_name {
             "MSL" => {
-                assert!(source.contains("#include <metal_stdlib>"), "MSL missing metal_stdlib");
-                assert!(source.contains("using namespace metal"), "MSL missing namespace");
+                assert!(
+                    source.contains("#include <metal_stdlib>"),
+                    "MSL missing metal_stdlib"
+                );
+                assert!(
+                    source.contains("using namespace metal"),
+                    "MSL missing namespace"
+                );
             }
             "WGSL" => {
                 assert!(source.contains("@compute"), "WGSL missing @compute");
-                assert!(source.contains("@workgroup_size"), "WGSL missing @workgroup_size");
+                assert!(
+                    source.contains("@workgroup_size"),
+                    "WGSL missing @workgroup_size"
+                );
             }
             "GLSL" => {
                 assert!(source.contains("#version 300 es"), "GLSL missing version");
-                assert!(source.contains("precision highp float"), "GLSL missing precision");
+                assert!(
+                    source.contains("precision highp float"),
+                    "GLSL missing precision"
+                );
             }
             "CUDA" => {
                 assert!(source.contains("__global__"), "CUDA missing __global__");
@@ -468,25 +532,53 @@ fn test_cross_renderers_where_op_syntax() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Bool, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Bool,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     for (renderer_name, renderer) in all_renderers() {
         let source = renderer.render(&kernel);
         match renderer_name {
             "WGSL" => {
-                assert!(source.contains("select("), "WGSL must use select() for Where");
+                assert!(
+                    source.contains("select("),
+                    "WGSL must use select() for Where"
+                );
                 assert!(!source.contains(" ? "), "WGSL must not use ternary");
             }
             "MSL" | "CUDA" | "HIP" | "GLSL" => {
-                assert!(source.contains(" ? "), "{} should use ternary for Where", renderer_name);
+                assert!(
+                    source.contains(" ? "),
+                    "{} should use ternary for Where",
+                    renderer_name
+                );
             }
             "OpenCL" => {
                 // OpenCL uses select() or ternary depending on implementation
@@ -528,12 +620,23 @@ fn test_cross_renderers_reciprocal_syntax() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     for (renderer_name, renderer) in all_renderers() {
@@ -542,7 +645,8 @@ fn test_cross_renderers_reciprocal_syntax() {
         assert!(
             source.contains("1.0") || source.contains("1.0f") || source.contains("f32(1.0)"),
             "{} renderer missing reciprocal expression in:\n{}",
-            renderer_name, source,
+            renderer_name,
+            source,
         );
     }
 }

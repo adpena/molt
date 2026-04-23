@@ -30,7 +30,9 @@ mod wasm_cpu_tests {
 
         // Copy data out
         let mut out = vec![0u8; 256];
-        device.copy_out(&buf, &mut out).expect("copy_out should succeed");
+        device
+            .copy_out(&buf, &mut out)
+            .expect("copy_out should succeed");
         assert_eq!(out, data);
 
         // Free
@@ -58,17 +60,23 @@ mod wasm_cpu_tests {
     fn test_wasm_cpu_compile_and_cache() {
         let device = WasmCpuDevice::new();
 
-        let prog1 = device.compile("source_a", "main").expect("compile should succeed");
+        let prog1 = device
+            .compile("source_a", "main")
+            .expect("compile should succeed");
         assert_eq!(prog1.entry, "main");
         assert_eq!(device.cache_len(), 1);
 
         // Same source should hit cache
-        let prog2 = device.compile("source_a", "main").expect("compile should succeed");
+        let prog2 = device
+            .compile("source_a", "main")
+            .expect("compile should succeed");
         assert_eq!(prog2.entry, "main");
         assert_eq!(device.cache_len(), 1); // No new entry
 
         // Different source should create new entry
-        let prog3 = device.compile("source_b", "entry").expect("compile should succeed");
+        let prog3 = device
+            .compile("source_b", "entry")
+            .expect("compile should succeed");
         assert_eq!(prog3.entry, "entry");
         assert_eq!(device.cache_len(), 2);
     }
@@ -84,7 +92,9 @@ mod wasm_cpu_tests {
     #[test]
     fn test_wasm_cpu_exec_noop() {
         let device = WasmCpuDevice::new();
-        let prog = device.compile("test", "main").expect("compile should succeed");
+        let prog = device
+            .compile("test", "main")
+            .expect("compile should succeed");
         let buf = device.alloc(64).expect("alloc should succeed");
 
         // exec is a no-op for WASM CPU (interpretation happens via execute_kernel)
@@ -106,9 +116,7 @@ mod wasm_cpu_tests {
         use molt_gpu::device::wasm_cpu::interpret::execute_kernel;
         use molt_gpu::dtype::DType;
         use molt_gpu::ops::PrimitiveOp;
-        use molt_gpu::render::{
-            BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc,
-        };
+        use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
         use molt_gpu::shapetracker::ShapeTracker;
 
         // Simple add kernel: buf0 = buf1 + buf2
@@ -140,7 +148,8 @@ mod wasm_cpu_tests {
             ],
             grid: [4, 1, 1],
             local: [4, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         let mut bufs = vec![
@@ -167,7 +176,9 @@ mod wasm_cpu_tests {
             assert!(
                 (val - exp).abs() < 1e-6,
                 "Output[{}] = {}, expected {}",
-                i, val, exp,
+                i,
+                val,
+                exp,
             );
         }
     }

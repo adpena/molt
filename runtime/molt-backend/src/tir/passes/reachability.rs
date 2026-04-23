@@ -23,10 +23,7 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
     }
 }
 
-fn exception_successors(
-    block: &TirBlock,
-    label_to_block: &HashMap<i64, BlockId>,
-) -> Vec<BlockId> {
+fn exception_successors(block: &TirBlock, label_to_block: &HashMap<i64, BlockId>) -> Vec<BlockId> {
     let mut successors = Vec::new();
     for op in &block.ops {
         if matches!(

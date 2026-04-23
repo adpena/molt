@@ -4,15 +4,15 @@
 //! an ordered chain of ops (elementwise prefix -> optional reduce ->
 //! elementwise suffix) plus buffer bindings and work distribution.
 
+pub mod cuda;
+pub mod glsl;
+pub mod hip;
+pub mod mil;
 pub mod msl;
 #[cfg(feature = "metal4")]
 pub mod msl4;
-pub mod wgsl;
-pub mod cuda;
-pub mod hip;
-pub mod glsl;
 pub mod opencl;
-pub mod mil;
+pub mod wgsl;
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;

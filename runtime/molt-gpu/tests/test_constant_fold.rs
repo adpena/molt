@@ -1,9 +1,7 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::fuse::constant_fold;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc,
-};
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_kernel(ops: Vec<FusedOp>, bufs: Vec<BufferBinding>) -> FusedKernel {
@@ -12,7 +10,8 @@ fn make_kernel(ops: Vec<FusedOp>, bufs: Vec<BufferBinding>) -> FusedKernel {
         bufs,
         grid: [64, 1, 1],
         local: [64, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -42,8 +41,14 @@ fn test_fold_mul_two_consts() {
         FusedOp {
             op: PrimitiveOp::Mul,
             srcs: vec![
-                FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 3.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 2.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 3.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         },
@@ -81,8 +86,14 @@ fn test_fold_chain_of_consts() {
         FusedOp {
             op: PrimitiveOp::Add,
             srcs: vec![
-                FusedSrc::Const { val: 1.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 1.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 2.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         },
@@ -90,16 +101,16 @@ fn test_fold_chain_of_consts() {
             op: PrimitiveOp::Mul,
             srcs: vec![
                 FusedSrc::Op(0),
-                FusedSrc::Const { val: 4.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 4.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         },
         FusedOp {
             op: PrimitiveOp::Sub,
-            srcs: vec![
-                FusedSrc::Buf(1),
-                FusedSrc::Op(1),
-            ],
+            srcs: vec![FusedSrc::Buf(1), FusedSrc::Op(1)],
             dst_dtype: DType::Float32,
         },
     ];
@@ -125,7 +136,10 @@ fn test_no_fold_when_buffer_involved() {
         op: PrimitiveOp::Add,
         srcs: vec![
             FusedSrc::Buf(1),
-            FusedSrc::Const { val: 1.0, dtype: DType::Float32 },
+            FusedSrc::Const {
+                val: 1.0,
+                dtype: DType::Float32,
+            },
         ],
         dst_dtype: DType::Float32,
     }];
@@ -143,7 +157,10 @@ fn test_fold_unary_const() {
     let ops = vec![
         FusedOp {
             op: PrimitiveOp::Neg,
-            srcs: vec![FusedSrc::Const { val: 5.0, dtype: DType::Float32 }],
+            srcs: vec![FusedSrc::Const {
+                val: 5.0,
+                dtype: DType::Float32,
+            }],
             dst_dtype: DType::Float32,
         },
         FusedOp {
@@ -171,7 +188,10 @@ fn test_fold_exp2_const() {
     let ops = vec![
         FusedOp {
             op: PrimitiveOp::Exp2,
-            srcs: vec![FusedSrc::Const { val: 3.0, dtype: DType::Float32 }],
+            srcs: vec![FusedSrc::Const {
+                val: 3.0,
+                dtype: DType::Float32,
+            }],
             dst_dtype: DType::Float32,
         },
         FusedOp {
@@ -200,8 +220,14 @@ fn test_fold_comparison_const() {
         FusedOp {
             op: PrimitiveOp::Cmplt,
             srcs: vec![
-                FusedSrc::Const { val: 1.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 1.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 2.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Bool,
         },
@@ -231,9 +257,18 @@ fn test_fold_where_const() {
         FusedOp {
             op: PrimitiveOp::Where,
             srcs: vec![
-                FusedSrc::Const { val: 1.0, dtype: DType::Bool },
-                FusedSrc::Const { val: 10.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 20.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 1.0,
+                    dtype: DType::Bool,
+                },
+                FusedSrc::Const {
+                    val: 10.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 20.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         },
@@ -270,8 +305,14 @@ fn test_fold_all_const_kernel() {
     let ops = vec![FusedOp {
         op: PrimitiveOp::Mul,
         srcs: vec![
-            FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
-            FusedSrc::Const { val: 3.0, dtype: DType::Float32 },
+            FusedSrc::Const {
+                val: 2.0,
+                dtype: DType::Float32,
+            },
+            FusedSrc::Const {
+                val: 3.0,
+                dtype: DType::Float32,
+            },
         ],
         dst_dtype: DType::Float32,
     }];
@@ -289,8 +330,14 @@ fn test_fold_multiple_kernels() {
         FusedOp {
             op: PrimitiveOp::Add,
             srcs: vec![
-                FusedSrc::Const { val: 1.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 1.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 2.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         },
@@ -323,7 +370,10 @@ fn test_fold_sqrt_const() {
     let ops = vec![
         FusedOp {
             op: PrimitiveOp::Sqrt,
-            srcs: vec![FusedSrc::Const { val: 16.0, dtype: DType::Float32 }],
+            srcs: vec![FusedSrc::Const {
+                val: 16.0,
+                dtype: DType::Float32,
+            }],
             dst_dtype: DType::Float32,
         },
         FusedOp {
@@ -351,7 +401,10 @@ fn test_fold_reciprocal_const() {
     let ops = vec![
         FusedOp {
             op: PrimitiveOp::Reciprocal,
-            srcs: vec![FusedSrc::Const { val: 4.0, dtype: DType::Float32 }],
+            srcs: vec![FusedSrc::Const {
+                val: 4.0,
+                dtype: DType::Float32,
+            }],
             dst_dtype: DType::Float32,
         },
         FusedOp {
@@ -378,7 +431,10 @@ fn test_no_fold_reduce_op() {
     // ReduceSum cannot be folded even with const source.
     let ops = vec![FusedOp {
         op: PrimitiveOp::ReduceSum,
-        srcs: vec![FusedSrc::Const { val: 1.0, dtype: DType::Float32 }],
+        srcs: vec![FusedSrc::Const {
+            val: 1.0,
+            dtype: DType::Float32,
+        }],
         dst_dtype: DType::Float32,
     }];
 

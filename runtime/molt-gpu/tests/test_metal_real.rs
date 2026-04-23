@@ -15,9 +15,7 @@ mod metal_real {
     use molt_gpu::dtype::DType;
     use molt_gpu::ops::PrimitiveOp;
     use molt_gpu::render::msl::MslRenderer;
-    use molt_gpu::render::{
-        BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-    };
+    use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
     use molt_gpu::shapetracker::ShapeTracker;
 
     fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
@@ -69,7 +67,8 @@ mod metal_real {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // CPU reference
@@ -139,12 +138,23 @@ mod metal_real {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         let max_buf = device.alloc(4).unwrap();
@@ -153,7 +163,9 @@ mod metal_real {
 
         let msl1 = MslRenderer.render(&k1);
         let prog1 = device.compile(&msl1, "molt_kernel").unwrap();
-        device.exec(&prog1, &[&max_buf, &x_buf], [1, 1, 1], [1, 1, 1]).unwrap();
+        device
+            .exec(&prog1, &[&max_buf, &x_buf], [1, 1, 1], [1, 1, 1])
+            .unwrap();
         device.synchronize().unwrap();
 
         let mut max_bytes = [0u8; 4];
@@ -164,23 +176,60 @@ mod metal_real {
         let log2_e = std::f64::consts::LOG2_E;
         let k2 = FusedKernel {
             ops: vec![
-                FusedOp { op: PrimitiveOp::Sub, srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: max_val as f64, dtype: DType::Float32 }], dst_dtype: DType::Float32 },
-                FusedOp { op: PrimitiveOp::Mul, srcs: vec![FusedSrc::Op(0), FusedSrc::Const { val: log2_e, dtype: DType::Float32 }], dst_dtype: DType::Float32 },
-                FusedOp { op: PrimitiveOp::Exp2, srcs: vec![FusedSrc::Op(1)], dst_dtype: DType::Float32 },
+                FusedOp {
+                    op: PrimitiveOp::Sub,
+                    srcs: vec![
+                        FusedSrc::Buf(1),
+                        FusedSrc::Const {
+                            val: max_val as f64,
+                            dtype: DType::Float32,
+                        },
+                    ],
+                    dst_dtype: DType::Float32,
+                },
+                FusedOp {
+                    op: PrimitiveOp::Mul,
+                    srcs: vec![
+                        FusedSrc::Op(0),
+                        FusedSrc::Const {
+                            val: log2_e,
+                            dtype: DType::Float32,
+                        },
+                    ],
+                    dst_dtype: DType::Float32,
+                },
+                FusedOp {
+                    op: PrimitiveOp::Exp2,
+                    srcs: vec![FusedSrc::Op(1)],
+                    dst_dtype: DType::Float32,
+                },
             ],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         let exp_buf = device.alloc(n * 4).unwrap();
         let msl2 = MslRenderer.render(&k2);
         let prog2 = device.compile(&msl2, "molt_kernel").unwrap();
-        device.exec(&prog2, &[&exp_buf, &x_buf], [n as u32, 1, 1], [256, 1, 1]).unwrap();
+        device
+            .exec(&prog2, &[&exp_buf, &x_buf], [n as u32, 1, 1], [256, 1, 1])
+            .unwrap();
         device.synchronize().unwrap();
 
         // Step 3: ReduceSum
@@ -191,18 +240,31 @@ mod metal_real {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         let sum_buf = device.alloc(4).unwrap();
         let msl3 = MslRenderer.render(&k3);
         let prog3 = device.compile(&msl3, "molt_kernel").unwrap();
-        device.exec(&prog3, &[&sum_buf, &exp_buf], [1, 1, 1], [1, 1, 1]).unwrap();
+        device
+            .exec(&prog3, &[&sum_buf, &exp_buf], [1, 1, 1], [1, 1, 1])
+            .unwrap();
         device.synchronize().unwrap();
 
         let mut sum_bytes = [0u8; 4];
@@ -214,22 +276,41 @@ mod metal_real {
         let k4 = FusedKernel {
             ops: vec![FusedOp {
                 op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: inv_sum as f64, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: inv_sum as f64,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         let out_buf = device.alloc(n * 4).unwrap();
         let msl4 = MslRenderer.render(&k4);
         let prog4 = device.compile(&msl4, "molt_kernel").unwrap();
-        device.exec(&prog4, &[&out_buf, &exp_buf], [n as u32, 1, 1], [256, 1, 1]).unwrap();
+        device
+            .exec(&prog4, &[&out_buf, &exp_buf], [n as u32, 1, 1], [256, 1, 1])
+            .unwrap();
         device.synchronize().unwrap();
 
         let mut result_bytes = vec![0u8; n * 4];
@@ -247,7 +328,10 @@ mod metal_real {
             "Softmax Metal vs CPU: max diff = {} (expected < 1e-4)",
             max_diff
         );
-        println!("Softmax Metal vs CPU (N={}): PASS (max diff = {:.2e})", n, max_diff);
+        println!(
+            "Softmax Metal vs CPU (N={}): PASS (max diff = {:.2e})",
+            n, max_diff
+        );
     }
 
     // ========================================================================
@@ -266,12 +350,23 @@ mod metal_real {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         // CPU reference
@@ -287,7 +382,9 @@ mod metal_real {
 
         let msl = MslRenderer.render(&kernel);
         let prog = device.compile(&msl, "molt_kernel").unwrap();
-        device.exec(&prog, &[&out_buf, &x_buf], [1, 1, 1], [1, 1, 1]).unwrap();
+        device
+            .exec(&prog, &[&out_buf, &x_buf], [1, 1, 1], [1, 1, 1])
+            .unwrap();
         device.synchronize().unwrap();
 
         let mut result_bytes = [0u8; 4];
@@ -298,7 +395,9 @@ mod metal_real {
         assert!(
             rel_err < 1e-4,
             "ReduceSum Metal vs CPU: metal={} cpu={} rel_err={} (expected < 1e-4)",
-            metal_sum, cpu_sum, rel_err
+            metal_sum,
+            cpu_sum,
+            rel_err
         );
         println!(
             "ReduceSum Metal vs CPU (N={}): PASS (metal={:.4}, cpu={:.4}, rel_err={:.2e})",

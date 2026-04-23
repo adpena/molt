@@ -6,16 +6,14 @@
 
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-};
-use molt_gpu::render::msl::MslRenderer;
-use molt_gpu::render::wgsl::WgslRenderer;
 use molt_gpu::render::cuda::CudaRenderer;
-use molt_gpu::render::hip::HipRenderer;
 use molt_gpu::render::glsl::GlslRenderer;
-use molt_gpu::render::opencl::OpenClRenderer;
+use molt_gpu::render::hip::HipRenderer;
 use molt_gpu::render::mil::MilRenderer;
+use molt_gpu::render::msl::MslRenderer;
+use molt_gpu::render::opencl::OpenClRenderer;
+use molt_gpu::render::wgsl::WgslRenderer;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
 use molt_gpu::shapetracker::ShapeTracker;
 
 /// All 7 renderers.
@@ -26,7 +24,10 @@ fn all_renderers() -> Vec<(&'static str, Box<dyn Renderer>)> {
         ("GLSL", Box::new(GlslRenderer) as Box<dyn Renderer>),
         ("CUDA", Box::new(CudaRenderer) as Box<dyn Renderer>),
         ("HIP", Box::new(HipRenderer) as Box<dyn Renderer>),
-        ("OpenCL", Box::new(OpenClRenderer { has_fp64: false }) as Box<dyn Renderer>),
+        (
+            "OpenCL",
+            Box::new(OpenClRenderer { has_fp64: false }) as Box<dyn Renderer>,
+        ),
         ("MIL", Box::new(MilRenderer) as Box<dyn Renderer>),
     ]
 }
@@ -58,13 +59,25 @@ fn make_rmsnorm_fused_kernel(n: usize) -> FusedKernel {
             // v2 = v1 * (1/n)  (mean)
             FusedOp {
                 op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Op(1), FusedSrc::Const { val: 1.0 / n as f64, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Op(1),
+                    FusedSrc::Const {
+                        val: 1.0 / n as f64,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             // v3 = v2 + eps
             FusedOp {
                 op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Op(2), FusedSrc::Const { val: 1e-6, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Op(2),
+                    FusedSrc::Const {
+                        val: 1e-6,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             // v4 = x * rsqrt(v3) -- approximated as x * reciprocal(sqrt(v3))
@@ -76,13 +89,29 @@ fn make_rmsnorm_fused_kernel(n: usize) -> FusedKernel {
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -118,15 +147,41 @@ fn make_rope_kernel(n: usize) -> FusedKernel {
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read }, // x_real
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read }, // x_imag
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read }, // cos_theta
-            BufferBinding { buf_id: 4, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read }, // sin_theta
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            }, // x_real
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            }, // x_imag
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            }, // cos_theta
+            BufferBinding {
+                buf_id: 4,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            }, // sin_theta
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -151,18 +206,40 @@ fn make_sdpa_qk_kernel(seq_len: usize, d_k: usize) -> FusedKernel {
             // v2 = v1 * scale (1/sqrt(d_k))
             FusedOp {
                 op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Op(1), FusedSrc::Const { val: scale, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Op(1),
+                    FusedSrc::Const {
+                        val: scale,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[seq_len]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[seq_len * d_k]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[seq_len * d_k]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[seq_len]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[seq_len * d_k]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[seq_len * d_k]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [seq_len as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -174,13 +251,26 @@ fn make_squared_relu_gate_kernel(n: usize) -> FusedKernel {
             // v0 = max(0, x) — ReLU via cmplt + where
             FusedOp {
                 op: PrimitiveOp::Cmplt,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: 0.0, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: 0.0,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Bool,
             },
             // v1 = where(v0, 0, x) — zero out negatives
             FusedOp {
                 op: PrimitiveOp::Where,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Const { val: 0.0, dtype: DType::Float32 }, FusedSrc::Buf(1)],
+                srcs: vec![
+                    FusedSrc::Op(0),
+                    FusedSrc::Const {
+                        val: 0.0,
+                        dtype: DType::Float32,
+                    },
+                    FusedSrc::Buf(1),
+                ],
                 dst_dtype: DType::Float32,
             },
             // v2 = v1 * v1 — square
@@ -191,12 +281,23 @@ fn make_squared_relu_gate_kernel(n: usize) -> FusedKernel {
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -205,7 +306,8 @@ fn make_squared_relu_gate_kernel(n: usize) -> FusedKernel {
 // ============================================================================
 
 fn validate_msl(source: &str) -> bool {
-    source.contains("kernel void") && (source.contains("threadgroup") || source.contains("thread_position_in_grid"))
+    source.contains("kernel void")
+        && (source.contains("threadgroup") || source.contains("thread_position_in_grid"))
 }
 
 fn validate_wgsl(source: &str) -> bool {
@@ -222,7 +324,11 @@ fn validate_cuda(source: &str) -> bool {
 
 fn validate_hip(source: &str) -> bool {
     // HIP uses hipBlockIdx_x / hipThreadIdx_x OR blockIdx / threadIdx
-    source.contains("__global__") && (source.contains("hipBlockIdx") || source.contains("hipThreadIdx") || source.contains("blockIdx") || source.contains("threadIdx"))
+    source.contains("__global__")
+        && (source.contains("hipBlockIdx")
+            || source.contains("hipThreadIdx")
+            || source.contains("blockIdx")
+            || source.contains("threadIdx"))
 }
 
 fn validate_opencl(source: &str) -> bool {
@@ -231,7 +337,10 @@ fn validate_opencl(source: &str) -> bool {
 
 fn validate_mil(source: &str) -> bool {
     // MIL uses a graph-based IR format
-    source.contains("func") || source.contains("program") || source.contains("main") || source.contains("@op")
+    source.contains("func")
+        || source.contains("program")
+        || source.contains("main")
+        || source.contains("@op")
 }
 
 fn validator_for(name: &str) -> fn(&str) -> bool {
@@ -259,9 +368,18 @@ fn test_rmsnorm_all_renderers() {
     println!("\n## RMSNorm (5 fused ops) — rendered kernel sizes:");
     for (name, renderer) in &renderers {
         let source = renderer.render(&kernel);
-        assert!(!source.is_empty(), "{} produced empty output for RMSNorm", name);
+        assert!(
+            !source.is_empty(),
+            "{} produced empty output for RMSNorm",
+            name
+        );
         let validator = validator_for(name);
-        assert!(validator(&source), "{} produced invalid RMSNorm kernel:\n{}", name, &source[..source.len().min(200)]);
+        assert!(
+            validator(&source),
+            "{} produced invalid RMSNorm kernel:\n{}",
+            name,
+            &source[..source.len().min(200)]
+        );
         println!("  {}: {} bytes", name, source.len());
     }
 }
@@ -274,9 +392,18 @@ fn test_rope_all_renderers() {
     println!("\n## RoPE (4 ops) — rendered kernel sizes:");
     for (name, renderer) in &renderers {
         let source = renderer.render(&kernel);
-        assert!(!source.is_empty(), "{} produced empty output for RoPE", name);
+        assert!(
+            !source.is_empty(),
+            "{} produced empty output for RoPE",
+            name
+        );
         let validator = validator_for(name);
-        assert!(validator(&source), "{} produced invalid RoPE kernel:\n{}", name, &source[..source.len().min(200)]);
+        assert!(
+            validator(&source),
+            "{} produced invalid RoPE kernel:\n{}",
+            name,
+            &source[..source.len().min(200)]
+        );
         println!("  {}: {} bytes", name, source.len());
     }
 }
@@ -289,9 +416,18 @@ fn test_sdpa_all_renderers() {
     println!("\n## SDPA QK (3 ops: mul + reduce + scale) — rendered kernel sizes:");
     for (name, renderer) in &renderers {
         let source = renderer.render(&kernel);
-        assert!(!source.is_empty(), "{} produced empty output for SDPA", name);
+        assert!(
+            !source.is_empty(),
+            "{} produced empty output for SDPA",
+            name
+        );
         let validator = validator_for(name);
-        assert!(validator(&source), "{} produced invalid SDPA kernel:\n{}", name, &source[..source.len().min(200)]);
+        assert!(
+            validator(&source),
+            "{} produced invalid SDPA kernel:\n{}",
+            name,
+            &source[..source.len().min(200)]
+        );
         println!("  {}: {} bytes", name, source.len());
     }
 }
@@ -304,9 +440,18 @@ fn test_squared_relu_gate_all_renderers() {
     println!("\n## Squared-ReLU Gate (3 ops: cmplt + where + mul) — rendered kernel sizes:");
     for (name, renderer) in &renderers {
         let source = renderer.render(&kernel);
-        assert!(!source.is_empty(), "{} produced empty output for SqReLU", name);
+        assert!(
+            !source.is_empty(),
+            "{} produced empty output for SqReLU",
+            name
+        );
         let validator = validator_for(name);
-        assert!(validator(&source), "{} produced invalid SqReLU kernel:\n{}", name, &source[..source.len().min(200)]);
+        assert!(
+            validator(&source),
+            "{} produced invalid SqReLU kernel:\n{}",
+            name,
+            &source[..source.len().min(200)]
+        );
         println!("  {}: {} bytes", name, source.len());
     }
 }
@@ -323,10 +468,14 @@ fn test_cross_renderer_consistency() {
     let renderers = all_renderers();
 
     println!("\n## Cross-Renderer Kernel Size Summary\n");
-    println!("| {:<12} | {:<6} | {:<6} | {:<6} | {:<6} | {:<6} | {:<6} | {:<6} |",
-             "Kernel", "MSL", "WGSL", "GLSL", "CUDA", "HIP", "OpenCL", "MIL");
-    println!("|{:-<14}|{:-<8}|{:-<8}|{:-<8}|{:-<8}|{:-<8}|{:-<8}|{:-<8}|",
-             "", "", "", "", "", "", "", "");
+    println!(
+        "| {:<12} | {:<6} | {:<6} | {:<6} | {:<6} | {:<6} | {:<6} | {:<6} |",
+        "Kernel", "MSL", "WGSL", "GLSL", "CUDA", "HIP", "OpenCL", "MIL"
+    );
+    println!(
+        "|{:-<14}|{:-<8}|{:-<8}|{:-<8}|{:-<8}|{:-<8}|{:-<8}|{:-<8}|",
+        "", "", "", "", "", "", "", ""
+    );
 
     for (kernel_name, kernel) in &kernels {
         let mut sizes = Vec::new();
@@ -335,7 +484,9 @@ fn test_cross_renderer_consistency() {
             assert!(!source.is_empty(), "{} x {} empty", rname, kernel_name);
             sizes.push(source.len());
         }
-        println!("| {:<12} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} |",
-                 kernel_name, sizes[0], sizes[1], sizes[2], sizes[3], sizes[4], sizes[5], sizes[6]);
+        println!(
+            "| {:<12} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} |",
+            kernel_name, sizes[0], sizes[1], sizes[2], sizes[3], sizes[4], sizes[5], sizes[6]
+        );
     }
 }

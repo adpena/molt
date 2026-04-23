@@ -56,13 +56,29 @@ fn run_binary_op_cpu(op: PrimitiveOp, a: &[f32], b: &[f32]) -> Vec<f32> {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let mut bufs = vec![
@@ -83,18 +99,26 @@ fn run_unary_op_cpu(op: PrimitiveOp, a: &[f32]) -> Vec<f32> {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
-    let mut bufs = vec![
-        vec![0u8; n * 4],
-        f32_to_bytes(a),
-    ];
+    let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(a)];
     interpret::execute_kernel(&kernel, &mut bufs);
     bytes_to_f32(&bufs[0])
 }
@@ -185,22 +209,33 @@ fn test_cpu_relu_composition() {
             op: PrimitiveOp::Max,
             srcs: vec![
                 FusedSrc::Buf(1),
-                FusedSrc::Const { val: 0.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 0.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
-    let mut bufs = vec![
-        vec![0u8; n * 4],
-        f32_to_bytes(&[-2.0, -1.0, 0.0, 3.0]),
-    ];
+    let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&[-2.0, -1.0, 0.0, 3.0])];
     interpret::execute_kernel(&kernel, &mut bufs);
     let result = bytes_to_f32(&bufs[0]);
     assert_eq!(result, vec![0.0, 0.0, 0.0, 3.0]);
@@ -216,14 +251,35 @@ fn test_cpu_where_ternary() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs = vec![
         vec![0u8; n * 4],
@@ -245,17 +301,25 @@ fn test_cpu_reduce_sum() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[4]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[4]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
-    let mut bufs = vec![
-        vec![0u8; 4],
-        f32_to_bytes(&[1.0, 2.0, 3.0, 4.0]),
-    ];
+    let mut bufs = vec![vec![0u8; 4], f32_to_bytes(&[1.0, 2.0, 3.0, 4.0])];
     interpret::execute_kernel(&kernel, &mut bufs);
     let result = bytes_to_f32(&bufs[0]);
     assert_eq!(result, vec![10.0]);
@@ -270,17 +334,25 @@ fn test_cpu_reduce_max() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[4]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[4]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
-    let mut bufs = vec![
-        vec![0u8; 4],
-        f32_to_bytes(&[3.0, 1.0, 4.0, 2.0]),
-    ];
+    let mut bufs = vec![vec![0u8; 4], f32_to_bytes(&[3.0, 1.0, 4.0, 2.0])];
     interpret::execute_kernel(&kernel, &mut bufs);
     let result = bytes_to_f32(&bufs[0]);
     assert_eq!(result, vec![4.0]);
@@ -298,20 +370,37 @@ fn test_cpu_idiv() {
             dst_dtype: DType::Int32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
         vals.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
     fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
-        bytes.chunks_exact(4)
+        bytes
+            .chunks_exact(4)
             .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
             .collect()
     }
@@ -336,20 +425,37 @@ fn test_cpu_mod() {
             dst_dtype: DType::Int32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
         vals.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
     fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
-        bytes.chunks_exact(4)
+        bytes
+            .chunks_exact(4)
             .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
             .collect()
     }
@@ -366,7 +472,11 @@ fn test_cpu_mod() {
 
 #[test]
 fn test_cpu_cmplt_nan() {
-    let result = run_binary_op_cpu(PrimitiveOp::Cmplt, &[f32::NAN, 1.0, 0.0], &[1.0, f32::NAN, 0.0]);
+    let result = run_binary_op_cpu(
+        PrimitiveOp::Cmplt,
+        &[f32::NAN, 1.0, 0.0],
+        &[1.0, f32::NAN, 0.0],
+    );
     assert_eq!(result, vec![0.0, 0.0, 0.0]);
 }
 
@@ -392,20 +502,37 @@ fn test_cpu_bitwise_and() {
             dst_dtype: DType::Int32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Int32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
         vals.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
     fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
-        bytes.chunks_exact(4)
+        bytes
+            .chunks_exact(4)
             .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
             .collect()
     }
@@ -434,23 +561,34 @@ fn test_cpu_fused_relu_chain() {
                 op: PrimitiveOp::Max,
                 srcs: vec![
                     FusedSrc::Op(0),
-                    FusedSrc::Const { val: 0.0, dtype: DType::Float32 },
+                    FusedSrc::Const {
+                        val: 0.0,
+                        dtype: DType::Float32,
+                    },
                 ],
                 dst_dtype: DType::Float32,
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
-    let mut bufs = vec![
-        vec![0u8; n * 4],
-        f32_to_bytes(&[-3.0, -1.0, 1.0, 3.0]),
-    ];
+    let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&[-3.0, -1.0, 1.0, 3.0])];
     interpret::execute_kernel(&kernel, &mut bufs);
     let result = bytes_to_f32(&bufs[0]);
     assert_eq!(result, vec![3.0, 1.0, 0.0, 0.0]);
@@ -460,15 +598,33 @@ fn test_cpu_fused_relu_chain() {
 fn test_all_26_ops_covered() {
     for op in PrimitiveOp::ALL {
         let srcs: Vec<FusedSrc> = match op.arity() {
-            1 => vec![FusedSrc::Const { val: 1.0, dtype: DType::Float32 }],
+            1 => vec![FusedSrc::Const {
+                val: 1.0,
+                dtype: DType::Float32,
+            }],
             2 => vec![
-                FusedSrc::Const { val: 1.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 1.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 2.0,
+                    dtype: DType::Float32,
+                },
             ],
             3 => vec![
-                FusedSrc::Const { val: 1.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 3.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 1.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 2.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 3.0,
+                    dtype: DType::Float32,
+                },
             ],
             _ => unreachable!(),
         };
@@ -509,25 +665,52 @@ mod metal_tests {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-                BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [n as u32, 1, 1],
             local: [4, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
         let msl = MslRenderer.render(&kernel);
         let prog = device.compile(&msl, "molt_kernel").unwrap();
-        device.exec(&prog, &[&out_buf, &a_buf, &b_buf], [n as u32, 1, 1], [4, 1, 1]).unwrap();
+        device
+            .exec(
+                &prog,
+                &[&out_buf, &a_buf, &b_buf],
+                [n as u32, 1, 1],
+                [4, 1, 1],
+            )
+            .unwrap();
         device.synchronize().unwrap();
 
         let mut result_bytes = vec![0u8; n * 4];
         device.copy_out(&out_buf, &mut result_bytes).unwrap();
         let result = bytes_to_f32(&result_bytes);
 
-        let expected = run_binary_op_cpu(PrimitiveOp::Add, &[1.0, 2.0, 3.0, 4.0], &[5.0, 6.0, 7.0, 8.0]);
+        let expected = run_binary_op_cpu(
+            PrimitiveOp::Add,
+            &[1.0, 2.0, 3.0, 4.0],
+            &[5.0, 6.0, 7.0, 8.0],
+        );
         assert_eq!(result, expected);
     }
 }

@@ -62,7 +62,10 @@ fn test_compile_empty_source() {
     let dev = CpuDevice::new();
     // Empty source should still "compile" on CPU (it's an interpreter).
     let result = dev.compile("", "main");
-    assert!(result.is_ok(), "compile with empty source should succeed on CPU");
+    assert!(
+        result.is_ok(),
+        "compile with empty source should succeed on CPU"
+    );
 }
 
 #[test]
@@ -70,7 +73,10 @@ fn test_compile_invalid_source() {
     let dev = CpuDevice::new();
     // Invalid/garbage source should still "compile" on CPU (noop kernel).
     let result = dev.compile("@#$%^&*() not valid shader source !!!", "main");
-    assert!(result.is_ok(), "compile with invalid source should succeed on CPU");
+    assert!(
+        result.is_ok(),
+        "compile with invalid source should succeed on CPU"
+    );
 }
 
 #[test]
@@ -85,7 +91,11 @@ fn test_compile_cache_dedup() {
 
     let r2 = dev.compile(source, "foo");
     assert!(r2.is_ok());
-    assert_eq!(dev.cache_len(), 1, "cache should deduplicate identical sources");
+    assert_eq!(
+        dev.cache_len(),
+        1,
+        "cache should deduplicate identical sources"
+    );
 
     // Different source
     let r3 = dev.compile("kernel void bar() {}", "bar");
@@ -159,7 +169,10 @@ fn test_copy_in_exact_size() {
     let data = vec![0xABu8; 16];
 
     let result = dev.copy_in(&buf, &data);
-    assert!(result.is_ok(), "copy_in with exact-size data should succeed");
+    assert!(
+        result.is_ok(),
+        "copy_in with exact-size data should succeed"
+    );
 
     let mut out = vec![0u8; 16];
     dev.copy_out(&buf, &mut out).unwrap();
@@ -241,7 +254,10 @@ fn test_zero_size_buffer_copy_in() {
 
     // copy_in non-empty data to zero-size buffer should fail
     let result = dev.copy_in(&buf, &[1, 2, 3]);
-    assert!(result.is_err(), "copy_in of data to zero-size buffer should fail");
+    assert!(
+        result.is_err(),
+        "copy_in of data to zero-size buffer should fail"
+    );
 
     dev.free(buf).unwrap();
 }

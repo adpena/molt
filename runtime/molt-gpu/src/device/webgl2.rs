@@ -96,9 +96,9 @@ impl TextureFormat {
     /// WebGL2 format constant for readPixels / texImage2D.
     pub fn gl_format(self) -> u32 {
         match self {
-            Self::Rgba32f => 0x1908,       // GL_RGBA
-            Self::Rgba32i => 0x8D99,       // GL_RGBA_INTEGER
-            Self::Rgba32ui => 0x8D99,      // GL_RGBA_INTEGER
+            Self::Rgba32f => 0x1908,  // GL_RGBA
+            Self::Rgba32i => 0x8D99,  // GL_RGBA_INTEGER
+            Self::Rgba32ui => 0x8D99, // GL_RGBA_INTEGER
         }
     }
 
@@ -153,7 +153,12 @@ impl TextureLayout {
             num_texels.div_ceil(tex_width)
         };
 
-        Self { num_elements, tex_width, tex_height, format }
+        Self {
+            num_elements,
+            tex_width,
+            tex_height,
+            format,
+        }
     }
 
     /// Total texture memory in bytes.
@@ -282,19 +287,58 @@ mod tests {
 
     #[test]
     fn test_texture_format_for_dtype() {
-        assert_eq!(TextureFormat::for_dtype(DType::Float32), TextureFormat::Rgba32f);
-        assert_eq!(TextureFormat::for_dtype(DType::Float64), TextureFormat::Rgba32f);
-        assert_eq!(TextureFormat::for_dtype(DType::Int32), TextureFormat::Rgba32i);
-        assert_eq!(TextureFormat::for_dtype(DType::Int64), TextureFormat::Rgba32i);
-        assert_eq!(TextureFormat::for_dtype(DType::UInt32), TextureFormat::Rgba32ui);
-        assert_eq!(TextureFormat::for_dtype(DType::UInt64), TextureFormat::Rgba32ui);
-        assert_eq!(TextureFormat::for_dtype(DType::Bool), TextureFormat::Rgba32f);
-        assert_eq!(TextureFormat::for_dtype(DType::Float16), TextureFormat::Rgba32f);
-        assert_eq!(TextureFormat::for_dtype(DType::BFloat16), TextureFormat::Rgba32f);
-        assert_eq!(TextureFormat::for_dtype(DType::Int8), TextureFormat::Rgba32i);
-        assert_eq!(TextureFormat::for_dtype(DType::Int16), TextureFormat::Rgba32i);
-        assert_eq!(TextureFormat::for_dtype(DType::UInt8), TextureFormat::Rgba32ui);
-        assert_eq!(TextureFormat::for_dtype(DType::UInt16), TextureFormat::Rgba32ui);
+        assert_eq!(
+            TextureFormat::for_dtype(DType::Float32),
+            TextureFormat::Rgba32f
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::Float64),
+            TextureFormat::Rgba32f
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::Int32),
+            TextureFormat::Rgba32i
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::Int64),
+            TextureFormat::Rgba32i
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::UInt32),
+            TextureFormat::Rgba32ui
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::UInt64),
+            TextureFormat::Rgba32ui
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::Bool),
+            TextureFormat::Rgba32f
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::Float16),
+            TextureFormat::Rgba32f
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::BFloat16),
+            TextureFormat::Rgba32f
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::Int8),
+            TextureFormat::Rgba32i
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::Int16),
+            TextureFormat::Rgba32i
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::UInt8),
+            TextureFormat::Rgba32ui
+        );
+        assert_eq!(
+            TextureFormat::for_dtype(DType::UInt16),
+            TextureFormat::Rgba32ui
+        );
     }
 
     #[test]

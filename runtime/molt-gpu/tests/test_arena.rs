@@ -153,7 +153,7 @@ fn test_arena_invalid_alignment() {
 fn test_arena_default_config() {
     let arena = Arena::with_defaults();
     assert_eq!(arena.capacity(), 64 * 1024 * 1024); // 64 MiB
-    // Should be able to allocate
+                                                    // Should be able to allocate
     let a = arena.alloc(1024).expect("alloc 1024 from default arena");
     assert_eq!(a.offset, 0);
     assert_eq!(a.size, 1024);

@@ -206,7 +206,9 @@ impl MilRenderer {
                 // exp2(x) = pow(2, x)
                 format!(
                     "{} = pow(x=const(val=2, dtype={}), y={})",
-                    var, dst_type, src(0),
+                    var,
+                    dst_type,
+                    src(0),
                 )
             }
             PrimitiveOp::Log2 => {
@@ -230,7 +232,9 @@ impl MilRenderer {
             PrimitiveOp::Reciprocal => {
                 format!(
                     "{} = real_div(x=const(val=1, dtype={}), y={})",
-                    var, dst_type, src(0),
+                    var,
+                    dst_type,
+                    src(0),
                 )
             }
 
@@ -252,7 +256,10 @@ impl MilRenderer {
             PrimitiveOp::Where => {
                 format!(
                     "{} = select(cond={}, a={}, b={})",
-                    var, src(0), src(1), src(2),
+                    var,
+                    src(0),
+                    src(1),
+                    src(2),
                 )
             }
             PrimitiveOp::Cast => {
@@ -268,13 +275,15 @@ impl MilRenderer {
             PrimitiveOp::ReduceSum => {
                 format!(
                     "{} = reduce_sum(x={}, axes=[0], keep_dims=false)",
-                    var, src(0),
+                    var,
+                    src(0),
                 )
             }
             PrimitiveOp::ReduceMax => {
                 format!(
                     "{} = reduce_max(x={}, axes=[0], keep_dims=false)",
-                    var, src(0),
+                    var,
+                    src(0),
                 )
             }
         }
@@ -335,7 +344,7 @@ impl Renderer for MilRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::{BufferBinding, FusedKernel, FusedOp, FusedSrc, BufferAccess};
+    use crate::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
     use crate::shapetracker::ShapeTracker;
 
     fn make_elementwise_kernel(op: PrimitiveOp, dst_dtype: DType) -> FusedKernel {
@@ -364,11 +373,16 @@ mod tests {
         }
 
         FusedKernel {
-            ops: vec![FusedOp { op, srcs, dst_dtype }],
+            ops: vec![FusedOp {
+                op,
+                srcs,
+                dst_dtype,
+            }],
             bufs,
             grid: [1024, 1, 1],
             local: [1, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         }
     }
 
@@ -454,7 +468,8 @@ mod tests {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
         let renderer = MilRenderer;
         let source = renderer.render(&kernel);
@@ -466,7 +481,10 @@ mod tests {
         // Verify that every primitive op can be rendered without panic.
         let renderer = MilRenderer;
         for op in PrimitiveOp::ALL {
-            let dst_dtype = if matches!(op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+            let dst_dtype = if matches!(
+                op,
+                PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+            ) {
                 DType::Bool
             } else {
                 DType::Float32
@@ -474,7 +492,11 @@ mod tests {
             let kernel = make_elementwise_kernel(op, dst_dtype);
             let source = renderer.render(&kernel);
             assert!(!source.is_empty(), "Empty render for op {:?}", op);
-            assert!(source.contains("mil_program"), "Missing header for op {:?}", op);
+            assert!(
+                source.contains("mil_program"),
+                "Missing header for op {:?}",
+                op
+            );
         }
     }
 
@@ -491,7 +513,13 @@ mod tests {
         assert_eq!(MilRenderer::format_const(1.0, DType::Bool), "true");
         assert_eq!(MilRenderer::format_const(0.0, DType::Bool), "false");
         assert_eq!(MilRenderer::format_const(42.0, DType::Int32), "42");
-        assert_eq!(MilRenderer::format_const(f64::INFINITY, DType::Float32), "inf");
-        assert_eq!(MilRenderer::format_const(f64::NEG_INFINITY, DType::Float32), "-inf");
+        assert_eq!(
+            MilRenderer::format_const(f64::INFINITY, DType::Float32),
+            "inf"
+        );
+        assert_eq!(
+            MilRenderer::format_const(f64::NEG_INFINITY, DType::Float32),
+            "-inf"
+        );
     }
 }

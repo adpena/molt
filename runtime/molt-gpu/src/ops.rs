@@ -99,12 +99,29 @@ impl PrimitiveOp {
     #[inline(always)]
     pub fn op_type(self) -> OpType {
         match self {
-            Self::Neg | Self::Exp2 | Self::Log2 | Self::Sin | Self::Sqrt
-            | Self::Reciprocal | Self::Trunc | Self::Cast | Self::Bitcast => OpType::Unary,
+            Self::Neg
+            | Self::Exp2
+            | Self::Log2
+            | Self::Sin
+            | Self::Sqrt
+            | Self::Reciprocal
+            | Self::Trunc
+            | Self::Cast
+            | Self::Bitcast => OpType::Unary,
 
-            Self::Add | Self::Sub | Self::Mul | Self::Idiv | Self::Mod
-            | Self::Cmplt | Self::Cmpeq | Self::Cmpne
-            | Self::And | Self::Or | Self::Xor | Self::Shl | Self::Shr
+            Self::Add
+            | Self::Sub
+            | Self::Mul
+            | Self::Idiv
+            | Self::Mod
+            | Self::Cmplt
+            | Self::Cmpeq
+            | Self::Cmpne
+            | Self::And
+            | Self::Or
+            | Self::Xor
+            | Self::Shl
+            | Self::Shr
             | Self::Max => OpType::Binary,
 
             Self::Where => OpType::Ternary,
@@ -127,16 +144,39 @@ impl PrimitiveOp {
     /// Whether this op is elementwise (fuses freely with other elementwise ops).
     #[inline(always)]
     pub fn is_elementwise(self) -> bool {
-        matches!(self.op_type(), OpType::Unary | OpType::Binary | OpType::Ternary)
+        matches!(
+            self.op_type(),
+            OpType::Unary | OpType::Binary | OpType::Ternary
+        )
     }
 
     /// All 26 primitive ops in canonical order.
     pub const ALL: [PrimitiveOp; 26] = [
-        Self::Add, Self::Sub, Self::Mul, Self::Idiv, Self::Mod, Self::Neg,
-        Self::Cmplt, Self::Cmpeq, Self::Cmpne,
-        Self::And, Self::Or, Self::Xor, Self::Shl, Self::Shr,
-        Self::Exp2, Self::Log2, Self::Sin, Self::Sqrt, Self::Reciprocal,
-        Self::Trunc, Self::Max, Self::Where, Self::Cast,
-        Self::Bitcast, Self::ReduceSum, Self::ReduceMax,
+        Self::Add,
+        Self::Sub,
+        Self::Mul,
+        Self::Idiv,
+        Self::Mod,
+        Self::Neg,
+        Self::Cmplt,
+        Self::Cmpeq,
+        Self::Cmpne,
+        Self::And,
+        Self::Or,
+        Self::Xor,
+        Self::Shl,
+        Self::Shr,
+        Self::Exp2,
+        Self::Log2,
+        Self::Sin,
+        Self::Sqrt,
+        Self::Reciprocal,
+        Self::Trunc,
+        Self::Max,
+        Self::Where,
+        Self::Cast,
+        Self::Bitcast,
+        Self::ReduceSum,
+        Self::ReduceMax,
     ];
 }

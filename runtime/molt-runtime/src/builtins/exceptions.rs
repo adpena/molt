@@ -5607,7 +5607,10 @@ pub extern "C" fn molt_exception_active() -> u64 {
             return bits;
         }
         if debug_exception_flow() {
-            eprintln!("molt exc active kind=none bits=0x{:x}", MoltObject::none().bits());
+            eprintln!(
+                "molt exc active kind=none bits=0x{:x}",
+                MoltObject::none().bits()
+            );
         }
         MoltObject::none().bits()
     })
@@ -5623,7 +5626,10 @@ pub extern "C" fn molt_exception_current() -> u64 {
                     .map(|ptr| unsafe { exception_kind_bits(ptr) })
                     .and_then(|kind_bits| string_obj_to_owned(obj_from_bits(kind_bits)))
                     .unwrap_or_else(|| "<unknown>".to_string());
-                eprintln!("molt exc current source=active kind={} bits=0x{:x}", kind, bits);
+                eprintln!(
+                    "molt exc current source=active kind={} bits=0x{:x}",
+                    kind, bits
+                );
             }
             inc_ref_bits(_py, bits);
             return bits;
@@ -5635,7 +5641,10 @@ pub extern "C" fn molt_exception_current() -> u64 {
                 .map(|ptr| unsafe { exception_kind_bits(ptr) })
                 .and_then(|kind_bits| string_obj_to_owned(obj_from_bits(kind_bits)))
                 .unwrap_or_else(|| type_name(_py, obj_from_bits(bits)).into_owned());
-            eprintln!("molt exc current source=last kind={} bits=0x{:x}", kind, bits);
+            eprintln!(
+                "molt exc current source=last kind={} bits=0x{:x}",
+                kind, bits
+            );
         }
         bits
     })

@@ -30,10 +30,7 @@ pub enum LazyOp {
         dtype: DType,
     },
     /// Elementwise unary op.
-    Unary {
-        op: PrimitiveOp,
-        src: Arc<LazyOp>,
-    },
+    Unary { op: PrimitiveOp, src: Arc<LazyOp> },
     /// Elementwise binary op.
     Binary {
         op: PrimitiveOp,
@@ -57,15 +54,10 @@ pub enum LazyOp {
     },
     /// Movement op (free — just modifies ShapeTracker).
     /// The `st` here is the RESULT view, not an incremental delta.
-    Movement {
-        src: Arc<LazyOp>,
-        st: ShapeTracker,
-    },
+    Movement { src: Arc<LazyOp>, st: ShapeTracker },
     /// Scheduling annotation: force materialization.
     /// NOT a compute op — the scheduler inserts a copy kernel.
-    Contiguous {
-        src: Arc<LazyOp>,
-    },
+    Contiguous { src: Arc<LazyOp> },
 }
 
 impl LazyOp {
@@ -84,7 +76,10 @@ impl LazyOp {
                 }
             }
             Self::Binary { op, lhs, .. } => {
-                if matches!(op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+                if matches!(
+                    op,
+                    PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+                ) {
                     DType::Bool
                 } else {
                     lhs.dtype()

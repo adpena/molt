@@ -4,8 +4,8 @@ use molt_obj_model::MoltObject;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
 use crate::builtins::annotations::pep649_enabled;
@@ -911,8 +911,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
     attr_bits: u64,
 ) -> Option<u64> {
     unsafe {
-        let trace_attr_lookup =
-            std::env::var("MOLT_TRACE_ATTR_LOOKUP").as_deref() == Ok("1");
+        let trace_attr_lookup = std::env::var("MOLT_TRACE_ATTR_LOOKUP").as_deref() == Ok("1");
         let trace_guard = AttrLookupTraceGuard::new(trace_attr_lookup);
         if trace_attr_lookup {
             let line_no = ATTR_LOOKUP_TRACE_LINES.fetch_add(1, Ordering::Relaxed);
