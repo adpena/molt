@@ -1434,6 +1434,11 @@ impl SimpleBackend {
             std::collections::BTreeMap::new();
         let mut list_len_cache: std::collections::BTreeMap<String, Variable> =
             std::collections::BTreeMap::new();
+        // Tracks whether a cached list variable is a TYPE_ID_LIST_BOOL.
+        // Stored as a Cranelift Variable holding 1 (bool list) or 0 (regular list).
+        // Used by the fast-path element access to pick u8-load+NaN-box vs u64-load.
+        let mut list_is_bool_cache: std::collections::BTreeMap<String, Variable> =
+            std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
         let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
         let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
@@ -5979,6 +5984,7 @@ impl SimpleBackend {
                     list_int_len_cache.remove(&args[0]);
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
+                    list_is_bool_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List append value not found");
@@ -6002,6 +6008,7 @@ impl SimpleBackend {
                     list_int_len_cache.remove(&args[0]);
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
+                    list_is_bool_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let idx =
                         var_get(&mut builder, &vars, &args[1]).expect("List pop index not found");
@@ -6025,6 +6032,7 @@ impl SimpleBackend {
                     list_int_len_cache.remove(&args[0]);
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
+                    list_is_bool_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let other = var_get(&mut builder, &vars, &args[1])
                         .expect("List extend iterable not found");
@@ -6048,6 +6056,7 @@ impl SimpleBackend {
                     list_int_len_cache.remove(&args[0]);
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
+                    list_is_bool_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let idx = var_get(&mut builder, &vars, &args[1])
                         .expect("List insert index not found");
@@ -6074,6 +6083,7 @@ impl SimpleBackend {
                     list_int_len_cache.remove(&args[0]);
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
+                    list_is_bool_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List remove value not found");
@@ -6098,6 +6108,7 @@ impl SimpleBackend {
                     list_int_len_cache.remove(&args[0]);
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
+                    list_is_bool_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
