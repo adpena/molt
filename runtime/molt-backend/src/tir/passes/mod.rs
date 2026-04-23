@@ -3,6 +3,7 @@
 
 pub mod bce;
 pub mod block_versioning;
+pub mod branchless_count;
 pub mod cha;
 pub mod closure_spec;
 pub mod dce;
@@ -11,12 +12,14 @@ pub mod effects;
 pub mod escape_analysis;
 pub mod fast_math;
 pub mod interprocedural;
+pub mod iter_devirt;
 pub mod loop_narrow;
 pub mod monomorphize;
 pub mod polyhedral;
 pub mod range_devirt;
 mod reachability;
 pub mod refcount_elim;
+pub mod reuse_analysis;
 pub mod sccp;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
@@ -135,14 +138,17 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     }
 
     run_pass!("range_devirt", range_devirt::run(func));
+    run_pass!("iter_devirt", iter_devirt::run(func));
     run_pass!("loop_narrow", loop_narrow::run(func));
     run_pass!("unboxing", unboxing::run(func));
     run_pass!("block_versioning", block_versioning::run(func));
     run_pass!("escape_analysis", escape_analysis::run(func));
     run_pass!("refcount_elim", refcount_elim::run(func));
+    run_pass!("reuse_analysis", reuse_analysis::run(func));
     run_pass!("type_guard_hoist", type_guard_hoist::run(func));
     run_pass!("sccp", sccp::run(func));
     run_pass!("strength_reduction", strength_reduction::run(func));
+    run_pass!("branchless_count", branchless_count::run(func));
     run_pass!("bce", bce::run(func));
     run_pass!("dce", dce::run(func));
 

@@ -1332,7 +1332,7 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                     }
                     return MoltObject::from_int(memoryview_len(ptr) as i64).bits();
                 }
-                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_LIST_INT {
+                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_LIST_INT || type_id == TYPE_ID_LIST_BOOL {
                     return MoltObject::from_int(list_len(ptr) as i64).bits();
                 }
                 if type_id == TYPE_ID_TUPLE {
@@ -1433,7 +1433,7 @@ pub extern "C" fn molt_len_list(bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let tid = object_type_id(ptr);
-                if tid == TYPE_ID_LIST || tid == TYPE_ID_LIST_INT {
+                if tid == TYPE_ID_LIST || tid == TYPE_ID_LIST_INT || tid == TYPE_ID_LIST_BOOL {
                     return MoltObject::from_int(list_len(ptr) as i64).bits();
                 }
             }
@@ -3464,8 +3464,13 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return raise_key_error_with_key(_py, key_bits);
                 }
                 // list_int: flat i64 storage — delegate to specialized getitem
-                if object_type_id(obj_ptr) == TYPE_ID_LIST_INT {
+                let tid = object_type_id(obj_ptr);
+                if tid == TYPE_ID_LIST_INT {
                     return molt_list_int_getitem(obj_bits, key_bits);
+                }
+                // list_bool: flat u8 storage — delegate to specialized getitem
+                if tid == TYPE_ID_LIST_BOOL {
+                    return molt_list_bool_getitem(obj_bits, key_bits);
                 }
             }
         }
@@ -3822,6 +3827,16 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     }
                     return MoltObject::from_int(bytes[i as usize] as i64).bits();
                 }
+                // Promote list_bool to regular list for slice access
+                // (rare path — slice getitem on bool lists is not perf-critical).
+                if type_id == TYPE_ID_LIST_BOOL {
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        crate::object::ops_list::promote_list_bool_public(_py, ptr);
+                    }
+                }
+                let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_LIST {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
@@ -4181,8 +4196,13 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     return obj_bits;
                 }
                 // list_int: flat i64 storage — delegate to specialized setitem
-                if object_type_id(ptr) == TYPE_ID_LIST_INT {
+                let tid = object_type_id(ptr);
+                if tid == TYPE_ID_LIST_INT {
                     return molt_list_int_setitem(obj_bits, key_bits, val_bits);
+                }
+                // list_bool: flat u8 storage — delegate to specialized setitem
+                if tid == TYPE_ID_LIST_BOOL {
+                    return molt_list_bool_setitem(obj_bits, key_bits, val_bits);
                 }
             }
         }
@@ -5069,6 +5089,32 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         // Non-int needle: box each element and compare.
                         for &raw in elems.iter() {
                             let elem_bits = MoltObject::from_int(raw).bits();
+                            let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
+                                Some(val) => val,
+                                None => return MoltObject::none().bits(),
+                            };
+                            if eq {
+                                return MoltObject::from_bool(true).bits();
+                            }
+                        }
+                        return MoltObject::from_bool(false).bits();
+                    }
+                    TYPE_ID_LIST_BOOL => {
+                        // list[bool] stores raw u8 (0/1) — compare against
+                        // the needle's bool value directly.
+                        let elems = crate::object::layout::list_bool_vec_ref(ptr);
+                        if let Some(needle_bool) = item.as_bool() {
+                            let needle_u8: u8 = if needle_bool { 1 } else { 0 };
+                            for &raw in elems.iter() {
+                                if raw == needle_u8 {
+                                    return MoltObject::from_bool(true).bits();
+                                }
+                            }
+                            return MoltObject::from_bool(false).bits();
+                        }
+                        // Non-bool needle (e.g. int 1 == True): box each element.
+                        for &raw in elems.iter() {
+                            let elem_bits = MoltObject::from_bool(raw != 0).bits();
                             let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
                                 Some(val) => val,
                                 None => return MoltObject::none().bits(),

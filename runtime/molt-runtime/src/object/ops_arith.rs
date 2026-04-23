@@ -201,7 +201,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
-                if ltype == TYPE_ID_LIST {
+                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL {
                     let _ = molt_list_extend(a, b);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
@@ -443,7 +443,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
         let type_id = object_type_id(ptr);
         if count <= 0 {
             let out_ptr = match type_id {
-                TYPE_ID_LIST => alloc_list(_py, &[]),
+                TYPE_ID_LIST | TYPE_ID_LIST_BOOL => alloc_list(_py, &[]),
                 TYPE_ID_TUPLE => alloc_tuple(_py, &[]),
                 TYPE_ID_STRING => alloc_string(_py, &[]),
                 TYPE_ID_BYTES => alloc_bytes(_py, &[]),
@@ -470,10 +470,36 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
                 };
                 if elems.len() == 1 {
+                    let val = elems[0];
+                    let val_obj = obj_from_bits(val);
+
+                    // Bool fast path: [True] * N or [False] * N → ListBoolStorage.
+                    // Uses u8 backing (1 byte per element) instead of u64 (8 bytes),
+                    // giving 8x cache-line density for iteration-heavy patterns like
+                    // sieve of Eratosthenes.
+                    if val_obj.is_bool() {
+                        let fill: u8 = if val_obj.as_bool().unwrap_or(false) { 1 } else { 0 };
+                        let vec = vec![fill; total];
+                        let storage_ptr = crate::object::layout::ListBoolStorage::from_vec(vec);
+                        let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
+                            + std::mem::size_of::<*mut crate::object::layout::ListBoolStorage>()
+                            + std::mem::size_of::<u64>(); // padding
+                        let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_BOOL);
+                        if out_ptr.is_null() {
+                            // Reconstruct and drop the vec to free the buffer.
+                            drop(unsafe { (*Box::from_raw(storage_ptr)).into_vec() });
+                            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        }
+                        unsafe {
+                            *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) =
+                                storage_ptr;
+                        }
+                        return Some(MoltObject::from_ptr(out_ptr).bits());
+                    }
+
                     // Single-element repeat: vec![val; total] compiles to
                     // memset-like fill — O(n) memory writes, zero per-element
                     // function calls.
-                    let val = elems[0];
                     let combined = vec![val; total];
                     // Use _owned variant: we handle refcounting ourselves in
                     // batch instead of N individual inc_ref_bits calls.
@@ -505,6 +531,29 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     }
                     Some(MoltObject::from_ptr(out_ptr).bits())
                 }
+            }
+            TYPE_ID_LIST_BOOL => {
+                let elems = crate::object::layout::list_bool_vec_ref(ptr);
+                let total = match elems.len().checked_mul(times) {
+                    Some(total) => total,
+                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                };
+                let src = elems.as_slice();
+                let mut combined = Vec::with_capacity(total);
+                for _ in 0..times {
+                    combined.extend_from_slice(src);
+                }
+                let storage_ptr = crate::object::layout::ListBoolStorage::from_vec(combined);
+                let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
+                    + std::mem::size_of::<*mut crate::object::layout::ListBoolStorage>()
+                    + std::mem::size_of::<u64>();
+                let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_BOOL);
+                if out_ptr.is_null() {
+                    drop((*Box::from_raw(storage_ptr)).into_vec());
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) = storage_ptr;
+                Some(MoltObject::from_ptr(out_ptr).bits())
             }
             TYPE_ID_TUPLE => {
                 let elems = seq_vec_ref(ptr);
@@ -737,7 +786,7 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
-                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_BYTEARRAY {
+                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_BYTEARRAY {
                     let rhs_type = type_name(_py, obj_from_bits(b));
                     let msg = format!("can't multiply sequence by non-int of type '{rhs_type}'");
                     let count = index_i64_from_obj(_py, b, &msg);

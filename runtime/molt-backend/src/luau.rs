@@ -3762,7 +3762,18 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let prefix = sanitize_ident(&args[1]);
-                    if args.len() >= 4 {
+                    let prefix_is_tuple = self.tuple_vars.contains(&args[1]);
+                    if prefix_is_tuple && args.len() >= 4 {
+                        let start = sanitize_ident(&args[2]);
+                        let end = sanitize_ident(&args[3]);
+                        self.emit_line(&format!(
+                            "local {out}; do local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __slice = string.sub({s}, __start + 1, __end); {out} = false; for __i = 1, #{prefix} do local __cand = {prefix}[__i]; if type(__cand) ~= \"string\" then error({{__type=\"TypeError\", __msg=\"tuple for startswith must only contain str\"}}) end; if __cand == \"\" then if __start_raw <= __n and __start <= __end then {out} = true; break end elseif string.sub(__slice, 1, #__cand) == __cand then {out} = true; break end end end"
+                        ));
+                    } else if prefix_is_tuple {
+                        self.emit_line(&format!(
+                            "local {out} = false; for __i = 1, #{prefix} do local __cand = {prefix}[__i]; if type(__cand) ~= \"string\" then error({{__type=\"TypeError\", __msg=\"tuple for startswith must only contain str\"}}) end; if __cand == \"\" or string.sub({s}, 1, #__cand) == __cand then {out} = true; break end end"
+                        ));
+                    } else if args.len() >= 4 {
                         let start = sanitize_ident(&args[2]);
                         let end = sanitize_ident(&args[3]);
                         self.emit_line(&format!(
@@ -3781,7 +3792,18 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let suffix = sanitize_ident(&args[1]);
-                    if args.len() >= 4 {
+                    let suffix_is_tuple = self.tuple_vars.contains(&args[1]);
+                    if suffix_is_tuple && args.len() >= 4 {
+                        let start = sanitize_ident(&args[2]);
+                        let end = sanitize_ident(&args[3]);
+                        self.emit_line(&format!(
+                            "local {out}; do local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __slice = string.sub({s}, __start + 1, __end); {out} = false; for __i = 1, #{suffix} do local __cand = {suffix}[__i]; if type(__cand) ~= \"string\" then error({{__type=\"TypeError\", __msg=\"tuple for endswith must only contain str\"}}) end; if __cand == \"\" then if __start_raw <= __n and __start <= __end then {out} = true; break end elseif string.sub(__slice, -#__cand) == __cand then {out} = true; break end end end"
+                        ));
+                    } else if suffix_is_tuple {
+                        self.emit_line(&format!(
+                            "local {out} = false; for __i = 1, #{suffix} do local __cand = {suffix}[__i]; if type(__cand) ~= \"string\" then error({{__type=\"TypeError\", __msg=\"tuple for endswith must only contain str\"}}) end; if __cand == \"\" or string.sub({s}, -#__cand) == __cand then {out} = true; break end end"
+                        ));
+                    } else if args.len() >= 4 {
                         let start = sanitize_ident(&args[2]);
                         let end = sanitize_ident(&args[3]);
                         self.emit_line(&format!(
@@ -9953,6 +9975,65 @@ mod tests {
                 && output.contains("__end")
                 && output.contains("if __found and __found <= __end then"),
             "string.find must honor normalized start/end bounds, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_startswith_endswith_tuple_prefixes_lower() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_tuple_affixes".to_string(),
+                params: vec!["s".to_string()],
+                param_types: Some(vec!["str".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("ba".to_string()),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("na".to_string()),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "tuple_new".to_string(),
+                        args: Some(vec!["v0".to_string(), "v1".to_string()]),
+                        out: Some("t0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_startswith".to_string(),
+                        args: Some(vec!["s".to_string(), "t0".to_string()]),
+                        out: Some("v2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_endswith".to_string(),
+                        args: Some(vec!["s".to_string(), "t0".to_string()]),
+                        out: Some("v3".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("for __i = 1, #t0 do")
+                && output.contains("type(__cand) ~= \"string\"")
+                && !output.contains("[unsupported op: string_startswith]")
+                && !output.contains("[unsupported op: string_endswith]"),
+            "tuple affix args must lower to candidate loop with type guard, got:\n{output}"
         );
     }
 

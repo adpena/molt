@@ -1978,6 +1978,19 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                         return int_bits_from_i128(_py, acc128);
                     }
                 }
+                // Specialized list[bool] — elements are raw u8 (0/1).
+                // sum([True, False, True]) == 2
+                if type_id == TYPE_ID_LIST_BOOL {
+                    let elems = unsafe { crate::object::layout::list_bool_vec_ref(ptr) };
+                    let start_int = to_i64(start_obj);
+                    if let Some(s) = start_int {
+                        let mut acc: i64 = s;
+                        for &raw in elems.iter() {
+                            acc += raw as i64;
+                        }
+                        return MoltObject::from_int(acc).bits();
+                    }
+                }
             }
         }
         let iter_obj = molt_iter(iter_bits);

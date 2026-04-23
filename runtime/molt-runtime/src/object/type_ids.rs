@@ -113,6 +113,11 @@ pub(crate) fn size_class_for(size: usize) -> u16 {
 /// Created when list elements are all known ints at compile time.
 pub(crate) const TYPE_ID_LIST_INT: u32 = 248;
 
+/// Specialized list of raw u8 bool values — 0 = False, 1 = True.
+/// 8x more cache-friendly than storing NaN-boxed bools in Vec<u64>.
+/// Created by `[True] * N` and `[False] * N` patterns.
+pub(crate) const TYPE_ID_LIST_BOOL: u32 = 250;
+
 /// Heap-allocated float (used for NaN values to preserve identity semantics).
 /// Non-NaN floats remain inline in the NaN-box; only NaN requires heap allocation
 /// so that each `float('nan')` call produces a unique pointer address.
