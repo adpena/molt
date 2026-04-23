@@ -667,19 +667,28 @@ def _parse_tensor_proto(
             return name, shape, data_type, _decode_packed_float32(raw_data)
         if data_type == 6:
             count = len(raw_data) // 4
-            return name, shape, data_type, list(
-                struct.unpack(f"<{count}i", raw_data[: count * 4])
+            return (
+                name,
+                shape,
+                data_type,
+                list(struct.unpack(f"<{count}i", raw_data[: count * 4])),
             )
         if data_type == 7:
             count = len(raw_data) // 8
-            return name, shape, data_type, list(
-                struct.unpack(f"<{count}q", raw_data[: count * 8])
+            return (
+                name,
+                shape,
+                data_type,
+                list(struct.unpack(f"<{count}q", raw_data[: count * 8])),
             )
         if data_type == 11:
             count = len(raw_data) // 8
-            return name, shape, data_type, [
-                float(x) for x in struct.unpack(f"<{count}d", raw_data[: count * 8])
-            ]
+            return (
+                name,
+                shape,
+                data_type,
+                [float(x) for x in struct.unpack(f"<{count}d", raw_data[: count * 8])],
+            )
 
     if data_type in (1, 11) and float_data:
         return name, shape, data_type, float_data

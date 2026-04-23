@@ -6,9 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PADDLEOCR = ROOT / "src" / "molt" / "stdlib" / "tinygrad" / "paddleocr.py"
-ONNX_INTERPRETER = (
-    ROOT / "src" / "molt" / "stdlib" / "tinygrad" / "onnx_interpreter.py"
-)
+ONNX_INTERPRETER = ROOT / "src" / "molt" / "stdlib" / "tinygrad" / "onnx_interpreter.py"
 
 
 def _imported_top_level_modules(path: Path) -> list[str]:
