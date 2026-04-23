@@ -20,6 +20,19 @@ from __future__ import annotations
 
 from collections import namedtuple
 from heapq import nlargest as _nlargest
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_molt_difflib_context_diff = _require_intrinsic("molt_difflib_context_diff")
+_molt_difflib_get_close_matches = _require_intrinsic("molt_difflib_get_close_matches")
+_molt_difflib_get_matching_blocks = _require_intrinsic(
+    "molt_difflib_get_matching_blocks"
+)
+_molt_difflib_get_opcodes = _require_intrinsic("molt_difflib_get_opcodes")
+_molt_difflib_is_junk = _require_intrinsic("molt_difflib_is_junk")
+_molt_difflib_ndiff = _require_intrinsic("molt_difflib_ndiff")
+_molt_difflib_quick_ratio = _require_intrinsic("molt_difflib_quick_ratio")
+_molt_difflib_ratio = _require_intrinsic("molt_difflib_ratio")
+_molt_difflib_unified_diff = _require_intrinsic("molt_difflib_unified_diff")
 
 __all__ = [
     "get_close_matches",

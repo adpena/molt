@@ -607,7 +607,7 @@ impl LuauBackend {
                 "\tjoin = function(sep: string, t: {string}): string\n\t\treturn table.concat(t, sep)\n\tend,\n",
                 "\tsplit = function(s: string, sep: string?): {string}\n",
                 "\t\tlocal result = {}\n\t\tlocal n = 0\n\t\tlocal pattern = sep and sep or \"%s+\"\n",
-                "\t\tif sep then\n\t\t\tlocal pos = 1\n\t\t\twhile pos <= #s do\n",
+                "\t\tif sep then\n\t\t\tif sep == \"\" then error({__type=\"ValueError\", __msg=\"empty separator\"}) end\n\t\t\tlocal pos = 1\n\t\t\twhile pos <= #s do\n",
                 "\t\t\t\tlocal i, j = string.find(s, pattern, pos, true)\n",
                 "\t\t\t\tif i then\n\t\t\t\t\tn += 1; result[n] = string.sub(s, pos, i - 1)\n",
                 "\t\t\t\t\tpos = j + 1\n\t\t\t\telse\n",
@@ -3788,9 +3788,17 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let sub = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = (string.find({s}, {sub}, 1, true) or 0) - 1"
-                    ));
+                    if args.len() >= 4 {
+                        let start = sanitize_ident(&args[2]);
+                        let end = sanitize_ident(&args[3]);
+                        self.emit_line(&format!(
+                            "local {out}; do local __n = #{s}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __found = string.find({s}, {sub}, __start + 1, true); if __found and __found <= __end then {out} = __found - 1 else {out} = -1 end end"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "local {out} = (string.find({s}, {sub}, 1, true) or 0) - 1"
+                        ));
+                    }
                 }
             }
             "string_split" => {
@@ -9622,6 +9630,89 @@ mod tests {
                 && output.contains("__end")
                 && output.contains("string.sub(s, __start + 1, __end)"),
             "startswith/endswith must normalize start/end bounds, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_find_honors_start_end_bounds() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_find_bounds".to_string(),
+                params: vec![
+                    "s".to_string(),
+                    "needle".to_string(),
+                    "start".to_string(),
+                    "end_idx".to_string(),
+                ],
+                param_types: Some(vec![
+                    "str".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_find".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__found")
+                && output.contains("__start")
+                && output.contains("__end")
+                && output.contains("if __found and __found <= __end then"),
+            "string.find must honor normalized start/end bounds, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_split_rejects_empty_separator() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_split_empty_sep".to_string(),
+                params: vec!["s".to_string(), "sep".to_string()],
+                param_types: Some(vec!["str".to_string(), "str".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_split".to_string(),
+                        args: Some(vec!["s".to_string(), "sep".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__type=\"ValueError\"")
+                && output.contains("empty separator"),
+            "str.split must reject empty separator instead of looping, got:\n{output}"
         );
     }
 

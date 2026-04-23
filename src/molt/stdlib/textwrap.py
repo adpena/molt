@@ -1,7 +1,4 @@
-"""Text wrapping and filling — CPython 3.12 parity for Molt.
-
-Pure-Python implementation; no intrinsics required.
-"""
+"""Text wrapping and filling — CPython 3.12 parity for Molt."""
 
 # Copyright (C) 1999-2001 Gregory P. Ward.
 # Copyright (C) 2002 Python Software Foundation.
@@ -9,7 +6,17 @@ Pure-Python implementation; no intrinsics required.
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
 import re
+
+_molt_textwrap_dedent = _require_intrinsic("molt_textwrap_dedent")
+_molt_textwrap_fill = _require_intrinsic("molt_textwrap_fill")
+_molt_textwrap_fill_ex = _require_intrinsic("molt_textwrap_fill_ex")
+_molt_textwrap_indent = _require_intrinsic("molt_textwrap_indent")
+_molt_textwrap_indent_ex = _require_intrinsic("molt_textwrap_indent_ex")
+_molt_textwrap_shorten = _require_intrinsic("molt_textwrap_shorten")
+_molt_textwrap_wrap = _require_intrinsic("molt_textwrap_wrap")
+_molt_textwrap_wrap_ex = _require_intrinsic("molt_textwrap_wrap_ex")
 
 __all__ = ["TextWrapper", "wrap", "fill", "dedent", "indent", "shorten"]
 
