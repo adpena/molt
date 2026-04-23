@@ -1944,9 +1944,7 @@ impl LuauBackend {
                                 if args.len() >= 3 {
                                     let idx = sanitize_ident(&args[1]);
                                     let val = sanitize_ident(&args[2]);
-                                    self.emit_line(&format!(
-                                        "table.insert({obj}, if {idx} >= 0 then {idx} + 1 else #{obj} + {idx} + 1, {val})"
-                                    ));
+                                    self.emit_list_insert(&obj, &idx, &val);
                                 }
                             }
                             "remove" => {
@@ -2230,9 +2228,7 @@ impl LuauBackend {
                     let list = sanitize_ident(&args[0]);
                     let idx = sanitize_ident(&args[1]);
                     let val = sanitize_ident(&args[2]);
-                    self.emit_line(&format!(
-                        "table.insert({list}, if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1, {val})"
-                    ));
+                    self.emit_list_insert(&list, &idx, &val);
                 }
             }
             "list_remove" => {
@@ -2300,7 +2296,9 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let val = sanitize_ident(&args[0]);
                     let count = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out} = table.create({count}, {val})"));
+                    self.emit_line(&format!(
+                        "local {out} = table.create(math.max(0, {count}), {val})"
+                    ));
                 } else {
                     self.emit_line(&format!("local {out} = {{}}"));
                 }
@@ -2405,7 +2403,7 @@ impl LuauBackend {
                 if let Some(dict) = args.first() {
                     let dict = sanitize_ident(dict);
                     self.emit_line(&format!(
-                        "local {out} = nil; for __k, __v in pairs({dict}) do {out} = {{__k, __v}}; {dict}[__k] = nil; break end"
+                        "local {out} = nil; for __k, __v in pairs({dict}) do {out} = {{__k, __v}}; {dict}[__k] = nil; break end; if {out} == nil then error({{__type=\"KeyError\", __msg=\"popitem(): dictionary is empty\"}}) end"
                     ));
                 }
             }
@@ -4137,6 +4135,12 @@ impl LuauBackend {
     fn emit_index_bounds_guard(&mut self, idx: &str, container: &str, message: &str) {
         self.emit_line(&format!(
             "if {idx} < 1 or {idx} > #{container} then error({{__type=\"IndexError\", __msg=\"{message}\"}}) end"
+        ));
+    }
+
+    fn emit_list_insert(&mut self, list: &str, idx: &str, val: &str) {
+        self.emit_line(&format!(
+            "do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 then __idx = 1 end; if __idx > #{list} + 1 then __idx = #{list} + 1 end; if __idx == #{list} + 1 then {list}[#{list} + 1] = {val} else table.insert({list}, __idx, {val}) end end"
         ));
     }
 
@@ -9380,6 +9384,81 @@ mod tests {
             output.contains("__type=\"KeyError\"")
                 && output.contains("popitem(): dictionary is empty"),
             "dict.popitem must guard empty dictionaries, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_list_insert_clamps_python_index_bounds() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "list_insert_clamps".to_string(),
+                params: vec!["xs".to_string(), "i".to_string(), "v".to_string()],
+                param_types: Some(vec![
+                    "list[int]".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "list_insert".to_string(),
+                        args: Some(vec![
+                            "xs".to_string(),
+                            "i".to_string(),
+                            "v".to_string(),
+                        ]),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__idx < 1")
+                && output.contains("__idx = 1")
+                && output.contains("__idx > #xs + 1")
+                && output.contains("xs[#xs + 1] = v"),
+            "list.insert must clamp Python indices before mutation, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_list_repeat_clamps_negative_count_to_empty() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "list_repeat_clamps".to_string(),
+                params: vec!["value".to_string(), "count".to_string()],
+                param_types: Some(vec!["int".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "list_repeat_range".to_string(),
+                        args: Some(vec!["value".to_string(), "count".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("math.max(0, count)"),
+            "list repetition must clamp negative counts to empty list, got:\n{output}"
         );
     }
 
