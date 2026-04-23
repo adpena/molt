@@ -2786,20 +2786,22 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap();
-                        let rhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
-                        .unwrap();
+                        // Inside loops, use Variable-only shadows (phi-correct).
+                        let in_loop = !loop_stack.is_empty();
+                        let lhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0],
+                            )
+                        }.unwrap();
+                        let rhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1],
+                            )
+                        }.unwrap();
                         let raw_result = builder.ins().iadd(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2845,6 +2847,7 @@ impl SimpleBackend {
                         }
                         continue;
                     } else if op_prefers_int_lane(&op) {
+                        // Propagate raw shadow so downstream ops skip unbox.
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -2857,7 +2860,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
                         let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
@@ -2869,17 +2873,26 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        jump_block(&mut builder, merge_block, &[fast_res, sum]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
+                        if let Some(ref out_name) = op.out {
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
+                        }
+                        merge_res
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -3427,20 +3440,22 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap();
-                        let rhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
-                        .unwrap();
+                        // Inside loops, use Variable-only shadows (phi-correct).
+                        let in_loop = !loop_stack.is_empty();
+                        let lhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0],
+                            )
+                        }.unwrap();
+                        let rhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1],
+                            )
+                        }.unwrap();
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -3627,20 +3642,22 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap();
-                        let rhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
-                        .unwrap();
+                        // Inside loops, use Variable-only shadows (phi-correct).
+                        let in_loop = !loop_stack.is_empty();
+                        let lhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0],
+                            )
+                        }.unwrap();
+                        let rhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1],
+                            )
+                        }.unwrap();
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -3823,20 +3840,22 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap();
-                        let rhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
-                        .unwrap();
+                        // Inside loops, use Variable-only shadows (phi-correct).
+                        let in_loop = !loop_stack.is_empty();
+                        let lhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0],
+                            )
+                        }.unwrap();
+                        let rhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1],
+                            )
+                        }.unwrap();
                         let (raw_result, fits) =
                             imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let callee = Self::import_func_id_split(
@@ -4012,21 +4031,23 @@ impl SimpleBackend {
                         &args[1],
                     ) && op_prefers_int_lane(&op)
                     {
-                        // Raw chain: both operands already unboxed + overflow guard
-                        let lhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap();
-                        let rhs_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
-                        .unwrap();
+                        // Raw chain: both operands already unboxed + overflow guard.
+                        // Inside loops, use Variable-only shadows (phi-correct).
+                        let in_loop = !loop_stack.is_empty();
+                        let lhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0],
+                            )
+                        }.unwrap();
+                        let rhs_val = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1],
+                            )
+                        }.unwrap();
                         let (raw_result, fits) =
                             imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let callee = Self::import_func_id_split(
@@ -7182,12 +7203,18 @@ impl SimpleBackend {
                             //
                             // Requires raw_int_shadow index for bounds-checked inline path.
                             // Falls back to the safe runtime function otherwise.
-                            if let Some(raw_idx) = shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            ) {
+                            // Inside loops, use Variable-only shadows (phi-correct).
+                            let raw_idx_lookup = if !loop_stack.is_empty() {
+                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                            } else {
+                                shadow_value_for(
+                                    &mut builder,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
+                                    &args[1],
+                                )
+                            };
+                            if let Some(raw_idx) = raw_idx_lookup {
                                 // Extract storage_ptr, data_ptr, len (cached across loop iterations).
                                 let (data_ptr, len_val) = {
                                     let dp = if let Some(&var) = list_int_data_cache.get(&args[0]) {
@@ -7375,16 +7402,23 @@ impl SimpleBackend {
                     if op.container_type.as_deref() == Some("list_int") {
                         // Inline list[int] setitem with bounds check using
                         // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
-                        let raw_idx_opt = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        );
-                        let raw_val_opt = raw_int_shadow_vals
-                            .get(&args[2])
-                            .copied()
-                            .or_else(|| raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v)));
+                        // Inside loops, use Variable-only shadows (phi-correct).
+                        let in_loop = !loop_stack.is_empty();
+                        let raw_idx_opt = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1],
+                            )
+                        };
+                        let raw_val_opt = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[2])
+                        } else {
+                            raw_int_shadow_vals
+                                .get(&args[2])
+                                .copied()
+                                .or_else(|| raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v)))
+                        };
                         if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
                             // Extract storage_ptr, data_ptr, len (cached).
                             let (data_ptr, len_val) = {
@@ -7546,17 +7580,24 @@ impl SimpleBackend {
                     // - fast_int: generic list but key is known int
                     // - default: full dict/generic dispatch
                     if op.container_type.as_deref() == Some("list_int") {
-                        // raw_int_shadow fast path for list_int dict_set
-                        let raw_key_opt = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        );
-                        let raw_val_opt = raw_int_shadow_vals
-                            .get(&args[2])
-                            .copied()
-                            .or_else(|| raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v)));
+                        // raw_int_shadow fast path for list_int dict_set.
+                        // Inside loops, use Variable-only shadows (phi-correct).
+                        let in_loop = !loop_stack.is_empty();
+                        let raw_key_opt = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        } else {
+                            shadow_value_for(
+                                &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1],
+                            )
+                        };
+                        let raw_val_opt = if in_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[2])
+                        } else {
+                            raw_int_shadow_vals
+                                .get(&args[2])
+                                .copied()
+                                .or_else(|| raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v)))
+                        };
                         if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
