@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os as _os
 from typing import IO as _IO
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -44,6 +43,7 @@ COPY_BUFSIZE = 1024 * 1024  # 1 MiB, matches CPython
 
 
 # ── Exceptions ───────────────────────────────────────────────────────────────
+
 
 class Error(OSError):
     pass
@@ -135,12 +135,11 @@ def unregister_unpack_format(name: str) -> None:
 
 def get_unpack_formats() -> list[tuple[str, list[str], str]]:
     """Return a list of supported unpack formats as (name, extensions, description) triples."""
-    return [
-        (name, info[0], info[3]) for name, info in _UNPACK_FORMATS.items()
-    ]
+    return [(name, info[0], info[3]) for name, info in _UNPACK_FORMATS.items()]
 
 
 # ── Core file operations ──────────────────────────────────────────────────────
+
 
 def copyfileobj(fsrc: _IO, fdst: _IO, length: int = COPY_BUFSIZE) -> None:
     """Copy data from file-like object fsrc to file-like object fdst."""

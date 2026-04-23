@@ -1304,11 +1304,9 @@ mod tests {
         entry
             .ops
             .push(make_op(OpCode::Call, vec![callee], vec![call_result]));
-        entry.ops.push(make_op(
-            OpCode::BuildList,
-            vec![elem],
-            vec![list_result],
-        ));
+        entry
+            .ops
+            .push(make_op(OpCode::BuildList, vec![elem], vec![list_result]));
         entry.ops.push(make_op(OpCode::DecRef, vec![elem], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 

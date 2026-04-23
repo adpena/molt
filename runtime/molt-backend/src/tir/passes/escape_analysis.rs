@@ -11,8 +11,8 @@ use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, OpCode};
 use crate::tir::values::ValueId;
 
-use super::effects;
 use super::PassStats;
+use super::effects;
 
 /// Escape lattice for allocated values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -56,7 +56,7 @@ fn attr_str<'a>(attrs: &'a AttrDict, key: &str) -> Option<&'a str> {
 /// included explicitly.
 fn is_borrowing_builtin(name: &str) -> bool {
     // If the effects system classifies it as effect_free, it borrows.
-    if effects::builtin_effects(name).map_or(false, |fx| fx.effect_free) {
+    if effects::builtin_effects(name).is_some_and(|fx| fx.effect_free) {
         return true;
     }
     // Builtins that have side effects (I/O) but never store their arguments.
@@ -94,7 +94,7 @@ fn is_borrowing_method_call(attrs: &AttrDict) -> bool {
         Some(rt) => rt,
         None => return false,
     };
-    effects::method_effects(receiver_type, method).map_or(false, |fx| fx.effect_free)
+    effects::method_effects(receiver_type, method).is_some_and(|fx| fx.effect_free)
 }
 
 /// Analyze escape state of all `Alloc` operations in `func`.
@@ -200,8 +200,8 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 // A builtin with known effect_free semantics never stores its
                 // arguments, so the alloc'd value doesn't escape through the call.
                 OpCode::CallBuiltin => {
-                    let borrows = attr_str(&use_info.attrs, "name")
-                        .map_or(false, |name| is_borrowing_builtin(name));
+                    let borrows =
+                        attr_str(&use_info.attrs, "name").is_some_and(is_borrowing_builtin);
                     if !borrows {
                         escapes.insert(val, EscapeState::GlobalEscape);
                     }

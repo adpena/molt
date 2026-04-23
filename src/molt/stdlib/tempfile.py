@@ -48,6 +48,7 @@ TMP_MAX: int = 10000
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
+
 def gettempdir() -> str:
     """Return the name of the directory used for temporary files."""
     if tempdir is not None:
@@ -115,6 +116,7 @@ def mktemp(
 
 
 # ── NamedTemporaryFile ────────────────────────────────────────────────────────
+
 
 class _NamedTemporaryFile:
     """Wrapper for a named temporary file backed by Rust intrinsic creation."""
@@ -233,6 +235,7 @@ def NamedTemporaryFile(
 
 # ── TemporaryFile ─────────────────────────────────────────────────────────────
 
+
 def TemporaryFile(
     mode: str = "w+b",
     buffering: int = -1,
@@ -270,6 +273,7 @@ def TemporaryFile(
 
 
 # ── SpooledTemporaryFile ──────────────────────────────────────────────────────
+
 
 class SpooledTemporaryFile:
     """Temporary file wrapper that spools data in memory up to *max_size* bytes.
@@ -445,6 +449,7 @@ class SpooledTemporaryFile:
 
 
 # ── TemporaryDirectory ─────────────────────────────────────────────────────────
+
 
 class TemporaryDirectory:
     """Create a temporary directory (secure, via Rust intrinsic).
