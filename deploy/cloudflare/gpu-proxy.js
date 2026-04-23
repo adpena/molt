@@ -92,6 +92,17 @@ function buildProviderRequest(provider, gpuEndpoint, gpuKey, imageBase64, option
                 }),
             };
         case "modal":
+            return {
+                url: gpuEndpoint,
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(gpuKey ? { "Authorization": `Bearer ${gpuKey}` } : {}),
+                },
+                body: JSON.stringify({
+                    image_base64: imageBase64,
+                    category,
+                }),
+            };
         case "flyio":
             return {
                 url: gpuEndpoint,
@@ -136,6 +147,14 @@ function parseProviderResponse(provider, responseData) {
                 model: "tiiuae/Falcon-OCR",
             };
         case "modal":
+            return {
+                text: responseData.text || "",
+                tokens: responseData.tokens || 0,
+                latency_ms: responseData.latency_ms || 0,
+                confidence: 0.95,
+                backend: "gpu-modal",
+                model: "tiiuae/Falcon-OCR",
+            };
         case "flyio":
             return {
                 text: responseData.text || "",
