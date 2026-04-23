@@ -2217,6 +2217,9 @@ mod tests {
 
     #[test]
     fn daemon_request_parse_applies_boolean_defaults() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let request = DaemonRequest::from_json_bytes(
             br#"{
                 "version": 1,
@@ -2243,6 +2246,9 @@ mod tests {
 
     #[test]
     fn daemon_request_parse_reads_split_runtime_table_min() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let request = DaemonRequest::from_json_bytes(
             br#"{
                 "version": 1,
