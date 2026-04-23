@@ -7,11 +7,11 @@
 ## Summary
 
 - `compile-error`: `7`
-- `implemented-exact`: `319`
+- `implemented-exact`: `328`
 - `implemented-target-limited`: `18`
 - `not-admitted`: `24`
 - `runtime-capability-error`: `5`
-- `total`: `373`
+- `total`: `382`
 
 ## Matrix
 
@@ -358,15 +358,24 @@
 | `string_find` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_find_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_format` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_index` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_index_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_join` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_lower` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_lstrip` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_partition` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_repeat` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_replace` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_rfind` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_rfind_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_rindex` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_rindex_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_rpartition` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_rstrip` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_split` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_split_sep_dict_inc` | `compile-error` | Checked Luau emission rejects unsupported markers. |
 | `string_split_ws_dict_inc` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `string_splitlines` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_startswith` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_startswith_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_strip` | `implemented-exact` | Lowered without checked-output stub markers. |

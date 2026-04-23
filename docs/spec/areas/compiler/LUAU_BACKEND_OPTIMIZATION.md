@@ -59,10 +59,13 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | `list.extend` / star expansion | `table.move(src, 1, #src, #dst + 1, dst)` | Optimized bulk array append |
 | List repetition | `table.create(math.max(0, count), value)` | Correct negative-count empty-list behavior with preallocation |
 | `str.startswith` / `str.endswith` | Direct `string.sub` checks with optional bound normalization | Correct for admitted string subset |
-| `str.find` | Plain `string.find` with optional bound normalization | Correct for admitted string subset |
+| `str.find` / `str.rfind` | Plain `string.find` loops with optional bound normalization | Correct for admitted string subset |
+| `str.index` / `str.rindex` | `find` / `rfind` lowering plus `ValueError` guard | Correct for admitted string subset |
 | `str.count` | Plain `string.find` non-overlap loop with optional bound normalization | Correct for admitted string subset |
 | `str.split` | Luau helper with empty-separator guard | Correct for admitted split subset |
+| `str.splitlines` | Direct CR/LF loop with optional keepends | Correct for admitted ASCII line-break subset |
 | `str.replace` | Escaped plain-pattern `string.gsub` with optional count limit | Correct for admitted replace subset |
+| `str.partition` / `str.rpartition` | Direct plain search and tuple table construction | Correct for admitted partition subset |
 | `dict.popitem` | `pairs` loop with empty-dict guard | Correct empty-dict `KeyError`; order follows Luau table iteration |
 | Dict literal `{}` | `{[k1]=v1, ...}` keyed table | Optimal |
 | Set `set()` | `{}` table (values as keys mapped to `true`) | Correct |

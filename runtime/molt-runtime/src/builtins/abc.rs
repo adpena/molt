@@ -16,20 +16,6 @@ fn get_attr_default(
     name: &[u8],
     default_bits: u64,
 ) -> u64 {
-    if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
-        unsafe {
-            if object_type_id(obj_ptr) == TYPE_ID_TYPE {
-                if let Some(name_bits) = attr_name_bits_from_bytes(_py, name) {
-                    let out = class_lookup_mro_attr(_py, obj_bits, name_bits);
-                    dec_ref_bits(_py, name_bits);
-                    if !obj_from_bits(out).is_none() {
-                        return out;
-                    }
-                }
-                return default_bits;
-            }
-        }
-    }
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return MoltObject::none().bits();
     };

@@ -618,12 +618,30 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 continue;
             }
 
-            let can_prove = value_proves_type(
-                candidate.guard.context.guarded_value,
+            // Trace through predecessor's branch args to find the source value
+            let guarded = candidate.guard.context.guarded_value;
+            let orig_block = &func.blocks[&orig_bid];
+            let arg_pos = orig_block.args.iter().position(|a| a.id == guarded);
+            let source_value = if let Some(pos) = arg_pos {
+                let pred_block = &func.blocks[&pred_id];
+                match &pred_block.terminator {
+                    Terminator::Branch { args, .. } => args.get(pos).copied(),
+                    Terminator::CondBranch { then_args, else_args, then_block, else_block, .. } => {
+                        if *then_block == orig_bid { then_args.get(pos).copied() }
+                        else if *else_block == orig_bid { else_args.get(pos).copied() }
+                        else { None }
+                    }
+                    _ => None,
+                }
+            } else {
+                Some(guarded)
+            };
+            let can_prove = source_value.is_some_and(|src| value_proves_type(
+                src,
                 &candidate.guard.context.proven_type,
                 &producing_ops,
                 &block_arg_types,
-            );
+            ));
 
             if can_prove {
                 let pred_block = func.blocks.get_mut(&pred_id).unwrap();
@@ -851,30 +869,41 @@ mod tests {
 
         let stats = run(&mut func);
 
-        // The pass should version bb3 because the guarded value (%arg) is a
-        // block argument, not directly produced by ConstInt. However, the
-        // current value_proves_type checks the *producing op* of the guarded
-        // value. Since %arg is a block argument (no producing op), the proof
-        // relies on block_arg_types. Since %arg has type DynBox, no predecessor
-        // can prove it's INT through block arg types alone.
+        // The pass traces through branch args to their definitions:
+        // - bb1 passes int_val (from ConstInt) → proves INT → routed to bb3_spec
+        // - bb2 passes dyn_val (from Call) → can't prove → stays on bb3 (generic)
         //
-        // This test validates the conservative behavior: when the guarded value
-        // is a block argument with DynBox type, no versioning occurs because
-        // the type proof is about the block arg, not the passed value.
-        //
-        // This is correct behavior — a more aggressive version would trace
-        // through branch arguments to their definitions, but that requires
-        // interprocedural analysis beyond SBBV's scope.
-        assert_eq!(
-            stats.values_changed, 0,
-            "block arg with DynBox type should not be versioned (conservative)"
+        // This validates the predecessor-tracing behavior: SBBV follows branch
+        // args back to their producing ops to determine type proofs, enabling
+        // versioning even when the block arg itself is typed DynBox.
+        assert!(
+            stats.values_changed >= 1,
+            "should version bb3 — bb1's ConstInt proves INT via branch arg tracing"
         );
 
-        // Verify the original block is unchanged.
+        // bb1 should now branch to the specialized block (not bb3).
+        let bb1_term = &func.blocks[&bb1].terminator;
+        match bb1_term {
+            Terminator::Branch { target, .. } => {
+                assert_ne!(*target, bb3, "bb1 should be rewired to specialized block");
+            }
+            other => panic!("expected Branch, got {:?}", other),
+        }
+
+        // bb2 should still branch to the original bb3 (generic).
+        let bb2_term = &func.blocks[&bb2].terminator;
+        match bb2_term {
+            Terminator::Branch { target, .. } => {
+                assert_eq!(*target, bb3, "bb2 should stay on generic block");
+            }
+            other => panic!("expected Branch, got {:?}", other),
+        }
+
+        // Original bb3 should still have TypeGuard (for the generic path).
         let bb3_ops = &func.blocks[&bb3].ops;
         assert!(
             bb3_ops.iter().any(|op| op.opcode == OpCode::TypeGuard),
-            "original bb3 should still have TypeGuard"
+            "generic bb3 should still have TypeGuard"
         );
     }
 

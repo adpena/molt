@@ -12922,7 +12922,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         has_explicit_bases = bool(node.bases)
         if node.bases:
             for base_expr in node.bases:
-                base_val = self.visit(base_expr)
+                prev_base_in_annotation = self.in_annotation
+                if type_param_map:
+                    self.in_annotation = True
+                try:
+                    base_val = self.visit(base_expr)
+                finally:
+                    self.in_annotation = prev_base_in_annotation
                 if base_val is None:
                     raise NotImplementedError("Base class must be defined before use")
                 base_vals.append(base_val)
@@ -28405,27 +28411,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if module_name in self._STUB_IMPORT_MODULES:
             return None
         module_val = self._emit_module_load_with_parents(module_name)
-        if (
-            self.known_modules
-            and module_name in self.known_modules
-            and module_name != self.module_name
-        ):
-            init_symbol = f"molt_init_{self._sanitize_module_name(module_name)}"
-            init_res = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CALL", args=[init_symbol], result=init_res))
-            handler_label = (
-                self.try_end_labels[-1]
-                if self.try_end_labels
-                else self.function_exception_label
-            )
-            if handler_label is not None:
-                self.emit(
-                    MoltOp(
-                        kind="CHECK_EXCEPTION",
-                        args=[handler_label],
-                        result=MoltValue("none"),
-                    )
-                )
         for alias in node.names:
             if alias.name == "*":
                 if self.current_func_name != "molt_main":
