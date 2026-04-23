@@ -1859,21 +1859,24 @@ fn main() -> io::Result<()> {
     if is_luau {
         #[cfg(feature = "luau-backend")]
         {
+            let mut backend = LuauBackend::new();
+            let source = if use_ir_pipeline {
+                backend.compile_via_ir(&ir)
+            } else {
+                backend.compile_checked(&ir)
+            }
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Luau validation failed for '{}': {}", output_file, err),
+                )
+            })?;
             let mut file = create_backend_output_file(output_file).map_err(|err| {
                 io::Error::new(
                     err.kind(),
                     format!("failed to create backend output '{}': {}", output_file, err),
                 )
             })?;
-            let mut backend = LuauBackend::new();
-            let source = if use_ir_pipeline {
-                backend.compile_via_ir(&ir)
-            } else {
-                // Use unchecked compile for now — compile_checked rejects
-                // unsupported ops from stdlib modules. Once more ops are
-                // implemented, switch to compile_checked.
-                backend.compile(&ir)
-            };
             file.write_all(source.as_bytes())?;
             let lines = source.lines().count();
             eprintln!(

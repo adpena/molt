@@ -103,7 +103,7 @@ structure LuauFunc where
 /-- A complete Luau module as emitted by the Molt backend.
     Corresponds to the full output of `emit_luau_module` in luau.rs. -/
 structure LuauModule where
-  prelude   : List LuauStmt    -- conditional prelude helpers (molt_list_get, etc.)
+  prelude   : List LuauStmt    -- conditional prelude helpers (molt_len, etc.)
   functions : List LuauFunc    -- translated IR functions
   mainBody  : List LuauStmt    -- module-level statements (entry point)
 

@@ -1,6 +1,7 @@
 # Backend Proof Status
 
 Generated: 2026-03-16
+Updated: 2026-04-23 (Luau backend proof/code correspondence and `LuauCorrect.lean` sorry closure)
 
 ## Sorry Count by File
 
