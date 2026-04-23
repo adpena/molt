@@ -1506,12 +1506,14 @@ def setLogRecordFactory(factory) -> None:
 
 # ── getLevelNamesMapping ──────────────────────────────────────────────────────
 
+
 def getLevelNamesMapping() -> dict[str, int]:
     """Return a copy of the mapping of level names to numeric levels."""
     return dict(_name_to_level)
 
 
 # ── PlaceHolder ───────────────────────────────────────────────────────────────
+
 
 class PlaceHolder:
     """PlaceHolder instances are used in the Manager logger hierarchy.
@@ -1529,6 +1531,7 @@ class PlaceHolder:
 
 
 # ── BufferingFormatter ────────────────────────────────────────────────────────
+
 
 class BufferingFormatter:
     """A formatter suitable for formatting a number of records."""
