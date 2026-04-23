@@ -1421,6 +1421,12 @@ impl SimpleBackend {
             std::collections::BTreeMap::new();
         let mut list_int_len_cache: std::collections::BTreeMap<String, Variable> =
             std::collections::BTreeMap::new();
+        // Cache data_ptr and len for generic list (TYPE_ID_LIST) containers.
+        // Same invariant as list_int caches: invalidated on list mutation.
+        let mut list_data_cache: std::collections::BTreeMap<String, Variable> =
+            std::collections::BTreeMap::new();
+        let mut list_len_cache: std::collections::BTreeMap<String, Variable> =
+            std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
         let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
         let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
@@ -5922,6 +5928,8 @@ impl SimpleBackend {
                     // Invalidate cached data_ptr/len — append may reallocate.
                     list_int_data_cache.remove(&args[0]);
                     list_int_len_cache.remove(&args[0]);
+                    list_data_cache.remove(&args[0]);
+                    list_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List append value not found");
@@ -5943,6 +5951,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     list_int_data_cache.remove(&args[0]);
                     list_int_len_cache.remove(&args[0]);
+                    list_data_cache.remove(&args[0]);
+                    list_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let idx =
                         var_get(&mut builder, &vars, &args[1]).expect("List pop index not found");
@@ -5964,6 +5974,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     list_int_data_cache.remove(&args[0]);
                     list_int_len_cache.remove(&args[0]);
+                    list_data_cache.remove(&args[0]);
+                    list_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let other = var_get(&mut builder, &vars, &args[1])
                         .expect("List extend iterable not found");
@@ -5985,6 +5997,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     list_int_data_cache.remove(&args[0]);
                     list_int_len_cache.remove(&args[0]);
+                    list_data_cache.remove(&args[0]);
+                    list_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let idx = var_get(&mut builder, &vars, &args[1])
                         .expect("List insert index not found");
@@ -6009,6 +6023,8 @@ impl SimpleBackend {
                     // Invalidate cached data_ptr/len — remove shifts elements and changes length.
                     list_int_data_cache.remove(&args[0]);
                     list_int_len_cache.remove(&args[0]);
+                    list_data_cache.remove(&args[0]);
+                    list_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List remove value not found");
@@ -6031,6 +6047,8 @@ impl SimpleBackend {
                     // Invalidate cached data_ptr/len — clear empties the list.
                     list_int_data_cache.remove(&args[0]);
                     list_int_len_cache.remove(&args[0]);
+                    list_data_cache.remove(&args[0]);
+                    list_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
@@ -7367,11 +7385,174 @@ impl SimpleBackend {
                                     def_var_named(&mut builder, &vars, out__, res);
                                 }
                             }
+                        } else if op.container_type.as_deref() == Some("list")
+                            && op_prefers_int_lane(&op)
+                        {
+                            // Inline generic list getitem — direct memory access
+                            // into Box<Vec<u64>>.
+                            //
+                            // Object layout:
+                            //   obj_ptr[0] = *mut Vec<u64>  (vec_ptr)
+                            //   vec_ptr[VEC_DATA_OFFSET] = data_ptr
+                            //   vec_ptr[VEC_LEN_OFFSET]  = len
+                            //
+                            // Vec offsets are probed at process init time since
+                            // Vec<T> is #[repr(Rust)] and field order varies
+                            // across compiler versions.
+                            let raw_idx_lookup = if !loop_stack.is_empty() {
+                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                            } else {
+                                shadow_value_for(
+                                    &mut builder,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
+                                    &args[1],
+                                )
+                            };
+                            if let Some(raw_idx) = raw_idx_lookup {
+                                let vec_layout = vec_u64_layout();
+                                // Extract vec_ptr, data_ptr, len (cached across loop iterations).
+                                let (data_ptr, len_val) = {
+                                    let dp = if let Some(&var) = list_data_cache.get(&args[0]) {
+                                        builder.use_var(var)
+                                    } else {
+                                        let masked =
+                                            builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                        let shifted = builder.ins().ishl_imm(masked, 16);
+                                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                        // obj_ptr[0] = *mut Vec<u64>
+                                        let vec_ptr = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::trusted(),
+                                            obj_ptr,
+                                            0,
+                                        );
+                                        let dp = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::trusted(),
+                                            vec_ptr,
+                                            vec_layout.data_offset,
+                                        );
+                                        let var = builder.declare_var(types::I64);
+                                        builder.def_var(var, dp);
+                                        list_data_cache.insert(args[0].clone(), var);
+                                        // Also cache len
+                                        let len = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::trusted(),
+                                            vec_ptr,
+                                            vec_layout.len_offset,
+                                        );
+                                        let lvar = builder.declare_var(types::I64);
+                                        builder.def_var(lvar, len);
+                                        list_len_cache.insert(args[0].clone(), lvar);
+                                        dp
+                                    };
+                                    let lv = if let Some(&var) = list_len_cache.get(&args[0]) {
+                                        builder.use_var(var)
+                                    } else {
+                                        // Len not cached yet (data was cached in a prior op).
+                                        let masked =
+                                            builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                        let shifted = builder.ins().ishl_imm(masked, 16);
+                                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                        let vec_ptr = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::trusted(),
+                                            obj_ptr,
+                                            0,
+                                        );
+                                        let len = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::trusted(),
+                                            vec_ptr,
+                                            vec_layout.len_offset,
+                                        );
+                                        let lvar = builder.declare_var(types::I64);
+                                        builder.def_var(lvar, len);
+                                        list_len_cache.insert(args[0].clone(), lvar);
+                                        len
+                                    };
+                                    (dp, lv)
+                                };
+                                // Bounds check: 0 <= raw_idx < len.
+                                // On failure, fall through to the safe runtime function.
+                                let in_bounds =
+                                    builder
+                                        .ins()
+                                        .icmp(IntCC::UnsignedLessThan, raw_idx, len_val);
+                                let fast_block = builder.create_block();
+                                let slow_block = builder.create_block();
+                                builder.set_cold_block(slow_block);
+                                let merge_block = builder.create_block();
+                                builder.append_block_param(merge_block, types::I64); // result
+                                builder
+                                    .ins()
+                                    .brif(in_bounds, fast_block, &[], slow_block, &[]);
+
+                                // Fast path: direct load + inline inc_ref
+                                switch_to_block_materialized(&mut builder, fast_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                                let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                                let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                                let elem = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    elem_addr,
+                                    0,
+                                );
+                                // Inline inc_ref for the loaded element.
+                                // The element is NaN-boxed — only pointer values
+                                // need refcount bumps (ints/bools/None are tagged
+                                // inline values with no heap allocation).
+                                emit_inc_ref_obj(&mut builder, elem, local_inc_ref_obj, &nbc);
+                                jump_block(&mut builder, merge_block, &[elem]);
+
+                                // Slow path: safe runtime call (handles negative index, IndexError)
+                                switch_to_block_materialized(&mut builder, slow_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_list_getitem_int_fast",
+                                    &[types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local_callee =
+                                    self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                                let slow_res = builder.inst_results(call)[0];
+                                jump_block(&mut builder, merge_block, &[slow_res]);
+
+                                // Merge
+                                switch_to_block_materialized(&mut builder, merge_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                                let merged = builder.block_params(merge_block)[0];
+                                if let Some(ref out__) = op.out {
+                                    def_var_named(&mut builder, &vars, out__, merged);
+                                }
+                            } else {
+                                // No raw_int_shadow — fall back to runtime call.
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_list_getitem_int_fast",
+                                    &[types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local_callee =
+                                    self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                                let res = builder.inst_results(call)[0];
+                                if let Some(out__) = op.out {
+                                    def_var_named(&mut builder, &vars, out__, res);
+                                }
+                            }
                         } else {
                             // Dispatch based on container specialization:
                             // - dict: direct hash-table lookup
                             // - tuple: direct element access
-                            // - fast_int: generic list but index is known int
+                            // - fast_int: generic list but index is known int (no container_type proof)
                             // - default: full type dispatch
                             let fn_name = match op.container_type.as_deref() {
                                 Some("dict") => "molt_dict_getitem",
@@ -7547,10 +7728,158 @@ impl SimpleBackend {
                                 def_var_named(&mut builder, &vars, out__, res);
                             }
                         }
+                    } else if op.container_type.as_deref() == Some("list")
+                        && op_prefers_int_lane(&op)
+                    {
+                        // Inline generic list setitem — direct memory store
+                        // into Box<Vec<u64>>.
+                        let raw_idx_opt = if !loop_stack.is_empty() {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        } else {
+                            shadow_value_for(
+                                &mut builder,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
+                                &args[1],
+                            )
+                        };
+                        if let Some(raw_idx) = raw_idx_opt {
+                            let vec_layout = vec_u64_layout();
+                            let (data_ptr, len_val) = {
+                                let dp = if let Some(&var) = list_data_cache.get(&args[0]) {
+                                    builder.use_var(var)
+                                } else {
+                                    let masked =
+                                        builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                    let shifted = builder.ins().ishl_imm(masked, 16);
+                                    let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                    let vec_ptr = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::trusted(),
+                                        obj_ptr,
+                                        0,
+                                    );
+                                    let dp = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::trusted(),
+                                        vec_ptr,
+                                        vec_layout.data_offset,
+                                    );
+                                    let var = builder.declare_var(types::I64);
+                                    builder.def_var(var, dp);
+                                    list_data_cache.insert(args[0].clone(), var);
+                                    let len = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::trusted(),
+                                        vec_ptr,
+                                        vec_layout.len_offset,
+                                    );
+                                    let lvar = builder.declare_var(types::I64);
+                                    builder.def_var(lvar, len);
+                                    list_len_cache.insert(args[0].clone(), lvar);
+                                    dp
+                                };
+                                let lv = if let Some(&var) = list_len_cache.get(&args[0]) {
+                                    builder.use_var(var)
+                                } else {
+                                    let masked =
+                                        builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                    let shifted = builder.ins().ishl_imm(masked, 16);
+                                    let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                    let vec_ptr = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::trusted(),
+                                        obj_ptr,
+                                        0,
+                                    );
+                                    let len = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::trusted(),
+                                        vec_ptr,
+                                        vec_layout.len_offset,
+                                    );
+                                    let lvar = builder.declare_var(types::I64);
+                                    builder.def_var(lvar, len);
+                                    list_len_cache.insert(args[0].clone(), lvar);
+                                    len
+                                };
+                                (dp, lv)
+                            };
+                            // Bounds check
+                            let in_bounds =
+                                builder
+                                    .ins()
+                                    .icmp(IntCC::UnsignedLessThan, raw_idx, len_val);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder
+                                .ins()
+                                .brif(in_bounds, fast_block, &[], slow_block, &[]);
+
+                            // Fast path: dec_ref old element, store new, inc_ref new
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                            let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                            // Dec-ref old element
+                            let old_elem = builder.ins().load(
+                                types::I64,
+                                MemFlags::trusted(),
+                                elem_addr,
+                                0,
+                            );
+                            emit_dec_ref_obj(&mut builder, old_elem, local_dec_ref_obj, &nbc);
+                            // Inc-ref new value
+                            emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
+                            // Store new value
+                            builder
+                                .ins()
+                                .store(MemFlags::trusted(), *val, elem_addr, 0);
+                            jump_block(&mut builder, merge_block, &[]);
+
+                            // Slow path: safe runtime call
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_list_setitem_int_fast",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee =
+                                self.module.declare_func_in_func(callee, builder.func);
+                            builder.ins().call(local_callee, &[*obj, *idx, *val]);
+                            jump_block(&mut builder, merge_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            if let Some(out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, *obj);
+                            }
+                        } else {
+                            // No raw_int_shadow — fall back to runtime call.
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_list_setitem_int_fast",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee =
+                                self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
+                            let res = builder.inst_results(call)[0];
+                            if let Some(out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, res);
+                            }
+                        }
                     } else {
                         // Dispatch based on container specialization:
                         // - dict: direct hash-table set
-                        // - int fast: list with proven-int index
+                        // - int fast: list with proven-int index (no container_type proof)
                         // - default: full type dispatch
                         let fn_name = match op.container_type.as_deref() {
                             Some("dict") => "molt_dict_setitem",
