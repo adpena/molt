@@ -614,6 +614,13 @@ unsafe fn type_attr_lookup_ptr_inner(
                 inc_ref_bits(_py, func_bits);
                 return Some(func_bits);
             }
+            if class_bits == builtins.tuple
+                && name == "__new__"
+                && let Some(func_bits) = builtin_class_method_bits(_py, class_bits, "__new__")
+            {
+                inc_ref_bits(_py, func_bits);
+                return Some(func_bits);
+            }
 
             if name == "__name__" {
                 let name_bits = class_name_bits(obj_ptr);

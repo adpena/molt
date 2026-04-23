@@ -654,8 +654,17 @@ unsafe fn try_subclass_str_or_repr_override(
             intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
         let raw_str = class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits);
         let base_str = class_attr_lookup_raw_mro(_py, base_ptr, str_name_bits);
-        if raw_str.is_some() && raw_str != base_str {
+        let raw_str_is_default = raw_str.is_some_and(|bits| {
+            call_bits_is_default_object_str(bits) || call_bits_is_default_object_repr(bits)
+        });
+        if raw_str.is_some() && raw_str != base_str && !raw_str_is_default {
             let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, str_name_bits)?;
+            if call_bits_is_default_object_str(call_bits)
+                || call_bits_is_default_object_repr(call_bits)
+            {
+                dec_ref_bits(_py, call_bits);
+                return None;
+            }
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
             let rendered = string_obj_to_owned(obj_from_bits(res_bits));
@@ -667,8 +676,17 @@ unsafe fn try_subclass_str_or_repr_override(
             intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
         let raw_repr = class_attr_lookup_raw_mro(_py, class_ptr, repr_name_bits);
         let base_repr = class_attr_lookup_raw_mro(_py, base_ptr, repr_name_bits);
-        if raw_repr.is_some() && raw_repr != base_repr {
+        let raw_repr_is_default = raw_repr.is_some_and(|bits| {
+            call_bits_is_default_object_repr(bits) || call_bits_is_default_object_str(bits)
+        });
+        if raw_repr.is_some() && raw_repr != base_repr && !raw_repr_is_default {
             let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, repr_name_bits)?;
+            if call_bits_is_default_object_repr(call_bits)
+                || call_bits_is_default_object_str(call_bits)
+            {
+                dec_ref_bits(_py, call_bits);
+                return None;
+            }
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
             let rendered = string_obj_to_owned(obj_from_bits(res_bits));
