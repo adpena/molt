@@ -1087,6 +1087,13 @@ impl<'a> SsaContext<'a> {
             }
         }
 
+        // range_new maps to CallBuiltin but has no s_value to provide the
+        // callee name.  Set it explicitly so downstream passes (range_devirt)
+        // can pattern-match on name = "range".
+        if op.kind == "range_new" && !attrs.contains_key("name") {
+            attrs.insert("name".into(), AttrValue::Str("range".into()));
+        }
+
         // Preserve the `var` field for passthrough (Copy) ops where `var` carries
         // metadata (a non-variable string) rather than an SSA reference.  For
         // such ops, the var was NOT resolved to an operand above (it was either
@@ -1464,7 +1471,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
             OpCode::Call
         }
         "call_method" => OpCode::CallMethod,
-        "call_builtin" | "builtin_print" | "print" => OpCode::CallBuiltin,
+        "call_builtin" | "builtin_print" | "print" | "range_new" => OpCode::CallBuiltin,
         "box" | "box_from_raw_int" => OpCode::BoxVal,
         "unbox" | "unbox_to_raw_int" => OpCode::UnboxVal,
         "type_guard" => OpCode::TypeGuard,

@@ -469,15 +469,42 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     Some(total) => total,
                     None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
                 };
-                let mut combined = Vec::with_capacity(total);
-                for _ in 0..times {
-                    combined.extend_from_slice(elems);
+                if elems.len() == 1 {
+                    // Single-element repeat: vec![val; total] compiles to
+                    // memset-like fill — O(n) memory writes, zero per-element
+                    // function calls.
+                    let val = elems[0];
+                    let combined = vec![val; total];
+                    // Use _owned variant: we handle refcounting ourselves in
+                    // batch instead of N individual inc_ref_bits calls.
+                    let out_ptr = alloc_list_with_capacity_owned(_py, &combined, total);
+                    if out_ptr.is_null() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    // Batch refcount: one atomic add instead of `total` adds.
+                    // For non-pointer values (bools, ints, floats, None),
+                    // is_heap_ref is false so we skip entirely — zero atomics.
+                    if crate::object::refcount_opt::is_heap_ref(val) {
+                        let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
+                        let header = header_from_obj_ptr(obj_ptr);
+                        if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) == 0 {
+                            (*header)
+                                .ref_count
+                                .fetch_add(total as u32, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    Some(MoltObject::from_ptr(out_ptr).bits())
+                } else {
+                    let mut combined = Vec::with_capacity(total);
+                    for _ in 0..times {
+                        combined.extend_from_slice(elems);
+                    }
+                    let out_ptr = alloc_list(_py, &combined);
+                    if out_ptr.is_null() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    Some(MoltObject::from_ptr(out_ptr).bits())
                 }
-                let out_ptr = alloc_list(_py, &combined);
-                if out_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                }
-                Some(MoltObject::from_ptr(out_ptr).bits())
             }
             TYPE_ID_TUPLE => {
                 let elems = seq_vec_ref(ptr);
@@ -485,15 +512,34 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     Some(total) => total,
                     None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
                 };
-                let mut combined = Vec::with_capacity(total);
-                for _ in 0..times {
-                    combined.extend_from_slice(elems);
+                if elems.len() == 1 {
+                    let val = elems[0];
+                    let combined = vec![val; total];
+                    let out_ptr = alloc_tuple_with_capacity_owned(_py, &combined, total);
+                    if out_ptr.is_null() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    if crate::object::refcount_opt::is_heap_ref(val) {
+                        let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
+                        let header = header_from_obj_ptr(obj_ptr);
+                        if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) == 0 {
+                            (*header)
+                                .ref_count
+                                .fetch_add(total as u32, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    Some(MoltObject::from_ptr(out_ptr).bits())
+                } else {
+                    let mut combined = Vec::with_capacity(total);
+                    for _ in 0..times {
+                        combined.extend_from_slice(elems);
+                    }
+                    let out_ptr = alloc_tuple(_py, &combined);
+                    if out_ptr.is_null() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    Some(MoltObject::from_ptr(out_ptr).bits())
                 }
-                let out_ptr = alloc_tuple(_py, &combined);
-                if out_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                }
-                Some(MoltObject::from_ptr(out_ptr).bits())
             }
             TYPE_ID_STRING => {
                 let len = string_len(ptr);
