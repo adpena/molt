@@ -310,6 +310,51 @@ impl MoltObject {
             val as i64
         }
     }
+
+    /// Returns `true` if this object is immortal — i.e. it must never be
+    /// refcounted because it represents an eternal constant.
+    ///
+    /// Immortal objects (mirroring CPython 3.12+ PEP 683):
+    /// - `None`
+    /// - `True` / `False`
+    /// - Small integers in `[-5, 256]` (the CPython interned range)
+    ///
+    /// For `None` and bools the check is a single tag comparison (O(1)).
+    /// For integers, after confirming the tag, a range check on the
+    /// sign-extended 47-bit payload determines immortality.
+    #[inline(always)]
+    pub fn is_immortal(&self) -> bool {
+        let tag_bits = self.0 & (QNAN | TAG_MASK);
+
+        // None and Bool are unconditionally immortal — single comparison each.
+        if tag_bits == (QNAN | TAG_NONE) || tag_bits == (QNAN | TAG_BOOL) {
+            return true;
+        }
+
+        // Small integers in [-5, 256].
+        if tag_bits == (QNAN | TAG_INT) {
+            let val = self.0 & INT_MASK;
+            let i = if (val & INT_SIGN_BIT) != 0 {
+                (val as i64) | !(INT_MASK as i64)
+            } else {
+                val as i64
+            };
+            return i >= -5 && i <= 256;
+        }
+
+        false
+    }
+}
+
+/// C ABI entry point for the compiler to check immortality before
+/// emitting IncRef/DecRef calls. Returns 1 if immortal, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is_immortal(bits: u64) -> u64 {
+    if MoltObject::from_bits(bits).is_immortal() {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -384,6 +429,64 @@ mod tests {
         let obj = MoltObject::from_int(-1);
         assert!(obj.is_int());
         assert_eq!(obj.as_int(), Some(-1));
+    }
+
+    #[test]
+    fn none_is_immortal() {
+        assert!(MoltObject::none().is_immortal());
+    }
+
+    #[test]
+    fn bools_are_immortal() {
+        assert!(MoltObject::from_bool(true).is_immortal());
+        assert!(MoltObject::from_bool(false).is_immortal());
+    }
+
+    #[test]
+    fn small_ints_are_immortal() {
+        // Boundary: -5 is the lowest immortal int
+        assert!(MoltObject::from_int(-5).is_immortal());
+        assert!(MoltObject::from_int(-4).is_immortal());
+        assert!(MoltObject::from_int(-1).is_immortal());
+        assert!(MoltObject::from_int(0).is_immortal());
+        assert!(MoltObject::from_int(1).is_immortal());
+        assert!(MoltObject::from_int(100).is_immortal());
+        assert!(MoltObject::from_int(255).is_immortal());
+        assert!(MoltObject::from_int(256).is_immortal());
+    }
+
+    #[test]
+    fn out_of_range_ints_are_not_immortal() {
+        assert!(!MoltObject::from_int(-6).is_immortal());
+        assert!(!MoltObject::from_int(257).is_immortal());
+        assert!(!MoltObject::from_int(1000).is_immortal());
+        assert!(!MoltObject::from_int(-1000).is_immortal());
+    }
+
+    #[test]
+    fn floats_are_not_immortal() {
+        assert!(!MoltObject::from_float(0.0).is_immortal());
+        assert!(!MoltObject::from_float(1.0).is_immortal());
+        assert!(!MoltObject::from_float(std::f64::consts::PI).is_immortal());
+    }
+
+    #[test]
+    fn pointers_are_not_immortal() {
+        let boxed = Box::new(42u8);
+        let ptr = Box::into_raw(boxed);
+        let obj = MoltObject::from_ptr(ptr);
+        assert!(!obj.is_immortal());
+        release_ptr(ptr);
+        unsafe { drop(Box::from_raw(ptr)); }
+    }
+
+    #[test]
+    fn molt_is_immortal_c_abi() {
+        assert_eq!(super::molt_is_immortal(MoltObject::none().bits()), 1);
+        assert_eq!(super::molt_is_immortal(MoltObject::from_bool(true).bits()), 1);
+        assert_eq!(super::molt_is_immortal(MoltObject::from_int(0).bits()), 1);
+        assert_eq!(super::molt_is_immortal(MoltObject::from_int(257).bits()), 0);
+        assert_eq!(super::molt_is_immortal(MoltObject::from_float(1.0).bits()), 0);
     }
 
     #[test]

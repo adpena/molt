@@ -1964,11 +1964,10 @@ fn importlib_metadata_payload_parses_name_version_and_entry_points() {
 
 #[test]
 fn importlib_metadata_record_payload_parses_rows() {
-    let tmp =
-        tempfile::Builder::new()
-            .prefix("molt_importlib_metadata_record_payload_")
-            .tempdir_in(std::env::temp_dir())
-            .expect("create temp dir");
+    let tmp = tempfile::Builder::new()
+        .prefix("molt_importlib_metadata_record_payload_")
+        .tempdir_in(std::env::temp_dir())
+        .expect("create temp dir");
     let dist = tmp.path().join("demo_record-1.0.dist-info");
     std::fs::create_dir_all(&dist).expect("create dist-info dir");
     std::fs::write(
