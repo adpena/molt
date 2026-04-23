@@ -55,6 +55,9 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | List/string indexing | 0-to-1 index adjustment plus bounds guard for known list/string containers | Correct -- raises `IndexError` on out-of-range reads |
 | List assignment/deletion | 0-to-1 index adjustment plus bounds guard for known list containers | Correct -- raises `IndexError` on out-of-range mutation |
 | `list.pop` / `list.index` | Direct `table.remove` / `ipairs` loops with explicit Python error guards | Correct for admitted list subset |
+| `list.insert` | Clamped 0-to-1 index conversion before `table.insert` or append | Correct for admitted list subset |
+| List repetition | `table.create(math.max(0, count), value)` | Correct negative-count empty-list behavior with preallocation |
+| `dict.popitem` | `pairs` loop with empty-dict guard | Correct empty-dict `KeyError`; order follows Luau table iteration |
 | Dict literal `{}` | `{[k1]=v1, ...}` keyed table | Optimal |
 | Set `set()` | `{}` table (values as keys mapped to `true`) | Correct |
 | `range(start, stop, step)` | `molt_range()` helper or `for i = start, stop-1, step do` | Good |
@@ -251,7 +254,7 @@ The Lean formalization explicitly acknowledges this: "Molt only compiles program
 **Python**: 0-based, `s[0]` is first character. `s[-1]` is last.
 **Luau**: 1-based, `string.sub(s, 1, 1)` is first character.
 
-**Current handling**: The backend adjusts numeric indices with `+ 1` for non-negative indices and `#container + idx + 1` for negative indices. Known list and string reads emit direct bounds guards that raise `IndexError` before table/string access. Known list assignment/deletion and `list.pop` emit scoped bounds guards before mutation. `list.index` raises `ValueError` when missing. Remaining work: extend exact bounds/error coverage across unknown container dispatch and all string method edge cases.
+**Current handling**: The backend adjusts numeric indices with `+ 1` for non-negative indices and `#container + idx + 1` for negative indices. Known list and string reads emit direct bounds guards that raise `IndexError` before table/string access. Known list assignment/deletion and `list.pop` emit scoped bounds guards before mutation. `list.insert` clamps indices to Python's insertion range before mutating. `list.index` raises `ValueError` when missing. Remaining work: extend exact bounds/error coverage across unknown container dispatch and all string method edge cases.
 
 ### 3.3 None vs nil
 
@@ -279,7 +282,7 @@ The Lean formalization explicitly acknowledges this: "Molt only compiles program
 **Python 3.7+**: Dicts preserve insertion order.
 **Luau**: `pairs()` iteration order is not guaranteed to match insertion order.
 
-**Current handling**: No special handling. Programs relying on dict insertion order will behave differently in Luau.
+**Current handling**: No insertion-order representation yet. Programs relying on dict insertion order will behave differently in Luau. `dict.popitem` raises `KeyError` on empty dictionaries but returns an arbitrary Luau table iteration pair for non-empty dictionaries.
 
 ---
 

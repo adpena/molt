@@ -589,19 +589,19 @@ def _parse_attribute_proto(data: bytes) -> tuple[str, object]:
         elif field_num == 2 and wire_type == 5:
             attr_value = struct.unpack("<f", value)[0]
         elif field_num == 3 and wire_type == 0:
-            attr_value = int(value)
+            attr_value = _signed_int64(value)
         elif field_num == 4 and wire_type == 2:
             attr_value = value
         elif field_num == 5 and wire_type == 2:
             attr_value = _parse_tensor_proto(value)
-        elif field_num == 6 and wire_type == 2:
-            floats.extend(_decode_packed_float32(value))
-        elif field_num == 6 and wire_type == 5:
-            floats.append(struct.unpack("<f", value)[0])
         elif field_num == 7 and wire_type == 2:
-            ints.extend(_decode_packed_varints(value))
-        elif field_num == 7 and wire_type == 0:
-            ints.append(int(value))
+            floats.extend(_decode_packed_float32(value))
+        elif field_num == 7 and wire_type == 5:
+            floats.append(struct.unpack("<f", value)[0])
+        elif field_num == 8 and wire_type == 2:
+            ints.extend(_decode_packed_int64s(value))
+        elif field_num == 8 and wire_type == 0:
+            ints.append(_signed_int64(value))
     if floats:
         attr_value = floats
     if ints:
@@ -649,13 +649,13 @@ def _parse_tensor_proto(
         elif field_num == 4 and wire_type == 5:
             float_data.append(struct.unpack("<f", value)[0])
         elif field_num == 5 and wire_type == 2:
-            int32_data.extend(_decode_packed_varints(value))
+            int32_data.extend(_decode_packed_int32s(value))
         elif field_num == 5 and wire_type == 0:
-            int32_data.append(int(value))
+            int32_data.append(_signed_int32(value))
         elif field_num == 7 and wire_type == 2:
-            int64_data.extend(_decode_packed_varints(value))
+            int64_data.extend(_decode_packed_int64s(value))
         elif field_num == 7 and wire_type == 0:
-            int64_data.append(int(value))
+            int64_data.append(_signed_int64(value))
         elif field_num == 8 and wire_type == 2:
             name = value.decode("utf-8", errors="replace")
         elif field_num == 9 and wire_type == 2:
@@ -753,6 +753,26 @@ def _decode_packed_varints(data: bytes) -> list[int]:
             break
         values.append(int(value))
     return values
+
+
+def _signed_int64(value: int) -> int:
+    if value >= (1 << 63):
+        return value - (1 << 64)
+    return value
+
+
+def _signed_int32(value: int) -> int:
+    if value >= (1 << 31):
+        return value - (1 << 32)
+    return value
+
+
+def _decode_packed_int64s(data: bytes) -> list[int]:
+    return [_signed_int64(value) for value in _decode_packed_varints(data)]
+
+
+def _decode_packed_int32s(data: bytes) -> list[int]:
+    return [_signed_int32(value) for value in _decode_packed_varints(data)]
 
 
 def _decode_packed_float32(data: bytes) -> list[float]:
