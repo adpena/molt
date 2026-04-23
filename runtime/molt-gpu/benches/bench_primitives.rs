@@ -37,7 +37,13 @@ struct BenchResult {
 }
 
 impl BenchResult {
-    fn new(name: &str, elements: usize, duration: Duration, flops_per_element: usize, bytes_per_element: usize) -> Self {
+    fn new(
+        name: &str,
+        elements: usize,
+        duration: Duration,
+        flops_per_element: usize,
+        bytes_per_element: usize,
+    ) -> Self {
         let avg_us = duration.as_secs_f64() * 1e6 / MEASURE_ITERS as f64;
         let total_flops = elements as f64 * flops_per_element as f64 * MEASURE_ITERS as f64;
         let total_bytes = elements as f64 * bytes_per_element as f64 * MEASURE_ITERS as f64;
@@ -55,7 +61,13 @@ impl BenchResult {
 }
 
 /// Run a benchmark with warmup and measurement.
-fn bench<F: FnMut()>(name: &str, elements: usize, flops_per_element: usize, bytes_per_element: usize, mut f: F) -> BenchResult {
+fn bench<F: FnMut()>(
+    name: &str,
+    elements: usize,
+    flops_per_element: usize,
+    bytes_per_element: usize,
+    mut f: F,
+) -> BenchResult {
     // Warmup
     for _ in 0..WARMUP_ITERS {
         f();
@@ -68,7 +80,13 @@ fn bench<F: FnMut()>(name: &str, elements: usize, flops_per_element: usize, byte
     }
     let elapsed = start.elapsed();
 
-    BenchResult::new(name, elements, elapsed, flops_per_element, bytes_per_element)
+    BenchResult::new(
+        name,
+        elements,
+        elapsed,
+        flops_per_element,
+        bytes_per_element,
+    )
 }
 
 /// Print results as a markdown table.
@@ -77,8 +95,10 @@ fn print_results(title: &str, results: &[BenchResult]) {
     println!("| Operation | Elements | Avg (us) | GFLOPS | BW (GB/s) |");
     println!("|-----------|----------|----------|--------|-----------|");
     for r in results {
-        println!("| {:<20} | {:>10} | {:>10.2} | {:>8.3} | {:>9.3} |",
-            r.name, r.elements, r.avg_us, r.throughput_gflops, r.bandwidth_gb_s);
+        println!(
+            "| {:<20} | {:>10} | {:>10.2} | {:>8.3} | {:>9.3} |",
+            r.name, r.elements, r.avg_us, r.throughput_gflops, r.bandwidth_gb_s
+        );
     }
 }
 
@@ -86,7 +106,10 @@ fn main() {
     let device = CpuDevice::new();
 
     println!("# molt-gpu CPU Benchmark Results\n");
-    println!("Warmup: {} iters, Measurement: {} iters\n", WARMUP_ITERS, MEASURE_ITERS);
+    println!(
+        "Warmup: {} iters, Measurement: {} iters\n",
+        WARMUP_ITERS, MEASURE_ITERS
+    );
 
     // --- Individual op benchmarks ---
     let n = 1_000_000;
@@ -114,10 +137,10 @@ fn main() {
         device.copy_out(&buf_a, &mut a_data).expect("copy_out a");
         device.copy_out(&buf_b, &mut b_data).expect("copy_out b");
         for i in 0..n {
-            let a = f32::from_le_bytes(a_data[i*4..(i+1)*4].try_into().unwrap());
-            let b = f32::from_le_bytes(b_data[i*4..(i+1)*4].try_into().unwrap());
+            let a = f32::from_le_bytes(a_data[i * 4..(i + 1) * 4].try_into().unwrap());
+            let b = f32::from_le_bytes(b_data[i * 4..(i + 1) * 4].try_into().unwrap());
             let r = a + b;
-            out_data[i*4..(i+1)*4].copy_from_slice(&r.to_le_bytes());
+            out_data[i * 4..(i + 1) * 4].copy_from_slice(&r.to_le_bytes());
         }
         device.copy_in(&buf_out, &out_data).expect("copy_in");
     }));
@@ -130,10 +153,10 @@ fn main() {
         device.copy_out(&buf_a, &mut a_data).expect("copy_out a");
         device.copy_out(&buf_b, &mut b_data).expect("copy_out b");
         for i in 0..n {
-            let a = f32::from_le_bytes(a_data[i*4..(i+1)*4].try_into().unwrap());
-            let b = f32::from_le_bytes(b_data[i*4..(i+1)*4].try_into().unwrap());
+            let a = f32::from_le_bytes(a_data[i * 4..(i + 1) * 4].try_into().unwrap());
+            let b = f32::from_le_bytes(b_data[i * 4..(i + 1) * 4].try_into().unwrap());
             let r = a * b;
-            out_data[i*4..(i+1)*4].copy_from_slice(&r.to_le_bytes());
+            out_data[i * 4..(i + 1) * 4].copy_from_slice(&r.to_le_bytes());
         }
         device.copy_in(&buf_out, &out_data).expect("copy_in");
     }));
@@ -144,9 +167,9 @@ fn main() {
         let mut a_data = vec![0u8; n * 4];
         device.copy_out(&buf_a, &mut a_data).expect("copy_out a");
         for i in 0..n {
-            let a = f32::from_le_bytes(a_data[i*4..(i+1)*4].try_into().unwrap());
+            let a = f32::from_le_bytes(a_data[i * 4..(i + 1) * 4].try_into().unwrap());
             let r = a.exp2();
-            out_data[i*4..(i+1)*4].copy_from_slice(&r.to_le_bytes());
+            out_data[i * 4..(i + 1) * 4].copy_from_slice(&r.to_le_bytes());
         }
         device.copy_in(&buf_out, &out_data).expect("copy_in");
     }));
@@ -157,9 +180,9 @@ fn main() {
         let mut a_data = vec![0u8; n * 4];
         device.copy_out(&buf_a, &mut a_data).expect("copy_out a");
         for i in 0..n {
-            let a = f32::from_le_bytes(a_data[i*4..(i+1)*4].try_into().unwrap());
+            let a = f32::from_le_bytes(a_data[i * 4..(i + 1) * 4].try_into().unwrap());
             let r = a.abs().sqrt();
-            out_data[i*4..(i+1)*4].copy_from_slice(&r.to_le_bytes());
+            out_data[i * 4..(i + 1) * 4].copy_from_slice(&r.to_le_bytes());
         }
         device.copy_in(&buf_out, &out_data).expect("copy_in");
     }));
@@ -173,12 +196,14 @@ fn main() {
         device.copy_out(&reduce_buf, &mut data).expect("copy_out");
         let mut acc: f32 = 0.0;
         for i in 0..reduce_n {
-            let v = f32::from_le_bytes(data[i*4..(i+1)*4].try_into().unwrap());
+            let v = f32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap());
             acc += v;
         }
         let out = vec![0u8; 4];
         let _ = acc.to_le_bytes();
-        device.copy_in(&device.alloc(4).expect("alloc"), &out).expect("copy_in");
+        device
+            .copy_in(&device.alloc(4).expect("alloc"), &out)
+            .expect("copy_in");
     }));
 
     print_results("Individual Op Benchmarks (1M elements)", &results);
@@ -191,18 +216,22 @@ fn main() {
     let softmax_n = 100_000;
     comp_results.push(bench("softmax_f32", softmax_n, 6, 24, || {
         let mut data = vec![0u8; softmax_n * 4];
-        device.copy_out(&buf_a, &mut data[..softmax_n * 4]).expect("copy_out");
+        device
+            .copy_out(&buf_a, &mut data[..softmax_n * 4])
+            .expect("copy_out");
         // Find max
         let mut max_val = f32::NEG_INFINITY;
         for i in 0..softmax_n {
-            let v = f32::from_le_bytes(data[i*4..(i+1)*4].try_into().unwrap());
-            if v > max_val { max_val = v; }
+            let v = f32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap());
+            if v > max_val {
+                max_val = v;
+            }
         }
         // Sub max, exp2, sum
         let mut sum: f32 = 0.0;
         let mut exps = vec![0f32; softmax_n];
         for i in 0..softmax_n {
-            let v = f32::from_le_bytes(data[i*4..(i+1)*4].try_into().unwrap());
+            let v = f32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap());
             let e = (v - max_val).exp2();
             exps[i] = e;
             sum += e;
@@ -212,7 +241,7 @@ fn main() {
         let mut out_data = vec![0u8; softmax_n * 4];
         for i in 0..softmax_n {
             let r = exps[i] * inv;
-            out_data[i*4..(i+1)*4].copy_from_slice(&r.to_le_bytes());
+            out_data[i * 4..(i + 1) * 4].copy_from_slice(&r.to_le_bytes());
         }
     }));
 
@@ -260,10 +289,14 @@ fn main() {
         let mut data: Vec<f32> = (0..rms_n).map(|i| i as f32 * 0.001).collect();
         // x^2
         let mut sq_sum: f64 = 0.0;
-        for &v in &data { sq_sum += (v as f64) * (v as f64); }
+        for &v in &data {
+            sq_sum += (v as f64) * (v as f64);
+        }
         let rms = (sq_sum / rms_n as f64).sqrt();
         let inv = 1.0 / rms as f32;
-        for v in &mut data { *v *= inv; }
+        for v in &mut data {
+            *v *= inv;
+        }
         std::hint::black_box(&data);
     }));
 
@@ -305,10 +338,19 @@ fn main() {
         let source = "kernel void test(device float*a){a[0]=1.0;}";
         let _p1 = d.compile(source, "test").expect("first compile");
         assert_eq!(d.cache_len(), 1, "first compile should populate cache");
-        let _p2 = d.compile(source, "test").expect("second compile (cache hit)");
-        assert_eq!(d.cache_len(), 1, "second compile should be a cache hit, not a new entry");
+        let _p2 = d
+            .compile(source, "test")
+            .expect("second compile (cache hit)");
+        assert_eq!(
+            d.cache_len(),
+            1,
+            "second compile should be a cache hit, not a new entry"
+        );
         println!("\n## Compile Cache Verification\n");
-        println!("Cache entries after 2 compiles of same source: {} (expected 1)", d.cache_len());
+        println!(
+            "Cache entries after 2 compiles of same source: {} (expected 1)",
+            d.cache_len()
+        );
     }
 
     print_results("Kernel Launch Overhead", &overhead_results);

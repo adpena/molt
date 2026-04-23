@@ -103,7 +103,8 @@ fn gpu_matmul(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: usize) -> V
         ],
         grid: [out_n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     // Pre-compute the element-wise products: A[i,k] * B[k,j] for all (i,k,j).
@@ -176,7 +177,8 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs1 = vec![vec![0u8; 4], x_bytes.clone()];
     interpret::execute_kernel(&k1, &mut bufs1);
@@ -189,12 +191,24 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ops: vec![
             FusedOp {
                 op: PrimitiveOp::Sub,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: max_val as f64, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: max_val as f64,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             FusedOp {
                 op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Const { val: log2_e, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Op(0),
+                    FusedSrc::Const {
+                        val: log2_e,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             FusedOp {
@@ -219,7 +233,8 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs2 = vec![vec![0u8; n * 4], x_bytes];
     interpret::execute_kernel(&k2, &mut bufs2);
@@ -247,7 +262,8 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let exp_bytes = bufs2[0].clone();
     let mut bufs3 = vec![vec![0u8; 4], exp_bytes.clone()];
@@ -258,7 +274,13 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
     let k4 = FusedKernel {
         ops: vec![FusedOp {
             op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: (1.0 / sum_val) as f64, dtype: DType::Float32 }],
+            srcs: vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: (1.0 / sum_val) as f64,
+                    dtype: DType::Float32,
+                },
+            ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
@@ -277,7 +299,8 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs4 = vec![vec![0u8; n * 4], exp_bytes];
     interpret::execute_kernel(&k4, &mut bufs4);
@@ -328,7 +351,8 @@ fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs1 = vec![vec![0u8; n * 4], x_bytes.clone()];
     interpret::execute_kernel(&k1, &mut bufs1);
@@ -356,7 +380,8 @@ fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let sq_bytes = bufs1[0].clone();
     let mut bufs2 = vec![vec![0u8; 4], sq_bytes];
@@ -370,7 +395,13 @@ fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
     let k3 = FusedKernel {
         ops: vec![FusedOp {
             op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: inv_rms as f64, dtype: DType::Float32 }],
+            srcs: vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: inv_rms as f64,
+                    dtype: DType::Float32,
+                },
+            ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
@@ -389,7 +420,8 @@ fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs3 = vec![vec![0u8; n * 4], x_bytes];
     interpret::execute_kernel(&k3, &mut bufs3);
@@ -489,7 +521,9 @@ fn main() {
     let mut c_raw = vec![0.0f32; m * n];
     raw_matmul(&a, &b, &mut c_raw, m, k, n);
     let c_gpu = gpu_matmul(&a, &b, m, k, n);
-    let max_diff: f32 = c_raw.iter().zip(c_gpu.iter())
+    let max_diff: f32 = c_raw
+        .iter()
+        .zip(c_gpu.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     println!("Matmul max diff (raw vs gpu): {:.6e}", max_diff);
@@ -498,7 +532,9 @@ fn main() {
     let mut s_raw = vec![0.0f32; softmax_n];
     raw_softmax(&x_soft, &mut s_raw);
     let s_gpu = gpu_softmax(&x_soft);
-    let max_diff: f32 = s_raw.iter().zip(s_gpu.iter())
+    let max_diff: f32 = s_raw
+        .iter()
+        .zip(s_gpu.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     println!("Softmax max diff (raw vs gpu): {:.6e}", max_diff);
@@ -509,7 +545,9 @@ fn main() {
     let mut n_raw = vec![0.0f32; norm_n];
     raw_rms_norm(&x_norm, &mut n_raw, eps);
     let n_gpu = gpu_rms_norm(&x_norm, eps);
-    let max_diff: f32 = n_raw.iter().zip(n_gpu.iter())
+    let max_diff: f32 = n_raw
+        .iter()
+        .zip(n_gpu.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     println!("RMSNorm max diff (raw vs gpu): {:.6e}", max_diff);

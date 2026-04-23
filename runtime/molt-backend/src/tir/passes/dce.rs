@@ -12,8 +12,8 @@ use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-use super::reachability::metadata_preserving_reachable_blocks;
 use super::PassStats;
+use super::reachability::metadata_preserving_reachable_blocks;
 
 // ---------------------------------------------------------------------------
 // Side-effect classification

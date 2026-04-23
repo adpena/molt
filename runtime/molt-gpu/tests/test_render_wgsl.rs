@@ -1,9 +1,7 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-};
 use molt_gpu::render::wgsl::WgslRenderer;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
@@ -35,7 +33,8 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -67,18 +66,45 @@ fn test_wgsl_render_select_not_ternary() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Bool, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Bool,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let wgsl = WgslRenderer::new().render(&kernel);
-    assert!(wgsl.contains("select("), "WGSL must use select(), not ternary");
-    assert!(!wgsl.contains(" ? "), "WGSL must not contain ternary operator");
+    assert!(
+        wgsl.contains("select("),
+        "WGSL must use select(), not ternary"
+    );
+    assert!(
+        !wgsl.contains(" ? "),
+        "WGSL must not contain ternary operator"
+    );
 }
 
 #[test]
@@ -90,15 +116,29 @@ fn test_wgsl_render_bitcast() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let wgsl = WgslRenderer::new().render(&kernel);
-    assert!(wgsl.contains("bitcast<f32>"), "WGSL must use bitcast<T> syntax");
+    assert!(
+        wgsl.contains("bitcast<f32>"),
+        "WGSL must use bitcast<T> syntax"
+    );
 }
 
 #[test]
@@ -122,13 +162,29 @@ fn test_wgsl_dtype_narrowing() {
             dst_dtype: DType::Float64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let wgsl = WgslRenderer::new().render(&kernel);
     // Should use f32, not f64 (WGSL has no f64)
@@ -138,7 +194,8 @@ fn test_wgsl_dtype_narrowing() {
 
 #[test]
 fn test_wgsl_all_26_ops_have_render_patterns() {
-    let elementwise_ops = PrimitiveOp::ALL.iter()
+    let elementwise_ops = PrimitiveOp::ALL
+        .iter()
         .filter(|op| op.is_elementwise())
         .collect::<Vec<_>>();
 
@@ -167,7 +224,10 @@ fn test_wgsl_all_26_ops_have_render_patterns() {
             ops: vec![FusedOp {
                 op,
                 srcs,
-                dst_dtype: if matches!(op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+                dst_dtype: if matches!(
+                    op,
+                    PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+                ) {
                     DType::Bool
                 } else {
                     DType::Float32
@@ -176,9 +236,14 @@ fn test_wgsl_all_26_ops_have_render_patterns() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
         let wgsl = WgslRenderer::new().render(&kernel);
-        assert!(wgsl.contains("molt_kernel"), "op {:?} failed to render WGSL", op);
+        assert!(
+            wgsl.contains("molt_kernel"),
+            "op {:?} failed to render WGSL",
+            op
+        );
     }
 }

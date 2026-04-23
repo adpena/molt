@@ -10,8 +10,8 @@ use core::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::device::{
-    Allocator, BufferHandle, Compiler, CompiledProgram, CpuKernelFn,
-    DeviceBuffer, DeviceError, Executor, ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, CpuKernelFn, DeviceBuffer, DeviceError,
+    Executor, ProgramHandle,
 };
 
 /// WASM-compatible CPU reference device backend.
@@ -135,7 +135,9 @@ impl Compiler for WasmCpuDevice {
         fn noop_kernel(_bufs: &[&[u8]], _out: &mut [u8], _num_elements: usize) {}
 
         // Store in cache.
-        self.compile_cache.borrow_mut().insert(hash, entry.to_string());
+        self.compile_cache
+            .borrow_mut()
+            .insert(hash, entry.to_string());
 
         Ok(CompiledProgram {
             handle: ProgramHandle::Cpu(noop_kernel as CpuKernelFn),

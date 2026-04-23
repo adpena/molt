@@ -19,7 +19,11 @@ impl HipRenderer {
     fn format_const(val: f64, dtype: DType) -> String {
         match dtype {
             DType::Bool => {
-                if val != 0.0 { "true".to_string() } else { "false".to_string() }
+                if val != 0.0 {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
             }
             DType::Float16 => {
                 let s = format!("{}", val);
@@ -38,10 +42,13 @@ impl HipRenderer {
                 }
             }
             DType::Float32 => {
-                if val == f64::INFINITY { "INFINITY".to_string() }
-                else if val == f64::NEG_INFINITY { "(-INFINITY)".to_string() }
-                else if val.is_nan() { "NAN".to_string() }
-                else {
+                if val == f64::INFINITY {
+                    "INFINITY".to_string()
+                } else if val == f64::NEG_INFINITY {
+                    "(-INFINITY)".to_string()
+                } else if val.is_nan() {
+                    "NAN".to_string()
+                } else {
                     let s = format!("{}", val);
                     if s.contains('.') || s.contains('e') || s.contains('E') {
                         format!("{}f", s)
@@ -51,10 +58,13 @@ impl HipRenderer {
                 }
             }
             DType::Float64 => {
-                if val == f64::INFINITY { "INFINITY".to_string() }
-                else if val == f64::NEG_INFINITY { "(-INFINITY)".to_string() }
-                else if val.is_nan() { "NAN".to_string() }
-                else {
+                if val == f64::INFINITY {
+                    "INFINITY".to_string()
+                } else if val == f64::NEG_INFINITY {
+                    "(-INFINITY)".to_string()
+                } else if val.is_nan() {
+                    "NAN".to_string()
+                } else {
                     let s = format!("{}", val);
                     if s.contains('.') || s.contains('e') || s.contains('E') {
                         s
@@ -133,9 +143,7 @@ impl HipRenderer {
     fn render_op(op: &FusedOp, _op_idx: usize, kernel: &FusedKernel, idx_var: &str) -> String {
         let src = |i: usize| -> String {
             match &op.srcs[i] {
-                FusedSrc::Buf(buf_idx) => {
-                    Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var)
-                }
+                FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var),
                 FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
                 FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
             }
@@ -170,7 +178,11 @@ impl HipRenderer {
             PrimitiveOp::Trunc => format!("truncf({})", src(0)),
             // NaN-propagating max: if either operand is NaN, result is NaN.
             // fmaxf is NaN-suppressing (IEEE 754 minNum), so we add an explicit NaN check.
-            PrimitiveOp::Max => format!("(isnan({a}) || isnan({b}) ? NAN : fmaxf({a}, {b}))", a = src(0), b = src(1)),
+            PrimitiveOp::Max => format!(
+                "(isnan({a}) || isnan({b}) ? NAN : fmaxf({a}, {b}))",
+                a = src(0),
+                b = src(1)
+            ),
             PrimitiveOp::Where => format!("({} ? {} : {})", src(0), src(1), src(2)),
             PrimitiveOp::Cast => format!("(({})({}))", dst_type, src(0)),
             PrimitiveOp::Bitcast => format!("*reinterpret_cast<const {}*>(&{})", dst_type, src(0)),
@@ -182,7 +194,11 @@ impl HipRenderer {
     }
 
     /// Detect FMA pattern: ADD(MUL(a, b), c) or ADD(c, MUL(a, b)).
-    fn detect_fma(op: &FusedOp, op_idx: usize, kernel: &FusedKernel) -> Option<(String, String, String)> {
+    fn detect_fma(
+        op: &FusedOp,
+        op_idx: usize,
+        kernel: &FusedKernel,
+    ) -> Option<(String, String, String)> {
         if op.op != PrimitiveOp::Add {
             return None;
         }
@@ -196,17 +212,23 @@ impl HipRenderer {
                     let prior_op = &kernel.ops[*prior_idx];
                     if prior_op.op == PrimitiveOp::Mul {
                         let a = match &prior_op.srcs[0] {
-                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Buf(buf_idx) => {
+                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                            }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
                         let b = match &prior_op.srcs[1] {
-                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Buf(buf_idx) => {
+                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                            }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
                         let c = match &op.srcs[add_src_pos] {
-                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Buf(buf_idx) => {
+                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                            }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
@@ -244,13 +266,20 @@ impl Renderer for HipRenderer {
         writeln!(out, ") {{").unwrap();
 
         // Thread index — HIP intrinsics
-        writeln!(out, "    unsigned int gid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;").unwrap();
+        writeln!(
+            out,
+            "    unsigned int gid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;"
+        )
+        .unwrap();
 
         // Bounds check
         let output_numel = kernel.bufs[0].st.numel();
         writeln!(out, "    if (gid >= {}) return;", output_numel).unwrap();
 
-        let has_reduce = kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+        let has_reduce = kernel
+            .ops
+            .iter()
+            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
         if !has_reduce {
             for (i, op) in kernel.ops.iter().enumerate() {
@@ -265,9 +294,11 @@ impl Renderer for HipRenderer {
             let last_op = kernel.ops.len() - 1;
             writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
         } else {
-            let reduce_idx = kernel.ops.iter().position(|op| {
-                matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
-            }).expect("has_reduce but no reduce op found");
+            let reduce_idx = kernel
+                .ops
+                .iter()
+                .position(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+                .expect("has_reduce but no reduce op found");
 
             let reduce_op = &kernel.ops[reduce_idx];
             let reduce_src = &reduce_op.srcs[0];
@@ -292,8 +323,18 @@ impl Renderer for HipRenderer {
                 if reduce_size <= 16 {
                     writeln!(out, "    #pragma unroll").unwrap();
                 }
-                writeln!(out, "    for (unsigned int rid = 0; rid < {}; rid++) {{", reduce_size).unwrap();
-                writeln!(out, "        unsigned int eidx = gid * {} + rid;", reduce_size).unwrap();
+                writeln!(
+                    out,
+                    "    for (unsigned int rid = 0; rid < {}; rid++) {{",
+                    reduce_size
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "        unsigned int eidx = gid * {} + rid;",
+                    reduce_size
+                )
+                .unwrap();
 
                 for i in 0..reduce_idx {
                     let op = &kernel.ops[i];
@@ -305,7 +346,12 @@ impl Renderer for HipRenderer {
                 let src_var = format!("v{}", reduce_idx - 1);
                 match reduce_op.op {
                     PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_var).unwrap(),
-                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = (isnan({v}) || isnan(acc)) ? NAN : fmaxf(acc, {v});", v = src_var).unwrap(),
+                    PrimitiveOp::ReduceMax => writeln!(
+                        out,
+                        "        acc = (isnan({v}) || isnan(acc)) ? NAN : fmaxf(acc, {v});",
+                        v = src_var
+                    )
+                    .unwrap(),
                     _ => unreachable!(),
                 }
                 writeln!(out, "    }}").unwrap();
@@ -313,14 +359,26 @@ impl Renderer for HipRenderer {
                 if reduce_size <= 16 {
                     writeln!(out, "    #pragma unroll").unwrap();
                 }
-                writeln!(out, "    for (unsigned int rid = 0; rid < {}; rid++) {{", reduce_size).unwrap();
-                writeln!(out, "        unsigned int eidx = gid * {} + rid;", reduce_size).unwrap();
+                writeln!(
+                    out,
+                    "    for (unsigned int rid = 0; rid < {}; rid++) {{",
+                    reduce_size
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "        unsigned int eidx = gid * {} + rid;",
+                    reduce_size
+                )
+                .unwrap();
                 let src_expr = match reduce_src {
                     FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
                     _ => unreachable!(),
                 };
                 match reduce_op.op {
-                    PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_expr).unwrap(),
+                    PrimitiveOp::ReduceSum => {
+                        writeln!(out, "        acc += {};", src_expr).unwrap()
+                    }
                     PrimitiveOp::ReduceMax => {
                         writeln!(out, "        {{ float _rv = {}; acc = (isnan(_rv) || isnan(acc)) ? NAN : fmaxf(acc, _rv); }}", src_expr).unwrap();
                     }
@@ -329,7 +387,13 @@ impl Renderer for HipRenderer {
                 writeln!(out, "    }}").unwrap();
             }
 
-            writeln!(out, "    {} v{} = acc;", reduce_dtype.hip_type(), reduce_idx).unwrap();
+            writeln!(
+                out,
+                "    {} v{} = acc;",
+                reduce_dtype.hip_type(),
+                reduce_idx
+            )
+            .unwrap();
 
             for i in (reduce_idx + 1)..kernel.ops.len() {
                 let op = &kernel.ops[i];

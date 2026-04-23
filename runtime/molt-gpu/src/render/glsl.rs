@@ -50,7 +50,11 @@ impl GlslRenderer {
         let dtype = dtype.narrow_webgl2();
         match dtype {
             DType::Bool => {
-                if val != 0.0 { "true".to_string() } else { "false".to_string() }
+                if val != 0.0 {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
             }
             DType::Float32 => {
                 if val == f64::INFINITY {
@@ -167,9 +171,7 @@ impl GlslRenderer {
     fn render_op(op: &FusedOp, _op_idx: usize, kernel: &FusedKernel, idx_var: &str) -> String {
         let src = |i: usize| -> String {
             match &op.srcs[i] {
-                FusedSrc::Buf(buf_idx) => {
-                    Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var)
-                }
+                FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var),
                 FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
                 FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
             }
@@ -245,7 +247,10 @@ impl GlslRenderer {
     /// the output goes to a float texture.
     fn glsl_var_type(op: &FusedOp) -> &'static str {
         let narrowed = op.dst_dtype.narrow_webgl2();
-        if matches!(op.op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+        if matches!(
+            op.op,
+            PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+        ) {
             // Comparison ops produce float for texture output
             "float"
         } else {
@@ -266,11 +271,23 @@ impl Renderer for GlslRenderer {
         writeln!(out).unwrap();
 
         // Texture width uniform for linear-to-2D mapping
-        writeln!(out, "// Texture packing: linear index -> 2D texel coordinate").unwrap();
-        writeln!(out, "// Each RGBA texel holds 4 elements. u_tex_width is the").unwrap();
+        writeln!(
+            out,
+            "// Texture packing: linear index -> 2D texel coordinate"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "// Each RGBA texel holds 4 elements. u_tex_width is the"
+        )
+        .unwrap();
         writeln!(out, "// number of texels per row in the packing layout.").unwrap();
         writeln!(out, "uniform int u_tex_width;").unwrap();
-        writeln!(out, "// Total number of output elements for bounds checking.").unwrap();
+        writeln!(
+            out,
+            "// Total number of output elements for bounds checking."
+        )
+        .unwrap();
         writeln!(out, "uniform int u_num_elements;").unwrap();
         writeln!(out).unwrap();
 
@@ -303,9 +320,10 @@ impl Renderer for GlslRenderer {
         writeln!(out, "        if (gid >= u_num_elements) break;").unwrap();
 
         // Check for reduce ops
-        let has_reduce = kernel.ops.iter().any(|op| {
-            matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
-        });
+        let has_reduce = kernel
+            .ops
+            .iter()
+            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
         let output_numel = kernel.bufs[0].st.numel();
 
         if !has_reduce {
@@ -319,9 +337,11 @@ impl Renderer for GlslRenderer {
             writeln!(out, "        result[comp] = float(v{});", last_op).unwrap();
         } else {
             // Fused kernel with reduce: elementwise prefix -> reduce -> elementwise suffix
-            let reduce_idx = kernel.ops.iter().position(|op| {
-                matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
-            }).expect("has_reduce but no reduce op found");
+            let reduce_idx = kernel
+                .ops
+                .iter()
+                .position(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+                .expect("has_reduce but no reduce op found");
 
             let reduce_op = &kernel.ops[reduce_idx];
             let reduce_src = &reduce_op.srcs[0];
@@ -340,11 +360,22 @@ impl Renderer for GlslRenderer {
                 _ => unreachable!(),
             };
 
-            writeln!(out, "        {} acc = {};", reduce_dtype.glsl_type(), init_val).unwrap();
+            writeln!(
+                out,
+                "        {} acc = {};",
+                reduce_dtype.glsl_type(),
+                init_val
+            )
+            .unwrap();
 
             if reduce_idx > 0 {
                 // Pre-reduce elementwise ops inside reduction loop
-                writeln!(out, "        for (int rid = 0; rid < {}; rid++) {{", reduce_size).unwrap();
+                writeln!(
+                    out,
+                    "        for (int rid = 0; rid < {}; rid++) {{",
+                    reduce_size
+                )
+                .unwrap();
                 writeln!(out, "            int eidx = gid * {} + rid;", reduce_size).unwrap();
 
                 for i in 0..reduce_idx {
@@ -367,7 +398,12 @@ impl Renderer for GlslRenderer {
                 writeln!(out, "        }}").unwrap();
             } else {
                 // Reduce directly from texture
-                writeln!(out, "        for (int rid = 0; rid < {}; rid++) {{", reduce_size).unwrap();
+                writeln!(
+                    out,
+                    "        for (int rid = 0; rid < {}; rid++) {{",
+                    reduce_size
+                )
+                .unwrap();
                 writeln!(out, "            int eidx = gid * {} + rid;", reduce_size).unwrap();
                 let src_expr = match reduce_src {
                     FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
@@ -386,7 +422,13 @@ impl Renderer for GlslRenderer {
             }
 
             // Store reduce result
-            writeln!(out, "        {} v{} = acc;", reduce_dtype.glsl_type(), reduce_idx).unwrap();
+            writeln!(
+                out,
+                "        {} v{} = acc;",
+                reduce_dtype.glsl_type(),
+                reduce_idx
+            )
+            .unwrap();
 
             // Post-reduce elementwise ops
             for i in (reduce_idx + 1)..kernel.ops.len() {

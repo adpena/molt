@@ -82,7 +82,10 @@ pub struct Arena {
 impl Arena {
     /// Create a new arena with the given configuration.
     pub fn new(config: ArenaConfig) -> Self {
-        assert!(config.alignment.is_power_of_two(), "alignment must be power of 2");
+        assert!(
+            config.alignment.is_power_of_two(),
+            "alignment must be power of 2"
+        );
         assert!(config.pool_size > 0, "pool_size must be > 0");
         Self {
             state: Mutex::new(ArenaState {
@@ -175,7 +178,12 @@ impl Arena {
     /// # Panics
     /// Panics if data length exceeds allocation size or allocation is out of bounds.
     pub fn write(&self, alloc: &ArenaAlloc, data: &[u8]) {
-        assert!(data.len() <= alloc.size, "data ({}) exceeds allocation ({})", data.len(), alloc.size);
+        assert!(
+            data.len() <= alloc.size,
+            "data ({}) exceeds allocation ({})",
+            data.len(),
+            alloc.size
+        );
         let mut state = self.state.lock().unwrap();
         state.pool[alloc.offset..alloc.offset + data.len()].copy_from_slice(data);
     }

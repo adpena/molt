@@ -3537,6 +3537,184 @@ function executeOnnxGraph(model, feedDict, profileOps = false) {
         break;
       }
 
+      case "DynamicQuantizeLinear": {
+        const x = getTensor(inputs[0]);
+        const xData = x.data;
+        const len = xData.length;
+
+        // Find min/max, clamping to include 0 in the range
+        let xMin = 0;
+        let xMax = 0;
+        for (let i = 0; i < len; i++) {
+          const v = xData[i];
+          if (v < xMin) xMin = v;
+          if (v > xMax) xMax = v;
+        }
+
+        const scale = (xMax - xMin) / 255;
+        const zeroPoint = scale === 0
+          ? 0
+          : Math.min(255, Math.max(0, Math.round(-xMin / scale)));
+
+        const y = new Uint8Array(len);
+        if (scale === 0) {
+          // All values are zero — y stays zero-filled
+        } else {
+          const invScale = 1.0 / scale;
+          for (let i = 0; i < len; i++) {
+            const q = Math.round(xData[i] * invScale) + zeroPoint;
+            y[i] = q < 0 ? 0 : (q > 255 ? 255 : q);
+          }
+        }
+
+        tensors.set(outputs[0], { dims: [...x.dims], data: y });
+        tensors.set(outputs[1], { dims: [], data: new Float32Array([scale]) });
+        tensors.set(outputs[2], { dims: [], data: new Uint8Array([zeroPoint]) });
+        break;
+      }
+
+      case "ConvInteger": {
+        const x = getTensor(inputs[0]);
+        const w = getTensor(inputs[1]);
+        const xZp = inputs.length > 2 && inputs[2] ? getTensor(inputs[2]).data[0] : 0;
+        const wZp = inputs.length > 3 && inputs[3] ? getTensor(inputs[3]).data[0] : 0;
+        const pads = attrs.get("pads") || [0, 0, 0, 0];
+        const strides = attrs.get("strides") || [1, 1];
+        const dilations = attrs.get("dilations") || [1, 1];
+        const group = attrs.get("group") || 1;
+
+        const [N, Ci, Hi, Wi] = x.dims;
+        const [Co, CiG, Kh, Kw] = w.dims;
+        const [sh, sw] = strides;
+        const [dh, dw] = dilations;
+        const [pt, pl, pb, pr] = pads;
+        const Ho = Math.floor((Hi + pt + pb - (Kh - 1) * dh - 1) / sh) + 1;
+        const Wo = Math.floor((Wi + pl + pr - (Kw - 1) * dw - 1) / sw) + 1;
+        const out = new Int32Array(N * Co * Ho * Wo);
+
+        const coPerGroup = Co / group;
+        const ciPerGroup = Ci / group;
+        const spatialSize = Ho * Wo;
+        const colSize = ciPerGroup * Kh * Kw;
+
+        // im2col + integer GEMM with zero-point subtraction
+        for (let n = 0; n < N; n++) {
+          const batchOff = n * Ci * Hi * Wi;
+          for (let g = 0; g < group; g++) {
+            // im2col: extract patches as int32 with x_zero_point subtracted
+            const col = new Int32Array(colSize * spatialSize);
+            let colIdx = 0;
+            for (let ci = 0; ci < ciPerGroup; ci++) {
+              const ciAbs = g * ciPerGroup + ci;
+              const chanOff = batchOff + ciAbs * Hi * Wi;
+              for (let kh = 0; kh < Kh; kh++) {
+                for (let kw = 0; kw < Kw; kw++) {
+                  for (let oh = 0; oh < Ho; oh++) {
+                    const ih = oh * sh - pt + kh * dh;
+                    if (ih < 0 || ih >= Hi) {
+                      // Zero-padded row: value is (0 - xZp)
+                      for (let ow = 0; ow < Wo; ow++) {
+                        col[colIdx++] = -xZp;
+                      }
+                      continue;
+                    }
+                    const rowOff = chanOff + ih * Wi;
+                    for (let ow = 0; ow < Wo; ow++) {
+                      const iw = ow * sw - pl + kw * dw;
+                      col[colIdx++] = (iw >= 0 && iw < Wi)
+                        ? (x.data[rowOff + iw] - xZp)
+                        : -xZp;
+                    }
+                  }
+                }
+              }
+            }
+
+            // Prepare weight column with w_zero_point subtracted
+            const wAdj = new Int32Array(coPerGroup * colSize);
+            const wGroupOff = g * coPerGroup * colSize;
+            for (let i = 0; i < coPerGroup * colSize; i++) {
+              wAdj[i] = w.data[wGroupOff + i] - wZp;
+            }
+
+            // Integer tiled matmul: wAdj [coPerGroup, colSize] @ col [colSize, spatialSize]
+            const oOff = n * Co * spatialSize + g * coPerGroup * spatialSize;
+            const TILE = 32;
+            for (let m0 = 0; m0 < coPerGroup; m0 += TILE) {
+              const mEnd = Math.min(m0 + TILE, coPerGroup);
+              for (let n0 = 0; n0 < spatialSize; n0 += TILE) {
+                const nEnd = Math.min(n0 + TILE, spatialSize);
+                for (let k0 = 0; k0 < colSize; k0 += TILE) {
+                  const kEnd = Math.min(k0 + TILE, colSize);
+                  for (let m = m0; m < mEnd; m++) {
+                    const aRowOff = m * colSize;
+                    const oRowOff = oOff + m * spatialSize;
+                    for (let k = k0; k < kEnd; k++) {
+                      const aVal = wAdj[aRowOff + k];
+                      const bRowOff = k * spatialSize;
+                      for (let ni = n0; ni < nEnd; ni++) {
+                        out[oRowOff + ni] += aVal * col[bRowOff + ni];
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        tensors.set(outputs[0], { dims: [N, Co, Ho, Wo], data: out });
+        break;
+      }
+
+      case "MatMulInteger": {
+        const a = getTensor(inputs[0]);
+        const b = getTensor(inputs[1]);
+        const aZp = inputs.length > 2 && inputs[2] ? getTensor(inputs[2]).data[0] : 0;
+        const bZp = inputs.length > 3 && inputs[3] ? getTensor(inputs[3]).data[0] : 0;
+        const aRank = a.dims.length;
+        const bRank = b.dims.length;
+        const M = a.dims[aRank - 2] || 1;
+        const K = a.dims[aRank - 1];
+        const N = b.dims[bRank - 1];
+        const batchSize = aRank > 2 ? numel(a.dims.slice(0, -2)) : 1;
+        const out = new Int32Array(batchSize * M * N);
+
+        for (let batch = 0; batch < batchSize; batch++) {
+          const aOff = batch * M * K;
+          const bOff = bRank > 2 ? batch * K * N : 0;
+          const oOff = batch * M * N;
+
+          // Tiled integer matmul with zero-point subtraction
+          const TILE = 32;
+          for (let m0 = 0; m0 < M; m0 += TILE) {
+            const mEnd = Math.min(m0 + TILE, M);
+            for (let n0 = 0; n0 < N; n0 += TILE) {
+              const nEnd = Math.min(n0 + TILE, N);
+              for (let k0 = 0; k0 < K; k0 += TILE) {
+                const kEnd = Math.min(k0 + TILE, K);
+                for (let m = m0; m < mEnd; m++) {
+                  const aRowOff = aOff + m * K;
+                  const oRowOff = oOff + m * N;
+                  for (let k = k0; k < kEnd; k++) {
+                    const aVal = a.data[aRowOff + k] - aZp;
+                    const bRowOff = bOff + k * N;
+                    for (let n = n0; n < nEnd; n++) {
+                      out[oRowOff + n] += aVal * (b.data[bRowOff + n] - bZp);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        const outDims = batchSize > 1
+          ? [...a.dims.slice(0, -2), M, N]
+          : (aRank >= 2 ? [M, N] : [N]);
+        tensors.set(outputs[0], { dims: outDims, data: out });
+        break;
+      }
+
       default:
         // Unknown op — skip with warning (the graph may still produce partial results)
         if (outputs[0]) {

@@ -9,16 +9,15 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use wgpu::{
-    BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingType, BufferBindingType, BufferDescriptor,
-    BufferUsages, ComputePassDescriptor, ComputePipelineDescriptor,
-    DeviceDescriptor, Instance, Limits, PipelineLayoutDescriptor,
+    BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
+    BindingType, BufferBindingType, BufferDescriptor, BufferUsages, ComputePassDescriptor,
+    ComputePipelineDescriptor, DeviceDescriptor, Instance, Limits, PipelineLayoutDescriptor,
     RequestAdapterOptions, ShaderModuleDescriptor, ShaderStages,
 };
 
 use crate::device::{
-    Allocator, BufferHandle, Compiler, CompiledProgram, DeviceBuffer,
-    DeviceError, Executor, ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, DeviceBuffer, DeviceError, Executor,
+    ProgramHandle,
 };
 
 /// Compiled WebGPU pipeline with its bind group layout.
@@ -99,7 +98,9 @@ impl WebGpuDevice {
             },
             None,
         ))
-        .map_err(|e| DeviceError::AllocationFailed(format!("WebGPU device request failed: {}", e)))?;
+        .map_err(|e| {
+            DeviceError::AllocationFailed(format!("WebGPU device request failed: {}", e))
+        })?;
 
         Ok(Self {
             device,
@@ -166,16 +167,19 @@ impl Allocator for WebGpuDevice {
     fn copy_in(&self, buf: &DeviceBuffer, data: &[u8]) -> Result<(), DeviceError> {
         let id = self.extract_id(buf)?;
         let live = self.live_buffers.lock().unwrap();
-        let wgpu_buf = live.get(&id)
+        let wgpu_buf = live
+            .get(&id)
             .ok_or_else(|| DeviceError::InvalidArgument("buffer not found".into()))?;
-        self.queue.write_buffer(wgpu_buf, 0, &data[..data.len().min(buf.size_bytes)]);
+        self.queue
+            .write_buffer(wgpu_buf, 0, &data[..data.len().min(buf.size_bytes)]);
         Ok(())
     }
 
     fn copy_out(&self, buf: &DeviceBuffer, data: &mut [u8]) -> Result<(), DeviceError> {
         let id = self.extract_id(buf)?;
         let live = self.live_buffers.lock().unwrap();
-        let wgpu_buf = live.get(&id)
+        let wgpu_buf = live
+            .get(&id)
             .ok_or_else(|| DeviceError::InvalidArgument("buffer not found".into()))?;
 
         let len = data.len().min(buf.size_bytes) as u64;
@@ -188,9 +192,11 @@ impl Allocator for WebGpuDevice {
             mapped_at_creation: false,
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("molt-gpu-copy-out"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("molt-gpu-copy-out"),
+            });
         encoder.copy_buffer_to_buffer(wgpu_buf, 0, &staging, 0, len);
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -201,7 +207,8 @@ impl Allocator for WebGpuDevice {
             let _ = sender.send(result);
         });
         self.device.poll(wgpu::Maintain::Wait);
-        receiver.recv()
+        receiver
+            .recv()
             .map_err(|_| DeviceError::ExecutionFailed("buffer map channel closed".into()))?
             .map_err(|e| DeviceError::ExecutionFailed(format!("buffer map failed: {}", e)))?;
 
@@ -220,9 +227,13 @@ impl WebGpuDevice {
         match &buf.handle {
             BufferHandle::Cpu(bytes) => {
                 if bytes.len() >= std::mem::size_of::<usize>() {
-                    Ok(usize::from_le_bytes(bytes[..std::mem::size_of::<usize>()].try_into().unwrap()))
+                    Ok(usize::from_le_bytes(
+                        bytes[..std::mem::size_of::<usize>()].try_into().unwrap(),
+                    ))
                 } else {
-                    Err(DeviceError::InvalidArgument("invalid WebGPU buffer handle".into()))
+                    Err(DeviceError::InvalidArgument(
+                        "invalid WebGPU buffer handle".into(),
+                    ))
                 }
             }
             #[cfg(target_os = "macos")]
@@ -269,30 +280,39 @@ impl Compiler for WebGpuDevice {
             })
             .collect();
 
-        let bind_group_layout = self.device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("molt-gpu-bind-group-layout"),
-            entries: &entries,
-        });
+        let bind_group_layout = self
+            .device
+            .create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("molt-gpu-bind-group-layout"),
+                entries: &entries,
+            });
 
-        let pipeline_layout = self.device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("molt-gpu-pipeline-layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some("molt-gpu-pipeline-layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
-        let pipeline = self.device.create_compute_pipeline(&ComputePipelineDescriptor {
-            label: Some("molt-gpu-pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader_module,
-            entry_point: Some("molt_kernel"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&ComputePipelineDescriptor {
+                label: Some("molt-gpu-pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader_module,
+                entry_point: Some("molt_kernel"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
-        self.pipelines.lock().unwrap().insert(hash, WgpuPipeline {
-            pipeline,
-            bind_group_layout,
-        });
+        self.pipelines.lock().unwrap().insert(
+            hash,
+            WgpuPipeline {
+                pipeline,
+                bind_group_layout,
+            },
+        );
 
         Ok(CompiledProgram {
             handle: ProgramHandle::Cpu(|_bufs: &[&[u8]], _out: &mut [u8], _n: usize| {}),
@@ -317,11 +337,14 @@ impl Executor for WebGpuDevice {
         grid: [u32; 3],
         _local: [u32; 3],
     ) -> Result<(), DeviceError> {
-        let hash: u64 = prog.entry.parse()
+        let hash: u64 = prog
+            .entry
+            .parse()
             .map_err(|_| DeviceError::InvalidArgument("invalid program hash".into()))?;
 
         let pipelines = self.pipelines.lock().unwrap();
-        let wgpu_pipeline = pipelines.get(&hash)
+        let wgpu_pipeline = pipelines
+            .get(&hash)
             .ok_or_else(|| DeviceError::InvalidArgument("pipeline not found".into()))?;
 
         let live = self.live_buffers.lock().unwrap();
@@ -337,7 +360,8 @@ impl Executor for WebGpuDevice {
                 #[cfg(target_os = "macos")]
                 _ => return Err(DeviceError::InvalidArgument("not a WebGPU buffer".into())),
             };
-            let wgpu_buf = live.get(&id)
+            let wgpu_buf = live
+                .get(&id)
                 .ok_or_else(|| DeviceError::InvalidArgument("buffer not found in exec".into()))?;
             wgpu_bufs.push(wgpu_buf);
         }
@@ -357,9 +381,11 @@ impl Executor for WebGpuDevice {
 
         drop(live);
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("molt-gpu-compute"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("molt-gpu-compute"),
+            });
 
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
@@ -415,39 +441,48 @@ impl WebGpuDevice {
         let pipelines = self.pipelines.lock().unwrap();
         let live = self.live_buffers.lock().unwrap();
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("molt-gpu-batch"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("molt-gpu-batch"),
+            });
 
         for (dispatch_idx, dispatch) in dispatches.iter().enumerate() {
-            let hash: u64 = dispatch.prog.entry.parse()
+            let hash: u64 = dispatch
+                .prog
+                .entry
+                .parse()
                 .map_err(|_| DeviceError::InvalidArgument("invalid program hash".into()))?;
 
-            let wgpu_pipeline = pipelines.get(&hash)
-                .ok_or_else(|| DeviceError::InvalidArgument(
-                    format!("pipeline not found for dispatch {}", dispatch_idx),
-                ))?;
+            let wgpu_pipeline = pipelines.get(&hash).ok_or_else(|| {
+                DeviceError::InvalidArgument(format!(
+                    "pipeline not found for dispatch {}",
+                    dispatch_idx
+                ))
+            })?;
 
             // Resolve buffer handles
             let mut wgpu_bufs = Vec::with_capacity(dispatch.bufs.len());
             for buf in dispatch.bufs {
                 let id = match &buf.handle {
-                    BufferHandle::Cpu(bytes) => {
-                        usize::from_le_bytes(
-                            bytes[..std::mem::size_of::<usize>()].try_into().unwrap(),
-                        )
-                    }
+                    BufferHandle::Cpu(bytes) => usize::from_le_bytes(
+                        bytes[..std::mem::size_of::<usize>()].try_into().unwrap(),
+                    ),
                     #[cfg(target_os = "macos")]
                     _ => return Err(DeviceError::InvalidArgument("not a WebGPU buffer".into())),
                 };
-                let wgpu_buf = live.get(&id)
-                    .ok_or_else(|| DeviceError::InvalidArgument(
-                        format!("buffer not found in batch dispatch {}", dispatch_idx),
-                    ))?;
+                let wgpu_buf = live.get(&id).ok_or_else(|| {
+                    DeviceError::InvalidArgument(format!(
+                        "buffer not found in batch dispatch {}",
+                        dispatch_idx
+                    ))
+                })?;
                 wgpu_bufs.push(wgpu_buf);
             }
 
-            let bind_entries: Vec<BindGroupEntry<'_>> = wgpu_bufs.iter().enumerate()
+            let bind_entries: Vec<BindGroupEntry<'_>> = wgpu_bufs
+                .iter()
+                .enumerate()
                 .map(|(i, wgpu_buf)| BindGroupEntry {
                     binding: i as u32,
                     resource: wgpu_buf.as_entire_binding(),

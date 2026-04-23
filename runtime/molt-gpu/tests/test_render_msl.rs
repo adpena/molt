@@ -1,9 +1,7 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-};
 use molt_gpu::render::msl::MslRenderer;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
@@ -35,7 +33,8 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -80,7 +79,8 @@ fn test_render_neg_unary() {
         ],
         grid: [256, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let msl = MslRenderer.render(&kernel);
     assert!(msl.contains("(-buf1[gid])"));
@@ -102,14 +102,35 @@ fn test_render_fused_chain() {
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[128]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[128]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[128]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[128]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[128]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[128]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[128]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[128]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [128, 1, 1],
         local: [128, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let msl = MslRenderer.render(&kernel);
     assert!(msl.contains("v0"));
@@ -124,17 +145,31 @@ fn test_render_relu_with_const() {
             op: PrimitiveOp::Max,
             srcs: vec![
                 FusedSrc::Buf(1),
-                FusedSrc::Const { val: 0.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 0.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [256, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let msl = MslRenderer.render(&kernel);
     assert!(msl.contains("max(buf1[gid], 0.0f)"));
@@ -149,13 +184,29 @@ fn test_render_comparison_bool_output() {
             dst_dtype: DType::Bool,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[128]), dtype: DType::Bool, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[128]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[128]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[128]),
+                dtype: DType::Bool,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[128]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[128]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [128, 1, 1],
         local: [128, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let msl = MslRenderer.render(&kernel);
     assert!(msl.contains("bool v0"));
@@ -164,7 +215,8 @@ fn test_render_comparison_bool_output() {
 
 #[test]
 fn test_all_26_ops_have_render_patterns() {
-    let elementwise_ops = PrimitiveOp::ALL.iter()
+    let elementwise_ops = PrimitiveOp::ALL
+        .iter()
         .filter(|op| op.is_elementwise())
         .collect::<Vec<_>>();
 
@@ -193,7 +245,10 @@ fn test_all_26_ops_have_render_patterns() {
             ops: vec![FusedOp {
                 op,
                 srcs,
-                dst_dtype: if matches!(op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+                dst_dtype: if matches!(
+                    op,
+                    PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+                ) {
                     DType::Bool
                 } else {
                     DType::Float32
@@ -202,7 +257,8 @@ fn test_all_26_ops_have_render_patterns() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
         let msl = MslRenderer.render(&kernel);
         assert!(msl.contains("molt_kernel"), "op {:?} failed to render", op);

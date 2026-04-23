@@ -1048,11 +1048,15 @@ mod tests {
             .expect("expected gpu_thread_id to lower to a call op");
         assert_eq!(
             call_op.attrs.get("s_value"),
-            Some(&crate::tir::ops::AttrValue::Str("molt_gpu_thread_id".to_string()))
+            Some(&crate::tir::ops::AttrValue::Str(
+                "molt_gpu_thread_id".to_string()
+            ))
         );
         assert_eq!(
             call_op.attrs.get("_original_kind"),
-            Some(&crate::tir::ops::AttrValue::Str("gpu_thread_id".to_string()))
+            Some(&crate::tir::ops::AttrValue::Str(
+                "gpu_thread_id".to_string()
+            ))
         );
     }
 

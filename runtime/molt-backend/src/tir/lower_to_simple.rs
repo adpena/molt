@@ -535,7 +535,10 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // Successors that carry exception-region ops need explicit labels.
         let successor_needs_label = |block: &TirBlock| {
             block.ops.iter().any(|op| {
-                matches!(op.opcode, OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd)
+                matches!(
+                    op.opcode,
+                    OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
+                )
             })
         };
         if successor_needs_label(then_blk) {
@@ -636,9 +639,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // Some loop-end blocks survive optimization as explicit CFG targets,
         // and dropping their labels leaves dangling jump targets in the
         // round-tripped SimpleIR.
-        let has_explicit_predecessor = predecessors
-            .get(bid)
-            .is_some_and(|preds| !preds.is_empty());
+        let has_explicit_predecessor = predecessors.get(bid).is_some_and(|preds| !preds.is_empty());
         if loop_role == super::blocks::LoopRole::LoopEnd && !has_explicit_predecessor {
             continue;
         }

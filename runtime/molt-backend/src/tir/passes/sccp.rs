@@ -8,8 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::reachability::metadata_preserving_reachable_blocks;
 use super::PassStats;
+use super::reachability::metadata_preserving_reachable_blocks;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, OpCode};

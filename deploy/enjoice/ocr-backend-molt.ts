@@ -539,14 +539,119 @@ export class MoltOcrBackend {
 
       progress?.("inferring", 0, { message: "Running PaddleOCR-molt inference..." });
 
-      // The molt WASM module receives ONNX model bytes and image data,
-      // runs the full detect -> recognize pipeline compiled from tinygrad.
-      // For now, the WASM interface is pending final linkage; return a
-      // structured placeholder that preserves the OcrResult contract.
-      const inferenceMs = performance.now() - totalStart;
+      const session = this.paddleMoltSession!;
+      const instance = session.wasmInstance;
 
+      if (instance) {
+        // WASM compiled path: call molt-compiled PaddleOCR exports
+        const exports = instance.exports as {
+          memory: WebAssembly.Memory;
+          init: (detPtr: number, detLen: number, recPtr: number, recLen: number, dictPtr: number, dictLen: number) => void;
+          ocr: (width: number, height: number, rgbPtr: number) => number;
+          malloc: (size: number) => number;
+          free: (ptr: number) => void;
+          result_ptr: () => number;
+          result_len: () => number;
+        };
+
+        // Initialize models (only on first call — WASM module caches state)
+        if (!(instance as unknown as { _moltInitDone?: boolean })._moltInitDone) {
+          const detBytes = new Uint8Array(session.detector);
+          const recBytes = new Uint8Array(session.recognizer);
+          const dictStr = session.charset.slice(1).join("\n"); // skip "blank" prefix
+          const dictBytes = new TextEncoder().encode(dictStr);
+
+          const detPtr = exports.malloc(detBytes.length);
+          const recPtr = exports.malloc(recBytes.length);
+          const dictPtr = exports.malloc(dictBytes.length);
+          const mem = new Uint8Array(exports.memory.buffer);
+          mem.set(detBytes, detPtr);
+          mem.set(recBytes, recPtr);
+          mem.set(dictBytes, dictPtr);
+          exports.init(detPtr, detBytes.length, recPtr, recBytes.length, dictPtr, dictBytes.length);
+          exports.free(detPtr);
+          exports.free(recPtr);
+          exports.free(dictPtr);
+          (instance as unknown as { _moltInitDone: boolean })._moltInitDone = true;
+        }
+
+        // Convert image to RGB bytes
+        let rgb: Uint8Array;
+        let w: number;
+        let h: number;
+        if ("rgb" in image) {
+          rgb = image.rgb;
+          w = image.width;
+          h = image.height;
+        } else {
+          w = image.width;
+          h = image.height;
+          rgb = new Uint8Array(w * h * 3);
+          for (let i = 0; i < w * h; i++) {
+            rgb[i * 3] = image.data[i * 4];
+            rgb[i * 3 + 1] = image.data[i * 4 + 1];
+            rgb[i * 3 + 2] = image.data[i * 4 + 2];
+          }
+        }
+
+        const rgbPtr = exports.malloc(rgb.length);
+        new Uint8Array(exports.memory.buffer).set(rgb, rgbPtr);
+        exports.ocr(w, h, rgbPtr);
+        exports.free(rgbPtr);
+
+        // Read result string from WASM memory
+        const resultPtr = exports.result_ptr();
+        const resultLen = exports.result_len();
+        const resultBytes = new Uint8Array(exports.memory.buffer, resultPtr, resultLen);
+        const resultText = new TextDecoder().decode(resultBytes);
+
+        // Parse structured output: "confidence|x1,y1,x2,y2|text" per line
+        const lines = resultText.split("\n").filter((l) => l.trim());
+        const boundingBoxes: Array<{ text: string; bbox: [number, number, number, number]; confidence: number }> = [];
+        const textParts: string[] = [];
+        for (const line of lines) {
+          const parts = line.split("|");
+          if (parts.length >= 3) {
+            const conf = parseFloat(parts[0]);
+            const coords = parts[1].split(",").map(Number) as [number, number, number, number];
+            const text = parts.slice(2).join("|");
+            boundingBoxes.push({ text, bbox: coords, confidence: conf });
+            textParts.push(text);
+          }
+        }
+
+        const inferenceMs = performance.now() - totalStart;
+        const avgConfidence = boundingBoxes.length > 0
+          ? boundingBoxes.reduce((sum, b) => sum + b.confidence, 0) / boundingBoxes.length
+          : 0;
+
+        progress?.("done", 100, {
+          message: `PaddleOCR-molt WASM: ${boundingBoxes.length} regions in ${inferenceMs.toFixed(0)}ms`,
+        });
+
+        return {
+          result: {
+            text: textParts.join("\n"),
+            boundingBoxes,
+            confidence: avgConfidence,
+            autoFilled: false,
+            autoFillWarning: "",
+            autoFillDismissable: false,
+          },
+          timings: {
+            initMs: this.initTimingMs,
+            inferenceMs,
+            totalMs: performance.now() - totalStart,
+            ttfbMs: 0,
+          },
+          backend: "paddle-molt-wasm",
+        };
+      }
+
+      // Fallback: WASM module didn't compile, use JS ONNX interpreter via Worker
+      const inferenceMs = performance.now() - totalStart;
       progress?.("done", 100, {
-        message: `PaddleOCR-molt inference complete (${inferenceMs.toFixed(0)}ms)`,
+        message: `PaddleOCR-molt: WASM unavailable, use /ocr/paddle-molt endpoint`,
       });
 
       return {
@@ -555,7 +660,7 @@ export class MoltOcrBackend {
           boundingBoxes: [],
           confidence: 0,
           autoFilled: false,
-          autoFillWarning: "",
+          autoFillWarning: "WASM module unavailable — use server-side endpoint",
           autoFillDismissable: false,
         },
         timings: {
@@ -564,7 +669,7 @@ export class MoltOcrBackend {
           totalMs: performance.now() - totalStart,
           ttfbMs: 0,
         },
-        backend: "paddle-molt-wasm",
+        backend: "paddle-molt-fallback",
       };
     }
 

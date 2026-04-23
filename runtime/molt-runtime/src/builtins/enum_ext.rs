@@ -291,8 +291,9 @@ pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
             b"fdel",
         ] {
             if let Some(name_key) = attr_name_bits_from_bytes(_py, attr_name) {
-                let val =
-                    unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key) };
+                let val = unsafe {
+                    crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key)
+                };
                 dec_ref_bits(_py, name_key);
                 if val.is_some() {
                     return MoltObject::from_bool(true).bits();
@@ -319,7 +320,8 @@ pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
         let Some(name_key) = attr_name_bits_from_bytes(_py, b"_molt_auto") else {
             return MoltObject::from_bool(false).bits();
         };
-        let val = unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key) };
+        let val =
+            unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key) };
         dec_ref_bits(_py, name_key);
         let Some(val_bits) = val else {
             return MoltObject::from_bool(false).bits();

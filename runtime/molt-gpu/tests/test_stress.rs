@@ -48,7 +48,8 @@ fn make_unary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -81,7 +82,8 @@ fn make_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -127,7 +129,11 @@ fn test_empty_tensor_unary_ops() {
     ];
     for op in unary_ops {
         let result = run_unary(op, empty);
-        assert!(result.is_empty(), "op {:?} on empty tensor should return empty", op);
+        assert!(
+            result.is_empty(),
+            "op {:?} on empty tensor should return empty",
+            op
+        );
     }
 }
 
@@ -145,7 +151,11 @@ fn test_empty_tensor_binary_ops() {
     ];
     for op in binary_ops {
         let result = run_binary(op, empty, empty);
-        assert!(result.is_empty(), "op {:?} on empty tensors should return empty", op);
+        assert!(
+            result.is_empty(),
+            "op {:?} on empty tensors should return empty",
+            op
+        );
     }
 }
 
@@ -230,7 +240,14 @@ fn test_large_tensor_neg_1m() {
 
 #[test]
 fn test_extreme_values_add() {
-    let extremes = &[f32::MAX, f32::MIN, f32::EPSILON, f32::MIN_POSITIVE, 0.0, -0.0];
+    let extremes = &[
+        f32::MAX,
+        f32::MIN,
+        f32::EPSILON,
+        f32::MIN_POSITIVE,
+        0.0,
+        -0.0,
+    ];
     let zeros = &[0.0f32; 6];
     let result = run_binary(PrimitiveOp::Add, extremes, zeros);
     assert_eq!(result.len(), 6);
@@ -246,12 +263,22 @@ fn test_extreme_values_mul_overflow() {
     let b = &[2.0f32, -2.0];
     let result = run_binary(PrimitiveOp::Mul, a, b);
     assert!(result[0].is_infinite() && result[0] > 0.0, "MAX * 2 = +inf");
-    assert!(result[1].is_infinite() && result[1] < 0.0, "MAX * -2 = -inf");
+    assert!(
+        result[1].is_infinite() && result[1] < 0.0,
+        "MAX * -2 = -inf"
+    );
 }
 
 #[test]
 fn test_extreme_values_neg() {
-    let a = &[f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 0.0f32];
+    let a = &[
+        f32::MAX,
+        f32::MIN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        0.0f32,
+    ];
     let result = run_unary(PrimitiveOp::Neg, a);
     assert_eq!(result[0], -f32::MAX);
     assert_eq!(result[1], -f32::MIN);
@@ -387,7 +414,8 @@ fn test_reduce_sum_single_element() {
         ],
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let mut bufs = vec![vec![0u8; n_out * 4], f32_to_bytes(&[42.0])];
@@ -422,7 +450,8 @@ fn test_reduce_max_single_element() {
         ],
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let mut bufs = vec![vec![0u8; n_out * 4], f32_to_bytes(&[-999.0])];
@@ -461,13 +490,19 @@ fn test_reduce_sum_large() {
         ],
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let mut bufs = vec![vec![0u8; n_out * 4], f32_to_bytes(&input)];
     interpret::execute_kernel(&kernel, &mut bufs);
     let result = bytes_to_f32(&bufs[0]);
-    assert!((result[0] - expected).abs() < 1.0, "reduce sum of 0..1024: got {}, expected {}", result[0], expected);
+    assert!(
+        (result[0] - expected).abs() < 1.0,
+        "reduce sum of 0..1024: got {}, expected {}",
+        result[0],
+        expected
+    );
 }
 
 // =============================================================================
@@ -483,7 +518,12 @@ fn test_shapetracker_6d() {
 
     // Verify all indices map correctly for contiguous 6D
     for i in 0..st.numel() {
-        assert_eq!(st.expr_idx(i), Some(i), "6D contiguous index {} should map to itself", i);
+        assert_eq!(
+            st.expr_idx(i),
+            Some(i),
+            "6D contiguous index {} should map to itself",
+            i
+        );
     }
 }
 
@@ -545,7 +585,13 @@ fn test_fused_chain_20_ops() {
     // First op: Add(buf[1], const 1.0)
     ops.push(FusedOp {
         op: PrimitiveOp::Add,
-        srcs: vec![FusedSrc::Buf(1), FusedSrc::Const { val: 1.0, dtype: DType::Float32 }],
+        srcs: vec![
+            FusedSrc::Buf(1),
+            FusedSrc::Const {
+                val: 1.0,
+                dtype: DType::Float32,
+            },
+        ],
         dst_dtype: DType::Float32,
     });
 
@@ -555,7 +601,10 @@ fn test_fused_chain_20_ops() {
             op: PrimitiveOp::Add,
             srcs: vec![
                 FusedSrc::Op(i - 1),
-                FusedSrc::Const { val: 1.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 1.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         });
@@ -579,7 +628,8 @@ fn test_fused_chain_20_ops() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let input: Vec<f32> = (0..n).map(|i| i as f32).collect();
@@ -589,7 +639,11 @@ fn test_fused_chain_20_ops() {
 
     for (i, &v) in result.iter().enumerate() {
         let expected = i as f32 + num_chain_ops as f32;
-        assert_eq!(v, expected, "element {}: got {}, expected {}", i, v, expected);
+        assert_eq!(
+            v, expected,
+            "element {}: got {}, expected {}",
+            i, v, expected
+        );
     }
 }
 
@@ -611,22 +665,41 @@ fn test_fused_chain_mixed_ops_25() {
         let (op, srcs) = match i % 4 {
             1 => (
                 PrimitiveOp::Add,
-                vec![FusedSrc::Op(i - 1), FusedSrc::Const { val: 10.0, dtype: DType::Float32 }],
+                vec![
+                    FusedSrc::Op(i - 1),
+                    FusedSrc::Const {
+                        val: 10.0,
+                        dtype: DType::Float32,
+                    },
+                ],
             ),
             2 => (
                 PrimitiveOp::Mul,
-                vec![FusedSrc::Op(i - 1), FusedSrc::Const { val: 0.5, dtype: DType::Float32 }],
+                vec![
+                    FusedSrc::Op(i - 1),
+                    FusedSrc::Const {
+                        val: 0.5,
+                        dtype: DType::Float32,
+                    },
+                ],
             ),
             3 => (
                 PrimitiveOp::Sub,
-                vec![FusedSrc::Op(i - 1), FusedSrc::Const { val: 1.0, dtype: DType::Float32 }],
+                vec![
+                    FusedSrc::Op(i - 1),
+                    FusedSrc::Const {
+                        val: 1.0,
+                        dtype: DType::Float32,
+                    },
+                ],
             ),
-            _ => (
-                PrimitiveOp::Neg,
-                vec![FusedSrc::Op(i - 1)],
-            ),
+            _ => (PrimitiveOp::Neg, vec![FusedSrc::Op(i - 1)]),
         };
-        ops.push(FusedOp { op, srcs, dst_dtype: DType::Float32 });
+        ops.push(FusedOp {
+            op,
+            srcs,
+            dst_dtype: DType::Float32,
+        });
     }
 
     let kernel = FusedKernel {
@@ -647,7 +720,8 @@ fn test_fused_chain_mixed_ops_25() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let input: Vec<f32> = vec![0.0; n];
@@ -659,7 +733,14 @@ fn test_fused_chain_mixed_ops_25() {
     // Verify all elements are the same (uniform input)
     let first = result[0];
     for (i, &v) in result.iter().enumerate() {
-        assert_eq!(v.to_bits(), first.to_bits(), "element {} differs: got {}, expected {}", i, v, first);
+        assert_eq!(
+            v.to_bits(),
+            first.to_bits(),
+            "element {} differs: got {}, expected {}",
+            i,
+            v,
+            first
+        );
     }
 }
 
@@ -675,8 +756,14 @@ fn test_constant_fold_all_constant_chain() {
         ops: vec![FusedOp {
             op: PrimitiveOp::Add,
             srcs: vec![
-                FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
-                FusedSrc::Const { val: 3.0, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: 2.0,
+                    dtype: DType::Float32,
+                },
+                FusedSrc::Const {
+                    val: 3.0,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         }],
@@ -688,7 +775,8 @@ fn test_constant_fold_all_constant_chain() {
         }],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let folded = constant_fold(std::slice::from_mut(&mut kernel));
@@ -705,8 +793,14 @@ fn test_constant_fold_nested_chain() {
             FusedOp {
                 op: PrimitiveOp::Mul,
                 srcs: vec![
-                    FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
-                    FusedSrc::Const { val: 3.0, dtype: DType::Float32 },
+                    FusedSrc::Const {
+                        val: 2.0,
+                        dtype: DType::Float32,
+                    },
+                    FusedSrc::Const {
+                        val: 3.0,
+                        dtype: DType::Float32,
+                    },
                 ],
                 dst_dtype: DType::Float32,
             },
@@ -714,7 +808,10 @@ fn test_constant_fold_nested_chain() {
                 op: PrimitiveOp::Add,
                 srcs: vec![
                     FusedSrc::Op(0), // result of Mul = 6.0
-                    FusedSrc::Const { val: 4.0, dtype: DType::Float32 },
+                    FusedSrc::Const {
+                        val: 4.0,
+                        dtype: DType::Float32,
+                    },
                 ],
                 dst_dtype: DType::Float32,
             },
@@ -727,7 +824,8 @@ fn test_constant_fold_nested_chain() {
         }],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let folded = constant_fold(std::slice::from_mut(&mut kernel));
@@ -747,15 +845,24 @@ fn test_constant_fold_partial_chain() {
                 op: PrimitiveOp::Add,
                 srcs: vec![
                     FusedSrc::Buf(1),
-                    FusedSrc::Const { val: 5.0, dtype: DType::Float32 },
+                    FusedSrc::Const {
+                        val: 5.0,
+                        dtype: DType::Float32,
+                    },
                 ],
                 dst_dtype: DType::Float32,
             },
             FusedOp {
                 op: PrimitiveOp::Mul,
                 srcs: vec![
-                    FusedSrc::Const { val: 2.0, dtype: DType::Float32 },
-                    FusedSrc::Const { val: 3.0, dtype: DType::Float32 },
+                    FusedSrc::Const {
+                        val: 2.0,
+                        dtype: DType::Float32,
+                    },
+                    FusedSrc::Const {
+                        val: 3.0,
+                        dtype: DType::Float32,
+                    },
                 ],
                 dst_dtype: DType::Float32,
             },
@@ -781,7 +888,8 @@ fn test_constant_fold_partial_chain() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let folded = constant_fold(std::slice::from_mut(&mut kernel));
@@ -791,7 +899,11 @@ fn test_constant_fold_partial_chain() {
     // The second remaining op should reference Const(6.0) for its second source
     match &kernel.ops[1].srcs[1] {
         FusedSrc::Const { val, .. } => {
-            assert!((val - 6.0).abs() < 1e-10, "folded constant should be 6.0, got {}", val);
+            assert!(
+                (val - 6.0).abs() < 1e-10,
+                "folded constant should be 6.0, got {}",
+                val
+            );
         }
         other => panic!("expected Const(6.0), got {:?}", other),
     }
@@ -816,14 +928,35 @@ fn test_where_op_large() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let mut bufs = vec![

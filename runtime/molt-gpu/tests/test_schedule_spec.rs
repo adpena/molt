@@ -4,9 +4,7 @@ use molt_gpu::dce;
 use molt_gpu::dtype::DType;
 use molt_gpu::lazy::{DeviceBufferRef, LazyOp};
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc,
-};
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
 use molt_gpu::schedule::{schedule, specialize_shapes};
 use molt_gpu::shapetracker::ShapeTracker;
 
@@ -42,7 +40,8 @@ fn make_kernel_with_shape(shape: &[usize]) -> FusedKernel {
         ],
         grid: [n.max(1) as u32, 1, 1],
         local: [n.clamp(1, 256) as u32, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -156,7 +155,10 @@ fn test_specialize_preserves_no_spec_when_empty() {
 fn test_schedule_then_specialize() {
     // Build a LazyOp DAG and schedule, then specialize.
     let buf = Arc::new(LazyOp::Buffer {
-        buf: DeviceBufferRef { id: 0, size_bytes: 1024 },
+        buf: DeviceBufferRef {
+            id: 0,
+            size_bytes: 1024,
+        },
         st: ShapeTracker::contiguous(&[256]),
         dtype: DType::Float32,
     });
@@ -179,7 +181,10 @@ fn test_schedule_then_specialize() {
 
 fn make_buffer(id: usize, size: usize) -> Arc<LazyOp> {
     Arc::new(LazyOp::Buffer {
-        buf: DeviceBufferRef { id, size_bytes: size * 4 },
+        buf: DeviceBufferRef {
+            id,
+            size_bytes: size * 4,
+        },
         st: ShapeTracker::contiguous(&[size]),
         dtype: DType::Float32,
     })
@@ -213,7 +218,10 @@ fn test_dce_multi_root_shared_subtree() {
     });
 
     // Both roots share `buf`. Total unique reachable = 3.
-    assert_eq!(dce::count_reachable(&[Arc::clone(&neg1), Arc::clone(&neg2)]), 3);
+    assert_eq!(
+        dce::count_reachable(&[Arc::clone(&neg1), Arc::clone(&neg2)]),
+        3
+    );
 }
 
 #[test]
@@ -225,11 +233,7 @@ fn test_dce_dead_node_eliminated() {
         src: Arc::clone(&buf_a),
     });
     // buf_b is dead — not reachable from `live`.
-    let all_nodes = vec![
-        Arc::clone(&buf_a),
-        Arc::clone(&buf_b),
-        Arc::clone(&live),
-    ];
+    let all_nodes = vec![Arc::clone(&buf_a), Arc::clone(&buf_b), Arc::clone(&live)];
     let roots = vec![Arc::clone(&live)];
     let surviving = dce::eliminate_dead_nodes(&roots, &all_nodes);
 
