@@ -23,6 +23,7 @@ pub mod types;
 pub mod values;
 pub mod verify;
 pub mod verify_lir;
+pub mod verify_lir_repr;
 pub mod wasm_component;
 pub mod wasm_split;
 pub mod wasm_streaming;
