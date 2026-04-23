@@ -22,6 +22,7 @@ Model sizes:
 
 ONNX weights: openai/whisper-tiny on HuggingFace (151 MB)
 """
+
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -45,7 +46,9 @@ def _layer_norm(x: Tensor, weight: Tensor, bias: Tensor, eps: float = 1e-5) -> T
 
 def _gelu(x: Tensor) -> Tensor:
     """GELU activation: x * 0.5 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))."""
-    return x * 0.5 * (1.0 + ((x + 0.044715 * x * x * x) * math.sqrt(2.0 / math.pi)).tanh())
+    return (
+        x * 0.5 * (1.0 + ((x + 0.044715 * x * x * x) * math.sqrt(2.0 / math.pi)).tanh())
+    )
 
 
 def _softmax(x: Tensor, axis: int = -1) -> Tensor:
@@ -62,8 +65,19 @@ class MultiHeadAttention:
     + softmax + 1 matmul (output projection) = 5 matmuls + 1 softmax.
     """
 
-    __slots__ = ("n_head", "n_state", "head_dim", "w_q", "b_q", "w_k", "b_k",
-                 "w_v", "b_v", "w_out", "b_out")
+    __slots__ = (
+        "n_head",
+        "n_state",
+        "head_dim",
+        "w_q",
+        "b_q",
+        "w_k",
+        "b_k",
+        "w_v",
+        "b_v",
+        "w_out",
+        "b_out",
+    )
 
     def __init__(self, n_state: int, n_head: int) -> None:
         self.n_state = n_state
@@ -79,7 +93,9 @@ class MultiHeadAttention:
         self.w_out: Tensor | None = None
         self.b_out: Tensor | None = None
 
-    def forward(self, x: Tensor, xa: Tensor | None = None, mask: Tensor | None = None) -> Tensor:
+    def forward(
+        self, x: Tensor, xa: Tensor | None = None, mask: Tensor | None = None
+    ) -> Tensor:
         """
         Self-attention: xa=None, uses x for Q/K/V.
         Cross-attention: xa=encoder output, Q from x, K/V from xa.
@@ -93,7 +109,7 @@ class MultiHeadAttention:
         kv_source = xa if xa is not None else x
 
         # Project Q, K, V
-        q = x.matmul(self.w_q) + self.b_q   # [B, T, n_state]
+        q = x.matmul(self.w_q) + self.b_q  # [B, T, n_state]
         k = kv_source.matmul(self.w_k) + self.b_k  # [B, S, n_state]
         v = kv_source.matmul(self.w_v) + self.b_v  # [B, S, n_state]
 
@@ -121,13 +137,30 @@ class MultiHeadAttention:
 class TransformerBlock:
     """Single transformer block: self-attn + (optional cross-attn) + FFN."""
 
-    __slots__ = ("attn", "cross_attn", "ln1", "ln1_w", "ln1_b",
-                 "ln2", "ln2_w", "ln2_b", "ln3_w", "ln3_b",
-                 "ffn_w1", "ffn_b1", "ffn_w2", "ffn_b2")
+    __slots__ = (
+        "attn",
+        "cross_attn",
+        "ln1",
+        "ln1_w",
+        "ln1_b",
+        "ln2",
+        "ln2_w",
+        "ln2_b",
+        "ln3_w",
+        "ln3_b",
+        "ffn_w1",
+        "ffn_b1",
+        "ffn_w2",
+        "ffn_b2",
+    )
 
-    def __init__(self, n_state: int, n_head: int, cross_attention: bool = False) -> None:
+    def __init__(
+        self, n_state: int, n_head: int, cross_attention: bool = False
+    ) -> None:
         self.attn = MultiHeadAttention(n_state, n_head)
-        self.cross_attn = MultiHeadAttention(n_state, n_head) if cross_attention else None
+        self.cross_attn = (
+            MultiHeadAttention(n_state, n_head) if cross_attention else None
+        )
         self.ln1_w: Tensor | None = None
         self.ln1_b: Tensor | None = None
         self.ln2_w: Tensor | None = None
@@ -139,7 +172,9 @@ class TransformerBlock:
         self.ffn_w2: Tensor | None = None
         self.ffn_b2: Tensor | None = None
 
-    def forward(self, x: Tensor, xa: Tensor | None = None, mask: Tensor | None = None) -> Tensor:
+    def forward(
+        self, x: Tensor, xa: Tensor | None = None, mask: Tensor | None = None
+    ) -> Tensor:
         # Self-attention + residual
         h = _layer_norm(x, self.ln1_w, self.ln1_b)
         x = x + self.attn.forward(h, mask=mask)
@@ -166,12 +201,30 @@ class WhisperEncoder:
     All convolutions are implemented as conv2d with height=1.
     """
 
-    __slots__ = ("n_mels", "n_ctx", "n_state", "n_head", "n_layer",
-                 "conv1_w", "conv1_b", "conv2_w", "conv2_b",
-                 "pos_embed", "ln_w", "ln_b", "blocks")
+    __slots__ = (
+        "n_mels",
+        "n_ctx",
+        "n_state",
+        "n_head",
+        "n_layer",
+        "conv1_w",
+        "conv1_b",
+        "conv2_w",
+        "conv2_b",
+        "pos_embed",
+        "ln_w",
+        "ln_b",
+        "blocks",
+    )
 
-    def __init__(self, n_mels: int = 80, n_ctx: int = 1500,
-                 n_state: int = 384, n_head: int = 6, n_layer: int = 4) -> None:
+    def __init__(
+        self,
+        n_mels: int = 80,
+        n_ctx: int = 1500,
+        n_state: int = 384,
+        n_head: int = 6,
+        n_layer: int = 4,
+    ) -> None:
         self.n_mels = n_mels
         self.n_ctx = n_ctx
         self.n_state = n_state
@@ -231,22 +284,40 @@ class WhisperDecoder:
     cross-attention to encoder output -> linear projection to vocab.
     """
 
-    __slots__ = ("n_vocab", "n_ctx", "n_state", "n_head", "n_layer",
-                 "token_embed", "pos_embed", "ln_w", "ln_b", "blocks")
+    __slots__ = (
+        "n_vocab",
+        "n_ctx",
+        "n_state",
+        "n_head",
+        "n_layer",
+        "token_embed",
+        "pos_embed",
+        "ln_w",
+        "ln_b",
+        "blocks",
+    )
 
-    def __init__(self, n_vocab: int = 51865, n_ctx: int = 448,
-                 n_state: int = 384, n_head: int = 6, n_layer: int = 4) -> None:
+    def __init__(
+        self,
+        n_vocab: int = 51865,
+        n_ctx: int = 448,
+        n_state: int = 384,
+        n_head: int = 6,
+        n_layer: int = 4,
+    ) -> None:
         self.n_vocab = n_vocab
         self.n_ctx = n_ctx
         self.n_state = n_state
         self.n_head = n_head
         self.n_layer = n_layer
         self.token_embed: Tensor | None = None  # [n_vocab, n_state]
-        self.pos_embed: Tensor | None = None    # [n_ctx, n_state]
+        self.pos_embed: Tensor | None = None  # [n_ctx, n_state]
         self.ln_w: Tensor | None = None
         self.ln_b: Tensor | None = None
-        self.blocks = [TransformerBlock(n_state, n_head, cross_attention=True)
-                       for _ in range(n_layer)]
+        self.blocks = [
+            TransformerBlock(n_state, n_head, cross_attention=True)
+            for _ in range(n_layer)
+        ]
 
     def forward(self, tokens: Tensor, encoder_out: Tensor) -> Tensor:
         """
@@ -317,12 +388,16 @@ class WhisperTiny:
             token_data = [float(t) for t in tokens]
             token_shape = (1, len(tokens))
             token_op = LazyOp("LOAD", (), dtype=dtypes.float32, shape=token_shape)
-            token_tensor = Tensor(LazyBuffer(token_op, dtypes.float32, token_shape, data=token_data))
+            token_tensor = Tensor(
+                LazyBuffer(token_op, dtypes.float32, token_shape, data=token_data)
+            )
 
             logits = self.decoder.forward(token_tensor, encoder_out)
 
             # Greedy decode: argmax of last position
-            last_logits = logits  # [1, seq_len, n_vocab] — take last token
+            logits.realize()  # [1, seq_len, n_vocab] — take last token
+            if logits.shape[-1] <= 0:
+                raise RuntimeError("decoder produced empty vocabulary logits")
             # In compiled code, this becomes a REDUCE_MAX + CMPEQ scan
             next_token = 50257  # placeholder — needs argmax implementation
             tokens.append(next_token)
