@@ -339,7 +339,7 @@ impl MoltObject {
             } else {
                 val as i64
             };
-            return i >= -5 && i <= 256;
+            return (-5..=256).contains(&i);
         }
 
         false
@@ -477,16 +477,24 @@ mod tests {
         let obj = MoltObject::from_ptr(ptr);
         assert!(!obj.is_immortal());
         release_ptr(ptr);
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 
     #[test]
     fn molt_is_immortal_c_abi() {
         assert_eq!(super::molt_is_immortal(MoltObject::none().bits()), 1);
-        assert_eq!(super::molt_is_immortal(MoltObject::from_bool(true).bits()), 1);
+        assert_eq!(
+            super::molt_is_immortal(MoltObject::from_bool(true).bits()),
+            1
+        );
         assert_eq!(super::molt_is_immortal(MoltObject::from_int(0).bits()), 1);
         assert_eq!(super::molt_is_immortal(MoltObject::from_int(257).bits()), 0);
-        assert_eq!(super::molt_is_immortal(MoltObject::from_float(1.0).bits()), 0);
+        assert_eq!(
+            super::molt_is_immortal(MoltObject::from_float(1.0).bits()),
+            0
+        );
     }
 
     #[test]

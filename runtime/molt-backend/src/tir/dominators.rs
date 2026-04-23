@@ -116,11 +116,11 @@ pub fn compute_idoms(
             // Find first processed predecessor.
             let mut new_idom: Option<usize> = None;
             for pred in preds {
-                if let Some(&rpo_i) = rpo_index.get(pred) {
-                    if doms[rpo_i].is_some() {
-                        new_idom = Some(rpo_i);
-                        break;
-                    }
+                if let Some(&rpo_i) = rpo_index.get(pred)
+                    && doms[rpo_i].is_some()
+                {
+                    new_idom = Some(rpo_i);
+                    break;
                 }
             }
             let Some(mut new_idom_val) = new_idom else {
@@ -129,10 +129,11 @@ pub fn compute_idoms(
 
             // Intersect with remaining processed predecessors.
             for pred in preds {
-                if let Some(&rpo_i) = rpo_index.get(pred) {
-                    if doms[rpo_i].is_some() && rpo_i != new_idom_val {
-                        new_idom_val = intersect(rpo_i, new_idom_val, &doms);
-                    }
+                if let Some(&rpo_i) = rpo_index.get(pred)
+                    && doms[rpo_i].is_some()
+                    && rpo_i != new_idom_val
+                {
+                    new_idom_val = intersect(rpo_i, new_idom_val, &doms);
                 }
             }
 

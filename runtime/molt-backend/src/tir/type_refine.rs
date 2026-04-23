@@ -41,13 +41,13 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
             }
 
             // TypeGuard results get the proven type directly.
-            if op.opcode == OpCode::TypeGuard {
-                if let Some(proven_ty) = parse_guard_type(&op.attrs) {
-                    for &result_id in &op.results {
-                        env.insert(result_id, proven_ty.clone());
-                    }
-                    continue;
+            if op.opcode == OpCode::TypeGuard
+                && let Some(proven_ty) = parse_guard_type(&op.attrs)
+            {
+                for &result_id in &op.results {
+                    env.insert(result_id, proven_ty.clone());
                 }
+                continue;
             }
 
             let operand_types: Vec<TirType> = op
@@ -498,7 +498,10 @@ fn propagate_guard_types(
         }
 
         // Update the env for the guarded value itself.
-        let current = env.get(&guard.guarded_value).cloned().unwrap_or(TirType::DynBox);
+        let current = env
+            .get(&guard.guarded_value)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
         if current == TirType::DynBox || current != guard.proven_type {
             // Only refine if it makes the type more specific.
             // If current is DynBox, the guard proves it. If current is
@@ -534,8 +537,8 @@ fn propagate_guard_types(
                 continue;
             }
             // Check if all operands are proven.
-            let all_proven = !op.operands.is_empty()
-                && op.operands.iter().all(|v| proven_types.contains_key(v));
+            let all_proven =
+                !op.operands.is_empty() && op.operands.iter().all(|v| proven_types.contains_key(v));
             if !all_proven {
                 continue;
             }
@@ -638,8 +641,8 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
             if op.results.is_empty() {
                 continue;
             }
-            let all_proven = !op.operands.is_empty()
-                && op.operands.iter().all(|v| proven.contains_key(v));
+            let all_proven =
+                !op.operands.is_empty() && op.operands.iter().all(|v| proven.contains_key(v));
             if !all_proven {
                 continue;
             }
@@ -1268,16 +1271,9 @@ mod tests {
 
     // ---- Guard propagation tests ----
 
-    fn make_type_guard_op(
-        operand: ValueId,
-        result: ValueId,
-        expected_type: &str,
-    ) -> TirOp {
+    fn make_type_guard_op(operand: ValueId, result: ValueId, expected_type: &str) -> TirOp {
         let mut attrs = AttrDict::new();
-        attrs.insert(
-            "expected_type".into(),
-            AttrValue::Str(expected_type.into()),
-        );
+        attrs.insert("expected_type".into(), AttrValue::Str(expected_type.into()));
         TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::TypeGuard,
@@ -1292,9 +1288,7 @@ mod tests {
     #[test]
     fn typeguard_result_gets_proven_type() {
         // TypeGuard(%x, "int") -> %ok should type %ok as I64.
-        let ops = vec![
-            make_type_guard_op(ValueId(0), ValueId(1), "int"),
-        ];
+        let ops = vec![make_type_guard_op(ValueId(0), ValueId(1), "int")];
         let entry_id = BlockId(0);
         let block = TirBlock {
             id: entry_id,

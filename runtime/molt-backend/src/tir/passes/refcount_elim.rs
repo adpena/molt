@@ -156,8 +156,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     if is_barrier(op_j.opcode) {
                         break;
                     }
-                    if op_j.opcode == target_opcode
-                        && op_j.operands.first().copied() == Some(val_i)
+                    if op_j.opcode == target_opcode && op_j.operands.first().copied() == Some(val_i)
                     {
                         result = Some(j);
                         break;
@@ -290,8 +289,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     if is_barrier(op.opcode) {
                         break;
                     }
-                    if op.opcode == target_opcode
-                        && op.operands.first().copied() == Some(trail.val)
+                    if op.opcode == target_opcode && op.operands.first().copied() == Some(trail.val)
                     {
                         result = Some(i);
                         break;
@@ -318,27 +316,27 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         // predecessor constraint), there are no conflicts.
         for (pred_bid, pred_idx, succ_bid, succ_idx) in cross_block_removals {
             // Remove the trailing op from the predecessor.
-            if let Some(pred_block) = func.blocks.get_mut(&pred_bid) {
-                if pred_idx < pred_block.ops.len() {
-                    let op = &pred_block.ops[pred_idx];
-                    if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
-                        && op.operands.first().copied().is_some()
-                    {
-                        pred_block.ops.remove(pred_idx);
-                        stats.ops_removed += 1;
-                    }
+            if let Some(pred_block) = func.blocks.get_mut(&pred_bid)
+                && pred_idx < pred_block.ops.len()
+            {
+                let op = &pred_block.ops[pred_idx];
+                if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
+                    && op.operands.first().copied().is_some()
+                {
+                    pred_block.ops.remove(pred_idx);
+                    stats.ops_removed += 1;
                 }
             }
             // Remove the leading op from the successor.
-            if let Some(succ_block) = func.blocks.get_mut(&succ_bid) {
-                if succ_idx < succ_block.ops.len() {
-                    let op = &succ_block.ops[succ_idx];
-                    if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
-                        && op.operands.first().copied().is_some()
-                    {
-                        succ_block.ops.remove(succ_idx);
-                        stats.ops_removed += 1;
-                    }
+            if let Some(succ_block) = func.blocks.get_mut(&succ_bid)
+                && succ_idx < succ_block.ops.len()
+            {
+                let op = &succ_block.ops[succ_idx];
+                if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
+                    && op.operands.first().copied().is_some()
+                {
+                    succ_block.ops.remove(succ_idx);
+                    stats.ops_removed += 1;
                 }
             }
         }
@@ -370,10 +368,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
         // From explicit loop_roles.
         for (&bid, role) in &func.loop_roles {
-            if matches!(
-                role,
-                crate::tir::blocks::LoopRole::LoopHeader
-            ) {
+            if matches!(role, crate::tir::blocks::LoopRole::LoopHeader) {
                 loop_header_set.insert(bid);
             }
         }
@@ -440,17 +435,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     if is_barrier(op_j.opcode) {
                         break;
                     }
-                    if op_j.opcode == target_opcode
-                        && op_j.operands.first().copied() == Some(val)
-                    {
+                    if op_j.opcode == target_opcode && op_j.operands.first().copied() == Some(val) {
                         partner = Some(j);
                         break;
                     }
                     // If we see the same opcode on the same value, the balance
                     // is different; stop.
-                    if op_j.opcode == op_i.opcode
-                        && op_j.operands.first().copied() == Some(val)
-                    {
+                    if op_j.opcode == op_i.opcode && op_j.operands.first().copied() == Some(val) {
                         break;
                     }
                 }
@@ -489,7 +480,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{BlockId, TirBlock, Terminator};
+    use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
@@ -511,11 +502,7 @@ mod tests {
     }
 
     /// Helper to add a new block with the given ops and terminator.
-    fn add_block(
-        func: &mut TirFunction,
-        ops: Vec<TirOp>,
-        terminator: Terminator,
-    ) -> BlockId {
+    fn add_block(func: &mut TirFunction, ops: Vec<TirOp>, terminator: Terminator) -> BlockId {
         let bid = func.fresh_block();
         let block = TirBlock {
             id: bid,
@@ -772,11 +759,7 @@ mod tests {
 
         // Create a loop header block (bid=1): IncRef(v), some arithmetic, DecRef(v),
         // then cond branch back to itself (back-edge) or to exit.
-        let exit_bid = add_block(
-            &mut func,
-            vec![],
-            Terminator::Return { values: vec![] },
-        );
+        let exit_bid = add_block(&mut func, vec![], Terminator::Return { values: vec![] });
 
         let header_bid = add_block(
             &mut func,
@@ -805,9 +788,7 @@ mod tests {
 
         // Entry block branches to header.
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry
-            .ops
-            .push(make_op(OpCode::ConstInt, vec![], vec![v]));
+        entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![v]));
         entry.terminator = Terminator::Branch {
             target: header_bid,
             args: vec![],
@@ -818,10 +799,7 @@ mod tests {
         assert_eq!(stats.ops_removed, 2);
         // Only the ConstBool should remain in the header.
         assert_eq!(func.blocks[&header_bid].ops.len(), 1);
-        assert_eq!(
-            func.blocks[&header_bid].ops[0].opcode,
-            OpCode::ConstBool
-        );
+        assert_eq!(func.blocks[&header_bid].ops[0].opcode, OpCode::ConstBool);
     }
 
     // -----------------------------------------------------------------------
@@ -833,11 +811,7 @@ mod tests {
         let v = func.fresh_value();
         let cond = func.fresh_value();
 
-        let exit_bid = add_block(
-            &mut func,
-            vec![],
-            Terminator::Return { values: vec![] },
-        );
+        let exit_bid = add_block(&mut func, vec![], Terminator::Return { values: vec![] });
 
         // Header defines v itself — v is NOT loop-invariant.
         let header_bid = add_block(

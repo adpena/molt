@@ -42,9 +42,6 @@ use crate::tir::values::{TirValue, ValueId};
 
 use super::PassStats;
 
-/// Maximum number of versions per original block (bounded code size).
-const MAX_VERSIONS: usize = 2;
-
 /// A type context: the guarded value and the type the guard proves.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TypeContext {
@@ -74,10 +71,7 @@ struct GuardCandidate {
 fn parse_guard_type(op: &TirOp) -> Option<TirType> {
     // The type_guard_hoist tests use "ty", the deopt module uses "expected_type".
     // Check both, preferring "ty".
-    let type_str = op
-        .attrs
-        .get("ty")
-        .or_else(|| op.attrs.get("expected_type"));
+    let type_str = op.attrs.get("ty").or_else(|| op.attrs.get("expected_type"));
 
     match type_str {
         Some(AttrValue::Str(s)) => match s.to_uppercase().as_str() {
@@ -124,22 +118,6 @@ fn build_pred_map(func: &TirFunction) -> HashMap<BlockId, Vec<BlockId>> {
         }
     }
     pred_map
-}
-
-/// Build a map: ValueId -> BlockId (which block defines it).
-fn build_def_map(func: &TirFunction) -> HashMap<ValueId, BlockId> {
-    let mut def_map: HashMap<ValueId, BlockId> = HashMap::new();
-    for (&bid, block) in &func.blocks {
-        for arg in &block.args {
-            def_map.insert(arg.id, bid);
-        }
-        for op in &block.ops {
-            for &result in &op.results {
-                def_map.insert(result, bid);
-            }
-        }
-    }
-    def_map
 }
 
 /// Build a map: ValueId -> OpCode that produced it (for ops, not block args).
@@ -313,7 +291,7 @@ fn remap_terminator(term: &Terminator, remap: &HashMap<ValueId, ValueId>) -> Ter
     match term {
         Terminator::Branch { target, args } => Terminator::Branch {
             target: *target,
-            args: args.iter().map(|a| r(a)).collect(),
+            args: args.iter().map(&r).collect(),
         },
         Terminator::CondBranch {
             cond,
@@ -324,9 +302,9 @@ fn remap_terminator(term: &Terminator, remap: &HashMap<ValueId, ValueId>) -> Ter
         } => Terminator::CondBranch {
             cond: r(cond),
             then_block: *then_block,
-            then_args: then_args.iter().map(|a| r(a)).collect(),
+            then_args: then_args.iter().map(&r).collect(),
             else_block: *else_block,
-            else_args: else_args.iter().map(|a| r(a)).collect(),
+            else_args: else_args.iter().map(&r).collect(),
         },
         Terminator::Switch {
             value,
@@ -337,13 +315,13 @@ fn remap_terminator(term: &Terminator, remap: &HashMap<ValueId, ValueId>) -> Ter
             value: r(value),
             cases: cases
                 .iter()
-                .map(|(v, bid, args)| (*v, *bid, args.iter().map(|a| r(a)).collect()))
+                .map(|(v, bid, args)| (*v, *bid, args.iter().map(&r).collect()))
                 .collect(),
             default: *default,
-            default_args: default_args.iter().map(|a| r(a)).collect(),
+            default_args: default_args.iter().map(&r).collect(),
         },
         Terminator::Return { values } => Terminator::Return {
-            values: values.iter().map(|v| r(v)).collect(),
+            values: values.iter().map(r).collect(),
         },
         Terminator::Unreachable => Terminator::Unreachable,
     }
@@ -505,10 +483,20 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 };
                 match &pred_block.terminator {
                     Terminator::Branch { args, .. } => args.get(pos).copied(),
-                    Terminator::CondBranch { then_args, else_args, then_block, else_block, .. } => {
-                        if *then_block == bid { then_args.get(pos).copied() }
-                        else if *else_block == bid { else_args.get(pos).copied() }
-                        else { None }
+                    Terminator::CondBranch {
+                        then_args,
+                        else_args,
+                        then_block,
+                        else_block,
+                        ..
+                    } => {
+                        if *then_block == bid {
+                            then_args.get(pos).copied()
+                        } else if *else_block == bid {
+                            else_args.get(pos).copied()
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 }
@@ -600,10 +588,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         // Phase 3: Rewire predecessors.
         // Predecessors that can prove the guard type go to spec_bid.
         // Others stay pointed at orig_bid.
-        let preds: Vec<BlockId> = pred_map
-            .get(&orig_bid)
-            .cloned()
-            .unwrap_or_default();
+        let preds: Vec<BlockId> = pred_map.get(&orig_bid).cloned().unwrap_or_default();
 
         // Build an empty arg remap — branch arguments that correspond to block
         // args need to be remapped for the specialized version.
@@ -626,31 +611,38 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 let pred_block = &func.blocks[&pred_id];
                 match &pred_block.terminator {
                     Terminator::Branch { args, .. } => args.get(pos).copied(),
-                    Terminator::CondBranch { then_args, else_args, then_block, else_block, .. } => {
-                        if *then_block == orig_bid { then_args.get(pos).copied() }
-                        else if *else_block == orig_bid { else_args.get(pos).copied() }
-                        else { None }
+                    Terminator::CondBranch {
+                        then_args,
+                        else_args,
+                        then_block,
+                        else_block,
+                        ..
+                    } => {
+                        if *then_block == orig_bid {
+                            then_args.get(pos).copied()
+                        } else if *else_block == orig_bid {
+                            else_args.get(pos).copied()
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 }
             } else {
                 Some(guarded)
             };
-            let can_prove = source_value.is_some_and(|src| value_proves_type(
-                src,
-                &candidate.guard.context.proven_type,
-                &producing_ops,
-                &block_arg_types,
-            ));
+            let can_prove = source_value.is_some_and(|src| {
+                value_proves_type(
+                    src,
+                    &candidate.guard.context.proven_type,
+                    &producing_ops,
+                    &block_arg_types,
+                )
+            });
 
             if can_prove {
                 let pred_block = func.blocks.get_mut(&pred_id).unwrap();
-                redirect_terminator(
-                    &mut pred_block.terminator,
-                    orig_bid,
-                    spec_bid,
-                    &empty_remap,
-                );
+                redirect_terminator(&mut pred_block.terminator, orig_bid, spec_bid, &empty_remap);
             }
             // Otherwise, keep the edge to the generic (original) block.
         }
@@ -746,9 +738,7 @@ mod tests {
                 ty: TirType::DynBox,
             }],
             ops: vec![make_type_guard(x_arg, ok, "INT")],
-            terminator: Terminator::Return {
-                values: vec![ok],
-            },
+            terminator: Terminator::Return { values: vec![ok] },
         };
         func.blocks.insert(bb1, block1);
 
@@ -988,10 +978,7 @@ mod tests {
             TirBlock {
                 id: merge,
                 args: vec![],
-                ops: vec![
-                    make_const_int(val, 99),
-                    make_type_guard(val, ok, "INT"),
-                ],
+                ops: vec![make_const_int(val, 99), make_type_guard(val, ok, "INT")],
                 terminator: Terminator::Return { values: vec![ok] },
             },
         );
@@ -1147,6 +1134,9 @@ mod tests {
         );
 
         let stats = run(&mut func);
-        assert_eq!(stats.values_changed, 0, "unknown type should not be versioned");
+        assert_eq!(
+            stats.values_changed, 0,
+            "unknown type should not be versioned"
+        );
     }
 }
