@@ -26,6 +26,7 @@ falcon_ocr_image = (
         "transformers>=4.48.0",
         "httpx>=0.28.0",
         "pillow>=11.0",
+        "fastapi[standard]",
     )
     .run_commands(
         # Pre-download model weights into the image layer so cold starts
