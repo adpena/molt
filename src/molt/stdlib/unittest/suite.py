@@ -1,7 +1,17 @@
-"""unittest.suite — re-exported from unittest for Molt."""
+"""Intrinsic-first stdlib module stub for `unittest.suite`."""
 
 from __future__ import annotations
 
-from unittest import TestSuite
+from _intrinsics import require_intrinsic as _require_intrinsic
 
-__all__ = ["TestSuite"]
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
+
+
+def __getattr__(attr: str):
+    raise RuntimeError(
+        'stdlib module "unittest.suite" is not fully lowered yet; only an '
+        "intrinsic-first stub is available."
+    )
+
+
+globals().pop("_require_intrinsic", None)

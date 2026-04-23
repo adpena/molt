@@ -16,6 +16,10 @@ import os
 import re
 import struct
 import sys
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_molt_gettext_gettext = _require_intrinsic("molt_gettext_gettext")
+_molt_gettext_ngettext = _require_intrinsic("molt_gettext_ngettext")
 
 __all__ = [
     "NullTranslations",
@@ -336,15 +340,12 @@ class NullTranslations:
     def gettext(self, message: str) -> str:
         if self._fallback:
             return self._fallback.gettext(message)
-        return message
+        return _molt_gettext_gettext(message)
 
     def ngettext(self, msgid1: str, msgid2: str, n: int) -> str:
         if self._fallback:
             return self._fallback.ngettext(msgid1, msgid2, n)
-        n = _as_int(n)
-        if n == 1:
-            return msgid1
-        return msgid2
+        return _molt_gettext_ngettext(msgid1, msgid2, n)
 
     def pgettext(self, context: str, message: str) -> str:
         if self._fallback:
@@ -629,7 +630,7 @@ def dgettext(domain: str, message: str) -> str:
     try:
         t = translation(domain, _localedirs.get(domain))
     except OSError:
-        return message
+        return _molt_gettext_gettext(message)
     return t.gettext(message)
 
 
@@ -637,9 +638,7 @@ def dngettext(domain: str, msgid1: str, msgid2: str, n: int) -> str:
     try:
         t = translation(domain, _localedirs.get(domain))
     except OSError:
-        if n == 1:
-            return msgid1
-        return msgid2
+        return _molt_gettext_ngettext(msgid1, msgid2, n)
     return t.ngettext(msgid1, msgid2, n)
 
 
