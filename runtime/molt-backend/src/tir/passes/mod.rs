@@ -2,6 +2,7 @@
 //! Each pass transforms a TirFunction in-place and returns statistics.
 
 pub mod bce;
+pub mod block_versioning;
 pub mod cha;
 pub mod closure_spec;
 pub mod dce;
@@ -11,6 +12,7 @@ pub mod fast_math;
 pub mod interprocedural;
 pub mod loop_narrow;
 pub mod monomorphize;
+pub mod effects;
 pub mod polyhedral;
 mod reachability;
 pub mod refcount_elim;
@@ -49,7 +51,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     // lower the original IR structurally without pass-induced metadata drift.
     let snapshot = func.clone();
 
-    let mut stats = Vec::with_capacity(9);
+    let mut stats = Vec::with_capacity(10);
 
     // Each pass can be individually disabled for debugging:
     //   MOLT_TIR_SKIP=unboxing,sccp,dce (comma-separated pass names)
@@ -133,6 +135,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
 
     run_pass!("loop_narrow", loop_narrow::run(func));
     run_pass!("unboxing", unboxing::run(func));
+    run_pass!("block_versioning", block_versioning::run(func));
     run_pass!("escape_analysis", escape_analysis::run(func));
     run_pass!("refcount_elim", refcount_elim::run(func));
     run_pass!("type_guard_hoist", type_guard_hoist::run(func));

@@ -1,14 +1,13 @@
-"""HTML entity escaping/unescaping — CPython 3.12 parity for Molt.
-
-Pure-Python implementation using the html.entities.html5 table.
-No intrinsics required; delegates to html.entities for the named
-character reference table.
-"""
+"""HTML entity escaping/unescaping — CPython 3.12 parity for Molt."""
 
 from __future__ import annotations
 
 import re as _re
+from _intrinsics import require_intrinsic as _require_intrinsic
 from html.entities import html5 as _html5
+
+_molt_html_escape = _require_intrinsic("molt_html_escape")
+_molt_html_unescape = _require_intrinsic("molt_html_unescape")
 
 __all__ = ["escape", "unescape"]
 
@@ -19,13 +18,7 @@ def escape(s: str, quote: bool = True) -> str:
     If the optional flag *quote* is true (the default), the quotation mark
     characters, both double quote (") and single quote ('), are also translated.
     """
-    s = s.replace("&", "&amp;")  # Must be done first!
-    s = s.replace("<", "&lt;")
-    s = s.replace(">", "&gt;")
-    if quote:
-        s = s.replace('"', "&quot;")
-        s = s.replace("'", "&#x27;")
-    return s
+    return _molt_html_escape(s, quote)
 
 
 # https://html.spec.whatwg.org/multipage/parsing.html#numeric-character-reference-end-state
@@ -244,6 +237,4 @@ def unescape(s: str) -> str:
     for both valid and invalid character references, and the list of
     HTML 5 named character references defined in html.entities.html5.
     """
-    if "&" not in s:
-        return s
-    return _charref.sub(_replace_charref, s)
+    return _molt_html_unescape(s)

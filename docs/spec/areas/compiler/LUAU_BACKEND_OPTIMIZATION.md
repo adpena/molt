@@ -56,10 +56,13 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | List assignment/deletion | 0-to-1 index adjustment plus bounds guard for known list containers | Correct -- raises `IndexError` on out-of-range mutation |
 | `list.pop` / `list.index` | Direct `table.remove` / bounded loops with explicit Python error guards | Correct for admitted list subset, including `list.index(value, start, stop)` |
 | `list.insert` | Clamped 0-to-1 index conversion before `table.insert` or append | Correct for admitted list subset |
+| `list.extend` / star expansion | `table.move(src, 1, #src, #dst + 1, dst)` | Optimized bulk array append |
 | List repetition | `table.create(math.max(0, count), value)` | Correct negative-count empty-list behavior with preallocation |
 | `str.startswith` / `str.endswith` | Direct `string.sub` checks with optional bound normalization | Correct for admitted string subset |
 | `str.find` | Plain `string.find` with optional bound normalization | Correct for admitted string subset |
+| `str.count` | Plain `string.find` non-overlap loop with optional bound normalization | Correct for admitted string subset |
 | `str.split` | Luau helper with empty-separator guard | Correct for admitted split subset |
+| `str.replace` | Escaped plain-pattern `string.gsub` with optional count limit | Correct for admitted replace subset |
 | `dict.popitem` | `pairs` loop with empty-dict guard | Correct empty-dict `KeyError`; order follows Luau table iteration |
 | Dict literal `{}` | `{[k1]=v1, ...}` keyed table | Optimal |
 | Set `set()` | `{}` table (values as keys mapped to `true`) | Correct |
