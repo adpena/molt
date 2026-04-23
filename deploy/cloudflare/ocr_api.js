@@ -2323,7 +2323,107 @@ function parseOnnxModel(buffer) {
     }
   }
 
-  return { nodes, initializers, inputs: inputNames, outputs: outputNames };
+  return fuseConvBn({ nodes, initializers, inputs: inputNames, outputs: outputNames });
+}
+
+/**
+ * Graph-level Conv+BatchNormalization fusion.
+ *
+ * When Conv is immediately followed by BatchNormalization (Conv output is BN's
+ * only consumer), fold BN's scale/bias/mean/variance into Conv's weight/bias.
+ * This eliminates the BN node and its per-element multiply+add pass entirely.
+ *
+ * Math:
+ *   BN(x) = scale * (x - mean) / sqrt(var + eps) + bias
+ *         = (scale / sqrt(var + eps)) * x + (bias - scale * mean / sqrt(var + eps))
+ *
+ *   Fused weight: w_new[co] = w[co] * (scale[co] / sqrt(var[co] + eps))
+ *   Fused bias:   b_new[co] = (b[co] or 0) * factor + (bias[co] - scale[co] * mean[co] / sqrt(var[co] + eps))
+ *
+ * @param {{ nodes: Array, initializers: Map, inputs: string[], outputs: string[] }} model
+ * @returns {{ nodes: Array, initializers: Map, inputs: string[], outputs: string[] }}
+ */
+function fuseConvBn(model) {
+  const { nodes, initializers } = model;
+  const fusedNodes = [];
+  const skipSet = new Set();
+
+  // Build output-consumer map: which nodes consume each output
+  const consumers = new Map();
+  for (let i = 0; i < nodes.length; i++) {
+    for (const inp of nodes[i].inputs) {
+      if (!inp) continue;
+      const arr = consumers.get(inp);
+      if (arr) arr.push(i);
+      else consumers.set(inp, [i]);
+    }
+  }
+
+  for (let i = 0; i < nodes.length; i++) {
+    if (skipSet.has(i)) continue;
+    const node = nodes[i];
+
+    if (node.opType === "Conv" && i + 1 < nodes.length) {
+      const next = nodes[i + 1];
+      // Check: next is BN, its input[0] is Conv's output[0], and Conv output has only 1 consumer
+      if (
+        next.opType === "BatchNormalization" &&
+        next.inputs[0] === node.outputs[0] &&
+        (consumers.get(node.outputs[0]) || []).length === 1
+      ) {
+        const wName = node.inputs[1];
+        const bName = node.inputs.length > 2 ? node.inputs[2] : null;
+        const bnScale = initializers.get(next.inputs[1]);
+        const bnBias = initializers.get(next.inputs[2]);
+        const bnMean = initializers.get(next.inputs[3]);
+        const bnVar = initializers.get(next.inputs[4]);
+        const w = initializers.get(wName);
+
+        if (w && bnScale && bnBias && bnMean && bnVar) {
+          const eps = next.attrs.get("epsilon") || 1e-5;
+          const Co = w.dims[0];
+          const kernelSize = w.data.length / Co;
+
+          // Get or create bias
+          const origBias = bName ? initializers.get(bName) : null;
+          const fusedBiasData = new Float32Array(Co);
+
+          for (let co = 0; co < Co; co++) {
+            const invStd = 1.0 / Math.sqrt(bnVar.data[co] + eps);
+            const factor = bnScale.data[co] * invStd;
+
+            // Fuse into weight
+            const wOff = co * kernelSize;
+            for (let j = 0; j < kernelSize; j++) {
+              w.data[wOff + j] *= factor;
+            }
+
+            // Fuse into bias
+            const origB = origBias ? origBias.data[co] : 0;
+            fusedBiasData[co] = origB * factor + bnBias.data[co] - bnMean.data[co] * factor;
+          }
+
+          // Store fused bias
+          const fusedBiasName = wName + "_fused_bias";
+          initializers.set(fusedBiasName, { dims: [Co], data: fusedBiasData });
+
+          // Create fused Conv node with BN's output name
+          fusedNodes.push({
+            opType: "Conv",
+            inputs: [node.inputs[0], wName, fusedBiasName],
+            outputs: next.outputs,
+            attrs: node.attrs,
+          });
+          skipSet.add(i + 1);
+          continue;
+        }
+      }
+    }
+
+    fusedNodes.push(node);
+  }
+
+  return { nodes: fusedNodes, initializers, inputs: model.inputs, outputs: model.outputs };
 }
 
 /**
@@ -2433,8 +2533,9 @@ function extractValueInfoName(bytes) {
  * @param {Map<string, { dims: number[], data: Float32Array }>} feedDict
  * @returns {Map<string, { dims: number[], data: Float32Array }>}
  */
-function executeOnnxGraph(model, feedDict) {
+function executeOnnxGraph(model, feedDict, profileOps = false) {
   const tensors = new Map();
+  const opProfile = profileOps ? new Map() : null;
 
   // Load initializers (weights)
   for (const [name, val] of model.initializers) {
@@ -2468,8 +2569,88 @@ function executeOnnxGraph(model, feedDict) {
     return n;
   }
 
+  /**
+   * im2col: unroll input patches into a 2D column matrix for Conv2d.
+   * Converts the 8-loop convolution into a single matmul: output = weight_matrix @ col_matrix.
+   * @param {Float32Array} x - Input NCHW data
+   * @param {number} Ci - Input channels
+   * @param {number} Hi - Input height
+   * @param {number} Wi - Input width
+   * @param {number} Kh - Kernel height
+   * @param {number} Kw - Kernel width
+   * @param {number} Ho - Output height
+   * @param {number} Wo - Output width
+   * @param {number} sh - Stride height
+   * @param {number} sw - Stride width
+   * @param {number} dh - Dilation height
+   * @param {number} dw - Dilation width
+   * @param {number} pt - Padding top
+   * @param {number} pl - Padding left
+   * @param {number} batchOffset - Offset into x for this batch
+   * @param {number} ciStart - Start channel (for grouped conv)
+   * @param {number} ciCount - Number of channels
+   * @returns {Float32Array} Column matrix of shape [ciCount * Kh * Kw, Ho * Wo]
+   */
+  function im2col(x, Ci, Hi, Wi, Kh, Kw, Ho, Wo, sh, sw, dh, dw, pt, pl, batchOffset, ciStart, ciCount) {
+    const colRows = ciCount * Kh * Kw;
+    const colCols = Ho * Wo;
+    const col = new Float32Array(colRows * colCols);
+    let colIdx = 0;
+    for (let ci = 0; ci < ciCount; ci++) {
+      const ciAbs = ciStart + ci;
+      const chanOff = batchOffset + ciAbs * Hi * Wi;
+      for (let kh = 0; kh < Kh; kh++) {
+        for (let kw = 0; kw < Kw; kw++) {
+          for (let oh = 0; oh < Ho; oh++) {
+            const ih = oh * sh - pt + kh * dh;
+            if (ih < 0 || ih >= Hi) {
+              // Entire row is zero-padded
+              colIdx += Wo;
+              continue;
+            }
+            const rowOff = chanOff + ih * Wi;
+            for (let ow = 0; ow < Wo; ow++) {
+              const iw = ow * sw - pl + kw * dw;
+              col[colIdx++] = (iw >= 0 && iw < Wi) ? x[rowOff + iw] : 0;
+            }
+          }
+        }
+      }
+    }
+    return col;
+  }
+
+  /**
+   * Tiled matmul: C = A @ B, with cache-friendly 32x32 tiling.
+   * A is [M, K], B is [K, N], C is [M, N].
+   */
+  function tiledMatmul(a, b, M, K, N, out, outOffset) {
+    const TILE = 32;
+    for (let m0 = 0; m0 < M; m0 += TILE) {
+      const mEnd = Math.min(m0 + TILE, M);
+      for (let n0 = 0; n0 < N; n0 += TILE) {
+        const nEnd = Math.min(n0 + TILE, N);
+        for (let k0 = 0; k0 < K; k0 += TILE) {
+          const kEnd = Math.min(k0 + TILE, K);
+          for (let m = m0; m < mEnd; m++) {
+            const aRowOff = m * K;
+            const oRowOff = outOffset + m * N;
+            for (let k = k0; k < kEnd; k++) {
+              const aVal = a[aRowOff + k];
+              const bRowOff = k * N;
+              for (let n = n0; n < nEnd; n++) {
+                out[oRowOff + n] += aVal * b[bRowOff + n];
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   for (const node of model.nodes) {
     const { opType, inputs, outputs, attrs } = node;
+    const t0 = opProfile ? performance.now() : 0;
 
     switch (opType) {
       case "Conv": {
@@ -2492,32 +2673,38 @@ function executeOnnxGraph(model, feedDict) {
 
         const coPerGroup = Co / group;
         const ciPerGroup = Ci / group;
+        const spatialSize = Ho * Wo;
+        const colSize = ciPerGroup * Kh * Kw;
 
+        // im2col + GEMM: convert conv to matmul for V8 JIT optimization
         for (let n = 0; n < N; n++) {
+          const batchOff = n * Ci * Hi * Wi;
           for (let g = 0; g < group; g++) {
-            for (let co = 0; co < coPerGroup; co++) {
-              const coAbs = g * coPerGroup + co;
-              for (let oh = 0; oh < Ho; oh++) {
-                for (let ow = 0; ow < Wo; ow++) {
-                  let sum = bias ? bias.data[coAbs] : 0;
-                  for (let ci = 0; ci < ciPerGroup; ci++) {
-                    const ciAbs = g * ciPerGroup + ci;
-                    for (let kh = 0; kh < Kh; kh++) {
-                      for (let kw = 0; kw < Kw; kw++) {
-                        const ih = oh * sh - pt + kh * dh;
-                        const iw = ow * sw - pl + kw * dw;
-                        if (ih >= 0 && ih < Hi && iw >= 0 && iw < Wi) {
-                          const xIdx = ((n * Ci + ciAbs) * Hi + ih) * Wi + iw;
-                          const wIdx = ((coAbs * CiG + ci) * Kh + kh) * Kw + kw;
-                          sum += x.data[xIdx] * w.data[wIdx];
-                        }
-                      }
-                    }
-                  }
-                  out[((n * Co + coAbs) * Ho + oh) * Wo + ow] = sum;
+            // im2col: unroll input patches into column matrix [colSize, spatialSize]
+            const col = im2col(
+              x.data, Ci, Hi, Wi, Kh, Kw, Ho, Wo,
+              sh, sw, dh, dw, pt, pl,
+              batchOff, g * ciPerGroup, ciPerGroup
+            );
+
+            // GEMM: weight [coPerGroup, colSize] @ col [colSize, spatialSize]
+            // → output [coPerGroup, spatialSize]
+            const wOff = g * coPerGroup * colSize;
+            const oOff = n * Co * spatialSize + g * coPerGroup * spatialSize;
+
+            // Initialize with bias
+            if (bias) {
+              for (let co = 0; co < coPerGroup; co++) {
+                const bVal = bias.data[g * coPerGroup + co];
+                const rowOff = oOff + co * spatialSize;
+                for (let s = 0; s < spatialSize; s++) {
+                  out[rowOff + s] = bVal;
                 }
               }
             }
+
+            // Tiled matmul: weight @ col → out
+            tiledMatmul(w.data.subarray(wOff), col, coPerGroup, colSize, spatialSize, out, oOff);
           }
         }
         tensors.set(outputs[0], { dims: [N, Co, Ho, Wo], data: out });
@@ -2773,7 +2960,6 @@ function executeOnnxGraph(model, feedDict) {
       case "MatMul": {
         const a = getTensor(inputs[0]);
         const b = getTensor(inputs[1]);
-        // Support 2D and batched matmul
         const aRank = a.dims.length;
         const bRank = b.dims.length;
         const M = a.dims[aRank - 2] || 1;
@@ -2785,15 +2971,11 @@ function executeOnnxGraph(model, feedDict) {
           const aOff = batch * M * K;
           const bOff = bRank > 2 ? batch * K * N : 0;
           const oOff = batch * M * N;
-          for (let m = 0; m < M; m++) {
-            for (let n = 0; n < N; n++) {
-              let sum = 0;
-              for (let k = 0; k < K; k++) {
-                sum += a.data[aOff + m * K + k] * b.data[bOff + k * N + n];
-              }
-              out[oOff + m * N + n] = sum;
-            }
-          }
+          tiledMatmul(
+            a.data.subarray(aOff, aOff + M * K),
+            b.data.subarray(bOff, bOff + K * N),
+            M, K, N, out, oOff
+          );
         }
         const outDims = batchSize > 1
           ? [...a.dims.slice(0, -2), M, N]
@@ -2922,7 +3104,8 @@ function executeOnnxGraph(model, feedDict) {
 
       case "Resize": {
         const x = getTensor(inputs[0]);
-        // Resize inputs: X, roi, scales, sizes — we use nearest neighbor
+        const mode = attrs.get("mode") || "nearest";
+        const coordTransform = attrs.get("coordinate_transformation_mode") || "half_pixel";
         const [N, C, Hi, Wi] = x.dims;
         let Ho, Wo;
         if (inputs.length > 3 && inputs[3] && tensors.has(inputs[3])) {
@@ -2937,13 +3120,48 @@ function executeOnnxGraph(model, feedDict) {
           Ho = Hi; Wo = Wi;
         }
         const out = new Float32Array(N * C * Ho * Wo);
+        const useLinear = mode === "linear" || mode === "bilinear";
         for (let n = 0; n < N; n++) {
           for (let c = 0; c < C; c++) {
+            const chanOff = (n * C + c) * Hi * Wi;
+            const outChanOff = (n * C + c) * Ho * Wo;
             for (let oh = 0; oh < Ho; oh++) {
               for (let ow = 0; ow < Wo; ow++) {
-                const ih = Math.min(Math.floor(oh * Hi / Ho), Hi - 1);
-                const iw = Math.min(Math.floor(ow * Wi / Wo), Wi - 1);
-                out[((n * C + c) * Ho + oh) * Wo + ow] = x.data[((n * C + c) * Hi + ih) * Wi + iw];
+                if (useLinear) {
+                  // Bilinear interpolation
+                  let srcH, srcW;
+                  if (coordTransform === "align_corners") {
+                    srcH = Ho > 1 ? oh * (Hi - 1) / (Ho - 1) : 0;
+                    srcW = Wo > 1 ? ow * (Wi - 1) / (Wo - 1) : 0;
+                  } else if (coordTransform === "asymmetric") {
+                    srcH = oh * Hi / Ho;
+                    srcW = ow * Wi / Wo;
+                  } else {
+                    // half_pixel
+                    srcH = (oh + 0.5) * Hi / Ho - 0.5;
+                    srcW = (ow + 0.5) * Wi / Wo - 0.5;
+                  }
+                  const h0 = Math.max(0, Math.floor(srcH));
+                  const w0 = Math.max(0, Math.floor(srcW));
+                  const h1 = Math.min(h0 + 1, Hi - 1);
+                  const w1 = Math.min(w0 + 1, Wi - 1);
+                  const fh = srcH - h0;
+                  const fw = srcW - w0;
+                  const v00 = x.data[chanOff + h0 * Wi + w0];
+                  const v01 = x.data[chanOff + h0 * Wi + w1];
+                  const v10 = x.data[chanOff + h1 * Wi + w0];
+                  const v11 = x.data[chanOff + h1 * Wi + w1];
+                  out[outChanOff + oh * Wo + ow] =
+                    v00 * (1 - fh) * (1 - fw) +
+                    v01 * (1 - fh) * fw +
+                    v10 * fh * (1 - fw) +
+                    v11 * fh * fw;
+                } else {
+                  // Nearest neighbor
+                  const ih = Math.min(Math.floor(oh * Hi / Ho), Hi - 1);
+                  const iw = Math.min(Math.floor(ow * Wi / Wo), Wi - 1);
+                  out[outChanOff + oh * Wo + ow] = x.data[chanOff + ih * Wi + iw];
+                }
               }
             }
           }
@@ -3101,8 +3319,61 @@ function executeOnnxGraph(model, feedDict) {
 
       case "Slice": {
         const x = getTensor(inputs[0]);
-        // Simple passthrough for now — PaddleOCR uses Slice minimally
-        tensors.set(outputs[0], { dims: [...x.dims], data: x.data });
+        const starts = inputs[1] ? Array.from(getTensor(inputs[1]).data).map(v => Math.round(v)) : [0];
+        const ends = inputs[2] ? Array.from(getTensor(inputs[2]).data).map(v => Math.round(v)) : [x.dims[0]];
+        const axes = inputs[3] ? Array.from(getTensor(inputs[3]).data).map(v => Math.round(v)) : starts.map((_, i) => i);
+        const steps = inputs[4] ? Array.from(getTensor(inputs[4]).data).map(v => Math.round(v)) : starts.map(() => 1);
+
+        // Resolve negative indices and clamp
+        const resolvedStarts = [];
+        const resolvedEnds = [];
+        const outDims = [...x.dims];
+        for (let i = 0; i < axes.length; i++) {
+          const axis = axes[i] < 0 ? axes[i] + x.dims.length : axes[i];
+          const dimSize = x.dims[axis];
+          let s = starts[i] < 0 ? starts[i] + dimSize : starts[i];
+          let e = ends[i] < 0 ? ends[i] + dimSize : ends[i];
+          const step = steps[i];
+          s = Math.max(0, Math.min(s, dimSize));
+          e = Math.max(0, Math.min(e, dimSize));
+          const sliceLen = Math.max(0, Math.ceil((e - s) / step));
+          outDims[axis] = sliceLen;
+          resolvedStarts[axis] = s;
+          resolvedEnds[axis] = e;
+        }
+        // Fill in non-sliced axes
+        for (let a = 0; a < x.dims.length; a++) {
+          if (resolvedStarts[a] === undefined) {
+            resolvedStarts[a] = 0;
+            resolvedEnds[a] = x.dims[a];
+          }
+        }
+
+        const outSize = numel(outDims);
+        const out = new Float32Array(outSize);
+        // Compute strides for source
+        const srcStrides = new Array(x.dims.length);
+        srcStrides[x.dims.length - 1] = 1;
+        for (let d = x.dims.length - 2; d >= 0; d--) {
+          srcStrides[d] = srcStrides[d + 1] * x.dims[d + 1];
+        }
+        const dstStrides = new Array(outDims.length);
+        dstStrides[outDims.length - 1] = 1;
+        for (let d = outDims.length - 2; d >= 0; d--) {
+          dstStrides[d] = dstStrides[d + 1] * outDims[d + 1];
+        }
+        // Iterate over output elements
+        for (let i = 0; i < outSize; i++) {
+          let srcIdx = 0;
+          let rem = i;
+          for (let d = 0; d < outDims.length; d++) {
+            const coord = Math.floor(rem / dstStrides[d]);
+            rem %= dstStrides[d];
+            srcIdx += (resolvedStarts[d] + coord * (steps[axes.indexOf(d)] !== undefined ? steps[axes.indexOf(d)] : 1)) * srcStrides[d];
+          }
+          out[i] = x.data[srcIdx];
+        }
+        tensors.set(outputs[0], { dims: outDims, data: out });
         break;
       }
 
@@ -3115,8 +3386,44 @@ function executeOnnxGraph(model, feedDict) {
 
       case "Pad": {
         const x = getTensor(inputs[0]);
-        // Simple passthrough — PaddleOCR detector handles padding in preprocessing
-        tensors.set(outputs[0], { dims: [...x.dims], data: x.data });
+        const padsT = inputs[1] ? getTensor(inputs[1]) : null;
+        const constValT = inputs[2] ? getTensor(inputs[2]) : null;
+        const padVal = constValT ? constValT.data[0] : 0;
+
+        if (!padsT || padsT.data.every(v => v === 0)) {
+          // No padding needed
+          tensors.set(outputs[0], { dims: [...x.dims], data: x.data });
+          break;
+        }
+
+        const rank = x.dims.length;
+        const padsBefore = Array.from(padsT.data.subarray(0, rank)).map(v => Math.round(v));
+        const padsAfter = Array.from(padsT.data.subarray(rank, 2 * rank)).map(v => Math.round(v));
+        const outDims = x.dims.map((d, i) => d + padsBefore[i] + padsAfter[i]);
+        const outSize = numel(outDims);
+        const out = new Float32Array(outSize);
+        if (padVal !== 0) out.fill(padVal);
+
+        // Copy source data into padded output
+        const srcStrides = new Array(rank);
+        const dstStrides = new Array(rank);
+        srcStrides[rank - 1] = 1;
+        dstStrides[rank - 1] = 1;
+        for (let d = rank - 2; d >= 0; d--) {
+          srcStrides[d] = srcStrides[d + 1] * x.dims[d + 1];
+          dstStrides[d] = dstStrides[d + 1] * outDims[d + 1];
+        }
+        for (let i = 0; i < x.data.length; i++) {
+          let srcIdx = i;
+          let dstIdx = 0;
+          for (let d = 0; d < rank; d++) {
+            const coord = Math.floor(srcIdx / srcStrides[d]);
+            srcIdx %= srcStrides[d];
+            dstIdx += (coord + padsBefore[d]) * dstStrides[d];
+          }
+          out[dstIdx] = x.data[i];
+        }
+        tensors.set(outputs[0], { dims: outDims, data: out });
         break;
       }
 
@@ -3238,6 +3545,17 @@ function executeOnnxGraph(model, feedDict) {
         }
         break;
     }
+
+    // Per-op profiling: record elapsed time per op type
+    if (opProfile) {
+      const elapsed = performance.now() - t0;
+      const arr = opProfile.get(opType);
+      if (arr) {
+        arr.push(elapsed);
+      } else {
+        opProfile.set(opType, [elapsed]);
+      }
+    }
   }
 
   // Collect outputs
@@ -3247,6 +3565,20 @@ function executeOnnxGraph(model, feedDict) {
       results.set(name, tensors.get(name));
     }
   }
+
+  // Attach profiling data if enabled
+  if (opProfile) {
+    results._profile = Object.fromEntries(
+      [...opProfile.entries()]
+        .map(([op, times]) => [op, {
+          count: times.length,
+          total_ms: times.reduce((a, b) => a + b, 0),
+          mean_ms: times.reduce((a, b) => a + b, 0) / times.length,
+        }])
+        .sort((a, b) => b[1].total_ms - a[1].total_ms)
+    );
+  }
+
   return results;
 }
 
@@ -3589,7 +3921,10 @@ export async function handlePaddleMoltInference(request, env, cors, rid) {
   // The detector's input name is typically "x" for PaddleOCR
   const detInputName = globalThis._paddleDetModel.inputs[0] || "x";
   detInput.set(detInputName, { dims: det.dims, data: det.data });
-  const detOutputs = executeOnnxGraph(globalThis._paddleDetModel, detInput);
+  const url = new URL(request.url);
+  const wantProfile = url.searchParams.has("profile");
+  const detOutputs = executeOnnxGraph(globalThis._paddleDetModel, detInput, wantProfile);
+  const detProfile = wantProfile ? detOutputs._profile : null;
 
   const detMs = Date.now() - start - modelLoadMs - parseMs;
 
@@ -3621,7 +3956,7 @@ export async function handlePaddleMoltInference(request, env, cors, rid) {
     const rec = paddleRecPreprocess(rgb, imgW, box);
     const recInput = new Map();
     recInput.set(recInputName, { dims: rec.dims, data: rec.data });
-    const recOutputs = executeOnnxGraph(recModel, recInput);
+    const recOutputs = executeOnnxGraph(recModel, recInput, wantProfile);
 
     const recOutputName = recModel.outputs[0] || "softmax_0.tmp_0";
     const recResult = recOutputs.get(recOutputName);
@@ -3658,6 +3993,7 @@ export async function handlePaddleMoltInference(request, env, cors, rid) {
       detection_ms: detMs,
       total_ms: totalMs,
     },
+    ...(detProfile ? { profile: { detector: detProfile } } : {}),
     image: {
       width: imgW,
       height: imgH,
