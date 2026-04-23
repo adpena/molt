@@ -4220,12 +4220,16 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                 e = s;
                             }
                             for &item in new_items.iter() {
-                                inc_ref_bits(_py, item);
+                                if crate::object::refcount_opt::is_heap_ref(item) {
+                                    inc_ref_bits(_py, item);
+                                }
                             }
                             let removed: Vec<u64> =
                                 elems.splice(s..e, new_items.iter().copied()).collect();
                             for old_bits in removed {
-                                dec_ref_bits(_py, old_bits);
+                                if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                                    dec_ref_bits(_py, old_bits);
+                                }
                             }
                             return obj_bits;
                         }
@@ -4242,12 +4246,16 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             );
                         }
                         for &item in new_items.iter() {
-                            inc_ref_bits(_py, item);
+                            if crate::object::refcount_opt::is_heap_ref(item) {
+                                inc_ref_bits(_py, item);
+                            }
                         }
                         for (idx, &item) in indices.iter().zip(new_items.iter()) {
                             let old_bits = elems[*idx];
                             if old_bits != item {
-                                dec_ref_bits(_py, old_bits);
+                                if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                                    dec_ref_bits(_py, old_bits);
+                                }
                                 elems[*idx] = item;
                             }
                         }
@@ -4298,8 +4306,12 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     let elems = seq_vec(ptr);
                     let old_bits = elems[i as usize];
                     if old_bits != val_bits {
-                        dec_ref_bits(_py, old_bits);
-                        inc_ref_bits(_py, val_bits);
+                        if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                            dec_ref_bits(_py, old_bits);
+                        }
+                        if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                            inc_ref_bits(_py, val_bits);
+                        }
                         elems[i as usize] = val_bits;
                     }
                     return obj_bits;
@@ -8804,12 +8816,14 @@ pub(crate) unsafe fn dict_set_in_place(
             let val_idx = entry_idx * 2 + 1;
             let old_bits = order[val_idx];
             if old_bits != val_bits {
-                dec_ref_bits(_py, old_bits);
-                inc_ref_bits(_py, val_bits);
-                order[val_idx] = val_bits;
+                if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                    dec_ref_bits(_py, old_bits);
+                }
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                    inc_ref_bits(_py, val_bits);
                     (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
                 }
+                order[val_idx] = val_bits;
             }
             return;
         }
@@ -8826,8 +8840,12 @@ pub(crate) unsafe fn dict_set_in_place(
 
         order.push(key_bits);
         order.push(val_bits);
-        inc_ref_bits(_py, key_bits);
-        inc_ref_bits(_py, val_bits);
+        if crate::object::refcount_opt::is_heap_ref(key_bits) {
+            inc_ref_bits(_py, key_bits);
+        }
+        if crate::object::refcount_opt::is_heap_ref(val_bits) {
+            inc_ref_bits(_py, val_bits);
+        }
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
         if crate::object::refcount_opt::is_heap_ref(key_bits)
@@ -10674,11 +10692,17 @@ pub extern "C" fn molt_list_setitem_raw_idx(list_bits: u64, raw_idx: i64, val_bi
                     val_bits,
                 );
             }
-            // Dec-ref old value, store new, inc-ref new
+            // Dec-ref old value, store new, inc-ref new.
+            // Skip refcount ops for inline primitives (bool, int, None, float)
+            // — they have no heap allocation, so inc/dec_ref_bits are no-ops.
             let old = elems[idx as usize];
             elems[idx as usize] = val_bits;
-            inc_ref_bits(_py, val_bits);
-            dec_ref_bits(_py, old);
+            if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                inc_ref_bits(_py, val_bits);
+            }
+            if crate::object::refcount_opt::is_heap_ref(old) {
+                dec_ref_bits(_py, old);
+            }
             MoltObject::none().bits()
         }
     })
@@ -11041,12 +11065,19 @@ pub extern "C" fn molt_list_setitem_int_fast(
             let elems = seq_vec(ptr);
             let old_bits = elems[idx as usize];
             if old_bits != val_bits {
-                dec_ref_bits(_py, old_bits);
-                inc_ref_bits(_py, val_bits);
-                elems[idx as usize] = val_bits;
+                // Skip refcount ops for inline primitives (bool, int, None, float).
+                // These are NaN-boxed values with no heap allocation — as_ptr()
+                // returns None so inc_ref_bits/dec_ref_bits would be no-ops, but
+                // skipping the function call eliminates overhead in hot loops
+                // (e.g., sieve: is_prime[i] = False millions of times).
+                if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                    dec_ref_bits(_py, old_bits);
+                }
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                    inc_ref_bits(_py, val_bits);
                     (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
                 }
+                elems[idx as usize] = val_bits;
             }
             list_bits
         })
