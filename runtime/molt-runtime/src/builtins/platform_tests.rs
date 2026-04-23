@@ -1964,16 +1964,12 @@ fn importlib_metadata_payload_parses_name_version_and_entry_points() {
 
 #[test]
 fn importlib_metadata_record_payload_parses_rows() {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let tmp = std::env::temp_dir().join(format!(
-        "molt_importlib_metadata_record_payload_{}_{}",
-        std::process::id(),
-        stamp
-    ));
-    let dist = tmp.join("demo_record-1.0.dist-info");
+    let tmp =
+        tempfile::Builder::new()
+            .prefix("molt_importlib_metadata_record_payload_")
+            .tempdir_in(std::env::temp_dir())
+            .expect("create temp dir");
+    let dist = tmp.path().join("demo_record-1.0.dist-info");
     std::fs::create_dir_all(&dist).expect("create dist-info dir");
     std::fs::write(
         dist.join("RECORD"),
@@ -1989,8 +1985,6 @@ fn importlib_metadata_record_payload_parses_rows() {
     assert_eq!(payload[1].path, "demo_record/data,file.txt");
     assert!(payload[1].hash.is_none());
     assert!(payload[1].size.is_none());
-
-    std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }
 
 #[test]
