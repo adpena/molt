@@ -39,7 +39,12 @@ impl PtrRegistry {
     }
 
     fn shard(&self, addr: u64) -> &RwLock<HashMap<u64, PtrSlot>> {
-        let idx = (addr as usize) % PTR_REGISTRY_SHARDS;
+        // Bit-mix hash to distribute aligned pointers across shards.
+        // Allocators return 16-byte aligned addresses, so naive modular
+        // hashing (addr % 64) clusters into 4 of 64 shards. This
+        // multiply-shift distributes evenly regardless of alignment.
+        let mixed = addr.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58;
+        let idx = mixed as usize & (PTR_REGISTRY_SHARDS - 1);
         &self.shards[idx]
     }
 }
