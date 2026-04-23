@@ -13,7 +13,7 @@ wide = { version = "0.7", optional = true }
 metal = "0.30"
 
 [features]
-default = ["metal-backend", "cpu-backend"]
+default = ["metal-backend", "cpu-backend", "simd-accel"]
 metal-backend = []
 metal4 = ["metal-backend"]
 cpu-backend = []
