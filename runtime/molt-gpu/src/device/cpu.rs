@@ -409,9 +409,11 @@ pub mod interpret {
             }
         }
 
-        for gid in 0..output_numel {
-            let mut values: Vec<f64> = Vec::with_capacity(kernel.ops.len());
+        // Pre-allocate values buffer outside the hot loop to avoid per-element
+        // heap allocation. This is the single biggest optimization for small kernels.
+        let mut values: Vec<f64> = vec![0.0; kernel.ops.len()];
 
+        for gid in 0..output_numel {
             for (op_idx, op) in kernel.ops.iter().enumerate() {
                 if matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax) {
                     // Handle reduce ops
@@ -468,7 +470,7 @@ pub mod interpret {
                             _ => unreachable!(),
                         };
                     }
-                    values.push(acc);
+                    values[op_idx] = acc;
                     continue;
                 }
 
@@ -480,12 +482,11 @@ pub mod interpret {
                     }
                 };
 
-                let result = compute_elementwise(op.op, &get_src, op.srcs.len());
-                values.push(result);
+                values[op_idx] = compute_elementwise(op.op, &get_src, op.srcs.len());
             }
 
             // Write output
-            let result = values.last().copied().unwrap_or(0.0);
+            let result = values[kernel.ops.len() - 1];
             write_f64(&mut bufs[0], gid, result, kernel.bufs[0].dtype);
         }
     }
@@ -578,12 +579,15 @@ pub mod interpret {
         let simd_count = output_numel / 4;
         let remainder_start = simd_count * 4;
 
+        // Pre-allocate values buffer OUTSIDE the hot loop — avoids heap
+        // allocation per chunk which dominates small-kernel execution time.
+        let mut simd_values: Vec<f32x4> = vec![f32x4::splat(0.0); kernel.ops.len()];
+
         // SIMD pass: process 4 elements at a time
         for chunk in 0..simd_count {
             let base = chunk * 4;
-            let mut simd_values: Vec<f32x4> = Vec::with_capacity(kernel.ops.len());
 
-            for op in kernel.ops.iter() {
+            for (op_idx, op) in kernel.ops.iter().enumerate() {
                 let get_src_simd = |i: usize| -> f32x4 {
                     match &op.srcs[i] {
                         FusedSrc::Buf(idx) => {
@@ -601,38 +605,34 @@ pub mod interpret {
                     }
                 };
 
-                let result = compute_elementwise_simd(op.op, &get_src_simd);
-                simd_values.push(result);
+                simd_values[op_idx] = compute_elementwise_simd(op.op, &get_src_simd);
             }
 
             // Write SIMD output
-            let result = *simd_values.last().unwrap();
-            let result_arr: [f32; 4] = result.into();
+            let result: [f32; 4] = simd_values[kernel.ops.len() - 1].into();
             let offset = base * 4;
-            for (i, &v) in result_arr.iter().enumerate() {
+            for (i, &v) in result.iter().enumerate() {
                 let o = offset + i * 4;
                 bufs[0][o..o + 4].copy_from_slice(&v.to_le_bytes());
             }
         }
 
-        // Scalar remainder
+        // Scalar remainder — reuse pre-allocated buffer
+        let mut scalar_values: Vec<f64> = vec![0.0; kernel.ops.len()];
         for gid in remainder_start..output_numel {
-            let mut values: Vec<f64> = Vec::with_capacity(kernel.ops.len());
-
-            for op in kernel.ops.iter() {
+            for (op_idx, op) in kernel.ops.iter().enumerate() {
                 let get_src = |i: usize| -> f64 {
                     match &op.srcs[i] {
                         FusedSrc::Buf(idx) => read_f64(&bufs[*idx], gid, kernel.bufs[*idx].dtype),
-                        FusedSrc::Op(prior) => values[*prior],
+                        FusedSrc::Op(prior) => scalar_values[*prior],
                         FusedSrc::Const { val, .. } => *val,
                     }
                 };
 
-                let result = compute_elementwise(op.op, &get_src, op.srcs.len());
-                values.push(result);
+                scalar_values[op_idx] = compute_elementwise(op.op, &get_src, op.srcs.len());
             }
 
-            let result = values.last().copied().unwrap_or(0.0);
+            let result = scalar_values[kernel.ops.len() - 1];
             write_f64(&mut bufs[0], gid, result, kernel.bufs[0].dtype);
         }
     }
