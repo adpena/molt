@@ -201,7 +201,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
-                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL {
+                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_LIST_INT {
                     let _ = molt_list_extend(a, b);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
@@ -784,7 +784,7 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
-                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_BYTEARRAY {
+                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_LIST_INT || ltype == TYPE_ID_BYTEARRAY {
                     let rhs_type = type_name(_py, obj_from_bits(b));
                     let msg = format!("can't multiply sequence by non-int of type '{rhs_type}'");
                     let count = index_i64_from_obj(_py, b, &msg);
@@ -792,6 +792,10 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     let ok = if ltype == TYPE_ID_LIST {
+                        list_repeat_in_place(_py, ptr, count)
+                    } else if ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_LIST_INT {
+                        // Promote specialized list to regular list, then repeat in-place.
+                        crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
                         list_repeat_in_place(_py, ptr, count)
                     } else {
                         bytearray_repeat_in_place(_py, ptr, count)

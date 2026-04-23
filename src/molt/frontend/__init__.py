@@ -11294,6 +11294,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 and len(node.left.elts) == 1
                 and isinstance(node.left.elts[0], ast.Constant)
                 and isinstance(node.left.elts[0].value, int)
+                and not isinstance(node.left.elts[0].value, bool)
             ):
                 list_node, count_node = node.left, node.right
             elif (
@@ -11301,6 +11302,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 and len(node.right.elts) == 1
                 and isinstance(node.right.elts[0], ast.Constant)
                 and isinstance(node.right.elts[0].value, int)
+                and not isinstance(node.right.elts[0].value, bool)
             ):
                 list_node, count_node = node.right, node.left
             if list_node is not None and count_node is not None:
@@ -29316,6 +29318,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._active_midend_function_name = "<direct>"
         ops = self._run_ir_midend_passes(ops)
         json_ops: list[dict[str, Any]] = []
+        json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
         emit_function_frame = self._function_needs_frame_trace(function_name)
 
         def field_offset(expected_class: str, attr: str) -> int | None:
@@ -31206,6 +31209,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "container_type": "list_int",
                     }
                 )
+                json_list_int_containers.add(op.result.name)
             elif op.kind == "RANGE_NEW":
                 json_ops.append(
                     {
@@ -31288,6 +31292,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+                if (
+                    op.args
+                    and isinstance(op.args[0], MoltValue)
+                    and op.args[0].name in json_list_int_containers
+                ):
+                    json_list_int_containers.add(op.result.name)
             elif op.kind == "LIST_REVERSE":
                 json_ops.append(
                     {
@@ -31516,13 +31526,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     ds_entry["fast_int"] = True
                 # list_int: container is a specialized flat i64 list —
                 # backend dispatches to molt_list_int_setitem.
-                li_set = getattr(self, "_list_int_containers", set())
                 if (
                     len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
-                    and op.args[0].name in li_set
+                    and op.args[0].name in json_list_int_containers
                 ):
-                    ds_entry["container_type"] = "list_int"
+                    value_hint = (
+                        op.args[2].type_hint
+                        if len(op.args) >= 3 and isinstance(op.args[2], MoltValue)
+                        else None
+                    )
+                    if value_hint == "int":
+                        ds_entry["container_type"] = "list_int"
+                        if op.result.name != "none":
+                            json_list_int_containers.add(op.result.name)
+                    else:
+                        json_list_int_containers.discard(op.args[0].name)
+                        if op.result.name != "none":
+                            json_list_int_containers.discard(op.result.name)
                 json_ops.append(ds_entry)
             elif op.kind == "DICT_SETDEFAULT":
                 json_ops.append(
@@ -31760,11 +31781,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # list_int: container is a specialized flat i64 list —
                 # backend dispatches to molt_list_int_getitem for O(1)
                 # unboxed access without refcounting.
-                li_set = getattr(self, "_list_int_containers", set())
                 if (
                     len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
-                    and op.args[0].name in li_set
+                    and op.args[0].name in json_list_int_containers
                 ):
                     index_entry["container_type"] = "list_int"
                 json_ops.append(index_entry)
@@ -31786,13 +31806,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 # list_int: container is a specialized flat i64 list —
                 # backend dispatches to molt_list_int_setitem.
-                li_set = getattr(self, "_list_int_containers", set())
                 if (
                     len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
-                    and op.args[0].name in li_set
+                    and op.args[0].name in json_list_int_containers
                 ):
-                    si_entry["container_type"] = "list_int"
+                    value_hint = (
+                        op.args[2].type_hint
+                        if len(op.args) >= 3 and isinstance(op.args[2], MoltValue)
+                        else None
+                    )
+                    if value_hint == "int":
+                        si_entry["container_type"] = "list_int"
+                        if op.result.name != "none":
+                            json_list_int_containers.add(op.result.name)
+                    else:
+                        json_list_int_containers.discard(op.args[0].name)
+                        if op.result.name != "none":
+                            json_list_int_containers.discard(op.result.name)
                 json_ops.append(si_entry)
             elif op.kind == "DEL_INDEX":
                 json_ops.append(
@@ -32503,9 +32534,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # Propagate list_int container hint through load_var:
                 # if the variable being loaded is a list_int container,
                 # the output name is also a list_int container.
-                li_set = getattr(self, "_list_int_containers", set())
-                if var_name in li_set:
-                    li_set.add(op.result.name)
+                if var_name in json_list_int_containers:
+                    json_list_int_containers.add(op.result.name)
             elif op.kind == "ret":
                 if emit_function_frame:
                     json_ops.append({"kind": "trace_exit"})
