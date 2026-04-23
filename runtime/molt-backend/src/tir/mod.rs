@@ -38,6 +38,11 @@ pub(crate) fn is_structural(kind: &str) -> bool {
         kind,
         "label"
             | "state_label"
+            | "check_exception"
+            | "try_start"
+            | "try_end"
+            | "state_block_start"
+            | "state_block_end"
             | "if"
             | "else"
             | "end_if"

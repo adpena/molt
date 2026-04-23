@@ -18167,7 +18167,7 @@ def _prepare_backend_dispatch(
             )
         layout_probe_path: Path | None = None
         if reloc_requested and linked and runtime_reloc_wasm is not None:
-            if not ensure_runtime_wasm_reloc():
+            if not ensure_runtime_wasm_reloc(None):
                 return None, _fail(
                     "Runtime wasm build failed",
                     json_output,

@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests {
     use crate::ir::{FunctionIR, OpIR};
+    use crate::tir::is_structural;
     use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::lower_to_simple::lower_to_simple_ir;
     use crate::tir::passes::run_pipeline;
@@ -677,6 +678,15 @@ mod tests {
             "check_exception.value must not be None, got: {:?}",
             check
         );
+    }
+
+    #[test]
+    fn check_exception_and_try_markers_are_structural() {
+        assert!(is_structural("check_exception"));
+        assert!(is_structural("try_start"));
+        assert!(is_structural("try_end"));
+        assert!(is_structural("state_block_start"));
+        assert!(is_structural("state_block_end"));
     }
 
     // ---------------------------------------------------------------------------
