@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-__all__ = ["filter", "fnmatch", "fnmatchcase", "translate"]
+__all__ = ["filter", "filterfalse", "fnmatch", "fnmatchcase", "translate"]
 
 
 _MOLT_FNMATCH_FNMATCH = _require_intrinsic("molt_fnmatch_fnmatch")
@@ -32,6 +32,16 @@ def filter(names, pat: str | bytes):
     if not isinstance(matches, list):
         raise RuntimeError("fnmatch filter intrinsic returned invalid value")
     return matches
+
+
+def filterfalse(names, pat: str | bytes):
+    """Return the subset of the list NAMES that do not match PAT."""
+    matched = set(filter(names, pat))
+    result = []
+    for name in names:
+        if name not in matched:
+            result.append(name)
+    return result
 
 
 def translate(pat: str) -> str:
