@@ -7988,9 +7988,8 @@ impl SimpleBackend {
                             let zero_i8 = builder.ins().iconst(types::I8, 0);
                             let is_bool_check = builder.ins().icmp(IntCC::NotEqual, is_bool_val, zero_i8);
 
-                            // Only inline list_bool store when the value is a compile-time-proven
-                            // bool. Otherwise fall to the slow path (which handles promotion).
                             if var_is_bool(&args[2]) {
+                                // Value is a compile-time-proven bool: inline both paths.
                                 let bool_store_block = builder.create_block();
                                 let vec_store_block = builder.create_block();
                                 builder.ins().brif(is_bool_check, bool_store_block, &[], vec_store_block, &[]);
@@ -8008,20 +8007,37 @@ impl SimpleBackend {
                                 // Regular list path: dec_ref old, store new u64, inc_ref new.
                                 switch_to_block_materialized(&mut builder, vec_store_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, vec_store_block);
+                                let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                                let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                                let old_elem =
+                                    builder
+                                        .ins()
+                                        .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+                                emit_dec_ref_obj(&mut builder, old_elem, local_dec_ref_obj, &nbc);
+                                // Bool values are non-heap, skip inc_ref.
+                                builder.ins().store(MemFlags::trusted(), *val, elem_addr, 0);
+                                jump_block(&mut builder, merge_block, &[]);
+                            } else {
+                                // Value is not proven bool: if list is list_bool, fall to slow
+                                // path (which handles type promotion). If regular list, inline store.
+                                let vec_store_block = builder.create_block();
+                                builder.ins().brif(is_bool_check, slow_block, &[], vec_store_block, &[]);
+
+                                switch_to_block_materialized(&mut builder, vec_store_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, vec_store_block);
+                                let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                                let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                                let old_elem =
+                                    builder
+                                        .ins()
+                                        .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+                                emit_dec_ref_obj(&mut builder, old_elem, local_dec_ref_obj, &nbc);
+                                if !var_is_known_non_heap(&args[2]) {
+                                    emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
+                                }
+                                builder.ins().store(MemFlags::trusted(), *val, elem_addr, 0);
+                                jump_block(&mut builder, merge_block, &[]);
                             }
-                            // Regular list store (also reached when var is not proven bool).
-                            let byte_offset = builder.ins().imul_imm(raw_idx, 8);
-                            let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
-                            let old_elem =
-                                builder
-                                    .ins()
-                                    .load(types::I64, MemFlags::trusted(), elem_addr, 0);
-                            emit_dec_ref_obj(&mut builder, old_elem, local_dec_ref_obj, &nbc);
-                            if !var_is_known_non_heap(&args[2]) {
-                                emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
-                            }
-                            builder.ins().store(MemFlags::trusted(), *val, elem_addr, 0);
-                            jump_block(&mut builder, merge_block, &[]);
 
                             // Slow path: safe runtime call
                             switch_to_block_materialized(&mut builder, slow_block);
