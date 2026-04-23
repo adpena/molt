@@ -147,10 +147,7 @@ fn mark_reachable(node: &Arc<LazyOp>, reachable: &mut HashSet<usize>) {
 /// intermediate results may be unused. `all_nodes` contains every node
 /// in the original program; the return value contains only those
 /// reachable from at least one root.
-pub fn eliminate_dead_nodes(
-    roots: &[Arc<LazyOp>],
-    all_nodes: &[Arc<LazyOp>],
-) -> Vec<Arc<LazyOp>> {
+pub fn eliminate_dead_nodes(roots: &[Arc<LazyOp>], all_nodes: &[Arc<LazyOp>]) -> Vec<Arc<LazyOp>> {
     let mut reachable_ptrs: HashSet<usize> = HashSet::new();
     for root in roots {
         mark_reachable(root, &mut reachable_ptrs);

@@ -13,7 +13,9 @@ use std::sync::Arc;
 use crate::dtype::DType;
 use crate::lazy::LazyOp;
 use crate::ops::PrimitiveOp;
-use crate::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ShapeSpecialization};
+use crate::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ShapeSpecialization,
+};
 use crate::shapetracker::ShapeTracker;
 
 /// Common workgroup sizes to try, in descending order of preference.
@@ -126,7 +128,10 @@ pub fn specialize_shapes(kernels: &mut [FusedKernel]) {
         let can_vectorize = total.is_multiple_of(4)
             && kernel.bufs.iter().all(|b| b.dtype == DType::Float32)
             && kernel.bufs.iter().all(|b| b.st.view().is_contiguous())
-            && !kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+            && !kernel
+                .ops
+                .iter()
+                .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
         if can_vectorize {
             kernel.vectorize_width = 4;
         }
@@ -181,7 +186,10 @@ fn kernel_structural_hash(kernel: &FusedKernel) -> u64 {
         for src in &op.srcs {
             match src {
                 FusedSrc::Buf(_) => 0u8.hash(&mut hasher),
-                FusedSrc::Op(idx) => { 1u8.hash(&mut hasher); idx.hash(&mut hasher); }
+                FusedSrc::Op(idx) => {
+                    1u8.hash(&mut hasher);
+                    idx.hash(&mut hasher);
+                }
                 FusedSrc::Const { val, dtype } => {
                     2u8.hash(&mut hasher);
                     val.to_bits().hash(&mut hasher);
@@ -205,11 +213,7 @@ fn kernel_structural_hash(kernel: &FusedKernel) -> u64 {
     hasher.finish()
 }
 
-fn schedule_recursive(
-    node: &Arc<LazyOp>,
-    kernels: &mut Vec<FusedKernel>,
-    next_buf_id: &mut usize,
-) {
+fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, next_buf_id: &mut usize) {
     match node.as_ref() {
         LazyOp::Buffer { .. } => {
             // Leaf node — already materialized, nothing to schedule.
@@ -230,12 +234,23 @@ fn schedule_recursive(
                     dst_dtype: node.dtype(),
                 }],
                 bufs: vec![
-                    BufferBinding { buf_id: out_id, st: ShapeTracker::contiguous(&shape), dtype: node.dtype(), access: BufferAccess::Write },
-                    BufferBinding { buf_id: in_id, st: ShapeTracker::contiguous(&shape), dtype: src.dtype(), access: BufferAccess::Read },
+                    BufferBinding {
+                        buf_id: out_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: node.dtype(),
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: in_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: src.dtype(),
+                        access: BufferAccess::Read,
+                    },
                 ],
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+                spec: None,
+                vectorize_width: 1,
             });
         }
         LazyOp::Binary { op, lhs, rhs } => {
@@ -257,13 +272,29 @@ fn schedule_recursive(
                     dst_dtype: node.dtype(),
                 }],
                 bufs: vec![
-                    BufferBinding { buf_id: out_id, st: ShapeTracker::contiguous(&shape), dtype: node.dtype(), access: BufferAccess::Write },
-                    BufferBinding { buf_id: lhs_id, st: ShapeTracker::contiguous(&shape), dtype: lhs.dtype(), access: BufferAccess::Read },
-                    BufferBinding { buf_id: rhs_id, st: ShapeTracker::contiguous(&shape), dtype: rhs.dtype(), access: BufferAccess::Read },
+                    BufferBinding {
+                        buf_id: out_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: node.dtype(),
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: lhs_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: lhs.dtype(),
+                        access: BufferAccess::Read,
+                    },
+                    BufferBinding {
+                        buf_id: rhs_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: rhs.dtype(),
+                        access: BufferAccess::Read,
+                    },
                 ],
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+                spec: None,
+                vectorize_width: 1,
             });
         }
         LazyOp::Ternary { op, cond, a, b } => {
@@ -288,14 +319,35 @@ fn schedule_recursive(
                     dst_dtype: node.dtype(),
                 }],
                 bufs: vec![
-                    BufferBinding { buf_id: out_id, st: ShapeTracker::contiguous(&shape), dtype: node.dtype(), access: BufferAccess::Write },
-                    BufferBinding { buf_id: cond_id, st: ShapeTracker::contiguous(&shape), dtype: cond.dtype(), access: BufferAccess::Read },
-                    BufferBinding { buf_id: a_id, st: ShapeTracker::contiguous(&shape), dtype: a.dtype(), access: BufferAccess::Read },
-                    BufferBinding { buf_id: b_id, st: ShapeTracker::contiguous(&shape), dtype: b.dtype(), access: BufferAccess::Read },
+                    BufferBinding {
+                        buf_id: out_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: node.dtype(),
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: cond_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: cond.dtype(),
+                        access: BufferAccess::Read,
+                    },
+                    BufferBinding {
+                        buf_id: a_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: a.dtype(),
+                        access: BufferAccess::Read,
+                    },
+                    BufferBinding {
+                        buf_id: b_id,
+                        st: ShapeTracker::contiguous(&shape),
+                        dtype: b.dtype(),
+                        access: BufferAccess::Read,
+                    },
                 ],
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+                spec: None,
+                vectorize_width: 1,
             });
         }
         LazyOp::Reduce { op, src, axis: _ } => {
@@ -315,12 +367,23 @@ fn schedule_recursive(
                     dst_dtype: node.dtype(),
                 }],
                 bufs: vec![
-                    BufferBinding { buf_id: out_id, st: ShapeTracker::contiguous(&out_shape), dtype: node.dtype(), access: BufferAccess::Write },
-                    BufferBinding { buf_id: in_id, st: ShapeTracker::contiguous(&in_shape), dtype: src.dtype(), access: BufferAccess::Read },
+                    BufferBinding {
+                        buf_id: out_id,
+                        st: ShapeTracker::contiguous(&out_shape),
+                        dtype: node.dtype(),
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: in_id,
+                        st: ShapeTracker::contiguous(&in_shape),
+                        dtype: src.dtype(),
+                        access: BufferAccess::Read,
+                    },
                 ],
                 grid: [out_n as u32, 1, 1],
                 local: [out_n.min(256) as u32, 1, 1],
-                spec: None, vectorize_width: 1,
+                spec: None,
+                vectorize_width: 1,
             });
         }
         LazyOp::Movement { src, st: _ } => {

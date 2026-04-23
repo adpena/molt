@@ -95,9 +95,10 @@ impl Msl4Renderer {
     /// Check if a fused kernel contains a reduce pattern that benefits from
     /// simdgroup matrix operations.
     fn has_reducible_pattern(kernel: &FusedKernel) -> bool {
-        kernel.ops.iter().any(|op| {
-            matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
-        })
+        kernel
+            .ops
+            .iter()
+            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
     }
 
     /// Format a constant value as MSL literal (same as MslRenderer).
@@ -105,15 +106,22 @@ impl Msl4Renderer {
         let dtype = dtype.narrow_metal();
         match dtype {
             DType::Bool => {
-                if val != 0.0 { "true".to_string() } else { "false".to_string() }
+                if val != 0.0 {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
             }
             DType::Float16 => format!("half({})", val),
             DType::BFloat16 => format!("bfloat({})", val),
             DType::Float32 => {
-                if val == f64::INFINITY { "INFINITY".to_string() }
-                else if val == f64::NEG_INFINITY { "(-INFINITY)".to_string() }
-                else if val.is_nan() { "NAN".to_string() }
-                else {
+                if val == f64::INFINITY {
+                    "INFINITY".to_string()
+                } else if val == f64::NEG_INFINITY {
+                    "(-INFINITY)".to_string()
+                } else if val.is_nan() {
+                    "NAN".to_string()
+                } else {
                     let s = format!("{}", val);
                     if s.contains('.') || s.contains('e') || s.contains('E') {
                         format!("{}f", s)
@@ -190,9 +198,7 @@ impl Msl4Renderer {
     fn render_op(op: &FusedOp, _op_idx: usize, kernel: &FusedKernel, idx_var: &str) -> String {
         let src = |i: usize| -> String {
             match &op.srcs[i] {
-                FusedSrc::Buf(buf_idx) => {
-                    Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var)
-                }
+                FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var),
                 FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
                 FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
             }
@@ -266,7 +272,12 @@ impl Msl4Renderer {
 
         // Sequential accumulation loop
         if reduce_idx > 0 {
-            writeln!(out, "    for (uint rid = 0; rid < {}; rid++) {{", reduce_size).unwrap();
+            writeln!(
+                out,
+                "    for (uint rid = 0; rid < {}; rid++) {{",
+                reduce_size
+            )
+            .unwrap();
             writeln!(out, "        uint eidx = gid * {} + rid;", reduce_size).unwrap();
 
             for i in 0..reduce_idx {
@@ -279,12 +290,19 @@ impl Msl4Renderer {
             let src_var = format!("v{}", reduce_idx - 1);
             match reduce_op.op {
                 PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_var).unwrap(),
-                PrimitiveOp::ReduceMax => writeln!(out, "        acc = max(acc, {});", src_var).unwrap(),
+                PrimitiveOp::ReduceMax => {
+                    writeln!(out, "        acc = max(acc, {});", src_var).unwrap()
+                }
                 _ => unreachable!(),
             }
             writeln!(out, "    }}").unwrap();
         } else {
-            writeln!(out, "    for (uint rid = 0; rid < {}; rid++) {{", reduce_size).unwrap();
+            writeln!(
+                out,
+                "    for (uint rid = 0; rid < {}; rid++) {{",
+                reduce_size
+            )
+            .unwrap();
             writeln!(out, "        uint eidx = gid * {} + rid;", reduce_size).unwrap();
             let src_expr = match reduce_src {
                 FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
@@ -292,7 +310,9 @@ impl Msl4Renderer {
             };
             match reduce_op.op {
                 PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_expr).unwrap(),
-                PrimitiveOp::ReduceMax => writeln!(out, "        acc = max(acc, {});", src_expr).unwrap(),
+                PrimitiveOp::ReduceMax => {
+                    writeln!(out, "        acc = max(acc, {});", src_expr).unwrap()
+                }
                 _ => unreachable!(),
             }
             writeln!(out, "    }}").unwrap();
@@ -302,17 +322,31 @@ impl Msl4Renderer {
         // simd_sum/simd_max reduce across the SIMD group (32 threads on Apple Silicon).
         match reduce_op.op {
             PrimitiveOp::ReduceSum => {
-                writeln!(out, "    // Metal 4: simdgroup reduction for final accumulation").unwrap();
+                writeln!(
+                    out,
+                    "    // Metal 4: simdgroup reduction for final accumulation"
+                )
+                .unwrap();
                 writeln!(out, "    acc = simd_sum(acc);").unwrap();
             }
             PrimitiveOp::ReduceMax => {
-                writeln!(out, "    // Metal 4: simdgroup reduction for final accumulation").unwrap();
+                writeln!(
+                    out,
+                    "    // Metal 4: simdgroup reduction for final accumulation"
+                )
+                .unwrap();
                 writeln!(out, "    acc = simd_max(acc);").unwrap();
             }
             _ => unreachable!(),
         }
 
-        writeln!(out, "    {} v{} = acc;", reduce_dtype.msl_type(), reduce_idx).unwrap();
+        writeln!(
+            out,
+            "    {} v{} = acc;",
+            reduce_dtype.msl_type(),
+            reduce_idx
+        )
+        .unwrap();
     }
 
     /// Render the standard reduce loop (fallback path, identical to MslRenderer).
@@ -342,7 +376,12 @@ impl Msl4Renderer {
         writeln!(out, "    {} acc = {};", reduce_dtype.msl_type(), init_val).unwrap();
 
         if reduce_idx > 0 {
-            writeln!(out, "    for (uint rid = 0; rid < {}; rid++) {{", reduce_size).unwrap();
+            writeln!(
+                out,
+                "    for (uint rid = 0; rid < {}; rid++) {{",
+                reduce_size
+            )
+            .unwrap();
             writeln!(out, "        uint eidx = gid * {} + rid;", reduce_size).unwrap();
 
             for i in 0..reduce_idx {
@@ -355,12 +394,19 @@ impl Msl4Renderer {
             let src_var = format!("v{}", reduce_idx - 1);
             match reduce_op.op {
                 PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_var).unwrap(),
-                PrimitiveOp::ReduceMax => writeln!(out, "        acc = max(acc, {});", src_var).unwrap(),
+                PrimitiveOp::ReduceMax => {
+                    writeln!(out, "        acc = max(acc, {});", src_var).unwrap()
+                }
                 _ => unreachable!(),
             }
             writeln!(out, "    }}").unwrap();
         } else {
-            writeln!(out, "    for (uint rid = 0; rid < {}; rid++) {{", reduce_size).unwrap();
+            writeln!(
+                out,
+                "    for (uint rid = 0; rid < {}; rid++) {{",
+                reduce_size
+            )
+            .unwrap();
             writeln!(out, "        uint eidx = gid * {} + rid;", reduce_size).unwrap();
             let src_expr = match reduce_src {
                 FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
@@ -368,13 +414,21 @@ impl Msl4Renderer {
             };
             match reduce_op.op {
                 PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_expr).unwrap(),
-                PrimitiveOp::ReduceMax => writeln!(out, "        acc = max(acc, {});", src_expr).unwrap(),
+                PrimitiveOp::ReduceMax => {
+                    writeln!(out, "        acc = max(acc, {});", src_expr).unwrap()
+                }
                 _ => unreachable!(),
             }
             writeln!(out, "    }}").unwrap();
         }
 
-        writeln!(out, "    {} v{} = acc;", reduce_dtype.msl_type(), reduce_idx).unwrap();
+        writeln!(
+            out,
+            "    {} v{} = acc;",
+            reduce_dtype.msl_type(),
+            reduce_idx
+        )
+        .unwrap();
     }
 }
 
@@ -402,7 +456,12 @@ impl Renderer for Msl4Renderer {
             if i > 0 {
                 write!(out, ", ").unwrap();
             }
-            write!(out, "{} {}* buf{} [[buffer({})]]", qualifier, dtype_str, binding.buf_id, i).unwrap();
+            write!(
+                out,
+                "{} {}* buf{} [[buffer({})]]",
+                qualifier, dtype_str, binding.buf_id, i
+            )
+            .unwrap();
         }
 
         write!(out, ", uint gid [[thread_position_in_grid]]").unwrap();
@@ -427,14 +486,16 @@ impl Renderer for Msl4Renderer {
             let last_op = kernel.ops.len() - 1;
             writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
         } else {
-            let reduce_idx = kernel.ops.iter().position(|op| {
-                matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
-            }).expect("has_reduce but no reduce op found");
+            let reduce_idx = kernel
+                .ops
+                .iter()
+                .position(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+                .expect("has_reduce but no reduce op found");
 
             // Use simdgroup reduction when Metal 4 tensor ops are available
             // and the configuration enables them.
-            let use_simdgroup = self.config.support.has_tensor_ops()
-                && self.config.use_simdgroup_matrix;
+            let use_simdgroup =
+                self.config.support.has_tensor_ops() && self.config.use_simdgroup_matrix;
 
             if use_simdgroup {
                 Self::render_simdgroup_reduce(&mut out, kernel, reduce_idx, output_numel);

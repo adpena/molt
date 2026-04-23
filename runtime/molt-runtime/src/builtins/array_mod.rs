@@ -6,12 +6,12 @@
 
 use crate::builtins::numbers::index_i64_with_overflow;
 use crate::object::ops::string_obj_to_owned;
-use crate::{
-    MoltObject, PyToken, alloc_bytes, alloc_list, alloc_string, alloc_tuple, bits_from_ptr,
-    dec_ref_bits, int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception, release_ptr,
-    slice_start_bits, slice_step_bits, slice_stop_bits, to_f64, to_i64, TYPE_ID_SLICE,
-};
 use crate::object::ops_sys::{collect_slice_indices, normalize_slice_indices, slice_error};
+use crate::{
+    MoltObject, PyToken, TYPE_ID_SLICE, alloc_bytes, alloc_list, alloc_string, alloc_tuple,
+    bits_from_ptr, dec_ref_bits, int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception,
+    release_ptr, slice_start_bits, slice_step_bits, slice_stop_bits, to_f64, to_i64,
+};
 
 // ---------------------------------------------------------------------------
 // Typecode metadata
@@ -635,23 +635,24 @@ pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
                     let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
                     let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
                     let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                    let (start, stop, step) = match normalize_slice_indices(
-                        _py, len, start_obj, stop_obj, step_obj,
-                    ) {
-                        Ok(value) => value,
-                        Err(err) => return slice_error(_py, err),
-                    };
+                    let (start, stop, step) =
+                        match normalize_slice_indices(_py, len, start_obj, stop_obj, step_obj) {
+                            Ok(value) => value,
+                            Err(err) => return slice_error(_py, err),
+                        };
                     let itemsize = handle.typecode.itemsize();
                     let mut out = ArrayHandle::new(handle.typecode);
                     if step == 1 {
                         let start_byte = start as usize * itemsize;
                         let stop_byte = stop as usize * itemsize;
-                        out.data.extend_from_slice(&handle.data[start_byte..stop_byte]);
+                        out.data
+                            .extend_from_slice(&handle.data[start_byte..stop_byte]);
                     } else {
                         for idx in collect_slice_indices(start, stop, step) {
                             let start_byte = idx * itemsize;
                             let end_byte = start_byte + itemsize;
-                            out.data.extend_from_slice(&handle.data[start_byte..end_byte]);
+                            out.data
+                                .extend_from_slice(&handle.data[start_byte..end_byte]);
                         }
                     }
                     return array_bits(out);
@@ -710,12 +711,11 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
                 let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
                 let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
                 let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                let (start, stop, step) = match normalize_slice_indices(
-                    _py, len, start_obj, stop_obj, step_obj,
-                ) {
-                    Ok(value) => value,
-                    Err(err) => return slice_error(_py, err),
-                };
+                let (start, stop, step) =
+                    match normalize_slice_indices(_py, len, start_obj, stop_obj, step_obj) {
+                        Ok(value) => value,
+                        Err(err) => return slice_error(_py, err),
+                    };
                 let itemsize = tc.itemsize();
                 if step == 1 {
                     let start_byte = start as usize * itemsize;

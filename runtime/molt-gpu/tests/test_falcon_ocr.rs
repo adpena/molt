@@ -37,7 +37,8 @@ fn run_chain(ops: Vec<FusedOp>, bufs: Vec<BufferBinding>, input_bufs: Vec<Vec<u8
         bufs,
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     interpret::execute_kernel(&kernel, &mut all_bufs);
@@ -82,7 +83,8 @@ fn test_falcon_rms_norm_unit_vector() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs1 = vec![vec![0u8; n * 4], f32_to_bytes(&x)];
     interpret::execute_kernel(&k1, &mut bufs1);
@@ -111,7 +113,8 @@ fn test_falcon_rms_norm_unit_vector() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let mut bufs2 = vec![vec![0u8; 4], f32_to_bytes(&x_sq)];
     interpret::execute_kernel(&k2, &mut bufs2);
@@ -156,7 +159,10 @@ fn test_falcon_rms_norm_unit_vector() {
         assert!(
             diff < 1e-5,
             "rms_norm[{}]: got {} expected {} (diff={})",
-            i, v, expected, diff
+            i,
+            v,
+            expected,
+            diff
         );
     }
 }
@@ -292,7 +298,8 @@ fn test_falcon_rope_identity_at_pos_zero() {
         assert!(
             (v - x_real[i]).abs() < 1e-6,
             "RoPE at pos 0 should be identity for real part: got {} expected {}",
-            v, x_real[i]
+            v,
+            x_real[i]
         );
     }
 }
@@ -377,7 +384,9 @@ fn test_falcon_rope_90_degree_rotation() {
         assert!(
             (v - expected).abs() < 1e-6,
             "RoPE 90deg real[{}]: got {} expected {}",
-            i, v, expected
+            i,
+            v,
+            expected
         );
     }
 }
@@ -446,7 +455,12 @@ fn test_falcon_attention_dot_scale() {
     let scaled = dot * scale;
     let expected = 1.0 * scale; // q=[1,0], k=[1,0] -> dot=1
     let diff = (scaled - expected).abs();
-    assert!(diff < 1e-5, "Attention dot*scale: {} vs {}", scaled, expected);
+    assert!(
+        diff < 1e-5,
+        "Attention dot*scale: {} vs {}",
+        scaled,
+        expected
+    );
 }
 
 #[test]
@@ -676,7 +690,9 @@ fn test_falcon_residual_add() {
         assert!(
             (v - expected).abs() < 1e-6,
             "residual[{}]: {} vs {}",
-            i, v, expected
+            i,
+            v,
+            expected
         );
     }
 }
@@ -742,11 +758,7 @@ fn test_falcon_softmax_with_causal_mask() {
 
     // Equal scores -> uniform distribution
     for &v in &softmax {
-        assert!(
-            (v - 1.0 / 3.0).abs() < 1e-5,
-            "Expected ~0.333, got {}",
-            v
-        );
+        assert!((v - 1.0 / 3.0).abs() < 1e-5, "Expected ~0.333, got {}", v);
     }
 }
 
@@ -798,13 +810,11 @@ fn test_falcon_rms_norm_renders_wgsl() {
     use molt_gpu::render::Renderer;
 
     let kernel = FusedKernel {
-        ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            },
-        ],
+        ops: vec![FusedOp {
+            op: PrimitiveOp::Mul,
+            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+            dst_dtype: DType::Float32,
+        }],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -821,12 +831,16 @@ fn test_falcon_rms_norm_renders_wgsl() {
         ],
         grid: [4, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let renderer = WgslRenderer::new();
     let src = renderer.render(&kernel);
-    assert!(!src.is_empty(), "WGSL render should produce non-empty source");
+    assert!(
+        !src.is_empty(),
+        "WGSL render should produce non-empty source"
+    );
     assert!(src.contains("@compute"), "WGSL should contain @compute");
 }
 
@@ -836,13 +850,11 @@ fn test_falcon_rms_norm_renders_cuda() {
     use molt_gpu::render::Renderer;
 
     let kernel = FusedKernel {
-        ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            },
-        ],
+        ops: vec![FusedOp {
+            op: PrimitiveOp::Mul,
+            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+            dst_dtype: DType::Float32,
+        }],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -859,16 +871,17 @@ fn test_falcon_rms_norm_renders_cuda() {
         ],
         grid: [4, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let renderer = CudaRenderer;
     let src = renderer.render(&kernel);
-    assert!(!src.is_empty(), "CUDA render should produce non-empty source");
     assert!(
-        src.contains("__global__"),
-        "CUDA should contain __global__"
+        !src.is_empty(),
+        "CUDA render should produce non-empty source"
     );
+    assert!(src.contains("__global__"), "CUDA should contain __global__");
 }
 
 #[test]
@@ -877,13 +890,11 @@ fn test_falcon_rms_norm_renders_msl() {
     use molt_gpu::render::Renderer;
 
     let kernel = FusedKernel {
-        ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            },
-        ],
+        ops: vec![FusedOp {
+            op: PrimitiveOp::Mul,
+            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+            dst_dtype: DType::Float32,
+        }],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -900,12 +911,16 @@ fn test_falcon_rms_norm_renders_msl() {
         ],
         grid: [4, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let renderer = MslRenderer;
     let src = renderer.render(&kernel);
-    assert!(!src.is_empty(), "MSL render should produce non-empty source");
+    assert!(
+        !src.is_empty(),
+        "MSL render should produce non-empty source"
+    );
     assert!(src.contains("kernel"), "MSL should contain kernel");
 }
 
@@ -957,7 +972,9 @@ fn test_falcon_ffn_simplified_composition() {
         assert!(
             *result >= *orig as f64 - 1e-6,
             "Residual should not decrease for positive input at index {}: {} < {}",
-            i, result, orig
+            i,
+            result,
+            orig
         );
     }
 }

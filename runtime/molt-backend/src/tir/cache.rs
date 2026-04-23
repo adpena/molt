@@ -296,7 +296,11 @@ pub fn backend_cache_dir() -> PathBuf {
 /// This is testable and deterministic: identical inputs must produce the same
 /// path, and changing either the executable path or mtime must invalidate the
 /// namespace.
-pub(crate) fn backend_cache_dir_for(root: &std::path::Path, exe: &std::path::Path, mtime: u64) -> PathBuf {
+pub(crate) fn backend_cache_dir_for(
+    root: &std::path::Path,
+    exe: &std::path::Path,
+    mtime: u64,
+) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     BACKEND_CACHE_NAMESPACE_VERSION.hash(&mut hasher);
     exe.hash(&mut hasher);

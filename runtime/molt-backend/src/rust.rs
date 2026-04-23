@@ -1207,7 +1207,8 @@ impl RustBackend {
         // Scope-escape hoisting
         collect_scope_escapes(&ops, func, &mut self.hoisted_vars);
 
-        let mut stable_return_vars: BTreeSet<String> = self.current_params.iter().cloned().collect();
+        let mut stable_return_vars: BTreeSet<String> =
+            self.current_params.iter().cloned().collect();
         stable_return_vars.extend(loop_idx_vars.iter().cloned());
         stable_return_vars.extend(closure_slots.iter().cloned());
         stable_return_vars.extend(named_storage_vars.iter().cloned());
@@ -3603,8 +3604,12 @@ mod tests {
         };
 
         let source = backend.compile(&ir);
-        assert!(source.contains("MoltValue::Int(\"2305843009213693951\".parse::<i64>().unwrap_or(0))"));
-        assert!(!source.contains("MoltValue::Int(2305843009213693951.parse::<i64>().unwrap_or(0))"));
+        assert!(
+            source.contains("MoltValue::Int(\"2305843009213693951\".parse::<i64>().unwrap_or(0))")
+        );
+        assert!(
+            !source.contains("MoltValue::Int(2305843009213693951.parse::<i64>().unwrap_or(0))")
+        );
     }
 
     #[test]

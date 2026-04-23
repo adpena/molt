@@ -26,7 +26,12 @@ fn test_contiguous_fast_path() {
     assert!(view.is_contiguous());
     // For contiguous views, expr_idx(i) == Some(i)
     for i in 0..32 {
-        assert_eq!(view.expr_idx(i), Some(i), "contiguous fast path failed at index {}", i);
+        assert_eq!(
+            view.expr_idx(i),
+            Some(i),
+            "contiguous fast path failed at index {}",
+            i
+        );
     }
 }
 
@@ -66,7 +71,12 @@ fn test_expr_idx_1d_specialization() {
     assert!(!view.is_contiguous());
     // Verify correctness: flip reverses the order
     for i in 0..10 {
-        assert_eq!(view.expr_idx(i), Some(9 - i), "1D flip failed at index {}", i);
+        assert_eq!(
+            view.expr_idx(i),
+            Some(9 - i),
+            "1D flip failed at index {}",
+            i
+        );
     }
 }
 
@@ -78,10 +88,10 @@ fn test_expr_idx_2d_specialization() {
     // Permuted [4,8] -> [8,4] with strides [1,8].
     // Linear idx i in [8,4]: i0 = i/4, i1 = i%4.
     // Buffer offset = i0*1 + i1*8.
-    assert_eq!(view.expr_idx(0), Some(0));  // (0,0) -> 0*1 + 0*8 = 0
-    assert_eq!(view.expr_idx(1), Some(8));  // (0,1) -> 0*1 + 1*8 = 8
-    assert_eq!(view.expr_idx(4), Some(1));  // (1,0) -> 1*1 + 0*8 = 1
-    assert_eq!(view.expr_idx(5), Some(9));  // (1,1) -> 1*1 + 1*8 = 9
+    assert_eq!(view.expr_idx(0), Some(0)); // (0,0) -> 0*1 + 0*8 = 0
+    assert_eq!(view.expr_idx(1), Some(8)); // (0,1) -> 0*1 + 1*8 = 8
+    assert_eq!(view.expr_idx(4), Some(1)); // (1,0) -> 1*1 + 0*8 = 1
+    assert_eq!(view.expr_idx(5), Some(9)); // (1,1) -> 1*1 + 1*8 = 9
 }
 
 #[test]
@@ -90,7 +100,12 @@ fn test_expr_idx_3d_specialization() {
     let view = View::contiguous(&[2, 3, 4]);
     assert!(view.is_contiguous());
     for i in 0..(2 * 3 * 4) {
-        assert_eq!(view.expr_idx(i), Some(i), "3D contiguous failed at index {}", i);
+        assert_eq!(
+            view.expr_idx(i),
+            Some(i),
+            "3D contiguous failed at index {}",
+            i
+        );
     }
 
     // 3D non-contiguous: shrunk
@@ -151,7 +166,8 @@ fn make_mul_add_kernel() -> FusedKernel {
         ],
         grid: [4, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -260,7 +276,8 @@ fn test_no_fma_for_integer_ops() {
         ],
         grid: [4, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let renderer = msl::MslRenderer;
     let source = renderer.render(&kernel);
@@ -300,7 +317,8 @@ fn test_unroll_hint_msl_small_reduce() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let renderer = msl::MslRenderer;
     let source = renderer.render(&kernel);
@@ -336,7 +354,8 @@ fn test_no_unroll_hint_msl_large_reduce() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let renderer = msl::MslRenderer;
     let source = renderer.render(&kernel);
@@ -382,7 +401,8 @@ fn test_kernel_dedup_identical_ops() {
         ],
         grid: [1, 1, 1],
         local: [128, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let k2 = FusedKernel {
@@ -393,19 +413,19 @@ fn test_kernel_dedup_identical_ops() {
         }],
         bufs: vec![
             BufferBinding {
-                buf_id: 10,  // different buf_id
+                buf_id: 10, // different buf_id
                 st: ShapeTracker::contiguous(&[128]),
                 dtype: DType::Float32,
                 access: BufferAccess::Write,
             },
             BufferBinding {
-                buf_id: 11,  // different buf_id
+                buf_id: 11, // different buf_id
                 st: ShapeTracker::contiguous(&[128]),
                 dtype: DType::Float32,
                 access: BufferAccess::Read,
             },
             BufferBinding {
-                buf_id: 12,  // different buf_id
+                buf_id: 12, // different buf_id
                 st: ShapeTracker::contiguous(&[128]),
                 dtype: DType::Float32,
                 access: BufferAccess::Read,
@@ -413,7 +433,8 @@ fn test_kernel_dedup_identical_ops() {
         ],
         grid: [1, 1, 1],
         local: [128, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let (result, dedup_count) = deduplicate_kernels(&[k1, k2]);
@@ -451,12 +472,13 @@ fn test_kernel_dedup_different_ops() {
         ],
         grid: [1, 1, 1],
         local: [128, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let k2 = FusedKernel {
         ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,  // different op
+            op: PrimitiveOp::Mul, // different op
             srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
             dst_dtype: DType::Float32,
         }],
@@ -482,7 +504,8 @@ fn test_kernel_dedup_different_ops() {
         ],
         grid: [1, 1, 1],
         local: [128, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
 
     let (_, dedup_count) = deduplicate_kernels(&[k1, k2]);
@@ -506,8 +529,15 @@ fn test_arena_alignment_aware_alloc() {
 
     // Second allocation should also be 128-byte aligned
     let a2 = arena.alloc_aligned(50, 128).unwrap();
-    assert_eq!(a2.offset % 128, 0, "second allocation should be 128-byte aligned");
-    assert!(a2.offset >= a1.offset + a1.size, "allocations should not overlap");
+    assert_eq!(
+        a2.offset % 128,
+        0,
+        "second allocation should be 128-byte aligned"
+    );
+    assert!(
+        a2.offset >= a1.offset + a1.size,
+        "allocations should not overlap"
+    );
 }
 
 #[test]
@@ -518,7 +548,11 @@ fn test_arena_default_alloc_respects_minimum() {
     });
 
     let a1 = arena.alloc(100).unwrap();
-    assert_eq!(a1.offset % 256, 0, "default alloc should respect minimum 256-byte alignment");
+    assert_eq!(
+        a1.offset % 256,
+        0,
+        "default alloc should respect minimum 256-byte alignment"
+    );
 }
 
 #[test]
@@ -531,16 +565,27 @@ fn test_arena_high_water_mark() {
     arena.alloc(1000).unwrap();
     arena.alloc(2000).unwrap();
     let hwm1 = arena.high_water_mark();
-    assert!(hwm1 > 0, "high water mark should be nonzero after allocations");
+    assert!(
+        hwm1 > 0,
+        "high water mark should be nonzero after allocations"
+    );
 
     arena.reset();
 
     // After reset, high water mark should persist
-    assert_eq!(arena.high_water_mark(), hwm1, "high water mark should persist across resets");
+    assert_eq!(
+        arena.high_water_mark(),
+        hwm1,
+        "high water mark should persist across resets"
+    );
 
     // Smaller allocation should not change HWM
     arena.alloc(100).unwrap();
-    assert_eq!(arena.high_water_mark(), hwm1, "smaller allocation should not increase HWM");
+    assert_eq!(
+        arena.high_water_mark(),
+        hwm1,
+        "smaller allocation should not increase HWM"
+    );
 }
 
 #[test]
@@ -556,7 +601,10 @@ fn test_arena_fragmentation() {
     arena.alloc(100).unwrap();
 
     let frag = arena.fragmentation();
-    assert!(frag > 0.0, "fragmentation should be > 0 due to alignment padding");
+    assert!(
+        frag > 0.0,
+        "fragmentation should be > 0 due to alignment padding"
+    );
     assert!(frag < 1.0, "fragmentation should be < 1.0");
 }
 
@@ -575,7 +623,10 @@ fn test_arena_stats() {
     assert_eq!(stats.pool_size, 16384);
     assert_eq!(stats.alloc_count, 3);
     assert_eq!(stats.bytes_allocated, 600);
-    assert!(stats.bytes_used >= 600, "bytes_used should be >= bytes_allocated");
+    assert!(
+        stats.bytes_used >= 600,
+        "bytes_used should be >= bytes_allocated"
+    );
     assert_eq!(stats.generation, 0);
     assert_eq!(stats.high_water_mark, stats.bytes_used);
     assert_eq!(stats.peak_alloc_count, 3);
@@ -600,7 +651,10 @@ fn test_page_aligned_allocation() {
     device.copy_in(&buf, &data).unwrap();
     let mut out = vec![0u8; 8192];
     device.copy_out(&buf, &mut out).unwrap();
-    assert_eq!(out, data, "large page-aligned allocation should preserve data");
+    assert_eq!(
+        out, data,
+        "large page-aligned allocation should preserve data"
+    );
 }
 
 #[test]
@@ -671,14 +725,11 @@ mod simd_tests {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
-        let mut bufs = vec![
-            vec![0u8; n * 4],
-            f32_to_bytes(&a),
-            f32_to_bytes(&b),
-        ];
+        let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&a), f32_to_bytes(&b)];
 
         interpret::execute_kernel(&kernel, &mut bufs);
         let result = bytes_to_f32(&bufs[0]);
@@ -723,23 +774,28 @@ mod simd_tests {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
-        let mut bufs = vec![
-            vec![0u8; n * 4],
-            f32_to_bytes(&a),
-            f32_to_bytes(&b),
-        ];
+        let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&a), f32_to_bytes(&b)];
 
         interpret::execute_kernel(&kernel, &mut bufs);
         let result = bytes_to_f32(&bufs[0]);
 
         // NaN-propagating max: max(NaN, 0) = NaN
         assert_eq!(result[0], 1.0);
-        assert!(result[1].is_nan(), "max(NaN, 0) should be NaN, got {}", result[1]);
+        assert!(
+            result[1].is_nan(),
+            "max(NaN, 0) should be NaN, got {}",
+            result[1]
+        );
         assert_eq!(result[2], 3.0);
-        assert!(result[4].is_nan(), "max(NaN, 0) should be NaN, got {}", result[4]);
+        assert!(
+            result[4].is_nan(),
+            "max(NaN, 0) should be NaN, got {}",
+            result[4]
+        );
     }
 
     #[test]
@@ -776,13 +832,11 @@ mod simd_tests {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-            spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
 
-        let mut bufs = vec![
-            vec![0u8; n * 4],
-            f32_to_bytes(&a),
-        ];
+        let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&a)];
 
         interpret::execute_kernel(&kernel, &mut bufs);
         let result = bytes_to_f32(&bufs[0]);
@@ -791,7 +845,14 @@ mod simd_tests {
         for i in 0..n {
             let expected = 1.0 / a[i].sqrt();
             let diff = (result[i] - expected).abs();
-            assert!(diff < 1e-6, "1/sqrt({}) = {}, expected {} (diff={})", a[i], result[i], expected, diff);
+            assert!(
+                diff < 1e-6,
+                "1/sqrt({}) = {}, expected {} (diff={})",
+                a[i],
+                result[i],
+                expected,
+                diff
+            );
         }
     }
 }
@@ -830,13 +891,20 @@ fn test_bounds_check_elim_for_divisible_size() {
         ],
         grid: [1, 1, 1],
         local: [256, 1, 1],
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }];
 
     specialize_shapes(&mut kernels);
 
-    let spec = kernels[0].spec.as_ref().expect("specialization should be applied");
-    assert!(spec.bounds_check_elim, "256 elements should allow bounds check elimination");
+    let spec = kernels[0]
+        .spec
+        .as_ref()
+        .expect("specialization should be applied");
+    assert!(
+        spec.bounds_check_elim,
+        "256 elements should allow bounds check elimination"
+    );
     assert_eq!(spec.total_elements, 256);
     assert!(spec.all_static);
 }

@@ -1,9 +1,7 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-};
 use molt_gpu::render::glsl::GlslRenderer;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
@@ -35,7 +33,8 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -62,7 +61,8 @@ fn make_simple_unary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -109,24 +109,39 @@ fn test_glsl_precision_highp_int() {
 fn test_glsl_sampler2d_inputs() {
     let kernel = make_simple_binary_kernel(PrimitiveOp::Add, 128);
     let glsl = GlslRenderer.render(&kernel);
-    assert!(glsl.contains("uniform sampler2D u_tex1;"), "Input buf 1 should be sampler2D");
-    assert!(glsl.contains("uniform sampler2D u_tex2;"), "Input buf 2 should be sampler2D");
+    assert!(
+        glsl.contains("uniform sampler2D u_tex1;"),
+        "Input buf 1 should be sampler2D"
+    );
+    assert!(
+        glsl.contains("uniform sampler2D u_tex2;"),
+        "Input buf 2 should be sampler2D"
+    );
     // Output buf (id=0) should NOT be a sampler2D
-    assert!(!glsl.contains("uniform sampler2D u_tex0;"), "Output buf should not be sampler2D");
+    assert!(
+        !glsl.contains("uniform sampler2D u_tex0;"),
+        "Output buf should not be sampler2D"
+    );
 }
 
 #[test]
 fn test_glsl_texture_width_uniform() {
     let kernel = make_simple_binary_kernel(PrimitiveOp::Add, 64);
     let glsl = GlslRenderer.render(&kernel);
-    assert!(glsl.contains("uniform int u_tex_width;"), "Must have texture width uniform");
+    assert!(
+        glsl.contains("uniform int u_tex_width;"),
+        "Must have texture width uniform"
+    );
 }
 
 #[test]
 fn test_glsl_num_elements_uniform() {
     let kernel = make_simple_binary_kernel(PrimitiveOp::Add, 64);
     let glsl = GlslRenderer.render(&kernel);
-    assert!(glsl.contains("uniform int u_num_elements;"), "Must have num_elements uniform");
+    assert!(
+        glsl.contains("uniform int u_num_elements;"),
+        "Must have num_elements uniform"
+    );
 }
 
 // ============================================================
@@ -137,8 +152,14 @@ fn test_glsl_num_elements_uniform() {
 fn test_glsl_frag_color_output() {
     let kernel = make_simple_binary_kernel(PrimitiveOp::Add, 64);
     let glsl = GlslRenderer.render(&kernel);
-    assert!(glsl.contains("out vec4 frag_color;"), "Must declare frag_color output");
-    assert!(glsl.contains("frag_color = result;"), "Must write to frag_color");
+    assert!(
+        glsl.contains("out vec4 frag_color;"),
+        "Must declare frag_color output"
+    );
+    assert!(
+        glsl.contains("frag_color = result;"),
+        "Must write to frag_color"
+    );
 }
 
 #[test]
@@ -164,13 +185,29 @@ fn test_glsl_no_f64_types() {
             dst_dtype: DType::Float64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     // f64 and double should not appear in GLSL output
@@ -187,13 +224,29 @@ fn test_glsl_no_i64_u64_types() {
             dst_dtype: DType::Int64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(!glsl.contains("i64"), "GLSL should not contain 'i64'");
@@ -269,17 +322,36 @@ fn test_glsl_render_cmplt() {
             dst_dtype: DType::Bool,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains(" < "), "Cmplt should use < operator");
-    assert!(glsl.contains("1.0") && glsl.contains("0.0"), "Comparison should output 1.0/0.0");
+    assert!(
+        glsl.contains("1.0") && glsl.contains("0.0"),
+        "Comparison should output 1.0/0.0"
+    );
 }
 
 #[test]
@@ -291,13 +363,29 @@ fn test_glsl_render_cmpeq() {
             dst_dtype: DType::Bool,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains(" == "), "Cmpeq should use == operator");
@@ -312,13 +400,29 @@ fn test_glsl_render_cmpne() {
             dst_dtype: DType::Bool,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains(" != "), "Cmpne should use != operator");
@@ -430,18 +534,42 @@ fn test_glsl_render_where_ternary() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Bool, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Bool,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     // GLSL supports ternary, so should use ? : (unlike WGSL's select())
-    assert!(glsl.contains(" ? "), "GLSL Where should use ternary operator");
+    assert!(
+        glsl.contains(" ? "),
+        "GLSL Where should use ternary operator"
+    );
     assert!(!glsl.contains("select("), "GLSL should not use select()");
 }
 
@@ -454,12 +582,23 @@ fn test_glsl_render_cast() {
             dst_dtype: DType::Int32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains("int("), "Cast to int should use int()");
@@ -474,12 +613,23 @@ fn test_glsl_render_bitcast_to_float() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -497,12 +647,23 @@ fn test_glsl_render_bitcast_to_int() {
             dst_dtype: DType::Int32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -520,12 +681,23 @@ fn test_glsl_render_bitcast_to_uint() {
             dst_dtype: DType::UInt32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::UInt32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::UInt32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -547,17 +719,34 @@ fn test_glsl_render_reduce_sum() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[1024]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[1024]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
-    assert!(glsl.contains("#version 300 es"), "Must have GLSL ES 3.0 header");
+    assert!(
+        glsl.contains("#version 300 es"),
+        "Must have GLSL ES 3.0 header"
+    );
     assert!(glsl.contains("acc"), "Reduce must use accumulator");
-    assert!(glsl.contains("for (int rid"), "Reduce must have reduction loop");
+    assert!(
+        glsl.contains("for (int rid"),
+        "Reduce must have reduction loop"
+    );
     assert!(glsl.contains("acc + "), "ReduceSum must accumulate with +");
 }
 
@@ -570,15 +759,29 @@ fn test_glsl_render_reduce_max() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[1024]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[1024]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
-    assert!(glsl.contains("for (int rid"), "Reduce must have reduction loop");
+    assert!(
+        glsl.contains("for (int rid"),
+        "Reduce must have reduction loop"
+    );
     assert!(glsl.contains("max(acc,"), "ReduceMax must use max()");
     // -infinity init via intBitsToFloat
     assert!(
@@ -604,18 +807,37 @@ fn test_glsl_render_fused_elementwise_then_reduce() {
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[4]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[1024]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1024]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[4]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[1024]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[1024]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [4, 1, 1],
         local: [4, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains("for (int rid"), "Must have reduce loop");
     // Mul should appear inside the loop
-    assert!(glsl.contains(" * "), "Mul should appear in fused pre-reduce");
+    assert!(
+        glsl.contains(" * "),
+        "Mul should appear in fused pre-reduce"
+    );
     assert!(glsl.contains("acc = acc + "), "ReduceSum accumulation");
 }
 
@@ -635,7 +857,13 @@ fn test_glsl_render_fused_elementwise_chain() {
             },
             FusedOp {
                 op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Const { val: 2.0, dtype: DType::Float32 }],
+                srcs: vec![
+                    FusedSrc::Op(0),
+                    FusedSrc::Const {
+                        val: 2.0,
+                        dtype: DType::Float32,
+                    },
+                ],
                 dst_dtype: DType::Float32,
             },
             FusedOp {
@@ -645,20 +873,39 @@ fn test_glsl_render_fused_elementwise_chain() {
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [256, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     // Check chain references: v1 uses v0, v2 uses v1
     assert!(glsl.contains("v0"), "First op result as v0");
     assert!(glsl.contains("v1"), "Second op result as v1");
     assert!(glsl.contains("v2"), "Third op result as v2");
-    assert!(glsl.contains("result[comp] = float(v2)"), "Final output should be v2");
+    assert!(
+        glsl.contains("result[comp] = float(v2)"),
+        "Final output should be v2"
+    );
 }
 
 // ============================================================
@@ -667,7 +914,8 @@ fn test_glsl_render_fused_elementwise_chain() {
 
 #[test]
 fn test_glsl_all_26_ops_have_render_patterns() {
-    let elementwise_ops: Vec<_> = PrimitiveOp::ALL.iter()
+    let elementwise_ops: Vec<_> = PrimitiveOp::ALL
+        .iter()
         .filter(|op| op.is_elementwise())
         .collect();
 
@@ -696,7 +944,10 @@ fn test_glsl_all_26_ops_have_render_patterns() {
             ops: vec![FusedOp {
                 op,
                 srcs,
-                dst_dtype: if matches!(op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+                dst_dtype: if matches!(
+                    op,
+                    PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+                ) {
                     DType::Bool
                 } else {
                     DType::Float32
@@ -705,7 +956,8 @@ fn test_glsl_all_26_ops_have_render_patterns() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
         let glsl = GlslRenderer.render(&kernel);
         assert!(
@@ -735,12 +987,23 @@ fn test_glsl_all_26_ops_have_render_patterns() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[256]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
         let glsl = GlslRenderer.render(&kernel);
         assert!(
@@ -801,17 +1064,31 @@ fn test_glsl_const_infinity() {
             op: PrimitiveOp::Add,
             srcs: vec![
                 FusedSrc::Buf(1),
-                FusedSrc::Const { val: f64::INFINITY, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: f64::INFINITY,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -827,17 +1104,31 @@ fn test_glsl_const_neg_infinity() {
             op: PrimitiveOp::Add,
             srcs: vec![
                 FusedSrc::Buf(1),
-                FusedSrc::Const { val: f64::NEG_INFINITY, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: f64::NEG_INFINITY,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -853,17 +1144,31 @@ fn test_glsl_const_nan() {
             op: PrimitiveOp::Add,
             srcs: vec![
                 FusedSrc::Buf(1),
-                FusedSrc::Const { val: f64::NAN, dtype: DType::Float32 },
+                FusedSrc::Const {
+                    val: f64::NAN,
+                    dtype: DType::Float32,
+                },
             ],
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(

@@ -1,9 +1,7 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::fuse::fuse;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc,
-};
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_elementwise_kernel(op: PrimitiveOp, buf_ids: (usize, usize, usize)) -> FusedKernel {
@@ -14,13 +12,29 @@ fn make_elementwise_kernel(op: PrimitiveOp, buf_ids: (usize, usize, usize)) -> F
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: buf_ids.0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: buf_ids.1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: buf_ids.2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: buf_ids.0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: buf_ids.1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: buf_ids.2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -32,12 +46,23 @@ fn make_reduce_kernel(op: PrimitiveOp, in_size: usize, out_size: usize) -> Fused
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 100, st: ShapeTracker::contiguous(&[out_size]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 101, st: ShapeTracker::contiguous(&[in_size]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 100,
+                st: ShapeTracker::contiguous(&[out_size]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 101,
+                st: ShapeTracker::contiguous(&[in_size]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [out_size as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -48,7 +73,11 @@ fn test_fuse_two_elementwise() {
         make_elementwise_kernel(PrimitiveOp::Mul, (20, 10, 3)),
     ];
     let fused = fuse(kernels);
-    assert_eq!(fused.len(), 1, "two elementwise ops should fuse into 1 kernel");
+    assert_eq!(
+        fused.len(),
+        1,
+        "two elementwise ops should fuse into 1 kernel"
+    );
     assert_eq!(fused[0].ops.len(), 2);
 }
 
@@ -60,7 +89,11 @@ fn test_fuse_three_elementwise() {
         make_elementwise_kernel(PrimitiveOp::Sub, (30, 20, 4)),
     ];
     let fused = fuse(kernels);
-    assert_eq!(fused.len(), 1, "three elementwise ops should fuse into 1 kernel");
+    assert_eq!(
+        fused.len(),
+        1,
+        "three elementwise ops should fuse into 1 kernel"
+    );
     assert_eq!(fused[0].ops.len(), 3);
 }
 

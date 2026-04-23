@@ -29,7 +29,11 @@ fn test_cpu_compile_cache_different_sources() {
     let _p2 = device.compile(source2, "b").expect("compile source2");
     let _p3 = device.compile(source3, "c").expect("compile source3");
 
-    assert_eq!(device.cache_len(), 3, "three different sources = three cache entries");
+    assert_eq!(
+        device.cache_len(),
+        3,
+        "three different sources = three cache entries"
+    );
 
     // Re-compile source1 — should be a cache hit
     let _p4 = device.compile(source1, "a").expect("re-compile source1");
@@ -67,7 +71,9 @@ mod metal_cache_tests {
         let _p1 = device.compile(source, "test").expect("first Metal compile");
 
         // Second compile — cache hit (no recompilation)
-        let _p2 = device.compile(source, "test").expect("second Metal compile (cache hit)");
+        let _p2 = device
+            .compile(source, "test")
+            .expect("second Metal compile (cache hit)");
 
         // Both should succeed and return valid programs
     }

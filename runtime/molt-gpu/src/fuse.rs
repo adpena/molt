@@ -30,9 +30,10 @@ pub fn fuse(kernels: Vec<FusedKernel>) -> Vec<FusedKernel> {
     let mut has_reduce_in_chain = false;
 
     for kernel in kernels {
-        let is_reduce = kernel.ops.iter().any(|op| {
-            matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
-        });
+        let is_reduce = kernel
+            .ops
+            .iter()
+            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
         if is_reduce && has_reduce_in_chain {
             // Fusion boundary: reduce-to-reduce.
@@ -75,7 +76,10 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
     // Collect input buffers from all kernels, remapping indices
     for kernel in &chain {
         for buf in &kernel.bufs[1..] {
-            if !merged_bufs.iter().any(|b: &BufferBinding| b.buf_id == buf.buf_id) {
+            if !merged_bufs
+                .iter()
+                .any(|b: &BufferBinding| b.buf_id == buf.buf_id)
+            {
                 merged_bufs.push(buf.clone());
             }
         }
@@ -99,7 +103,9 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
                         } else {
                             // Input buffer -> find in merged_bufs
                             let buf_id = kernel.bufs[*idx].buf_id;
-                            let new_idx = merged_bufs.iter().position(|b| b.buf_id == buf_id)
+                            let new_idx = merged_bufs
+                                .iter()
+                                .position(|b| b.buf_id == buf_id)
                                 .expect("buffer not found in merged set");
                             remapped_srcs.push(FusedSrc::Buf(new_idx));
                         }
@@ -108,7 +114,10 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
                         remapped_srcs.push(FusedSrc::Op(op_offset + prior));
                     }
                     FusedSrc::Const { val, dtype } => {
-                        remapped_srcs.push(FusedSrc::Const { val: *val, dtype: *dtype });
+                        remapped_srcs.push(FusedSrc::Const {
+                            val: *val,
+                            dtype: *dtype,
+                        });
                     }
                 }
             }
@@ -125,7 +134,8 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
         bufs: merged_bufs,
         grid: last.grid,
         local: last.local,
-        spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -206,8 +216,7 @@ fn constant_fold_kernel(kernel: &mut FusedKernel) -> usize {
                         FusedSrc::Const { val, dtype }
                     } else {
                         FusedSrc::Op(
-                            old_to_new[*prior_idx]
-                                .expect("non-folded op must have a new index"),
+                            old_to_new[*prior_idx].expect("non-folded op must have a new index"),
                         )
                     }
                 }
@@ -279,9 +288,7 @@ fn evaluate_const_op(op: PrimitiveOp, vals: &[f64]) -> Option<f64> {
         }
 
         // Ternary ops
-        PrimitiveOp::Where => {
-            Some(if vals[0] != 0.0 { vals[1] } else { vals[2] })
-        }
+        PrimitiveOp::Where => Some(if vals[0] != 0.0 { vals[1] } else { vals[2] }),
 
         // Cast/Bitcast cannot be folded without target type context
         // at this level (the FusedOp knows dst_dtype but the value

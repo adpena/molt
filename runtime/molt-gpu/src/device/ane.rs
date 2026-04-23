@@ -54,8 +54,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::device::{
-    Allocator, BufferHandle, Compiler, CompiledProgram, DeviceBuffer,
-    DeviceError, Executor, ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, DeviceBuffer, DeviceError, Executor,
+    ProgramHandle,
 };
 
 /// Page size for IOSurface-backed ANE buffers (arm64).
@@ -78,8 +78,7 @@ impl AneShape {
     /// Total number of elements.
     #[inline]
     pub fn numel(&self) -> usize {
-        self.n as usize * self.c as usize * self.h as usize
-            * self.w as usize * self.d as usize
+        self.n as usize * self.c as usize * self.h as usize * self.w as usize * self.d as usize
     }
 
     /// Validate that all dimensions are within ANE hardware limits.
@@ -331,19 +330,37 @@ mod tests {
 
     #[test]
     fn test_ane_shape_numel() {
-        let shape = AneShape { n: 1, c: 3, h: 224, w: 224, d: 1 };
+        let shape = AneShape {
+            n: 1,
+            c: 3,
+            h: 224,
+            w: 224,
+            d: 1,
+        };
         assert_eq!(shape.numel(), 3 * 224 * 224);
     }
 
     #[test]
     fn test_ane_shape_validate_ok() {
-        let shape = AneShape { n: 1, c: 512, h: 512, w: 1, d: 1 };
+        let shape = AneShape {
+            n: 1,
+            c: 512,
+            h: 512,
+            w: 1,
+            d: 1,
+        };
         assert!(shape.validate().is_ok());
     }
 
     #[test]
     fn test_ane_shape_validate_exceeds_max() {
-        let shape = AneShape { n: 1, c: 1, h: 20000, w: 1, d: 1 };
+        let shape = AneShape {
+            n: 1,
+            c: 1,
+            h: 20000,
+            w: 1,
+            d: 1,
+        };
         assert!(shape.validate().is_err());
     }
 

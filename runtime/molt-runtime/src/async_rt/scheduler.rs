@@ -1315,7 +1315,9 @@ pub extern "C" fn molt_asyncio_task_registry_pop(token_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_last_exception_clear(task_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_task_last_exception_clear_impl(_py, task_bits) })
+    crate::with_gil_entry!(_py, {
+        asyncio_task_last_exception_clear_impl(_py, task_bits)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -3820,7 +3822,10 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 } else {
                     "<none>".to_string()
                 };
-                eprintln!("molt block_on epilogue step={} pending={} kind={}", label, pending, kind);
+                eprintln!(
+                    "molt block_on epilogue step={} pending={} kind={}",
+                    label, pending, kind
+                );
             };
             let new_depth = exception_stack_depth();
             trace_step("start");

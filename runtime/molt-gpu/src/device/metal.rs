@@ -12,8 +12,8 @@ use metal::foreign_types::ForeignType;
 use metal::{Device, MTLResourceOptions, MTLSize};
 
 use crate::device::{
-    Allocator, BufferHandle, Compiler, CompiledProgram, DeviceBuffer,
-    DeviceError, Executor, ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, DeviceBuffer, DeviceError, Executor,
+    ProgramHandle,
 };
 
 /// Apple Metal GPU device backend.
@@ -54,10 +54,9 @@ impl MetalDevice {
 
 impl Allocator for MetalDevice {
     fn alloc(&self, size_bytes: usize) -> Result<DeviceBuffer, DeviceError> {
-        let buffer = self.device.new_buffer(
-            size_bytes as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let buffer = self
+            .device
+            .new_buffer(size_bytes as u64, MTLResourceOptions::StorageModeShared);
         let key = buffer.as_ptr() as usize;
         let ptr = buffer.as_ptr() as *mut std::ffi::c_void;
 
@@ -87,14 +86,19 @@ impl Allocator for MetalDevice {
             BufferHandle::Metal(ptr) => {
                 let key = *ptr as usize;
                 let live = self.live_buffers.lock().unwrap();
-                let mtl_buf = live.get(&key)
+                let mtl_buf = live
+                    .get(&key)
                     .ok_or_else(|| DeviceError::InvalidArgument("buffer not found".into()))?;
                 let contents = mtl_buf.contents() as *mut u8;
                 // SAFETY: MTLBuffer::contents() returns a valid shared-mode pointer.
                 // The copy length is clamped to the buffer size, preventing out-of-bounds writes.
                 // Metal shared-mode buffers are CPU-accessible without synchronization.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(data.as_ptr(), contents, data.len().min(buf.size_bytes));
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        contents,
+                        data.len().min(buf.size_bytes),
+                    );
                 }
                 Ok(())
             }
@@ -108,7 +112,8 @@ impl Allocator for MetalDevice {
             BufferHandle::Metal(ptr) => {
                 let key = *ptr as usize;
                 let live = self.live_buffers.lock().unwrap();
-                let mtl_buf = live.get(&key)
+                let mtl_buf = live
+                    .get(&key)
                     .ok_or_else(|| DeviceError::InvalidArgument("buffer not found".into()))?;
                 let contents = mtl_buf.contents() as *const u8;
                 let len = data.len().min(buf.size_bytes);
@@ -210,7 +215,8 @@ impl Executor for MetalDevice {
             match &buf.handle {
                 BufferHandle::Metal(ptr) => {
                     let key = *ptr as usize;
-                    let mtl_buf = live.get(&key)
+                    let mtl_buf = live
+                        .get(&key)
                         .ok_or_else(|| DeviceError::InvalidArgument("buffer not found".into()))?;
                     encoder.set_buffer(i as u64, Some(mtl_buf), 0);
                 }

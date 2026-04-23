@@ -39,7 +39,9 @@ pub struct WgslRenderer {
 impl WgslRenderer {
     /// Create a new WGSL renderer with default configuration (no subgroups).
     pub fn new() -> Self {
-        Self { config: WgslRendererConfig::default() }
+        Self {
+            config: WgslRendererConfig::default(),
+        }
     }
 
     /// Create a new WGSL renderer with the given configuration.
@@ -54,14 +56,23 @@ impl WgslRenderer {
         let dtype = dtype.narrow_webgpu();
         match dtype {
             DType::Bool => {
-                if val != 0.0 { "true".to_string() } else { "false".to_string() }
+                if val != 0.0 {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
             }
             DType::Float16 => format!("f16({})", val),
             DType::Float32 | DType::BFloat16 => {
-                if val == f64::INFINITY { "bitcast<f32>(0x7f800000u)".to_string() }
-                else if val == f64::NEG_INFINITY { "bitcast<f32>(0xff800000u)".to_string() }
-                else if val.is_nan() { "bitcast<f32>(0x7fc00000u)".to_string() }
-                else { format!("f32({})", val) }
+                if val == f64::INFINITY {
+                    "bitcast<f32>(0x7f800000u)".to_string()
+                } else if val == f64::NEG_INFINITY {
+                    "bitcast<f32>(0xff800000u)".to_string()
+                } else if val.is_nan() {
+                    "bitcast<f32>(0x7fc00000u)".to_string()
+                } else {
+                    format!("f32({})", val)
+                }
             }
             DType::Int8 | DType::Int16 | DType::Int32 | DType::Int64 => {
                 format!("i32({})", val as i64)
@@ -131,9 +142,7 @@ impl WgslRenderer {
     fn render_op(op: &FusedOp, _op_idx: usize, kernel: &FusedKernel, idx_var: &str) -> String {
         let src = |i: usize| -> String {
             match &op.srcs[i] {
-                FusedSrc::Buf(buf_idx) => {
-                    Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var)
-                }
+                FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var),
                 FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
                 FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
             }
@@ -185,7 +194,11 @@ impl WgslRenderer {
     }
 
     /// Detect FMA pattern: ADD(MUL(a, b), c) or ADD(c, MUL(a, b)).
-    fn detect_fma(op: &FusedOp, op_idx: usize, kernel: &FusedKernel) -> Option<(String, String, String)> {
+    fn detect_fma(
+        op: &FusedOp,
+        op_idx: usize,
+        kernel: &FusedKernel,
+    ) -> Option<(String, String, String)> {
         if op.op != PrimitiveOp::Add {
             return None;
         }
@@ -199,17 +212,23 @@ impl WgslRenderer {
                     let prior_op = &kernel.ops[*prior_idx];
                     if prior_op.op == PrimitiveOp::Mul {
                         let a = match &prior_op.srcs[0] {
-                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Buf(buf_idx) => {
+                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                            }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
                         let b = match &prior_op.srcs[1] {
-                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Buf(buf_idx) => {
+                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                            }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
                         let c = match &op.srcs[add_src_pos] {
-                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Buf(buf_idx) => {
+                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                            }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
@@ -249,7 +268,8 @@ impl Renderer for WgslRenderer {
                 out,
                 "@group(0) @binding({}) var<storage, {}> buf{}: array<{}>;",
                 i, access, binding.buf_id, dtype_str
-            ).unwrap();
+            )
+            .unwrap();
         }
         writeln!(out).unwrap();
 
@@ -258,8 +278,13 @@ impl Renderer for WgslRenderer {
             out,
             "@compute @workgroup_size({}, {}, {})",
             kernel.local[0], kernel.local[1], kernel.local[2]
-        ).unwrap();
-        writeln!(out, "fn molt_kernel(@builtin(global_invocation_id) gid_vec: vec3<u32>) {{").unwrap();
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "fn molt_kernel(@builtin(global_invocation_id) gid_vec: vec3<u32>) {{"
+        )
+        .unwrap();
         writeln!(out, "    let gid = gid_vec.x;").unwrap();
 
         // Bounds check: elide when shape specialization proves total_elements
@@ -267,14 +292,16 @@ impl Renderer for WgslRenderer {
         // Per Maczan 2026, every instruction in the dispatch path matters when
         // per-operation overhead dominates at batch=1.
         let output_numel = kernel.bufs[0].st.numel();
-        let bounds_check_elim = kernel.spec.as_ref()
-            .is_some_and(|s| s.bounds_check_elim);
+        let bounds_check_elim = kernel.spec.as_ref().is_some_and(|s| s.bounds_check_elim);
         if !bounds_check_elim {
             writeln!(out, "    if (gid >= {}u) {{ return; }}", output_numel).unwrap();
         }
 
         // Check for reduce ops
-        let has_reduce = kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+        let has_reduce = kernel
+            .ops
+            .iter()
+            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
         if kernel.vectorize_width == 4 && !has_reduce {
             // Vectorized 4-wide: each thread processes 4 contiguous elements
@@ -285,7 +312,11 @@ impl Renderer for WgslRenderer {
             }
             writeln!(out, "    // Vectorized 4-wide path").unwrap();
             writeln!(out, "    let base = gid * 4u;").unwrap();
-            writeln!(out, "    for (var lane: u32 = 0u; lane < 4u; lane = lane + 1u) {{").unwrap();
+            writeln!(
+                out,
+                "    for (var lane: u32 = 0u; lane < 4u; lane = lane + 1u) {{"
+            )
+            .unwrap();
             writeln!(out, "        let eidx = base + lane;").unwrap();
 
             for (i, op) in kernel.ops.iter().enumerate() {
@@ -298,7 +329,12 @@ impl Renderer for WgslRenderer {
                 writeln!(out, "        var v{}: {} = {};", i, dtype_str, expr).unwrap();
             }
             let last_op = kernel.ops.len() - 1;
-            writeln!(out, "        buf{}[eidx] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(
+                out,
+                "        buf{}[eidx] = v{};",
+                kernel.bufs[0].buf_id, last_op
+            )
+            .unwrap();
             writeln!(out, "    }}").unwrap();
         } else if !has_reduce {
             for (i, op) in kernel.ops.iter().enumerate() {
@@ -313,9 +349,11 @@ impl Renderer for WgslRenderer {
             let last_op = kernel.ops.len() - 1;
             writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
         } else {
-            let reduce_idx = kernel.ops.iter().position(|op| {
-                matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
-            }).expect("has_reduce but no reduce op found");
+            let reduce_idx = kernel
+                .ops
+                .iter()
+                .position(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+                .expect("has_reduce but no reduce op found");
 
             let reduce_op = &kernel.ops[reduce_idx];
             let reduce_src = &reduce_op.srcs[0];
@@ -334,10 +372,21 @@ impl Renderer for WgslRenderer {
                 _ => unreachable!(),
             };
 
-            writeln!(out, "    var acc: {} = {};", reduce_dtype.wgsl_type(), init_val).unwrap();
+            writeln!(
+                out,
+                "    var acc: {} = {};",
+                reduce_dtype.wgsl_type(),
+                init_val
+            )
+            .unwrap();
 
             if reduce_idx > 0 {
-                writeln!(out, "    for (var rid: u32 = 0u; rid < {}u; rid = rid + 1u) {{", reduce_size).unwrap();
+                writeln!(
+                    out,
+                    "    for (var rid: u32 = 0u; rid < {}u; rid = rid + 1u) {{",
+                    reduce_size
+                )
+                .unwrap();
                 writeln!(out, "        let eidx = gid * {}u + rid;", reduce_size).unwrap();
 
                 for i in 0..reduce_idx {
@@ -349,21 +398,34 @@ impl Renderer for WgslRenderer {
 
                 let src_var = format!("v{}", reduce_idx - 1);
                 match reduce_op.op {
-                    PrimitiveOp::ReduceSum => writeln!(out, "        acc = acc + {};", src_var).unwrap(),
-                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = max(acc, {});", src_var).unwrap(),
+                    PrimitiveOp::ReduceSum => {
+                        writeln!(out, "        acc = acc + {};", src_var).unwrap()
+                    }
+                    PrimitiveOp::ReduceMax => {
+                        writeln!(out, "        acc = max(acc, {});", src_var).unwrap()
+                    }
                     _ => unreachable!(),
                 }
                 writeln!(out, "    }}").unwrap();
             } else {
-                writeln!(out, "    for (var rid: u32 = 0u; rid < {}u; rid = rid + 1u) {{", reduce_size).unwrap();
+                writeln!(
+                    out,
+                    "    for (var rid: u32 = 0u; rid < {}u; rid = rid + 1u) {{",
+                    reduce_size
+                )
+                .unwrap();
                 writeln!(out, "        let eidx = gid * {}u + rid;", reduce_size).unwrap();
                 let src_expr = match reduce_src {
                     FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
                     _ => unreachable!(),
                 };
                 match reduce_op.op {
-                    PrimitiveOp::ReduceSum => writeln!(out, "        acc = acc + {};", src_expr).unwrap(),
-                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = max(acc, {});", src_expr).unwrap(),
+                    PrimitiveOp::ReduceSum => {
+                        writeln!(out, "        acc = acc + {};", src_expr).unwrap()
+                    }
+                    PrimitiveOp::ReduceMax => {
+                        writeln!(out, "        acc = max(acc, {});", src_expr).unwrap()
+                    }
                     _ => unreachable!(),
                 }
                 writeln!(out, "    }}").unwrap();
@@ -384,7 +446,13 @@ impl Renderer for WgslRenderer {
                 }
             }
 
-            writeln!(out, "    var v{}: {} = acc;", reduce_idx, reduce_dtype.wgsl_type()).unwrap();
+            writeln!(
+                out,
+                "    var v{}: {} = acc;",
+                reduce_idx,
+                reduce_dtype.wgsl_type()
+            )
+            .unwrap();
 
             for i in (reduce_idx + 1)..kernel.ops.len() {
                 let op = &kernel.ops[i];

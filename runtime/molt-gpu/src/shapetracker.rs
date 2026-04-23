@@ -52,7 +52,12 @@ impl View {
     }
 
     /// Create a view with explicit fields and compute the contiguity cache.
-    fn new(shape: Vec<usize>, strides: Vec<i64>, offset: i64, mask: Option<Vec<(i64, i64)>>) -> Self {
+    fn new(
+        shape: Vec<usize>,
+        strides: Vec<i64>,
+        offset: i64,
+        mask: Option<Vec<(i64, i64)>>,
+    ) -> Self {
         let is_contiguous_cache = Self::compute_is_contiguous(&shape, &strides, offset, &mask);
         Self {
             shape,
@@ -64,7 +69,12 @@ impl View {
     }
 
     /// Compute contiguity without constructing a View (used during construction).
-    fn compute_is_contiguous(shape: &[usize], strides: &[i64], offset: i64, mask: &Option<Vec<(i64, i64)>>) -> bool {
+    fn compute_is_contiguous(
+        shape: &[usize],
+        strides: &[i64],
+        offset: i64,
+        mask: &Option<Vec<(i64, i64)>>,
+    ) -> bool {
         if offset != 0 || mask.is_some() {
             return false;
         }
@@ -164,8 +174,10 @@ impl View {
         if let Some(ref mask) = self.mask {
             let i0_i64 = i0 as i64;
             let i1_i64 = i1 as i64;
-            if i0_i64 < mask[0].0 || i0_i64 >= mask[0].1
-                || i1_i64 < mask[1].0 || i1_i64 >= mask[1].1
+            if i0_i64 < mask[0].0
+                || i0_i64 >= mask[0].1
+                || i1_i64 < mask[1].0
+                || i1_i64 >= mask[1].1
             {
                 return None;
             }
@@ -192,9 +204,12 @@ impl View {
             let i0_i64 = i0 as i64;
             let i1_i64 = i1 as i64;
             let i2_i64 = i2 as i64;
-            if i0_i64 < mask[0].0 || i0_i64 >= mask[0].1
-                || i1_i64 < mask[1].0 || i1_i64 >= mask[1].1
-                || i2_i64 < mask[2].0 || i2_i64 >= mask[2].1
+            if i0_i64 < mask[0].0
+                || i0_i64 >= mask[0].1
+                || i1_i64 < mask[1].0
+                || i1_i64 >= mask[1].1
+                || i2_i64 < mask[2].0
+                || i2_i64 >= mask[2].1
             {
                 return None;
             }
@@ -256,7 +271,9 @@ impl ShapeTracker {
     /// The current (outermost) view.
     #[inline(always)]
     pub fn view(&self) -> &View {
-        self.views.last().expect("ShapeTracker must have at least one view")
+        self.views
+            .last()
+            .expect("ShapeTracker must have at least one view")
     }
 
     /// The logical shape of the tensor.
@@ -303,9 +320,10 @@ impl ShapeTracker {
 
         let new_shape: Vec<usize> = order.iter().map(|&i| current.shape[i]).collect();
         let new_strides: Vec<i64> = order.iter().map(|&i| current.strides[i]).collect();
-        let new_mask = current.mask.as_ref().map(|m| {
-            order.iter().map(|&i| m[i]).collect()
-        });
+        let new_mask = current
+            .mask
+            .as_ref()
+            .map(|m| order.iter().map(|&i| m[i]).collect());
 
         Self {
             views: vec![View::new(new_shape, new_strides, current.offset, new_mask)],
@@ -316,19 +334,32 @@ impl ShapeTracker {
     /// shape can be expanded to any size (stride becomes 0).
     pub fn expand(&self, new_shape: &[usize]) -> Self {
         let current = self.view();
-        assert_eq!(new_shape.len(), current.shape.len(), "expand: ndim mismatch");
+        assert_eq!(
+            new_shape.len(),
+            current.shape.len(),
+            "expand: ndim mismatch"
+        );
 
         let mut new_strides = current.strides.clone();
         for (i, (&old, &new)) in current.shape.iter().zip(new_shape.iter()).enumerate() {
             if old == 1 && new != 1 {
                 new_strides[i] = 0; // broadcast
             } else {
-                assert_eq!(old, new, "expand: can only expand size-1 dims (dim {} is {})", i, old);
+                assert_eq!(
+                    old, new,
+                    "expand: can only expand size-1 dims (dim {} is {})",
+                    i, old
+                );
             }
         }
 
         Self {
-            views: vec![View::new(new_shape.to_vec(), new_strides, current.offset, current.mask.clone())],
+            views: vec![View::new(
+                new_shape.to_vec(),
+                new_strides,
+                current.offset,
+                current.mask.clone(),
+            )],
         }
     }
 
@@ -359,7 +390,12 @@ impl ShapeTracker {
             .collect();
 
         Self {
-            views: vec![View::new(new_shape, current.strides.clone(), new_offset, Some(new_mask))],
+            views: vec![View::new(
+                new_shape,
+                current.strides.clone(),
+                new_offset,
+                Some(new_mask),
+            )],
         }
     }
 
@@ -377,7 +413,12 @@ impl ShapeTracker {
         }
 
         Self {
-            views: vec![View::new(new_shape, current.strides.clone(), new_offset, current.mask.clone())],
+            views: vec![View::new(
+                new_shape,
+                current.strides.clone(),
+                new_offset,
+                current.mask.clone(),
+            )],
         }
     }
 
@@ -393,7 +434,12 @@ impl ShapeTracker {
         let new_offset = current.offset + (current.shape[axis] as i64 - 1) * current.strides[axis];
 
         Self {
-            views: vec![View::new(current.shape.clone(), new_strides, new_offset, current.mask.clone())],
+            views: vec![View::new(
+                current.shape.clone(),
+                new_strides,
+                new_offset,
+                current.mask.clone(),
+            )],
         }
     }
 

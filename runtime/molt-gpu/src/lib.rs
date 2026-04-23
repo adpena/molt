@@ -4,16 +4,16 @@
 //! a zero-copy ShapeTracker view system, lazy evaluation DAG,
 //! kernel fusion, and multi-backend rendering/execution.
 
-pub mod ops;
-pub mod dtype;
-pub mod shapetracker;
-pub mod lazy;
-pub mod render;
-pub mod device;
-pub mod schedule;
-pub mod fuse;
 pub mod dce;
+pub mod device;
+pub mod dtype;
+pub mod fuse;
+pub mod lazy;
 pub mod mlir;
+pub mod ops;
+pub mod render;
+pub mod schedule;
+pub mod shapetracker;
 
 #[cfg(test)]
 mod test_perf_regression;

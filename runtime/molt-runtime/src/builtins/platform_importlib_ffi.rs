@@ -7437,10 +7437,18 @@ fn importlib_module_dict_ptr_for_state(
     }
     let dict_bits = unsafe { module_dict_bits(module_ptr) };
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return Err(raise_exception::<_>(_py, "TypeError", "module dict missing"));
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "module dict missing",
+        ));
     };
     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-        return Err(raise_exception::<_>(_py, "TypeError", "module dict missing"));
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "module dict missing",
+        ));
     }
     Ok(dict_ptr)
 }
@@ -7576,7 +7584,8 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
                         None => false,
                     };
                     if should_delete {
-                        let module_dict_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
+                        let module_dict_ptr =
+                            importlib_module_dict_ptr_for_state(_py, module_bits)?;
                         unsafe {
                             dict_del_in_place(_py, module_dict_ptr, dunder_path_name);
                         }

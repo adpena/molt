@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::device::{
-    Allocator, BufferHandle, Compiler, CompiledProgram, CpuKernelFn,
-    DeviceBuffer, DeviceError, Executor, ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, CpuKernelFn, DeviceBuffer, DeviceError,
+    Executor, ProgramHandle,
 };
 
 /// CPU reference device backend for correctness testing.
@@ -136,7 +136,10 @@ impl Compiler for CpuDevice {
         fn noop_kernel(_bufs: &[&[u8]], _out: &mut [u8], _num_elements: usize) {}
 
         // Store in cache
-        self.compile_cache.lock().unwrap().insert(hash, entry.to_string());
+        self.compile_cache
+            .lock()
+            .unwrap()
+            .insert(hash, entry.to_string());
 
         Ok(CompiledProgram {
             handle: ProgramHandle::Cpu(noop_kernel as CpuKernelFn),
@@ -290,12 +293,7 @@ pub mod interpret {
     /// `input_buf` is the raw f32 input, `output_buf` is pre-allocated.
     /// `n` is the number of output rows, `reduce_size` is elements per row.
     #[inline(never)]
-    pub fn fused_softmax(
-        input_buf: &[u8],
-        output_buf: &mut [u8],
-        n: usize,
-        reduce_size: usize,
-    ) {
+    pub fn fused_softmax(input_buf: &[u8], output_buf: &mut [u8], n: usize, reduce_size: usize) {
         for row in 0..n {
             let row_start = row * reduce_size;
 
@@ -307,9 +305,8 @@ pub mod interpret {
                 if offset + 4 > input_buf.len() {
                     continue;
                 }
-                let val = f32::from_le_bytes(
-                    input_buf[offset..offset + 4].try_into().unwrap(),
-                ) as f64;
+                let val =
+                    f32::from_le_bytes(input_buf[offset..offset + 4].try_into().unwrap()) as f64;
                 if val > max_val {
                     max_val = val;
                 }
@@ -324,9 +321,8 @@ pub mod interpret {
                 if offset + 4 > input_buf.len() {
                     continue;
                 }
-                let val = f32::from_le_bytes(
-                    input_buf[offset..offset + 4].try_into().unwrap(),
-                ) as f64;
+                let val =
+                    f32::from_le_bytes(input_buf[offset..offset + 4].try_into().unwrap()) as f64;
                 let e = (val - max_val).exp2();
                 *exp_slot = e;
                 sum += e;
@@ -358,13 +354,7 @@ pub mod interpret {
     /// `n` is the number of rows, `dim` is elements per row, `eps` is the
     /// normalization epsilon.
     #[inline(never)]
-    pub fn fused_rms_norm(
-        input_buf: &[u8],
-        output_buf: &mut [u8],
-        n: usize,
-        dim: usize,
-        eps: f64,
-    ) {
+    pub fn fused_rms_norm(input_buf: &[u8], output_buf: &mut [u8], n: usize, dim: usize, eps: f64) {
         for row in 0..n {
             let row_start = row * dim;
 
@@ -376,9 +366,8 @@ pub mod interpret {
                 if offset + 4 > input_buf.len() {
                     continue;
                 }
-                let val = f32::from_le_bytes(
-                    input_buf[offset..offset + 4].try_into().unwrap(),
-                ) as f64;
+                let val =
+                    f32::from_le_bytes(input_buf[offset..offset + 4].try_into().unwrap()) as f64;
                 sum_sq += val * val;
             }
 
@@ -393,9 +382,8 @@ pub mod interpret {
                 if offset + 4 > input_buf.len() {
                     continue;
                 }
-                let val = f32::from_le_bytes(
-                    input_buf[offset..offset + 4].try_into().unwrap(),
-                ) as f64;
+                let val =
+                    f32::from_le_bytes(input_buf[offset..offset + 4].try_into().unwrap()) as f64;
                 let result = (val * inv_rms) as f32;
                 if offset + 4 <= output_buf.len() {
                     output_buf[offset..offset + 4].copy_from_slice(&result.to_le_bytes());
@@ -458,7 +446,8 @@ pub mod interpret {
                                         FusedSrc::Const { val, .. } => *val,
                                     }
                                 };
-                                let result = compute_elementwise(pre_op.op, &get_pre_src, pre_op.srcs.len());
+                                let result =
+                                    compute_elementwise(pre_op.op, &get_pre_src, pre_op.srcs.len());
                                 pre_values.push(result);
                             }
                             *pre_values.last().unwrap()
@@ -485,9 +474,7 @@ pub mod interpret {
 
                 let get_src = |i: usize| -> f64 {
                     match &op.srcs[i] {
-                        FusedSrc::Buf(idx) => {
-                            read_f64(&bufs[*idx], gid, kernel.bufs[*idx].dtype)
-                        }
+                        FusedSrc::Buf(idx) => read_f64(&bufs[*idx], gid, kernel.bufs[*idx].dtype),
                         FusedSrc::Op(prior) => values[*prior],
                         FusedSrc::Const { val, .. } => *val,
                     }
@@ -532,9 +519,10 @@ pub mod interpret {
         }
 
         // No reduce ops
-        let has_reduce = kernel.ops.iter().any(|op| {
-            matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
-        });
+        let has_reduce = kernel
+            .ops
+            .iter()
+            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
         if has_reduce {
             return false;
         }
@@ -634,9 +622,7 @@ pub mod interpret {
             for op in kernel.ops.iter() {
                 let get_src = |i: usize| -> f64 {
                     match &op.srcs[i] {
-                        FusedSrc::Buf(idx) => {
-                            read_f64(&bufs[*idx], gid, kernel.bufs[*idx].dtype)
-                        }
+                        FusedSrc::Buf(idx) => read_f64(&bufs[*idx], gid, kernel.bufs[*idx].dtype),
                         FusedSrc::Op(prior) => values[*prior],
                         FusedSrc::Const { val, .. } => *val,
                     }
@@ -676,10 +662,26 @@ pub mod interpret {
                 let aa: [f32; 4] = a.into();
                 let ba: [f32; 4] = b.into();
                 f32x4::new([
-                    if aa[0].is_nan() || ba[0].is_nan() { f32::NAN } else { aa[0].max(ba[0]) },
-                    if aa[1].is_nan() || ba[1].is_nan() { f32::NAN } else { aa[1].max(ba[1]) },
-                    if aa[2].is_nan() || ba[2].is_nan() { f32::NAN } else { aa[2].max(ba[2]) },
-                    if aa[3].is_nan() || ba[3].is_nan() { f32::NAN } else { aa[3].max(ba[3]) },
+                    if aa[0].is_nan() || ba[0].is_nan() {
+                        f32::NAN
+                    } else {
+                        aa[0].max(ba[0])
+                    },
+                    if aa[1].is_nan() || ba[1].is_nan() {
+                        f32::NAN
+                    } else {
+                        aa[1].max(ba[1])
+                    },
+                    if aa[2].is_nan() || ba[2].is_nan() {
+                        f32::NAN
+                    } else {
+                        aa[2].max(ba[2])
+                    },
+                    if aa[3].is_nan() || ba[3].is_nan() {
+                        f32::NAN
+                    } else {
+                        aa[3].max(ba[3])
+                    },
                 ])
             }
             PrimitiveOp::Exp2 => {
@@ -761,10 +763,26 @@ pub mod interpret {
                 let aa: [f32; 4] = a.into();
                 let ba: [f32; 4] = b.into();
                 f32x4::new([
-                    if ba[0] as i32 == 0 { 0.0 } else { ((aa[0] as i32) / (ba[0] as i32)) as f32 },
-                    if ba[1] as i32 == 0 { 0.0 } else { ((aa[1] as i32) / (ba[1] as i32)) as f32 },
-                    if ba[2] as i32 == 0 { 0.0 } else { ((aa[2] as i32) / (ba[2] as i32)) as f32 },
-                    if ba[3] as i32 == 0 { 0.0 } else { ((aa[3] as i32) / (ba[3] as i32)) as f32 },
+                    if ba[0] as i32 == 0 {
+                        0.0
+                    } else {
+                        ((aa[0] as i32) / (ba[0] as i32)) as f32
+                    },
+                    if ba[1] as i32 == 0 {
+                        0.0
+                    } else {
+                        ((aa[1] as i32) / (ba[1] as i32)) as f32
+                    },
+                    if ba[2] as i32 == 0 {
+                        0.0
+                    } else {
+                        ((aa[2] as i32) / (ba[2] as i32)) as f32
+                    },
+                    if ba[3] as i32 == 0 {
+                        0.0
+                    } else {
+                        ((aa[3] as i32) / (ba[3] as i32)) as f32
+                    },
                 ])
             }
             PrimitiveOp::Mod => {
@@ -774,10 +792,26 @@ pub mod interpret {
                 let aa: [f32; 4] = a.into();
                 let ba: [f32; 4] = b.into();
                 f32x4::new([
-                    if ba[0] as i32 == 0 { 0.0 } else { ((aa[0] as i32) % (ba[0] as i32)) as f32 },
-                    if ba[1] as i32 == 0 { 0.0 } else { ((aa[1] as i32) % (ba[1] as i32)) as f32 },
-                    if ba[2] as i32 == 0 { 0.0 } else { ((aa[2] as i32) % (ba[2] as i32)) as f32 },
-                    if ba[3] as i32 == 0 { 0.0 } else { ((aa[3] as i32) % (ba[3] as i32)) as f32 },
+                    if ba[0] as i32 == 0 {
+                        0.0
+                    } else {
+                        ((aa[0] as i32) % (ba[0] as i32)) as f32
+                    },
+                    if ba[1] as i32 == 0 {
+                        0.0
+                    } else {
+                        ((aa[1] as i32) % (ba[1] as i32)) as f32
+                    },
+                    if ba[2] as i32 == 0 {
+                        0.0
+                    } else {
+                        ((aa[2] as i32) % (ba[2] as i32)) as f32
+                    },
+                    if ba[3] as i32 == 0 {
+                        0.0
+                    } else {
+                        ((aa[3] as i32) % (ba[3] as i32)) as f32
+                    },
                 ])
             }
             PrimitiveOp::And => {
@@ -842,11 +876,16 @@ pub mod interpret {
                 ])
             }
             PrimitiveOp::Bitcast => get_src(0), // f32 -> f32 is identity in SIMD
-            PrimitiveOp::Cast => get_src(0), // f32 -> f32 is identity
+            PrimitiveOp::Cast => get_src(0),    // f32 -> f32 is identity
             PrimitiveOp::Trunc => {
                 let x = get_src(0);
                 let arr: [f32; 4] = x.into();
-                f32x4::new([arr[0].trunc(), arr[1].trunc(), arr[2].trunc(), arr[3].trunc()])
+                f32x4::new([
+                    arr[0].trunc(),
+                    arr[1].trunc(),
+                    arr[2].trunc(),
+                    arr[3].trunc(),
+                ])
             }
             _ => {
                 // Fallback: should not reach here if is_simd_op is correct
@@ -864,17 +903,43 @@ pub mod interpret {
             PrimitiveOp::Idiv => {
                 let a = get_src(0) as i64;
                 let b = get_src(1) as i64;
-                if b == 0 { 0.0 } else { (a / b) as f64 }
+                if b == 0 {
+                    0.0
+                } else {
+                    (a / b) as f64
+                }
             }
             PrimitiveOp::Mod => {
                 let a = get_src(0) as i64;
                 let b = get_src(1) as i64;
-                if b == 0 { 0.0 } else { (a % b) as f64 }
+                if b == 0 {
+                    0.0
+                } else {
+                    (a % b) as f64
+                }
             }
             PrimitiveOp::Neg => -get_src(0),
-            PrimitiveOp::Cmplt => if get_src(0) < get_src(1) { 1.0 } else { 0.0 },
-            PrimitiveOp::Cmpeq => if get_src(0) == get_src(1) { 1.0 } else { 0.0 },
-            PrimitiveOp::Cmpne => if get_src(0) != get_src(1) { 1.0 } else { 0.0 },
+            PrimitiveOp::Cmplt => {
+                if get_src(0) < get_src(1) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            PrimitiveOp::Cmpeq => {
+                if get_src(0) == get_src(1) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            PrimitiveOp::Cmpne => {
+                if get_src(0) != get_src(1) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             PrimitiveOp::And => ((get_src(0) as i64) & (get_src(1) as i64)) as f64,
             PrimitiveOp::Or => ((get_src(0) as i64) | (get_src(1) as i64)) as f64,
             PrimitiveOp::Xor => ((get_src(0) as i64) ^ (get_src(1) as i64)) as f64,
@@ -897,7 +962,11 @@ pub mod interpret {
                 }
             }
             PrimitiveOp::Where => {
-                if get_src(0) != 0.0 { get_src(1) } else { get_src(2) }
+                if get_src(0) != 0.0 {
+                    get_src(1)
+                } else {
+                    get_src(2)
+                }
             }
             PrimitiveOp::Cast => get_src(0),
             PrimitiveOp::Bitcast => get_src(0),
@@ -910,67 +979,93 @@ pub mod interpret {
         match dtype {
             DType::Float32 => {
                 let offset = idx * 4;
-                if offset + 4 > buf.len() { return 0.0; }
+                if offset + 4 > buf.len() {
+                    return 0.0;
+                }
                 f32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as f64
             }
             DType::Float64 => {
                 let offset = idx * 8;
-                if offset + 8 > buf.len() { return 0.0; }
+                if offset + 8 > buf.len() {
+                    return 0.0;
+                }
                 f64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap())
             }
             DType::Int32 => {
                 let offset = idx * 4;
-                if offset + 4 > buf.len() { return 0.0; }
+                if offset + 4 > buf.len() {
+                    return 0.0;
+                }
                 i32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as f64
             }
             DType::Bool | DType::UInt8 => {
-                if idx >= buf.len() { return 0.0; }
+                if idx >= buf.len() {
+                    return 0.0;
+                }
                 buf[idx] as f64
             }
             DType::Int8 => {
-                if idx >= buf.len() { return 0.0; }
+                if idx >= buf.len() {
+                    return 0.0;
+                }
                 (buf[idx] as i8) as f64
             }
             DType::Int16 => {
                 let offset = idx * 2;
-                if offset + 2 > buf.len() { return 0.0; }
+                if offset + 2 > buf.len() {
+                    return 0.0;
+                }
                 i16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap()) as f64
             }
             DType::UInt16 => {
                 let offset = idx * 2;
-                if offset + 2 > buf.len() { return 0.0; }
+                if offset + 2 > buf.len() {
+                    return 0.0;
+                }
                 u16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap()) as f64
             }
             DType::Int64 => {
                 let offset = idx * 8;
-                if offset + 8 > buf.len() { return 0.0; }
+                if offset + 8 > buf.len() {
+                    return 0.0;
+                }
                 i64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()) as f64
             }
             DType::UInt32 => {
                 let offset = idx * 4;
-                if offset + 4 > buf.len() { return 0.0; }
+                if offset + 4 > buf.len() {
+                    return 0.0;
+                }
                 u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as f64
             }
             DType::UInt64 => {
                 let offset = idx * 8;
-                if offset + 8 > buf.len() { return 0.0; }
+                if offset + 8 > buf.len() {
+                    return 0.0;
+                }
                 u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()) as f64
             }
             DType::Float16 => {
                 let offset = idx * 2;
-                if offset + 2 > buf.len() { return 0.0; }
+                if offset + 2 > buf.len() {
+                    return 0.0;
+                }
                 let bits = u16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap());
                 half::f16::from_bits(bits).to_f64()
             }
             DType::BFloat16 => {
                 let offset = idx * 2;
-                if offset + 2 > buf.len() { return 0.0; }
+                if offset + 2 > buf.len() {
+                    return 0.0;
+                }
                 let bits = u16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap());
                 half::bf16::from_bits(bits).to_f64()
             }
             // MXFP types: raw byte read. Dequantization happens at a higher level.
             DType::MxFP8 | DType::MxFP4 => {
-                if idx >= buf.len() { return 0.0; }
+                if idx >= buf.len() {
+                    return 0.0;
+                }
                 buf[idx] as f64
             }
         }

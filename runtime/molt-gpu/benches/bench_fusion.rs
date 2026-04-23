@@ -10,10 +10,8 @@ use std::time::{Duration, Instant};
 use molt_gpu::dtype::DType;
 use molt_gpu::fuse::fuse;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-};
 use molt_gpu::render::msl::MslRenderer;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
 use molt_gpu::shapetracker::ShapeTracker;
 
 /// Number of warmup iterations.
@@ -48,7 +46,10 @@ fn main() {
     let mut results = Vec::new();
 
     println!("# molt-gpu Fusion Benchmark Results\n");
-    println!("Warmup: {} iters, Measurement: {} iters\n", WARMUP_ITERS, MEASURE_ITERS);
+    println!(
+        "Warmup: {} iters, Measurement: {} iters\n",
+        WARMUP_ITERS, MEASURE_ITERS
+    );
 
     // --- Softmax: unfused (7 individual ops) vs fused (2 kernels) ---
     let n = 1024;
@@ -61,12 +62,23 @@ fn main() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         },
         // 2. Sub (x - max)
         FusedKernel {
@@ -76,13 +88,29 @@ fn main() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-                BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         },
         // 3. Exp2
         FusedKernel {
@@ -92,12 +120,23 @@ fn main() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         },
         // 4. ReduceSum
         FusedKernel {
@@ -107,12 +146,23 @@ fn main() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         },
         // 5. Reciprocal
         FusedKernel {
@@ -122,12 +172,23 @@ fn main() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         },
         // 6. Mul (exp * inv_sum)
         FusedKernel {
@@ -137,13 +198,29 @@ fn main() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-                BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         },
     ];
 
@@ -157,12 +234,23 @@ fn main() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         },
         // Kernel 2: sub -> exp2 -> reduce_sum -> reciprocal -> mul (fused)
         FusedKernel {
@@ -194,13 +282,29 @@ fn main() {
                 },
             ],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-                BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         },
     ];
 
@@ -233,42 +337,105 @@ fn main() {
     });
 
     // --- Elementwise chain: 4 ops unfused vs 1 kernel fused ---
-    let chain_unfused: Vec<FusedKernel> = (0..4).map(|_| {
-        FusedKernel {
+    let chain_unfused: Vec<FusedKernel> = (0..4)
+        .map(|_| FusedKernel {
             ops: vec![FusedOp {
                 op: PrimitiveOp::Add,
                 srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-                BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
-        }
-    }).collect();
+            spec: None,
+            vectorize_width: 1,
+        })
+        .collect();
 
     let chain_fused = vec![FusedKernel {
         ops: vec![
-            FusedOp { op: PrimitiveOp::Add, srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)], dst_dtype: DType::Float32 },
-            FusedOp { op: PrimitiveOp::Add, srcs: vec![FusedSrc::Op(0), FusedSrc::Buf(3)], dst_dtype: DType::Float32 },
-            FusedOp { op: PrimitiveOp::Add, srcs: vec![FusedSrc::Op(1), FusedSrc::Buf(4)], dst_dtype: DType::Float32 },
-            FusedOp { op: PrimitiveOp::Add, srcs: vec![FusedSrc::Op(2), FusedSrc::Buf(5)], dst_dtype: DType::Float32 },
+            FusedOp {
+                op: PrimitiveOp::Add,
+                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                dst_dtype: DType::Float32,
+            },
+            FusedOp {
+                op: PrimitiveOp::Add,
+                srcs: vec![FusedSrc::Op(0), FusedSrc::Buf(3)],
+                dst_dtype: DType::Float32,
+            },
+            FusedOp {
+                op: PrimitiveOp::Add,
+                srcs: vec![FusedSrc::Op(1), FusedSrc::Buf(4)],
+                dst_dtype: DType::Float32,
+            },
+            FusedOp {
+                op: PrimitiveOp::Add,
+                srcs: vec![FusedSrc::Op(2), FusedSrc::Buf(5)],
+                dst_dtype: DType::Float32,
+            },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 4, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 5, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 4,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 5,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }];
 
     let unfused_d2 = measure(|| {
@@ -300,9 +467,16 @@ fn main() {
     println!("|-------------|-----------------|---------------|--------------------:|------------------:|--------:|-----------------:|");
     for r in &results {
         let speedup = r.unfused_render_us / r.fused_render_us;
-        println!("| {:<20} | {:>15} | {:>13} | {:>19.2} | {:>17.2} | {:>7.2}x | {:>16.2} |",
-            r.name, r.unfused_kernels, r.fused_kernels,
-            r.unfused_render_us, r.fused_render_us, speedup, r.fusion_time_us);
+        println!(
+            "| {:<20} | {:>15} | {:>13} | {:>19.2} | {:>17.2} | {:>7.2}x | {:>16.2} |",
+            r.name,
+            r.unfused_kernels,
+            r.fused_kernels,
+            r.unfused_render_us,
+            r.fused_render_us,
+            speedup,
+            r.fusion_time_us
+        );
     }
 
     println!("\nFusion benchmark complete.");

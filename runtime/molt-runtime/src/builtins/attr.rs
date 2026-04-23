@@ -21,14 +21,15 @@ use crate::{
     classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
     dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
     dict_set_in_place, exception_class_bits, exception_dict_bits, exception_kind_bits,
-    exception_last_bits_noinc, exception_pending, exception_type_bits_from_name, inc_ref_bits, init_atomic_bits,
-    instance_dict_bits, instance_set_dict_bits, intern_static_name, is_builtin_class_bits,
-    is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits, module_dict_bits,
-    molt_awaitable_await, molt_bound_method_new, molt_exception_last, molt_function_get_code,
-    molt_function_get_globals, molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits,
-    object_field_get_ptr_raw, object_set_class_bits, object_type_id, profile_hit_unchecked,
-    property_get_bits, raise_exception, runtime_state, seq_vec_ref, staticmethod_func_bits,
-    string_bytes, string_len, string_obj_to_owned, type_name, type_of_bits,
+    exception_last_bits_noinc, exception_pending, exception_type_bits_from_name, inc_ref_bits,
+    init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name,
+    is_builtin_class_bits, is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits,
+    module_dict_bits, molt_awaitable_await, molt_bound_method_new, molt_exception_last,
+    molt_function_get_code, molt_function_get_globals, molt_iter, molt_iter_next, obj_eq,
+    obj_from_bits, object_class_bits, object_field_get_ptr_raw, object_set_class_bits,
+    object_type_id, profile_hit_unchecked, property_get_bits, raise_exception, runtime_state,
+    seq_vec_ref, staticmethod_func_bits, string_bytes, string_len, string_obj_to_owned, type_name,
+    type_of_bits,
 };
 
 struct AttrNameCacheEntry {
@@ -662,8 +663,11 @@ pub(crate) unsafe fn module_attr_lookup(
             &runtime_state(_py).interned.getattr_name,
             b"__getattr__",
         );
-        if !obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(getattr_name_bits))
-            && let Some(getattr_bits) = dict_get_in_place(_py, dict_ptr, getattr_name_bits)
+        if !obj_eq(
+            _py,
+            obj_from_bits(attr_bits),
+            obj_from_bits(getattr_name_bits),
+        ) && let Some(getattr_bits) = dict_get_in_place(_py, dict_ptr, getattr_name_bits)
         {
             let res_bits = call_callable1(_py, getattr_bits, attr_bits);
             if exception_pending(_py) {

@@ -1,9 +1,7 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-};
 use molt_gpu::render::cuda::CudaRenderer;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
@@ -35,7 +33,8 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -66,17 +65,36 @@ fn test_cuda_full_i64_support() {
             dst_dtype: DType::Int64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let cuda = CudaRenderer.render(&kernel);
     // CUDA supports full i64 — should NOT narrow to i32
-    assert!(cuda.contains("long long"), "CUDA should support i64 as 'long long'");
+    assert!(
+        cuda.contains("long long"),
+        "CUDA should support i64 as 'long long'"
+    );
 }
 
 #[test]
@@ -88,16 +106,35 @@ fn test_cuda_full_f64_support() {
             dst_dtype: DType::Float64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let cuda = CudaRenderer.render(&kernel);
-    assert!(cuda.contains("double"), "CUDA should support f64 as 'double'");
+    assert!(
+        cuda.contains("double"),
+        "CUDA should support f64 as 'double'"
+    );
 }
 
 #[test]
@@ -110,14 +147,35 @@ fn test_cuda_ternary_operator() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Bool, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Bool,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let cuda = CudaRenderer.render(&kernel);
     assert!(cuda.contains(" ? "), "CUDA should use ternary operator");
@@ -125,7 +183,8 @@ fn test_cuda_ternary_operator() {
 
 #[test]
 fn test_cuda_all_26_ops_render() {
-    let elementwise_ops = PrimitiveOp::ALL.iter()
+    let elementwise_ops = PrimitiveOp::ALL
+        .iter()
         .filter(|op| op.is_elementwise())
         .collect::<Vec<_>>();
 
@@ -154,7 +213,10 @@ fn test_cuda_all_26_ops_render() {
             ops: vec![FusedOp {
                 op,
                 srcs,
-                dst_dtype: if matches!(op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+                dst_dtype: if matches!(
+                    op,
+                    PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+                ) {
                     DType::Bool
                 } else {
                     DType::Float32
@@ -163,9 +225,14 @@ fn test_cuda_all_26_ops_render() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
         let cuda = CudaRenderer.render(&kernel);
-        assert!(cuda.contains("molt_kernel"), "op {:?} failed to render CUDA", op);
+        assert!(
+            cuda.contains("molt_kernel"),
+            "op {:?} failed to render CUDA",
+            op
+        );
     }
 }

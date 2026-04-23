@@ -1,9 +1,7 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer,
-};
 use molt_gpu::render::opencl::OpenClRenderer;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
@@ -35,7 +33,8 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -62,7 +61,8 @@ fn make_unary_kernel(op: PrimitiveOp, n: usize, dtype: DType) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     }
 }
 
@@ -74,8 +74,14 @@ fn test_opencl_render_add() {
     let ocl = OpenClRenderer::new(false).render(&kernel);
     assert!(ocl.contains("__kernel"), "must have __kernel qualifier");
     assert!(ocl.contains("molt_kernel"), "must have kernel name");
-    assert!(ocl.contains("get_global_id(0)"), "must use get_global_id(0)");
-    assert!(ocl.contains("__global"), "must have __global buffer qualifiers");
+    assert!(
+        ocl.contains("get_global_id(0)"),
+        "must use get_global_id(0)"
+    );
+    assert!(
+        ocl.contains("__global"),
+        "must have __global buffer qualifiers"
+    );
     assert!(ocl.contains("restrict"), "must have restrict qualifier");
     assert!(ocl.contains("buf1[gid] + buf2[gid]"));
 }
@@ -130,17 +136,39 @@ fn test_opencl_f64_with_extension() {
             dst_dtype: DType::Float64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(true).render(&kernel);
-    assert!(ocl.contains("#pragma OPENCL EXTENSION cl_khr_fp64 : enable"), "must enable fp64 pragma");
-    assert!(ocl.contains("double"), "must use double type when fp64 available");
+    assert!(
+        ocl.contains("#pragma OPENCL EXTENSION cl_khr_fp64 : enable"),
+        "must enable fp64 pragma"
+    );
+    assert!(
+        ocl.contains("double"),
+        "must use double type when fp64 available"
+    );
 }
 
 #[test]
@@ -152,17 +180,39 @@ fn test_opencl_f64_without_extension() {
             dst_dtype: DType::Float64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
-    assert!(!ocl.contains("#pragma OPENCL EXTENSION cl_khr_fp64"), "no fp64 pragma when not supported");
-    assert!(!ocl.contains("double"), "f64 should be narrowed to f32 when no fp64");
+    assert!(
+        !ocl.contains("#pragma OPENCL EXTENSION cl_khr_fp64"),
+        "no fp64 pragma when not supported"
+    );
+    assert!(
+        !ocl.contains("double"),
+        "f64 should be narrowed to f32 when no fp64"
+    );
     assert!(ocl.contains("float"), "should use float instead of double");
 }
 
@@ -175,13 +225,29 @@ fn test_opencl_i64_native_support() {
             dst_dtype: DType::Int64,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int64, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int64,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     // OpenCL supports i64 natively
@@ -197,17 +263,36 @@ fn test_opencl_bool_as_int() {
             dst_dtype: DType::Bool,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Bool, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Bool,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     // OpenCL kernels use int for bool
-    assert!(ocl.contains("int v0"), "bool should be rendered as int in OpenCL");
+    assert!(
+        ocl.contains("int v0"),
+        "bool should be rendered as int in OpenCL"
+    );
 }
 
 // --- Op rendering tests ---
@@ -221,17 +306,41 @@ fn test_opencl_ternary_where() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Bool, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 3, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Bool,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 3,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
-    assert!(ocl.contains(" ? "), "OpenCL should use ternary operator for Where");
+    assert!(
+        ocl.contains(" ? "),
+        "OpenCL should use ternary operator for Where"
+    );
 }
 
 #[test]
@@ -243,16 +352,30 @@ fn test_opencl_bitcast_as_type() {
             dst_dtype: DType::Int32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[64]), dtype: DType::Int32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Int32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[64]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     // OpenCL uses as_type() for bitcasts
-    assert!(ocl.contains("as_int("), "OpenCL should use as_type for bitcast");
+    assert!(
+        ocl.contains("as_int("),
+        "OpenCL should use as_type for bitcast"
+    );
 }
 
 #[test]
@@ -308,19 +431,45 @@ fn test_opencl_reduce_sum_with_barrier() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
-    assert!(ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"), "reduce must use barrier");
-    assert!(ocl.contains("__local"), "reduce must use __local shared memory");
-    assert!(ocl.contains("sdata["), "reduce must use shared memory array");
-    assert!(ocl.contains("get_local_id(0)"), "reduce must use get_local_id");
-    assert!(ocl.contains("get_local_size(0)"), "reduce must use get_local_size");
+    assert!(
+        ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"),
+        "reduce must use barrier"
+    );
+    assert!(
+        ocl.contains("__local"),
+        "reduce must use __local shared memory"
+    );
+    assert!(
+        ocl.contains("sdata["),
+        "reduce must use shared memory array"
+    );
+    assert!(
+        ocl.contains("get_local_id(0)"),
+        "reduce must use get_local_id"
+    );
+    assert!(
+        ocl.contains("get_local_size(0)"),
+        "reduce must use get_local_size"
+    );
 }
 
 #[test]
@@ -332,18 +481,38 @@ fn test_opencl_reduce_max_with_barrier() {
             dst_dtype: DType::Float32,
         }],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
-    assert!(ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"), "reduce must use barrier");
-    assert!(ocl.contains("__local"), "reduce must use __local shared memory");
+    assert!(
+        ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"),
+        "reduce must use barrier"
+    );
+    assert!(
+        ocl.contains("__local"),
+        "reduce must use __local shared memory"
+    );
     assert!(ocl.contains("fmax("), "reduce max must use fmax");
-    assert!(ocl.contains("-INFINITY"), "reduce max must init with -INFINITY");
+    assert!(
+        ocl.contains("-INFINITY"),
+        "reduce max must init with -INFINITY"
+    );
 }
 
 #[test]
@@ -363,24 +532,44 @@ fn test_opencl_reduce_with_prefix_ops() {
             },
         ],
         bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Read },
-            BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[256]), dtype: DType::Float32, access: BufferAccess::Read },
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[256]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
         ],
         grid: [1, 1, 1],
         local: [256, 1, 1],
-                spec: None, vectorize_width: 1,
+        spec: None,
+        vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     assert!(ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"));
-    assert!(ocl.contains("buf1[eidx] * buf2[eidx]"), "prefix mul should be inside reduce loop");
+    assert!(
+        ocl.contains("buf1[eidx] * buf2[eidx]"),
+        "prefix mul should be inside reduce loop"
+    );
 }
 
 // --- All 26 ops test ---
 
 #[test]
 fn test_opencl_all_26_ops_render() {
-    let elementwise_ops = PrimitiveOp::ALL.iter()
+    let elementwise_ops = PrimitiveOp::ALL
+        .iter()
         .filter(|op| op.is_elementwise())
         .collect::<Vec<_>>();
 
@@ -409,7 +598,10 @@ fn test_opencl_all_26_ops_render() {
             ops: vec![FusedOp {
                 op,
                 srcs,
-                dst_dtype: if matches!(op, PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne) {
+                dst_dtype: if matches!(
+                    op,
+                    PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
+                ) {
                     DType::Bool
                 } else {
                     DType::Float32
@@ -418,12 +610,25 @@ fn test_opencl_all_26_ops_render() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
         let ocl = OpenClRenderer::new(false).render(&kernel);
-        assert!(ocl.contains("__kernel void molt_kernel("), "op {:?} failed to render OpenCL", op);
-        assert!(ocl.contains("get_global_id(0)"), "op {:?} missing thread index", op);
-        assert!(ocl.contains("__global"), "op {:?} missing buffer qualifiers", op);
+        assert!(
+            ocl.contains("__kernel void molt_kernel("),
+            "op {:?} failed to render OpenCL",
+            op
+        );
+        assert!(
+            ocl.contains("get_global_id(0)"),
+            "op {:?} missing thread index",
+            op
+        );
+        assert!(
+            ocl.contains("__global"),
+            "op {:?} missing buffer qualifiers",
+            op
+        );
     }
 
     // Test reduce ops
@@ -435,16 +640,35 @@ fn test_opencl_all_26_ops_render() {
                 dst_dtype: DType::Float32,
             }],
             bufs: vec![
-                BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
-                BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[64]), dtype: DType::Float32, access: BufferAccess::Read },
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[64]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
             ],
             grid: [1, 1, 1],
             local: [64, 1, 1],
-                spec: None, vectorize_width: 1,
+            spec: None,
+            vectorize_width: 1,
         };
         let ocl = OpenClRenderer::new(false).render(&kernel);
-        assert!(ocl.contains("__kernel void molt_kernel("), "reduce op {:?} failed to render OpenCL", reduce_op);
-        assert!(ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"), "reduce op {:?} missing barrier", reduce_op);
+        assert!(
+            ocl.contains("__kernel void molt_kernel("),
+            "reduce op {:?} failed to render OpenCL",
+            reduce_op
+        );
+        assert!(
+            ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"),
+            "reduce op {:?} missing barrier",
+            reduce_op
+        );
     }
 }
 
@@ -465,11 +689,31 @@ fn test_narrow_opencl_f64_conditional() {
 #[test]
 fn test_narrow_opencl_passthrough() {
     // All other types pass through unchanged
-    for dtype in [DType::Bool, DType::Int8, DType::Int16, DType::Int32, DType::Int64,
-                  DType::UInt8, DType::UInt16, DType::UInt32, DType::UInt64,
-                  DType::Float16, DType::Float32] {
-        assert_eq!(dtype.narrow_opencl(false), dtype, "{:?} should not be narrowed", dtype);
-        assert_eq!(dtype.narrow_opencl(true), dtype, "{:?} should not be narrowed", dtype);
+    for dtype in [
+        DType::Bool,
+        DType::Int8,
+        DType::Int16,
+        DType::Int32,
+        DType::Int64,
+        DType::UInt8,
+        DType::UInt16,
+        DType::UInt32,
+        DType::UInt64,
+        DType::Float16,
+        DType::Float32,
+    ] {
+        assert_eq!(
+            dtype.narrow_opencl(false),
+            dtype,
+            "{:?} should not be narrowed",
+            dtype
+        );
+        assert_eq!(
+            dtype.narrow_opencl(true),
+            dtype,
+            "{:?} should not be narrowed",
+            dtype
+        );
     }
 }
 
@@ -495,5 +739,8 @@ fn test_opencl_type_names() {
 fn test_opencl_no_fp64_pragma_for_f32_kernel() {
     let kernel = make_simple_binary_kernel(PrimitiveOp::Add, 64);
     let ocl = OpenClRenderer::new(true).render(&kernel);
-    assert!(!ocl.contains("#pragma OPENCL EXTENSION cl_khr_fp64"), "should not emit fp64 pragma for f32 kernel");
+    assert!(
+        !ocl.contains("#pragma OPENCL EXTENSION cl_khr_fp64"),
+        "should not emit fp64 pragma for f32 kernel"
+    );
 }
