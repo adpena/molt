@@ -275,8 +275,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             let result_id = op.results[0];
             // Don't rewrite ops that are already constant constructors.
             match op.opcode {
-                OpCode::ConstInt | OpCode::ConstFloat | OpCode::ConstStr
-                | OpCode::ConstBool | OpCode::ConstNone => {
+                OpCode::ConstInt
+                | OpCode::ConstFloat
+                | OpCode::ConstStr
+                | OpCode::ConstBool
+                | OpCode::ConstNone => {
                     continue;
                 }
                 _ => {}
@@ -685,9 +688,9 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                     };
                     Some(ConstVal::Str(s))
                 }
-                ConstVal::Bool(v) => Some(ConstVal::Str(
-                    if *v { "True" } else { "False" }.to_string(),
-                )),
+                ConstVal::Bool(v) => {
+                    Some(ConstVal::Str(if *v { "True" } else { "False" }.to_string()))
+                }
                 ConstVal::Str(s) => Some(ConstVal::Str(s.clone())),
                 ConstVal::None => Some(ConstVal::Str("None".to_string())),
             }
@@ -704,9 +707,9 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                     };
                     Some(ConstVal::Str(s))
                 }
-                ConstVal::Bool(v) => Some(ConstVal::Str(
-                    if *v { "True" } else { "False" }.to_string(),
-                )),
+                ConstVal::Bool(v) => {
+                    Some(ConstVal::Str(if *v { "True" } else { "False" }.to_string()))
+                }
                 ConstVal::Str(s) => Some(ConstVal::Str(format!("'{}'", s))),
                 ConstVal::None => Some(ConstVal::Str("None".to_string())),
             }
@@ -783,9 +786,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
             let a = operands[0]?;
             let b = operands[1]?;
             match (a, b) {
-                (ConstVal::Int(x), ConstVal::Int(y)) => {
-                    Some(ConstVal::Int(std::cmp::min(*x, *y)))
-                }
+                (ConstVal::Int(x), ConstVal::Int(y)) => Some(ConstVal::Int(std::cmp::min(*x, *y))),
                 (ConstVal::Float(x), ConstVal::Float(y)) => Some(ConstVal::Float(x.min(*y))),
                 _ => None,
             }
@@ -797,9 +798,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
             let a = operands[0]?;
             let b = operands[1]?;
             match (a, b) {
-                (ConstVal::Int(x), ConstVal::Int(y)) => {
-                    Some(ConstVal::Int(std::cmp::max(*x, *y)))
-                }
+                (ConstVal::Int(x), ConstVal::Int(y)) => Some(ConstVal::Int(std::cmp::max(*x, *y))),
                 (ConstVal::Float(x), ConstVal::Float(y)) => Some(ConstVal::Float(x.max(*y))),
                 _ => None,
             }
@@ -844,8 +843,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                 _ => None,
             }
         }
-        "math.sin" | "math.cos" | "math.tan" | "math.asin" | "math.acos"
-        | "math.atan" => {
+        "math.sin" | "math.cos" | "math.tan" | "math.asin" | "math.acos" | "math.atan" => {
             let a = operands.first().copied().flatten()?;
             let v = match a {
                 ConstVal::Float(v) => *v,
@@ -910,9 +908,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
             let a = operands[0]?;
             let b = operands[1]?;
             match (a, b) {
-                (ConstVal::Float(x), ConstVal::Float(y)) => {
-                    Some(ConstVal::Float(x.copysign(*y)))
-                }
+                (ConstVal::Float(x), ConstVal::Float(y)) => Some(ConstVal::Float(x.copysign(*y))),
                 _ => None,
             }
         }
@@ -1046,8 +1042,7 @@ fn eval_concrete_method(
                     let result = match chars.next() {
                         Some(c) => {
                             let upper: String = c.to_uppercase().collect();
-                            let lower: String =
-                                chars.flat_map(|c| c.to_lowercase()).collect();
+                            let lower: String = chars.flat_map(|c| c.to_lowercase()).collect();
                             format!("{}{}", upper, lower)
                         }
                         None => String::new(),
@@ -1082,12 +1077,10 @@ fn eval_concrete_method(
                     !s.is_empty() && s.chars().all(|c| c.is_whitespace()),
                 )),
                 "isupper" => Some(ConstVal::Bool(
-                    s.chars().any(|c| c.is_uppercase())
-                        && !s.chars().any(|c| c.is_lowercase()),
+                    s.chars().any(|c| c.is_uppercase()) && !s.chars().any(|c| c.is_lowercase()),
                 )),
                 "islower" => Some(ConstVal::Bool(
-                    s.chars().any(|c| c.is_lowercase())
-                        && !s.chars().any(|c| c.is_uppercase()),
+                    s.chars().any(|c| c.is_lowercase()) && !s.chars().any(|c| c.is_uppercase()),
                 )),
                 "startswith" => {
                     let prefix = operands.get(1).copied().flatten()?;
@@ -1173,12 +1166,11 @@ fn eval_concrete_method(
                         if s.len() >= w {
                             Some(ConstVal::Str(s.clone()))
                         } else {
-                            let (prefix, body) =
-                                if s.starts_with('-') || s.starts_with('+') {
-                                    (&s[..1], &s[1..])
-                                } else {
-                                    ("", s.as_str())
-                                };
+                            let (prefix, body) = if s.starts_with('-') || s.starts_with('+') {
+                                (&s[..1], &s[1..])
+                            } else {
+                                ("", s.as_str())
+                            };
                             let fill = w - s.len();
                             Some(ConstVal::Str(format!(
                                 "{}{}{}",
@@ -1205,14 +1197,10 @@ fn eval_concrete_method(
                     if v == 0 {
                         Some(ConstVal::Int(0))
                     } else {
-                        Some(ConstVal::Int(
-                            64 - v.abs().leading_zeros() as i64,
-                        ))
+                        Some(ConstVal::Int(64 - v.abs().leading_zeros() as i64))
                     }
                 }
-                "bit_count" => {
-                    Some(ConstVal::Int(v.unsigned_abs().count_ones() as i64))
-                }
+                "bit_count" => Some(ConstVal::Int(v.unsigned_abs().count_ones() as i64)),
                 _ => None,
             }
         }
@@ -1223,9 +1211,7 @@ fn eval_concrete_method(
                 return None;
             };
             match method {
-                "is_integer" => {
-                    Some(ConstVal::Bool(v.fract() == 0.0 && v.is_finite()))
-                }
+                "is_integer" => Some(ConstVal::Bool(v.fract() == 0.0 && v.is_finite())),
                 _ => None,
             }
         }
@@ -1574,10 +1560,7 @@ mod tests {
     #[test]
     fn fold_abs_of_negative_int() {
         // abs(-42) => 42
-        let ops = vec![
-            make_const_int(0, -42),
-            make_call_builtin(1, "abs", vec![0]),
-        ];
+        let ops = vec![make_const_int(0, -42), make_call_builtin(1, "abs", vec![0])];
         let (result_ops, _) = run_sccp_on_ops(ops, 2);
         assert_eq!(result_ops[1].opcode, OpCode::ConstInt);
         assert_eq!(result_ops[1].attrs.get("value"), Some(&AttrValue::Int(42)));
@@ -1687,10 +1670,7 @@ mod tests {
     #[test]
     fn fold_chr_ord_roundtrip() {
         // chr(65) => "A"
-        let ops = vec![
-            make_const_int(0, 65),
-            make_call_builtin(1, "chr", vec![0]),
-        ];
+        let ops = vec![make_const_int(0, 65), make_call_builtin(1, "chr", vec![0])];
         let (result_ops, _) = run_sccp_on_ops(ops, 2);
         assert_eq!(result_ops[1].opcode, OpCode::ConstStr);
         assert_eq!(
@@ -1702,10 +1682,7 @@ mod tests {
     #[test]
     fn fold_hex_of_int() {
         // hex(255) => "0xff"
-        let ops = vec![
-            make_const_int(0, 255),
-            make_call_builtin(1, "hex", vec![0]),
-        ];
+        let ops = vec![make_const_int(0, 255), make_call_builtin(1, "hex", vec![0])];
         let (result_ops, _) = run_sccp_on_ops(ops, 2);
         assert_eq!(result_ops[1].opcode, OpCode::ConstStr);
         assert_eq!(
@@ -1757,10 +1734,7 @@ mod tests {
     #[test]
     fn fold_bool_builtin() {
         // bool(0) => False
-        let ops = vec![
-            make_const_int(0, 0),
-            make_call_builtin(1, "bool", vec![0]),
-        ];
+        let ops = vec![make_const_int(0, 0), make_call_builtin(1, "bool", vec![0])];
         let (result_ops, _) = run_sccp_on_ops(ops, 2);
         assert_eq!(result_ops[1].opcode, OpCode::ConstBool);
         assert_eq!(

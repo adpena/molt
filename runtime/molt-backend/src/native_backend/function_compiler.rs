@@ -876,11 +876,10 @@ fn preanalyze_function_ir(
                 "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "bool" | "cast_bool" | "builtin_bool"
                 | "is_truthy" | "is" | "not" => bool_like_vars.insert(out.clone()),
                 "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
-                | "floordiv" | "mod" | "inplace_floordiv" | "inplace_mod"
-                | "bit_and" | "bit_or" | "bit_xor"
-                | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor"
-                | "lshift" | "rshift"
-                | "shl" | "shr" | "neg" | "abs" | "invert" | "builtin_abs" => {
+                | "floordiv" | "mod" | "inplace_floordiv" | "inplace_mod" | "bit_and"
+                | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
+                | "inplace_bit_xor" | "lshift" | "rshift" | "shl" | "shr" | "neg" | "abs"
+                | "invert" | "builtin_abs" => {
                     match infer_scalar_lane(
                         op,
                         &int_like_vars,
@@ -4765,7 +4764,6 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
 
-
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         // Check for zero divisor using the NaN-boxed representation.
@@ -4896,7 +4894,6 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
-
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -5035,7 +5032,6 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
 
-
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
@@ -5163,7 +5159,6 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
-
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
