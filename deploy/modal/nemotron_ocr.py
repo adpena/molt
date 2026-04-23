@@ -121,19 +121,17 @@ def _format_ocr_result(predictions, latency_ms: float | None = None) -> dict:
 
 nemotron_image = (
     modal.Image.from_registry(
+        # Use NVIDIA's PyTorch container WITHOUT add_python override.
+        # The CUDA C++ extension (nemotron_ocr_cpp) must compile against
+        # the container's native Python + CUDA toolkit. Injecting a separate
+        # Python 3.12 breaks the CUDA header paths.
         "nvcr.io/nvidia/pytorch:24.12-py3",
-        add_python="3.12",
-    )
-    .pip_install(
-        "httpx>=0.28.0",
-        "pillow>=11.0",
-        "hatchling>=1.21.0",
     )
     .run_commands(
-        # Install git-lfs (missing from NVIDIA container)
+        # Install git-lfs and build dependencies
         "apt-get update && apt-get install -y git-lfs && git lfs install",
-        # Clone nemotron-ocr v2 and install with build isolation disabled
-        # (CUDA toolkit + PyTorch already in the NVIDIA base image)
+        "pip install hatchling httpx pillow",
+        # Clone and build nemotron-ocr (CUDA C++ extension + Python package)
         "git clone https://huggingface.co/nvidia/nemotron-ocr-v2 /models/nemotron-ocr-v2",
         "cd /models/nemotron-ocr-v2/nemotron-ocr && pip install --no-build-isolation .",
     )
