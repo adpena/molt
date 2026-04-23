@@ -17,12 +17,16 @@
 //!    (before back-edge), x is loop-invariant (defined outside the loop body),
 //!    and no barrier intervenes between them within the header → both removed.
 //!
-//! Does NOT remove IncRef/DecRef that cross function call boundaries
-//! (the callee may store the reference).
+//! Deferred RC (Deutsch-Bobrow 1976):
+//! 6. Only track references from HEAP objects. Stack/register references are
+//!    implicitly alive during their scope. Values with no "heap exposure"
+//!    (never passed to calls, returned, stored to attrs/indices/closures,
+//!    yielded, raised, or placed into containers) have all IncRef/DecRef
+//!    eliminated unconditionally.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{build_pred_map, compute_idoms, dominates};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
@@ -69,6 +73,59 @@ fn build_def_map(func: &TirFunction) -> HashMap<ValueId, BlockId> {
         }
     }
     def_map
+}
+
+/// Returns `true` if the opcode causes its operands to have heap exposure
+/// (the value may escape the stack frame via this operation).
+fn is_heap_exposing(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        OpCode::Call
+            | OpCode::CallMethod
+            | OpCode::CallBuiltin
+            | OpCode::StoreAttr
+            | OpCode::StoreIndex
+            | OpCode::ClosureStore
+            | OpCode::Yield
+            | OpCode::YieldFrom
+            | OpCode::Raise
+            | OpCode::BuildList
+            | OpCode::BuildDict
+            | OpCode::BuildTuple
+            | OpCode::BuildSet
+            | OpCode::BuildSlice
+            | OpCode::AllocTask
+            | OpCode::StateYield
+            | OpCode::ChanSendYield
+            | OpCode::ChanRecvYield
+            | OpCode::Import
+            | OpCode::ImportFrom
+    )
+}
+
+/// Build the set of ValueIds that have "heap exposure" — they appear as
+/// operands in heap-storing/escaping operations or in Return terminators.
+fn build_heap_exposed_set(func: &TirFunction) -> HashSet<ValueId> {
+    let mut heap_exposed: HashSet<ValueId> = HashSet::new();
+
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if is_heap_exposing(op.opcode) {
+                for &operand in &op.operands {
+                    heap_exposed.insert(operand);
+                }
+            }
+        }
+
+        // Return values escape the function.
+        if let crate::tir::blocks::Terminator::Return { values } = &block.terminator {
+            for &val in values {
+                heap_exposed.insert(val);
+            }
+        }
+    }
+
+    heap_exposed
 }
 
 /// Eliminate redundant IncRef/DecRef pairs.
@@ -479,8 +536,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // IncRef/DecRef on all other values (pure stack references).
     //
     // A value has heap exposure if it appears as an operand in any of:
-    //   - StoreAttr (value position: operand index 1)
-    //   - StoreIndex (value position: operand index 2)
+    //   - StoreAttr / StoreIndex (stored into a heap object)
     //   - ClosureStore (stored into a closure cell)
     //   - Return (escapes the function)
     //   - Call / CallMethod / CallBuiltin (callee may capture)
@@ -490,103 +546,15 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     //     (elements escape into the container)
     //   - AllocTask (escapes into a task)
     //   - StateYield / ChanSendYield / ChanRecvYield (escapes via channel)
+    //   - Import / ImportFrom (interacts with module system)
     //
     // All remaining IncRef/DecRef ops target pure stack references and are
     // safe to eliminate.
     // -----------------------------------------------------------------------
     {
-        let mut heap_exposed: HashSet<ValueId> = HashSet::new();
+        let heap_exposed = build_heap_exposed_set(func);
 
-        for block in func.blocks.values() {
-            for op in &block.ops {
-                match op.opcode {
-                    // Calls: all arguments may be captured by the callee.
-                    OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // StoreAttr: operands[0] = target, operands[1] = value.
-                    // The value is stored into the heap object.
-                    // The target also needs its refcount maintained (it's a heap object
-                    // being mutated, and the store may trigger __setattr__).
-                    OpCode::StoreAttr => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // StoreIndex: operands[0] = target, operands[1] = index,
-                    // operands[2] = value. All may need heap tracking.
-                    OpCode::StoreIndex => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // Closure store: value escapes into the closure cell.
-                    OpCode::ClosureStore => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // Generator yields: value escapes to the caller.
-                    OpCode::Yield | OpCode::YieldFrom => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // Raise: exception object escapes.
-                    OpCode::Raise => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // Container construction: all elements escape into the container.
-                    OpCode::BuildList
-                    | OpCode::BuildDict
-                    | OpCode::BuildTuple
-                    | OpCode::BuildSet
-                    | OpCode::BuildSlice => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // Task allocation: value escapes into the task.
-                    OpCode::AllocTask => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // State/channel yields: value escapes.
-                    OpCode::StateYield | OpCode::ChanSendYield | OpCode::ChanRecvYield => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // Import: result may come from module cache, but the operand
-                    // (module name) is typically a const. ImportFrom similarly.
-                    // Conservative: mark operands as heap-exposed since import
-                    // interacts with the module system.
-                    OpCode::Import | OpCode::ImportFrom => {
-                        for &operand in &op.operands {
-                            heap_exposed.insert(operand);
-                        }
-                    }
-                    // All other ops are local computations — no heap exposure.
-                    _ => {}
-                }
-            }
-
-            // Return values escape the function.
-            if let Terminator::Return { values } = &block.terminator {
-                for &val in values {
-                    heap_exposed.insert(val);
-                }
-            }
-        }
-
-        // Now eliminate IncRef/DecRef on values that have NO heap exposure.
-        // These are pure stack references — their lifetime is bounded by the
-        // function scope, so refcount tracking is unnecessary.
+        // Eliminate IncRef/DecRef on values that have NO heap exposure.
         let block_ids: Vec<_> = func.blocks.keys().copied().collect();
         for bid in block_ids {
             let block = match func.blocks.get_mut(&bid) {
@@ -705,9 +673,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);
-        // IncRef and DecRef both removed (StackAlloc rule catches them individually)
         assert_eq!(stats.ops_removed, 2);
-        // StackAlloc itself stays
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 1);
         assert_eq!(
             func.blocks[&func.entry_block].ops[0].opcode,
@@ -716,10 +682,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 4: IncRef with intervening Call → NOT removed
+    // Test 4: IncRef with intervening Call (v not passed) → eliminated by
+    //         deferred RC since v has no heap exposure
     // -----------------------------------------------------------------------
     #[test]
-    fn incref_with_call_barrier_not_removed() {
+    fn incref_with_call_barrier_no_heap_exposure() {
         let mut func = make_func();
         let v = func.fresh_value();
         let callee = func.fresh_value();
@@ -734,9 +701,8 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);
-        // Intra-block pairing blocked by Call barrier, but deferred RC
-        // (Step 5) eliminates both because v has no heap exposure — it is
-        // not passed to Call, not returned, not stored.
+        // Intra-block can't pair across Call barrier, but deferred RC
+        // eliminates both because v has no heap exposure.
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 1);
     }
@@ -759,22 +725,23 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 6: Different values — no cross-pairing
+    // Test 6: Different values, no heap exposure → both eliminated by
+    //         deferred RC
     // -----------------------------------------------------------------------
     #[test]
-    fn different_values_not_paired() {
+    fn different_values_no_heap_exposure() {
         let mut func = make_func();
         let v1 = func.fresh_value();
         let v2 = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        // IncRef(v1) then DecRef(v2) — different values, no intra-block pairing.
-        // However, deferred RC eliminates both because neither has heap exposure.
         entry.ops.push(make_op(OpCode::IncRef, vec![v1], vec![]));
         entry.ops.push(make_op(OpCode::DecRef, vec![v2], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);
+        // No intra-block pairing (different values), but deferred RC
+        // eliminates both since neither has heap exposure.
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 0);
     }
@@ -791,14 +758,12 @@ mod tests {
         let mut func = make_func();
         let v = func.fresh_value();
 
-        // Create successor block: DecRef(v) then return.
         let succ_bid = add_block(
             &mut func,
             vec![make_op(OpCode::DecRef, vec![v], vec![])],
             Terminator::Return { values: vec![] },
         );
 
-        // Entry block: IncRef(v) then branch to succ.
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::IncRef, vec![v], vec![]));
         entry.terminator = Terminator::Branch {
@@ -807,28 +772,26 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // Both should be eliminated cross-block.
         assert_eq!(stats.ops_removed, 2);
         assert!(func.blocks[&func.entry_block].ops.is_empty());
         assert!(func.blocks[&succ_bid].ops.is_empty());
     }
 
     // -----------------------------------------------------------------------
-    // Test 8: Cross-block NOT eliminated when succ has multiple predecessors
+    // Test 8: Cross-block with multiple predecessors, no heap exposure →
+    //         eliminated by deferred RC
     // -----------------------------------------------------------------------
     #[test]
-    fn cross_block_not_eliminated_multiple_preds() {
+    fn cross_block_multiple_preds_no_heap_exposure() {
         let mut func = make_func();
         let v = func.fresh_value();
 
-        // Successor block: DecRef(v) then return.
         let succ_bid = add_block(
             &mut func,
             vec![make_op(OpCode::DecRef, vec![v], vec![])],
             Terminator::Return { values: vec![] },
         );
 
-        // Second predecessor block that also branches to succ.
         let other_pred = add_block(
             &mut func,
             vec![],
@@ -838,7 +801,6 @@ mod tests {
             },
         );
 
-        // Entry block: IncRef(v) then cond branch to succ or other_pred.
         let cond = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry
@@ -854,29 +816,27 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // Cross-block pairing blocked (two predecessors), but deferred RC
-        // eliminates both because v has no heap exposure.
+        // Deferred RC eliminates both — v has no heap exposure.
         assert_eq!(stats.ops_removed, 2);
     }
 
     // -----------------------------------------------------------------------
-    // Test 9: Cross-block NOT eliminated with trailing barrier in pred
+    // Test 9: Cross-block with trailing barrier, no heap exposure →
+    //         eliminated by deferred RC
     // -----------------------------------------------------------------------
     #[test]
-    fn cross_block_not_eliminated_trailing_barrier() {
+    fn cross_block_trailing_barrier_no_heap_exposure() {
         let mut func = make_func();
         let v = func.fresh_value();
         let callee = func.fresh_value();
         let call_result = func.fresh_value();
 
-        // Successor block: DecRef(v) then return.
         let succ_bid = add_block(
             &mut func,
             vec![make_op(OpCode::DecRef, vec![v], vec![])],
             Terminator::Return { values: vec![] },
         );
 
-        // Entry block: IncRef(v), Call (barrier), branch to succ.
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::IncRef, vec![v], vec![]));
         entry
@@ -888,8 +848,7 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // Cross-block pairing blocked by barrier, but deferred RC eliminates
-        // both because v has no heap exposure (not passed to Call).
+        // Deferred RC eliminates both — v not passed to Call.
         assert_eq!(stats.ops_removed, 2);
     }
 
@@ -899,11 +858,9 @@ mod tests {
     #[test]
     fn loop_invariant_incref_decref_eliminated() {
         let mut func = make_func();
-        let v = func.fresh_value(); // Defined in entry block (loop-invariant).
+        let v = func.fresh_value();
         let cond = func.fresh_value();
 
-        // Create a loop header block (bid=1): IncRef(v), some arithmetic, DecRef(v),
-        // then cond branch back to itself (back-edge) or to exit.
         let exit_bid = add_block(&mut func, vec![], Terminator::Return { values: vec![] });
 
         let header_bid = add_block(
@@ -915,23 +872,21 @@ mod tests {
             ],
             Terminator::CondBranch {
                 cond,
-                then_block: BlockId(0), // placeholder, will fix
+                then_block: BlockId(0),
                 then_args: vec![],
                 else_block: exit_bid,
                 else_args: vec![],
             },
         );
 
-        // Fix the back-edge to point to the header itself.
         func.blocks.get_mut(&header_bid).unwrap().terminator = Terminator::CondBranch {
             cond,
-            then_block: header_bid, // back-edge
+            then_block: header_bid,
             then_args: vec![],
             else_block: exit_bid,
             else_args: vec![],
         };
 
-        // Entry block branches to header.
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![v]));
         entry.terminator = Terminator::Branch {
@@ -940,9 +895,7 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // IncRef and DecRef in the loop header on loop-invariant v should be eliminated.
         assert_eq!(stats.ops_removed, 2);
-        // Only the ConstBool should remain in the header.
         assert_eq!(func.blocks[&header_bid].ops.len(), 1);
         assert_eq!(func.blocks[&header_bid].ops[0].opcode, OpCode::ConstBool);
     }
@@ -958,7 +911,6 @@ mod tests {
 
         let exit_bid = add_block(&mut func, vec![], Terminator::Return { values: vec![] });
 
-        // Header defines v itself — v is NOT loop-invariant.
         let header_bid = add_block(
             &mut func,
             vec![
@@ -969,7 +921,7 @@ mod tests {
             ],
             Terminator::CondBranch {
                 cond,
-                then_block: BlockId(0), // placeholder
+                then_block: BlockId(0),
                 then_args: vec![],
                 else_block: exit_bid,
                 else_args: vec![],
@@ -991,15 +943,8 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // The intra-block pass will still eliminate the pair (they are adjacent
-        // with no barrier). This is correct — intra-block elimination does not
-        // require loop invariance. The loop-invariant pass is for cases where
-        // the pair spans more of the block. Here the intra-block pass handles it.
-        // What matters is that the loop-invariant pass would NOT fire on a
-        // non-invariant value. Since intra-block already eliminated them,
-        // the result is the same.
+        // Intra-block pairing handles it (adjacent, no barrier).
         assert_eq!(stats.ops_removed, 2);
-        // ConstInt and ConstBool remain.
         assert_eq!(func.blocks[&header_bid].ops.len(), 2);
     }
 
@@ -1011,14 +956,12 @@ mod tests {
         let mut func = make_func();
         let v = func.fresh_value();
 
-        // Successor: IncRef(v) then return.
         let succ_bid = add_block(
             &mut func,
             vec![make_op(OpCode::IncRef, vec![v], vec![])],
             Terminator::Return { values: vec![] },
         );
 
-        // Entry: DecRef(v) then branch to succ.
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
         entry.terminator = Terminator::Branch {
@@ -1033,16 +976,16 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 13: Cross-block NOT eliminated with leading barrier in succ
+    // Test 13: Cross-block with leading barrier in succ, no heap exposure →
+    //          eliminated by deferred RC
     // -----------------------------------------------------------------------
     #[test]
-    fn cross_block_not_eliminated_leading_barrier_in_succ() {
+    fn cross_block_leading_barrier_no_heap_exposure() {
         let mut func = make_func();
         let v = func.fresh_value();
         let callee = func.fresh_value();
         let call_result = func.fresh_value();
 
-        // Successor: Call (barrier), then DecRef(v), then return.
         let succ_bid = add_block(
             &mut func,
             vec![
@@ -1052,7 +995,6 @@ mod tests {
             Terminator::Return { values: vec![] },
         );
 
-        // Entry: IncRef(v) then branch to succ.
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::IncRef, vec![v], vec![]));
         entry.terminator = Terminator::Branch {
@@ -1061,9 +1003,7 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // Cross-block pairing is blocked by the barrier, but deferred RC
-        // (Step 5) eliminates both because v has no heap exposure — it is
-        // never passed to Call, returned, or stored.
+        // Deferred RC eliminates both — v has no heap exposure.
         assert_eq!(stats.ops_removed, 2);
     }
 
@@ -1072,7 +1012,7 @@ mod tests {
     // ===================================================================
 
     // -----------------------------------------------------------------------
-    // Test 14: IncRef/DecRef on local-only value → eliminated by deferred RC
+    // Test 14: IncRef/DecRef on local-only value → eliminated
     // -----------------------------------------------------------------------
     #[test]
     fn deferred_rc_local_only_eliminated() {
@@ -1096,7 +1036,6 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // Intra-block pairing catches this, but deferred RC would too.
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 3);
     }
@@ -1121,7 +1060,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![v] };
 
         let stats = run(&mut func);
-        // v is returned (heap exposure) and Call barrier prevents intra-block.
+        // v returned (heap exposure) + Call barrier = nothing eliminated.
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 4);
     }
@@ -1144,7 +1083,6 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);
-        // v has heap exposure (StoreAttr) and barrier prevents intra-block.
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 3);
     }
@@ -1161,7 +1099,6 @@ mod tests {
         let const_none = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        // v is NOT passed to Call, NOT returned, NOT stored — pure stack ref.
         entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![v]));
         entry.ops.push(make_op(OpCode::IncRef, vec![v], vec![]));
         entry
@@ -1176,8 +1113,7 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // Intra-block can't pair across Call, but deferred RC sees v has
-        // NO heap exposure and eliminates both.
+        // v not passed to Call, not returned — deferred RC eliminates.
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 3);
     }
@@ -1207,7 +1143,7 @@ mod tests {
         };
 
         let stats = run(&mut func);
-        // v passed to Call (heap exposure), Call is barrier — nothing eliminated.
+        // v passed to Call = heap exposure. Call is barrier. Nothing eliminated.
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 4);
     }
@@ -1250,8 +1186,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);
-        // local_v: IncRef + DecRef eliminated (no heap exposure) = 2
-        // heap_v: kept (StoreAttr exposure + barrier)
+        // local_v eliminated (no heap exposure), heap_v kept (StoreAttr).
         assert_eq!(stats.ops_removed, 2);
         let entry = &func.blocks[&func.entry_block];
         assert_eq!(entry.ops.len(), 5);
@@ -1284,7 +1219,6 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);
-        // v has heap exposure via ClosureStore, and ClosureStore is a barrier.
         assert_eq!(stats.ops_removed, 0);
     }
 
@@ -1304,14 +1238,16 @@ mod tests {
         entry
             .ops
             .push(make_op(OpCode::Call, vec![callee], vec![call_result]));
-        entry
-            .ops
-            .push(make_op(OpCode::BuildList, vec![elem], vec![list_result]));
+        entry.ops.push(make_op(
+            OpCode::BuildList,
+            vec![elem],
+            vec![list_result],
+        ));
         entry.ops.push(make_op(OpCode::DecRef, vec![elem], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);
-        // elem has heap exposure via BuildList, and Call is a barrier.
+        // elem has heap exposure via BuildList, Call is barrier.
         assert_eq!(stats.ops_removed, 0);
     }
 }
