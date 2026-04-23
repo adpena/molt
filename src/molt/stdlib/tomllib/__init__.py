@@ -48,10 +48,7 @@ class TOMLDecodeError(ValueError):
 _WHITESPACE = frozenset(" \t")
 _NEWLINE = frozenset("\n\r")
 _BARE_KEY_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-    "-_"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
 )
 _DIGITS = frozenset("0123456789")
 _HEX = frozenset("0123456789abcdefABCDEF")
@@ -73,7 +70,17 @@ _UNICODE_ESCAPES = {
 class _Parser:
     """Recursive-descent TOML 1.0 parser."""
 
-    __slots__ = ("_src", "_pos", "_len", "_root", "_current_table", "_implicit_tables", "_defined_tables", "_array_tables", "_table_path")
+    __slots__ = (
+        "_src",
+        "_pos",
+        "_len",
+        "_root",
+        "_current_table",
+        "_implicit_tables",
+        "_defined_tables",
+        "_array_tables",
+        "_table_path",
+    )
 
     def __init__(self, src: str) -> None:
         self._src = src
@@ -114,8 +121,7 @@ class _Parser:
 
     def _skip_whitespace_and_newlines(self) -> None:
         while self._pos < self._len and (
-            self._src[self._pos] in _WHITESPACE
-            or self._src[self._pos] in _NEWLINE
+            self._src[self._pos] in _WHITESPACE or self._src[self._pos] in _NEWLINE
         ):
             self._pos += 1
 
@@ -146,7 +152,9 @@ class _Parser:
             elif ch == "[":
                 self._parse_table_header()
             else:
-                self._parse_keyval(self._current_table, top_level_path=self._current_path())
+                self._parse_keyval(
+                    self._current_table, top_level_path=self._current_path()
+                )
             self._skip_comment_and_newline()
         return self._root
 
@@ -254,11 +262,9 @@ class _Parser:
         if last in container:
             val = container[last]
             if not isinstance(val, list):
-                raise self._err(
-                    f"Cannot redefine key {last!r} as array-of-tables"
-                )
+                raise self._err(f"Cannot redefine key {last!r} as array-of-tables")
             if path not in self._array_tables:
-                raise self._err(f"Cannot redefine static array as array-of-tables")
+                raise self._err("Cannot redefine static array as array-of-tables")
         else:
             container[last] = []
             self._array_tables.add(path)
@@ -422,7 +428,11 @@ class _Parser:
         # Skip immediate newline after opening
         if self._peek() == "\n":
             self._pos += 1
-        elif self._peek() == "\r" and self._pos + 1 < self._len and self._src[self._pos + 1] == "\n":
+        elif (
+            self._peek() == "\r"
+            and self._pos + 1 < self._len
+            and self._src[self._pos + 1] == "\n"
+        ):
             self._pos += 2
 
         parts: list[str] = []
@@ -458,7 +468,11 @@ class _Parser:
         # Skip immediate newline after opening
         if self._peek() == "\n":
             self._pos += 1
-        elif self._peek() == "\r" and self._pos + 1 < self._len and self._src[self._pos + 1] == "\n":
+        elif (
+            self._peek() == "\r"
+            and self._pos + 1 < self._len
+            and self._src[self._pos + 1] == "\n"
+        ):
             self._pos += 2
 
         start = self._pos
@@ -548,6 +562,7 @@ class _Parser:
 # Scalar (non-string, non-collection) parser
 # ---------------------------------------------------------------------------
 
+
 def _parse_scalar(token: str, err_fn) -> Any:
     """Parse a TOML scalar token to a Python value."""
     # Special float values
@@ -621,6 +636,7 @@ def _looks_like_datetime(token: str) -> bool:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def loads(s: str) -> dict[str, Any]:
     """Parse TOML from *s* (a ``str``) and return a ``dict``."""

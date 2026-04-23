@@ -54,9 +54,10 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | List literal `[]` | `{}` table constructor | Optimal |
 | List/string indexing | 0-to-1 index adjustment plus bounds guard for known list/string containers | Correct -- raises `IndexError` on out-of-range reads |
 | List assignment/deletion | 0-to-1 index adjustment plus bounds guard for known list containers | Correct -- raises `IndexError` on out-of-range mutation |
-| `list.pop` / `list.index` | Direct `table.remove` / `ipairs` loops with explicit Python error guards | Correct for admitted list subset |
+| `list.pop` / `list.index` | Direct `table.remove` / bounded loops with explicit Python error guards | Correct for admitted list subset, including `list.index(value, start, stop)` |
 | `list.insert` | Clamped 0-to-1 index conversion before `table.insert` or append | Correct for admitted list subset |
 | List repetition | `table.create(math.max(0, count), value)` | Correct negative-count empty-list behavior with preallocation |
+| `str.startswith` / `str.endswith` | Direct `string.sub` checks with optional bound normalization | Correct for admitted string subset |
 | `dict.popitem` | `pairs` loop with empty-dict guard | Correct empty-dict `KeyError`; order follows Luau table iteration |
 | Dict literal `{}` | `{[k1]=v1, ...}` keyed table | Optimal |
 | Set `set()` | `{}` table (values as keys mapped to `true`) | Correct |
@@ -254,7 +255,7 @@ The Lean formalization explicitly acknowledges this: "Molt only compiles program
 **Python**: 0-based, `s[0]` is first character. `s[-1]` is last.
 **Luau**: 1-based, `string.sub(s, 1, 1)` is first character.
 
-**Current handling**: The backend adjusts numeric indices with `+ 1` for non-negative indices and `#container + idx + 1` for negative indices. Known list and string reads emit direct bounds guards that raise `IndexError` before table/string access. Known list assignment/deletion and `list.pop` emit scoped bounds guards before mutation. `list.insert` clamps indices to Python's insertion range before mutating. `list.index` raises `ValueError` when missing. Remaining work: extend exact bounds/error coverage across unknown container dispatch and all string method edge cases.
+**Current handling**: The backend adjusts numeric indices with `+ 1` for non-negative indices and `#container + idx + 1` for negative indices. Known list and string reads emit direct bounds guards that raise `IndexError` before table/string access. Known list assignment/deletion and `list.pop` emit scoped bounds guards before mutation. `list.insert` clamps indices to Python's insertion range before mutating. `list.index` raises `ValueError` when missing and honors normalized `start`/`stop` bounds for the range form. `str.startswith`/`str.endswith` honor optional normalized `start`/`end` bounds. Remaining work: extend exact bounds/error coverage across unknown container dispatch and all string method edge cases.
 
 ### 3.3 None vs nil
 
