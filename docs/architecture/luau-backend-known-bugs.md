@@ -1,7 +1,14 @@
-# Luau Backend — Known Bugs
+# Luau Backend — Historical Bug Ledger
 
 Discovered during Vertigo algorithm compilation work (2026-03-08).
 Repro artifacts: `tools/kdtree_3d.py`.
+
+Current status: this file records historical repros. It is not the canonical
+support matrix. As of 2026-04-23, checked Luau emission rejects unsupported
+markers by default, user functions receive `@native`/parameter annotations
+where available, list-parameter append lowering has regression coverage, and
+goto/label comment emission has regression coverage. Remaining entries below
+must be treated as repro candidates until covered by fresh CPython-vs-Lune tests.
 
 ---
 
@@ -32,8 +39,8 @@ molt_module_cache["varname"] or nil.append(x)  -- silent failure
 **Fix:** Wrap the `module_get_global` expression in parentheses when it is
 the left-hand side of a subscript or method call operation.
 
-**Workaround:** Avoid `global` declarations; pass the value as a function
-parameter instead.
+**Current action:** Re-verify with a targeted CPython-vs-Lune regression. Do
+not document a workaround as an accepted support path.
 
 ---
 
@@ -62,8 +69,9 @@ def build(pool: list[list[int]], i: int) -> None:
 2. Subscript results when the receiver is `type_hint="list"` (i.e., a
    `list[list[T]]` subscript yields `type_hint="list"`)
 
-**Workaround:** Use flat parallel arrays (`list[int]` at top level) instead
-of nested lists. This avoids the subscript-of-list pattern entirely.
+**Current status:** Function parameter list hints are covered by
+`test_param_type_hint_list_propagation` in `runtime/molt-backend/src/luau.rs`.
+Nested-list propagation still requires fresh end-to-end differential coverage.
 
 ---
 
@@ -83,9 +91,8 @@ in the Luau environment.
 equivalents (`math.floor`, `math.sin`, `math.cos`, etc.) in the Luau backend's
 stdlib direct-call table, bypassing the module cache path.
 
-**Workaround:** Assign `math.floor` to a local at module top: `_floor = math.floor`
-then call `_floor(x)`. This goes through the simpler `LOAD_GLOBAL` → `CALL`
-path which resolves correctly.
+**Current action:** Re-verify direct `math.*` calls through the current module
+bridge and add CPython-vs-Lune coverage for each admitted math attribute.
 
 ---
 
@@ -108,9 +115,9 @@ comment bug fires, only the first matching branch's assignments are visible.
 **Fix:** Implement proper Luau `do/break` blocks or label/goto pairs for
 elif chains instead of emitting goto as a comment.
 
-**Workaround:** Rewrite elif chains as nested `if/else` blocks — each branch
-independently assigns all variables, even if some assignments repeat. This
-avoids any goto need.
+**Current status:** Goto/label emission as comments has regression coverage in
+`runtime/molt-backend/src/luau.rs`; complex multi-branch value propagation still
+requires fresh differential coverage.
 
 ---
 
@@ -123,8 +130,8 @@ correct Luau multi-return syntax, but callers that destructure the result
 (`a, b, c = f()`) sometimes receive nil if the function went through the
 module cache path or if the return passes through an intermediate variable.
 
-**Workaround:** Return a single table `{x, y, z}` and index it at the call
-site, or use flat parallel output arrays passed by reference.
+**Current action:** Add explicit tuple/multi-return differential tests. Checked
+Luau output must fail closed if a tuple path cannot be emitted faithfully.
 
 ---
 
@@ -139,9 +146,9 @@ of valid Luau with zero errors.
 **Affected targets:** `--target luau` only. Native and WASM targets are unaffected
 since they use Rust's type system rather than runtime type hints.
 
-**Confirmed working pattern:** flat parallel float arrays, no `global` list
-access, no nested lists, no module attributes (use local aliases), simple
-if/else (not elif chains), no tuple returns.
+**Current validation posture:** support claims require fresh checked-build,
+static-analysis, and CPython-vs-Lune evidence. Historical working patterns are
+not accepted as workarounds for unsupported semantics.
 
 ---
 

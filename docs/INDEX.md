@@ -29,6 +29,7 @@ Molt targets **Python 3.12+** semantics only.
 - Standalone binary proof workflow: [proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 - Benchmarking guide: [BENCHMARKING.md](BENCHMARKING.md)
 - Detailed benchmark report: [benchmarks/bench_summary.md](benchmarks/bench_summary.md)
+- Luau backend optimization and generated support: [spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md), [spec/areas/compiler/luau_support_matrix.generated.md](spec/areas/compiler/luau_support_matrix.generated.md)
 
 ## Workspace Guides
 

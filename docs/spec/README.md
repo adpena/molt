@@ -40,6 +40,8 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0201 Guard And Deopt Lang: [docs/spec/areas/compiler/0201_GUARD_AND_DEOPT_LANG.md](docs/spec/areas/compiler/0201_GUARD_AND_DEOPT_LANG.md)
 - 0202 Foreign Function Boundary: [docs/spec/areas/compiler/0202_FOREIGN_FUNCTION_BOUNDARY.md](docs/spec/areas/compiler/0202_FOREIGN_FUNCTION_BOUNDARY.md)
 - 0920 Type Facts Artifact Ty Integration: [docs/spec/areas/compiler/0920_TYPE_FACTS_ARTIFACT_TY_INTEGRATION.md](docs/spec/areas/compiler/0920_TYPE_FACTS_ARTIFACT_TY_INTEGRATION.md)
+- Luau Backend Optimization: [docs/spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](docs/spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md)
+- Luau Support Matrix (generated): [docs/spec/areas/compiler/luau_support_matrix.generated.md](docs/spec/areas/compiler/luau_support_matrix.generated.md)
 
 ## Compatibility And Contracts
 - Compatibility architecture index: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)

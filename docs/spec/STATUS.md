@@ -22,6 +22,9 @@ It is current-state only. For forward-looking priorities, use
   surfaces under `docs/spec/areas/compat/surfaces/stdlib/`.
 - WASM remains a supported target area, but same-contract parity with native is
   still incomplete.
+- Luau is a checked source-emission target for the current/future Luau surface;
+  current OpIR support is generated in
+  `docs/spec/areas/compiler/luau_support_matrix.generated.md`.
 
 ## Intentionally Unsupported
 
@@ -35,6 +38,8 @@ It is current-state only. For forward-looking priorities, use
 - CPython coverage is incomplete across language, stdlib, and target-specific
   behavior.
 - Native and WASM parity is still incomplete for several claimed surfaces.
+- Luau parity is incomplete and must be extended through checked-build,
+  static-analysis, and CPython-vs-Luau evidence rather than silent stub emission.
 - The runpy dynamic-lane expected failures list is currently empty because
   supported lanes moved to intrinsic support; governance for unsupported
   runpy dynamic execution remains documented rather than tracked through an

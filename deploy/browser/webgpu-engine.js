@@ -6,7 +6,7 @@
  *
  * All WGSL shaders follow molt WgslRenderer conventions:
  *   - Entry points: molt_kernel (matmul), molt_softmax, molt_rms_norm,
- *     molt_rope, molt_add, molt_mul
+ *     molt_rope, molt_add, molt_mul, molt_conv2d
  *   - @builtin(global_invocation_id) for thread indexing
  *   - @group(0) @binding(N) for storage/uniform buffers
  *   - f32 dtype (narrowed via DType::narrow_webgpu)
@@ -339,68 +339,141 @@ fn molt_mul(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 /**
- * Conv2d via direct convolution on GPU.
+ * Conv2d via im2col + tiled matmul with shared memory weight tiles.
  *
- * Input: [N, C_in, H, W], Weight: [C_out, C_in, KH, KW]
- * Output: [N, C_out, OH, OW]
+ * Input: [N, Ci, Hi, Wi], Weight: [Co, CiG, Kh, Kw], Bias: [Co]
+ * Output: [N, Co, OH, OW]
  *
- * Each thread computes one output element (output_channel, spatial_position).
- * Uses 16x16 workgroup: x = output channel, y = spatial position (oh * OW + ow).
+ * Supports padding, strides, dilations, and groups (including depthwise).
+ *
+ * Strategy: For each batch element and group, the convolution is expressed as
+ * a matrix multiply: output[Co/G, OH*OW] = weight[Co/G, CiG*Kh*Kw] @ col[CiG*Kh*Kw, OH*OW]
+ * where col is the im2col-expanded input patch matrix.
+ *
+ * Each workgroup computes a 16x16 tile of the output matrix. The M dimension
+ * maps to output channels within a group (Co/G), and the N dimension maps to
+ * spatial positions (OH*OW). The K dimension is the im2col column length
+ * (CiG*Kh*Kw). Weight tiles are loaded into shared memory; im2col elements
+ * are computed on-the-fly from the input tensor (avoiding the memory
+ * expansion of a materialized im2col buffer).
  *
  * This is the #1 compute bottleneck in PaddleOCR (~60% of inference time).
- * The direct convolution avoids im2col memory expansion and is profitable for
- * small-to-medium kernel sizes (3x3, 5x5) typical in OCR detection networks.
+ * With 62 Conv layers in the detector, this shader dominates end-to-end
+ * browser OCR latency.
  *
- * Buffer layout:
- *   binding 0: input  [N * C_in * H * W], read
- *   binding 1: weight [C_out * C_in * KH * KW], read
- *   binding 2: bias   [C_out], read
- *   binding 3: output [N * C_out * OH * OW], read_write
- *   binding 4: params uniform ConvParams
+ * Buffer layout (WgslRenderer convention):
+ *   buf0 (binding 0): output [N * Co * OH * OW], read_write
+ *   buf1 (binding 1): input  [N * Ci * Hi * Wi], read
+ *   buf2 (binding 2): weight [Co * CiG * Kh * Kw], read
+ *   buf3 (binding 3): bias   [Co], read
+ *   buf4 (binding 4): params uniform ConvParams
  */
 const CONV2D_WGSL = /* wgsl */ `
 struct ConvParams {
-    N: u32, C_in: u32, H: u32, W: u32,
-    C_out: u32, KH: u32, KW: u32,
-    stride: u32, padding: u32,
-    OH: u32, OW: u32,
+    // Row 0 (16 bytes)
+    N: u32, Ci: u32, Hi: u32, Wi: u32,
+    // Row 1 (16 bytes)
+    Co: u32, Kh: u32, Kw: u32, stride_h: u32,
+    // Row 2 (16 bytes)
+    stride_w: u32, pad_h: u32, pad_w: u32, dil_h: u32,
+    // Row 3 (16 bytes)
+    dil_w: u32, groups: u32, OH: u32, OW: u32,
+    // Row 4 (16 bytes)
+    CiG: u32, CoG: u32, col_k: u32, has_bias: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<f32>;
-@group(0) @binding(1) var<storage, read> weight: array<f32>;
-@group(0) @binding(2) var<storage, read> bias: array<f32>;
-@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+@group(0) @binding(0) var<storage, read_write> buf0: array<f32>;
+@group(0) @binding(1) var<storage, read> buf1: array<f32>;
+@group(0) @binding(2) var<storage, read> buf2: array<f32>;
+@group(0) @binding(3) var<storage, read> buf3: array<f32>;
 @group(0) @binding(4) var<uniform> params: ConvParams;
 
-@compute @workgroup_size(16, 16)
-fn molt_conv2d(@builtin(global_invocation_id) gid: vec3u) {
-    let oc = gid.x;
-    let pos = gid.y;
+var<workgroup> tile_w: array<f32, ${TILE_SIZE * TILE_SIZE}>;
 
-    if (oc >= params.C_out || pos >= params.OH * params.OW) { return; }
+@compute @workgroup_size(${TILE_SIZE}, ${TILE_SIZE}, 1)
+fn molt_conv2d(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wg: vec3<u32>
+) {
+    // gid.z encodes (batch_idx * groups + group_idx).
+    let batch = gid.z / params.groups;
+    let group = gid.z % params.groups;
 
-    let oh = pos / params.OW;
-    let ow = pos % params.OW;
+    // M dimension = output channels within this group (CoG).
+    // N dimension = spatial positions (OH * OW).
+    let oc_local = wg.y * ${TILE_SIZE}u + lid.y;  // output channel within group
+    let spatial  = wg.x * ${TILE_SIZE}u + lid.x;   // oh * OW + ow
 
-    var sum = bias[oc];
+    let oc_global = group * params.CoG + oc_local;
 
-    for (var ic: u32 = 0; ic < params.C_in; ic++) {
-        for (var kh: u32 = 0; kh < params.KH; kh++) {
-            for (var kw: u32 = 0; kw < params.KW; kw++) {
-                let ih = oh * params.stride + kh - params.padding;
-                let iw = ow * params.stride + kw - params.padding;
+    // K dimension = CiG * Kh * Kw (im2col column length).
+    let K = params.col_k;
+    let num_tiles = (K + ${TILE_SIZE - 1}u) / ${TILE_SIZE}u;
 
-                if (ih < params.H && iw < params.W) {
-                    let in_idx = ic * params.H * params.W + ih * params.W + iw;
-                    let w_idx = oc * params.C_in * params.KH * params.KW +
-                                ic * params.KH * params.KW + kh * params.KW + kw;
-                    sum = fma(input[in_idx], weight[w_idx], sum);
-                }
-            }
+    var acc: f32 = f32(0);
+
+    let local_idx = lid.y * ${TILE_SIZE}u + lid.x;
+
+    for (var t: u32 = 0u; t < num_tiles; t = t + 1u) {
+        // Load weight tile into shared memory.
+        // Weight layout: [Co, CiG, Kh, Kw] — row = oc_global, col = k.
+        let w_k = t * ${TILE_SIZE}u + lid.x;
+        if (oc_local < params.CoG && w_k < K) {
+            tile_w[local_idx] = buf2[oc_global * K + w_k];
+        } else {
+            tile_w[local_idx] = f32(0);
         }
+
+        workgroupBarrier();
+
+        // Accumulate: for each element in the tile, compute im2col value
+        // on-the-fly from buf1 (input).
+        for (var ki: u32 = 0u; ki < ${TILE_SIZE}u; ki = ki + 1u) {
+            let k_idx = t * ${TILE_SIZE}u + ki;
+            if (k_idx >= K) { break; }
+
+            // Decode im2col index: k_idx = ic_local * (Kh * Kw) + kh * Kw + kw
+            let kk = params.Kh * params.Kw;
+            let ic_local = k_idx / kk;
+            let rem = k_idx % kk;
+            let kh = rem / params.Kw;
+            let kw = rem % params.Kw;
+
+            // Compute the input spatial coordinate for this patch element.
+            let oh = spatial / params.OW;
+            let ow = spatial % params.OW;
+
+            // Use i32 arithmetic to handle negative padding offsets correctly.
+            let ih = i32(oh * params.stride_h + kh * params.dil_h) - i32(params.pad_h);
+            let iw = i32(ow * params.stride_w + kw * params.dil_w) - i32(params.pad_w);
+
+            var col_val: f32 = f32(0);
+            if (spatial < params.OH * params.OW &&
+                ih >= 0 && ih < i32(params.Hi) &&
+                iw >= 0 && iw < i32(params.Wi)) {
+                let ic_global = group * params.CiG + ic_local;
+                let in_idx = batch * params.Ci * params.Hi * params.Wi
+                           + ic_global * params.Hi * params.Wi
+                           + u32(ih) * params.Wi + u32(iw);
+                col_val = buf1[in_idx];
+            }
+
+            acc = fma(tile_w[lid.y * ${TILE_SIZE}u + ki], col_val, acc);
+        }
+
+        workgroupBarrier();
     }
 
-    output[oc * params.OH * params.OW + pos] = sum;
+    if (oc_local < params.CoG && spatial < params.OH * params.OW) {
+        // Add bias if present.
+        if (params.has_bias != 0u) {
+            acc = acc + buf3[oc_global];
+        }
+        let out_idx = batch * params.Co * params.OH * params.OW
+                    + oc_global * params.OH * params.OW + spatial;
+        buf0[out_idx] = acc;
+    }
 }
 `;
 
@@ -606,10 +679,10 @@ export class WebGPUEngine {
             [storageRW(0), storageRO(1), storageRO(2), uniform(3)]
         );
 
-        // Conv2d: input(ro), weight(ro), bias(ro), output(rw), params(uniform)
+        // Conv2d: buf0=output(rw), buf1=input(ro), buf2=weight(ro), buf3=bias(ro), buf4=params(uniform)
         this.pipelines.conv2d = compilePipeline(
             dev, CONV2D_WGSL, 'molt_conv2d',
-            [storageRO(0), storageRO(1), storageRO(2), storageRW(3), uniform(4)]
+            [storageRW(0), storageRO(1), storageRO(2), storageRO(3), uniform(4)]
         );
     }
 
@@ -1228,38 +1301,44 @@ export class WebGPUEngine {
     }
 
     // -----------------------------------------------------------------------
-    // Conv2d — direct convolution (60% of PaddleOCR compute)
+    // Conv2d — im2col + tiled matmul (60% of PaddleOCR compute)
     // -----------------------------------------------------------------------
 
     /**
      * GPU Conv2d with CPU readback.
      *
-     * Input: [C_in, H, W] (single batch), Weight: [C_out, C_in, KH, KW]
-     * Bias: [C_out], Output: [C_out, OH, OW]
+     * Input: [N, Ci, Hi, Wi], Weight: [Co, CiG, Kh, Kw], Bias: [Co]
+     * Output: [N, Co, OH, OW]
      *
-     * OH = (H + 2*padding - KH) / stride + 1
-     * OW = (W + 2*padding - KW) / stride + 1
+     * Supports padding, strides, dilations, and groups (including depthwise
+     * convolution where groups = Ci = Co).
      *
-     * @param {Float32Array|GPUBuffer} input  - [C_in * H * W]
-     * @param {Float32Array|GPUBuffer} weight - [C_out * C_in * KH * KW]
-     * @param {Float32Array|GPUBuffer} bias   - [C_out]
-     * @param {number} cIn  - Input channels.
-     * @param {number} h    - Input height.
-     * @param {number} w    - Input width.
-     * @param {number} cOut - Output channels.
-     * @param {number} kh   - Kernel height.
-     * @param {number} kw   - Kernel width.
-     * @param {number} stride  - Convolution stride (default 1).
-     * @param {number} padding - Zero-padding (default 0).
-     * @returns {Promise<Float32Array>} Output [C_out * OH * OW].
+     * @param {Float32Array|GPUBuffer} input  - Input tensor, row-major.
+     * @param {Float32Array|GPUBuffer} weight - Weight tensor, row-major.
+     * @param {Float32Array|GPUBuffer|null} bias - Bias vector, or null for no bias.
+     * @param {object} convParams - Convolution parameters.
+     * @param {number} convParams.N      - Batch size.
+     * @param {number} convParams.Ci     - Input channels.
+     * @param {number} convParams.Hi     - Input height.
+     * @param {number} convParams.Wi     - Input width.
+     * @param {number} convParams.Co     - Output channels.
+     * @param {number} convParams.Kh     - Kernel height.
+     * @param {number} convParams.Kw     - Kernel width.
+     * @param {number} [convParams.strideH=1]  - Vertical stride.
+     * @param {number} [convParams.strideW=1]  - Horizontal stride.
+     * @param {number} [convParams.padH=0]     - Vertical padding.
+     * @param {number} [convParams.padW=0]     - Horizontal padding.
+     * @param {number} [convParams.dilH=1]     - Vertical dilation.
+     * @param {number} [convParams.dilW=1]     - Horizontal dilation.
+     * @param {number} [convParams.groups=1]   - Number of groups.
+     * @returns {Promise<Float32Array>} Output tensor [N * Co * OH * OW].
      */
-    async conv2d(input, weight, bias, cIn, h, w, cOut, kh, kw, stride = 1, padding = 0) {
-        const oh = Math.floor((h + 2 * padding - kh) / stride) + 1;
-        const ow = Math.floor((w + 2 * padding - kw) / stride) + 1;
-        const outputSize = cOut * oh * ow;
+    async conv2d(input, weight, bias, convParams) {
+        const p = this._normalizeConvParams(convParams);
+        const outputSize = p.N * p.Co * p.OH * p.OW;
         const totalBytes = outputSize * 4;
 
-        const bufOut = this.conv2dGPU(input, weight, bias, cIn, h, w, cOut, kh, kw, stride, padding);
+        const bufOut = this.conv2dGPU(input, weight, bias, convParams);
 
         const staging = this.device.createBuffer({
             size: totalBytes,
@@ -1282,25 +1361,16 @@ export class WebGPUEngine {
     /**
      * GPU Conv2d returning GPUBuffer (no readback).
      *
-     * @param {Float32Array|GPUBuffer} input  - [C_in * H * W]
-     * @param {Float32Array|GPUBuffer} weight - [C_out * C_in * KH * KW]
-     * @param {Float32Array|GPUBuffer} bias   - [C_out]
-     * @param {number} cIn  - Input channels.
-     * @param {number} h    - Input height.
-     * @param {number} w    - Input width.
-     * @param {number} cOut - Output channels.
-     * @param {number} kh   - Kernel height.
-     * @param {number} kw   - Kernel width.
-     * @param {number} stride  - Convolution stride (default 1).
-     * @param {number} padding - Zero-padding (default 0).
-     * @returns {GPUBuffer} Output [C_out * OH * OW].
+     * @param {Float32Array|GPUBuffer} input
+     * @param {Float32Array|GPUBuffer} weight
+     * @param {Float32Array|GPUBuffer|null} bias
+     * @param {object} convParams - See conv2d() for parameter docs.
+     * @returns {GPUBuffer} Output [N * Co * OH * OW].
      */
-    conv2dGPU(input, weight, bias, cIn, h, w, cOut, kh, kw, stride = 1, padding = 0) {
+    conv2dGPU(input, weight, bias, convParams) {
         const { pipeline, bindGroupLayout } = this.pipelines.conv2d;
-
-        const oh = Math.floor((h + 2 * padding - kh) / stride) + 1;
-        const ow = Math.floor((w + 2 * padding - kw) / stride) + 1;
-        const outputSize = cOut * oh * ow;
+        const p = this._normalizeConvParams(convParams);
+        const outputSize = p.N * p.Co * p.OH * p.OW;
 
         const bufIn = input instanceof GPUBuffer
             ? input
@@ -1308,47 +1378,102 @@ export class WebGPUEngine {
         const bufW = weight instanceof GPUBuffer
             ? weight
             : this.createBuffer(weight, GPUBufferUsage.STORAGE);
-        const bufB = bias instanceof GPUBuffer
-            ? bias
-            : this.createBuffer(bias, GPUBufferUsage.STORAGE);
+
+        // Bias: if null, create a zero-filled single-element buffer (has_bias=0
+        // ensures it is never read, but the binding must exist).
+        const hasBias = bias != null ? 1 : 0;
+        let bufB;
+        let biasOwned = false;
+        if (bias instanceof GPUBuffer) {
+            bufB = bias;
+        } else if (bias != null) {
+            bufB = this.createBuffer(bias, GPUBufferUsage.STORAGE);
+            biasOwned = true;
+        } else {
+            bufB = this.createBuffer(new Float32Array(1), GPUBufferUsage.STORAGE);
+            biasOwned = true;
+        }
+
         const bufOut = this.createOutputBuffer(
             outputSize * 4,
             GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
         );
 
-        // ConvParams: N, C_in, H, W, C_out, KH, KW, stride, padding, OH, OW
-        // 11 u32 fields = 44 bytes, padded to 48 for 16-byte alignment.
-        const paramsBuf = this.bufferPool.acquire(48, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+        // ConvParams: 20 u32 fields = 80 bytes (5 x vec4<u32> rows).
+        const paramsBuf = this.bufferPool.acquire(80, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         this.device.queue.writeBuffer(paramsBuf, 0, new Uint32Array([
-            1, cIn, h, w, cOut, kh, kw, stride, padding, oh, ow, 0,
+            p.N, p.Ci, p.Hi, p.Wi,
+            p.Co, p.Kh, p.Kw, p.strideH,
+            p.strideW, p.padH, p.padW, p.dilH,
+            p.dilW, p.groups, p.OH, p.OW,
+            p.CiG, p.CoG, p.colK, hasBias,
         ]));
 
         const bindGroup = this.device.createBindGroup({
             layout: bindGroupLayout,
             entries: [
-                { binding: 0, resource: { buffer: bufIn } },
-                { binding: 1, resource: { buffer: bufW } },
-                { binding: 2, resource: { buffer: bufB } },
-                { binding: 3, resource: { buffer: bufOut } },
+                { binding: 0, resource: { buffer: bufOut } },
+                { binding: 1, resource: { buffer: bufIn } },
+                { binding: 2, resource: { buffer: bufW } },
+                { binding: 3, resource: { buffer: bufB } },
                 { binding: 4, resource: { buffer: paramsBuf } },
             ],
         });
 
+        // Dispatch: x = ceil(OH*OW / 16), y = ceil(CoG / 16), z = N * groups.
+        const spatialPositions = p.OH * p.OW;
         const encoder = this.device.createCommandEncoder();
         const pass = encoder.beginComputePass();
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, bindGroup);
-        pass.dispatchWorkgroups(Math.ceil(cOut / 16), Math.ceil(oh * ow / 16), 1);
+        pass.dispatchWorkgroups(
+            Math.ceil(spatialPositions / TILE_SIZE),
+            Math.ceil(p.CoG / TILE_SIZE),
+            p.N * p.groups
+        );
         pass.end();
 
         this.device.queue.submit([encoder.finish()]);
 
         if (!(input instanceof GPUBuffer)) this.bufferPool.release(bufIn);
         if (!(weight instanceof GPUBuffer)) this.bufferPool.release(bufW);
-        if (!(bias instanceof GPUBuffer)) this.bufferPool.release(bufB);
+        if (biasOwned) this.bufferPool.release(bufB);
         this.bufferPool.release(paramsBuf);
 
         return bufOut;
+    }
+
+    /**
+     * Normalize and validate conv2d parameters, computing derived values.
+     * @private
+     */
+    _normalizeConvParams(p) {
+        const N = p.N;
+        const Ci = p.Ci;
+        const Hi = p.Hi;
+        const Wi = p.Wi;
+        const Co = p.Co;
+        const Kh = p.Kh;
+        const Kw = p.Kw;
+        const strideH = p.strideH ?? 1;
+        const strideW = p.strideW ?? 1;
+        const padH = p.padH ?? 0;
+        const padW = p.padW ?? 0;
+        const dilH = p.dilH ?? 1;
+        const dilW = p.dilW ?? 1;
+        const groups = p.groups ?? 1;
+
+        const OH = Math.floor((Hi + 2 * padH - dilH * (Kh - 1) - 1) / strideH) + 1;
+        const OW = Math.floor((Wi + 2 * padW - dilW * (Kw - 1) - 1) / strideW) + 1;
+        const CiG = Ci / groups;   // Input channels per group.
+        const CoG = Co / groups;   // Output channels per group.
+        const colK = CiG * Kh * Kw; // im2col column length.
+
+        return {
+            N, Ci, Hi, Wi, Co, Kh, Kw,
+            strideH, strideW, padH, padW, dilH, dilW, groups,
+            OH, OW, CiG, CoG, colK,
+        };
     }
 
     /**

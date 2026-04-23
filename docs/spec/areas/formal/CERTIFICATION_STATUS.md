@@ -126,7 +126,7 @@ See `formal/lean/AXIOM_INVENTORY.md` for the complete enumeration.
 ### Backend Proof Limitations
 
 - **Vacuous equivalence:** All backends defined as the same function; `rfl` proves nothing about real behavior
-- **Operator approximations in Luau proofs:** `bit_xor` → `land`, `lshift` → `land`, `rshift` → `land`
+- **Luau proof scope:** Luau bitwise operators now map to distinct Luau bitwise nodes in the formal model, but the backend proof remains expression-level and does not prove the real source emitter, Luau VM, or Roblox native-code execution.
 - **Operator approximations in Rust proofs:** `floordiv` → `div` (wrong for negatives), `pow` → `mul`
 - **WASM proofs:** Bitwise ops use placeholder semantics
 - **No unboxed fast-path modeling:** Rust backends emit type-specialized code; proofs assume all NaN-boxed
@@ -180,7 +180,7 @@ but vacuous with respect to actual backend behavior (see Scope Disclaimer above)
   induction proving that for every IR expression, if IR evaluation succeeds, Luau
   evaluation of the emitted expression succeeds with the corresponding value. Environment
   preservation (`emitInstr_preserves_env`). Index adjustment, builtin mapping, operator
-  totality. Note: operator approximations (bit_xor, shifts map to land).
+  totality.
 
 - **LuauTargetSemantics.lean** -- Deep formalization of Luau target semantics: extended
   value model (closures, userdata, tables), Luau-specific operations (# length,
@@ -378,7 +378,7 @@ The formalization achieves genuine results within its scope:
 | Property | Status | Notes |
 |----------|--------|-------|
 | End-to-end expression correctness | **Blocked** | 9 core-chain sorrys; ~95 additional sorrys in dependent files |
-| Backend model proofs (Luau, Rust, WASM) | Partial | Structurally proven but with operator approximations |
+| Backend model proofs (Luau, Rust, WASM) | Partial | Structurally proven, but still scoped to formal backend models rather than real source emitters/VMs |
 | Native (Cranelift) backend proofs | **None** | Zero formal proofs for the production native backend |
 | Cross-backend equivalence (all 6 pairs) | **Vacuous** | Proven by `rfl` — all backends defined identically |
 | All determinism proofs | **Vacuous** | Proven by `rfl` — trivially true by construction |

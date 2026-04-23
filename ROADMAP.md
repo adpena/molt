@@ -25,6 +25,9 @@ This file is forward-looking only.
    one coherent CLI-first DX surface.
 6. Make performance reporting and compatibility reporting generator-owned
    instead of manually synchronized across multiple docs.
+7. Drive the Luau target from checked source emission to full current/future
+   Luau parity coverage, with generated OpIR support evidence and no silent
+   semantic stubs.
 
 ## Milestone Sequence
 
@@ -36,6 +39,8 @@ This file is forward-looking only.
 - Make typed SSA / explicit representation facts survive lowering without
   degrading into transport-only hints.
 - Close the highest-value native and WASM parity blockers.
+- Keep the generated Luau support matrix current and use it to prioritize
+  checked CPython-vs-Luau feature-gap closure.
 - Keep the canonical local validation matrix green across:
   - `molt validate --suite smoke`
   - `molt validate`
