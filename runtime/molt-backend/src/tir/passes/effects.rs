@@ -66,18 +66,14 @@ pub fn builtin_effects(name: &str) -> Option<FunctionEffects> {
         "chr" | "ord" | "hex" | "oct" | "bin" => Some(PURE),
 
         // Constructors that produce fresh immutable sequences
-        "range" | "enumerate" | "zip" | "map" | "filter" | "tuple"
-        | "frozenset" => Some(PURE),
+        "range" | "enumerate" | "zip" | "map" | "filter" | "tuple" | "frozenset" => Some(PURE),
 
         // Math module (pure numerical functions)
-        "math.sqrt" | "math.floor" | "math.ceil" | "math.log"
-        | "math.log2" | "math.log10" | "math.exp" | "math.sin"
-        | "math.cos" | "math.tan" | "math.asin" | "math.acos"
-        | "math.atan" | "math.atan2" | "math.fabs" | "math.pow"
-        | "math.gcd" | "math.lcm" | "math.isfinite" | "math.isinf"
-        | "math.isnan" | "math.copysign" | "math.trunc" | "math.hypot" => {
-            Some(PURE)
-        }
+        "math.sqrt" | "math.floor" | "math.ceil" | "math.log" | "math.log2" | "math.log10"
+        | "math.exp" | "math.sin" | "math.cos" | "math.tan" | "math.asin" | "math.acos"
+        | "math.atan" | "math.atan2" | "math.fabs" | "math.pow" | "math.gcd" | "math.lcm"
+        | "math.isfinite" | "math.isinf" | "math.isnan" | "math.copysign" | "math.trunc"
+        | "math.hypot" => Some(PURE),
 
         // Explicitly NOT pure (I/O, random, time, mutation):
         // print, input, open, random.*, time.*, os.*, sys.*
@@ -95,37 +91,71 @@ pub fn builtin_effects(name: &str) -> Option<FunctionEffects> {
 pub fn method_effects(receiver_type: &str, method_name: &str) -> Option<FunctionEffects> {
     match (receiver_type, method_name) {
         // str methods -- strings are immutable, all these return new strings
-        ("str", "upper") | ("str", "lower") | ("str", "strip")
-        | ("str", "lstrip") | ("str", "rstrip") | ("str", "title")
-        | ("str", "capitalize") | ("str", "casefold") | ("str", "swapcase")
-        | ("str", "center") | ("str", "ljust") | ("str", "rjust")
-        | ("str", "zfill") | ("str", "replace") | ("str", "join")
-        | ("str", "split") | ("str", "rsplit") | ("str", "splitlines")
-        | ("str", "startswith") | ("str", "endswith")
-        | ("str", "find") | ("str", "rfind") | ("str", "index")
-        | ("str", "rindex") | ("str", "count") | ("str", "isalpha")
-        | ("str", "isdigit") | ("str", "isalnum") | ("str", "isspace")
-        | ("str", "isupper") | ("str", "islower") | ("str", "istitle")
-        | ("str", "isidentifier") | ("str", "isprintable")
-        | ("str", "isdecimal") | ("str", "isnumeric")
-        | ("str", "encode") | ("str", "expandtabs")
-        | ("str", "removeprefix") | ("str", "removesuffix")
-        | ("str", "partition") | ("str", "rpartition")
-        | ("str", "maketrans") | ("str", "translate") => Some(PURE),
+        ("str", "upper")
+        | ("str", "lower")
+        | ("str", "strip")
+        | ("str", "lstrip")
+        | ("str", "rstrip")
+        | ("str", "title")
+        | ("str", "capitalize")
+        | ("str", "casefold")
+        | ("str", "swapcase")
+        | ("str", "center")
+        | ("str", "ljust")
+        | ("str", "rjust")
+        | ("str", "zfill")
+        | ("str", "replace")
+        | ("str", "join")
+        | ("str", "split")
+        | ("str", "rsplit")
+        | ("str", "splitlines")
+        | ("str", "startswith")
+        | ("str", "endswith")
+        | ("str", "find")
+        | ("str", "rfind")
+        | ("str", "index")
+        | ("str", "rindex")
+        | ("str", "count")
+        | ("str", "isalpha")
+        | ("str", "isdigit")
+        | ("str", "isalnum")
+        | ("str", "isspace")
+        | ("str", "isupper")
+        | ("str", "islower")
+        | ("str", "istitle")
+        | ("str", "isidentifier")
+        | ("str", "isprintable")
+        | ("str", "isdecimal")
+        | ("str", "isnumeric")
+        | ("str", "encode")
+        | ("str", "expandtabs")
+        | ("str", "removeprefix")
+        | ("str", "removesuffix")
+        | ("str", "partition")
+        | ("str", "rpartition")
+        | ("str", "maketrans")
+        | ("str", "translate") => Some(PURE),
 
         // tuple methods -- tuples are immutable
         ("tuple", "count") | ("tuple", "index") => Some(PURE),
 
         // frozenset methods -- immutable
-        ("frozenset", "union") | ("frozenset", "intersection")
-        | ("frozenset", "difference") | ("frozenset", "symmetric_difference")
-        | ("frozenset", "issubset") | ("frozenset", "issuperset")
-        | ("frozenset", "isdisjoint") | ("frozenset", "copy") => Some(PURE),
+        ("frozenset", "union")
+        | ("frozenset", "intersection")
+        | ("frozenset", "difference")
+        | ("frozenset", "symmetric_difference")
+        | ("frozenset", "issubset")
+        | ("frozenset", "issuperset")
+        | ("frozenset", "isdisjoint")
+        | ("frozenset", "copy") => Some(PURE),
 
         // int/float methods
-        ("int", "bit_length") | ("int", "bit_count")
-        | ("int", "to_bytes") | ("int", "conjugate")
-        | ("float", "is_integer") | ("float", "hex")
+        ("int", "bit_length")
+        | ("int", "bit_count")
+        | ("int", "to_bytes")
+        | ("int", "conjugate")
+        | ("float", "is_integer")
+        | ("float", "hex")
         | ("float", "conjugate") => Some(PURE),
 
         // Explicitly NOT pure: list.append, list.extend, dict.update, set.add, etc.
@@ -140,13 +170,32 @@ mod tests {
     #[test]
     fn pure_builtins_are_pure() {
         for name in &[
-            "len", "abs", "min", "max", "sum", "sorted", "bool", "int",
-            "float", "str", "repr", "hash", "chr", "ord", "hex", "oct",
-            "bin", "range", "enumerate", "zip", "math.sqrt", "math.floor",
-            "math.ceil", "math.log",
+            "len",
+            "abs",
+            "min",
+            "max",
+            "sum",
+            "sorted",
+            "bool",
+            "int",
+            "float",
+            "str",
+            "repr",
+            "hash",
+            "chr",
+            "ord",
+            "hex",
+            "oct",
+            "bin",
+            "range",
+            "enumerate",
+            "zip",
+            "math.sqrt",
+            "math.floor",
+            "math.ceil",
+            "math.log",
         ] {
-            let fx = builtin_effects(name)
-                .unwrap_or_else(|| panic!("{name} should have effects"));
+            let fx = builtin_effects(name).unwrap_or_else(|| panic!("{name} should have effects"));
             assert!(fx.is_pure(), "{name} should be pure");
         }
     }
@@ -163,8 +212,16 @@ mod tests {
     #[test]
     fn str_methods_are_pure() {
         for method in &[
-            "upper", "lower", "strip", "split", "replace", "startswith",
-            "endswith", "find", "count", "join",
+            "upper",
+            "lower",
+            "strip",
+            "split",
+            "replace",
+            "startswith",
+            "endswith",
+            "find",
+            "count",
+            "join",
         ] {
             let fx = method_effects("str", method)
                 .unwrap_or_else(|| panic!("str.{method} should have effects"));
