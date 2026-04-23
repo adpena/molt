@@ -2,10 +2,12 @@ use crate::bridge::*;
 use blake2b_simd::{Params as Blake2bParams, State as Blake2bState};
 use blake2s_simd::{Params as Blake2sParams, State as Blake2sState};
 use digest::{Digest, ExtendableOutput, Update, XofReader};
+#[cfg(feature = "legacy")]
 use md4::Md4;
 use md5::Md5;
 use molt_runtime_core::prelude::*;
 use num_traits::ToPrimitive;
+#[cfg(feature = "legacy")]
 use ripemd::Ripemd160;
 use sha1::Sha1;
 use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
@@ -13,8 +15,10 @@ use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512, Shake128, Shake256};
 
 #[derive(Clone)]
 pub enum HashKind {
+    #[cfg(feature = "legacy")]
     Md4(Md4),
     Md5(Md5),
+    #[cfg(feature = "legacy")]
     Ripemd160(Ripemd160),
     Sha1(Sha1),
     Sha224(Sha224),
@@ -63,12 +67,14 @@ pub enum HashError {
 impl HashKind {
     fn update(&mut self, data: &[u8]) {
         match self {
+            #[cfg(feature = "legacy")]
             HashKind::Md4(hasher) => {
                 Digest::update(hasher, data);
             }
             HashKind::Md5(hasher) => {
                 Digest::update(hasher, data);
             }
+            #[cfg(feature = "legacy")]
             HashKind::Ripemd160(hasher) => {
                 Digest::update(hasher, data);
             }
@@ -122,8 +128,10 @@ impl HashKind {
 
     fn finalize_bytes(self, length: Option<usize>) -> Result<Vec<u8>, HashError> {
         match self {
+            #[cfg(feature = "legacy")]
             HashKind::Md4(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Md5(hasher) => Ok(hasher.finalize().to_vec()),
+            #[cfg(feature = "legacy")]
             HashKind::Ripemd160(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha1(hasher) => Ok(hasher.finalize().to_vec()),
             HashKind::Sha224(hasher) => Ok(hasher.finalize().to_vec()),
@@ -426,6 +434,7 @@ fn parse_blake2_options(
 pub fn build_hash_handle(_py: &PyToken, name: &str, options_bits: u64) -> Result<HashHandle, u64> {
     let normalized = normalize_hash_name(name);
     match normalized.as_str() {
+        #[cfg(feature = "legacy")]
         "md4" => Ok(HashHandle {
             kind: HashKind::Md4(Md4::new()),
             name: "md4",
@@ -440,6 +449,7 @@ pub fn build_hash_handle(_py: &PyToken, name: &str, options_bits: u64) -> Result
             block_size: 64,
             is_xof: false,
         }),
+        #[cfg(feature = "legacy")]
         "ripemd160" => Ok(HashHandle {
             kind: HashKind::Ripemd160(Ripemd160::new()),
             name: "ripemd160",
@@ -721,8 +731,10 @@ pub extern "C" fn molt_hash_drop(handle_bits: u64) -> u64 {
 
 fn pbkdf2_digest_size(name: &str) -> Option<usize> {
     match name {
+        #[cfg(feature = "legacy")]
         "md4" => Some(16),
         "md5" => Some(16),
+        #[cfg(feature = "legacy")]
         "ripemd160" => Some(20),
         "sha1" => Some(20),
         "sha224" => Some(28),
@@ -834,8 +846,10 @@ pub extern "C" fn molt_pbkdf2_hmac(
         }
         out.resize(dklen, 0);
         match normalized.as_str() {
+            #[cfg(feature = "legacy")]
             "md4" => pbkdf2::pbkdf2_hmac::<Md4>(password, salt, rounds, &mut out),
             "md5" => pbkdf2::pbkdf2_hmac::<Md5>(password, salt, rounds, &mut out),
+            #[cfg(feature = "legacy")]
             "ripemd160" => pbkdf2::pbkdf2_hmac::<Ripemd160>(password, salt, rounds, &mut out),
             "sha1" => pbkdf2::pbkdf2_hmac::<Sha1>(password, salt, rounds, &mut out),
             "sha224" => pbkdf2::pbkdf2_hmac::<Sha224>(password, salt, rounds, &mut out),
