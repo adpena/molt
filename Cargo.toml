@@ -258,11 +258,11 @@ debug = 0
 # panic = "unwind" required — see [profile.release] comment above.
 [profile.release-fast]
 inherits = "release"
-opt-level = 2
+opt-level = 3          # O3: auto-vectorization + aggressive inlining for daemon hot paths
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
-panic = "unwind"
+panic = "unwind"       # required for catch_unwind in Cranelift retry path
 
 # Size-optimized release profile for micro stdlib builds.
 # Uses opt-level "z" (minimize binary size) with fat LTO and single codegen
@@ -283,7 +283,7 @@ inherits = "release"
 opt-level = "z"  # minimize binary size for Cloudflare Workers 3MB limit
 lto = "fat"
 codegen-units = 1
-panic = "unwind"
+panic = "abort"  # WASM doesn't use catch_unwind; unwind tables are pure bloat
 strip = true
 
 [profile.dev-release]
