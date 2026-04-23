@@ -9448,6 +9448,16 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_shutil_copymode",
+        symbol: "molt_shutil_copymode",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_shutil_copystat",
+        symbol: "molt_shutil_copystat",
+        arity: 3,
+    },
+    IntrinsicSpec {
         name: "molt_shutil_copytree",
         symbol: "molt_shutil_copytree",
         arity: 3,
@@ -21391,6 +21401,14 @@ fn resolve_shutil_symbol(symbol: &str) -> Option<u64> {
         "molt_shutil_copy2" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_shutil_copy2",
             crate::molt_shutil_copy2 as *const (),
+        )),
+        "molt_shutil_copymode" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_shutil_copymode",
+            crate::molt_shutil_copymode as *const (),
+        )),
+        "molt_shutil_copystat" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_shutil_copystat",
+            crate::molt_shutil_copystat as *const (),
         )),
         "molt_shutil_copytree" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_shutil_copytree",
