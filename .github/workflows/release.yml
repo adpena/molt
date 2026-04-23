@@ -244,3 +244,55 @@ jobs:
           files: |
             dist/SHA256SUMS
             dist/release_manifest.json
+
+  deploy-worker:
+    runs-on: ubuntu-24.04
+    needs: manifest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Cloudflare Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: deploy/cloudflare
+          command: deploy
+
+      - name: Smoke test Worker
+        run: |
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            --max-time 30 \
+            https://falcon-ocr.adpena.workers.dev/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "Worker health check failed: HTTP $STATUS" >&2
+            exit 1
+          fi
+          echo "Worker health check passed (HTTP $STATUS)"
+
+  deploy-modal:
+    runs-on: ubuntu-24.04
+    needs: manifest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Modal
+        run: pip install modal
+
+      - name: Deploy Falcon-OCR to Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: modal deploy deploy/modal/falcon_ocr.py
+
+      - name: Deploy Nemotron OCR to Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: modal deploy deploy/modal/nemotron_ocr.py

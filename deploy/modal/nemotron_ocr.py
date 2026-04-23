@@ -127,10 +127,12 @@ nemotron_image = (
     .pip_install(
         "httpx>=0.28.0",
         "pillow>=11.0",
+        "hatchling>=1.21.0",
     )
     .run_commands(
+        # Install git-lfs (not in NVIDIA container by default)
+        "apt-get update && apt-get install -y git-lfs && git lfs install",
         # Clone and install nemotron-ocr package
-        "git lfs install",
         "git clone https://huggingface.co/nvidia/nemotron-ocr-v2 /models/nemotron-ocr-v2",
         "cd /models/nemotron-ocr-v2/nemotron-ocr && pip install --no-build-isolation -v .",
     )
@@ -141,9 +143,9 @@ nemotron_image = (
     image=nemotron_image,
     gpu="A10G",  # 24 GB VRAM — English variant uses ~1.5 GB, multilingual ~2.5 GB
     timeout=120,
-    allow_concurrent_inputs=32,
-    container_idle_timeout=300,
+    scaledown_window=300,
 )
+@modal.concurrent(max_inputs=32)
 class NemotronOCR:
     """High-throughput Nemotron OCR v2 inference."""
 
@@ -239,10 +241,9 @@ class NemotronOCR:
     image=nemotron_image,
     gpu="A10G",
     timeout=120,
-    allow_concurrent_inputs=32,
-    container_idle_timeout=300,
+    scaledown_window=300,
 )
-@modal.web_endpoint(method="POST", docs=True)
+@modal.fastapi_endpoint(method="POST", docs=True)
 async def ocr_endpoint(item: dict) -> dict:
     """
     HTTP POST endpoint for Nemotron OCR.
