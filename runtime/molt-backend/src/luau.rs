@@ -2626,11 +2626,25 @@ impl LuauBackend {
                     let key = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
                     let key_is_int = op.fast_int == Some(true)
-                        || op.fast_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
                         || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
-                    if key_known_nonneg {
+                    let known_list_like = self
+                        .var_type_hints
+                        .get(&args[0])
+                        .is_some_and(|t| t == "list")
+                        || matches!(op.container_type.as_deref(), Some("list"))
+                        || matches!(op.type_hint.as_deref(), Some("list"));
+                    if known_list_like {
+                        let idx_expr = if key_known_nonneg {
+                            format!("{key} + 1")
+                        } else {
+                            format!("if {key} >= 0 then {key} + 1 else #{container} + {key} + 1")
+                        };
+                        self.emit_line(&format!(
+                            "do local __idx = {idx_expr}; if __idx < 1 or __idx > #{container} then error({{__type=\"IndexError\", __msg=\"list assignment index out of range\"}}) end; {container}[__idx] = {value} end"
+                        ));
+                    } else if key_known_nonneg {
                         self.emit_line(&format!("{container}[{key} + 1] = {value}"));
                     } else if key_is_int {
                         self.emit_line(&format!(
@@ -2653,11 +2667,25 @@ impl LuauBackend {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
                     let key_is_int = op.fast_int == Some(true)
-                        || op.fast_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
                         || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
-                    if key_known_nonneg {
+                    let known_list_like = self
+                        .var_type_hints
+                        .get(&args[0])
+                        .is_some_and(|t| t == "list")
+                        || matches!(op.container_type.as_deref(), Some("list"))
+                        || matches!(op.type_hint.as_deref(), Some("list"));
+                    if known_list_like {
+                        let idx_expr = if key_known_nonneg {
+                            format!("{key} + 1")
+                        } else {
+                            format!("if {key} >= 0 then {key} + 1 else #{container} + {key} + 1")
+                        };
+                        self.emit_line(&format!(
+                            "do local __idx = {idx_expr}; if __idx < 1 or __idx > #{container} then error({{__type=\"IndexError\", __msg=\"list deletion index out of range\"}}) end; table.remove({container}, __idx) end"
+                        ));
+                    } else if key_known_nonneg {
                         self.emit_line(&format!("table.remove({container}, {key} + 1)"));
                     } else if key_is_int {
                         self.emit_line(&format!(
@@ -9215,6 +9243,55 @@ mod tests {
             output.contains("list index out of range")
                 && output.contains("string index out of range"),
             "expected list and string IndexError messages, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_list_set_and_delete_emit_index_error_guards() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "mutation_index_guards".to_string(),
+                params: vec!["xs".to_string(), "i".to_string(), "v".to_string()],
+                param_types: Some(vec![
+                    "list[int]".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "set_item".to_string(),
+                        args: Some(vec![
+                            "xs".to_string(),
+                            "i".to_string(),
+                            "v".to_string(),
+                        ]),
+                        type_hint: Some("list".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "del_item".to_string(),
+                        args: Some(vec!["xs".to_string(), "i".to_string()]),
+                        type_hint: Some("list".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("list assignment index out of range")
+                && output.contains("list deletion index out of range"),
+            "list set/delete must guard out-of-range accesses, got:\n{output}"
         );
     }
 

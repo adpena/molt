@@ -5539,6 +5539,7 @@ def _enforce_intrinsic_stdlib(
     module_graph: dict[str, Path],
     stdlib_root: Path,
     json_output: bool,
+    module_reasons: Mapping[str, set[str]] | None = None,
 ) -> int | None:
     missing: list[str] = []
     probe_only: list[str] = []
@@ -5557,6 +5558,12 @@ def _enforce_intrinsic_stdlib(
             probe_only.append(name)
     if not missing:
         return None
+    if os.environ.get("MOLT_DEBUG_INTRINSIC_GATE") == "1":
+        for name in sorted(missing):
+            print(
+                f"[intrinsic-gate] {name}: path={module_graph.get(name)} reasons={sorted((module_reasons or {}).get(name, set()))}",
+                file=sys.stderr,
+            )
     missing.sort()
     probe_only.sort()
     message = (
@@ -17350,7 +17357,7 @@ def _prepare_entry_module_graph(
             "core_required",
         )
     intrinsic_enforced = _enforce_intrinsic_stdlib(
-        module_graph, stdlib_root, json_output
+        module_graph, stdlib_root, json_output, module_reasons
     )
     if intrinsic_enforced is not None:
         return None, intrinsic_enforced
