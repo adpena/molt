@@ -16598,12 +16598,14 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                         } else if cond_is_int_typed {
                             // NaN-boxed int: unbox and check != 0.
-                            let raw_val = shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[0],
-                            )
+                            // Inside loops, use Variable-only shadows (phi-correct).
+                            let raw_val = if !loop_stack.is_empty() {
+                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                            } else {
+                                shadow_value_for(
+                                    &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0],
+                                )
+                            }
                             .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
@@ -16763,12 +16765,14 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                         } else if cond_is_int_typed {
                             // NaN-boxed int: unbox and check != 0.
-                            let raw_val = shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[0],
-                            )
+                            // Inside loops, use Variable-only shadows (phi-correct).
+                            let raw_val = if !loop_stack.is_empty() {
+                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                            } else {
+                                shadow_value_for(
+                                    &mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0],
+                                )
+                            }
                             .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
