@@ -62,10 +62,11 @@ class OnnxWeightParser:
       1 = float32, 6 = int32, 7 = int64, 11 = double
 
     Strategy:
-      1. Try ``onnx`` library (fast, reliable, handles all edge cases).
-      2. Fall back to a minimal protobuf wire-format parser that handles
-         both ``graph.initializer`` *and* Constant-node extraction without
-         any external dependency.
+      Use a minimal protobuf wire-format parser that handles both
+      ``graph.initializer`` and Constant-node extraction without any external
+      dependency.  The stdlib path must compile to WASM/native without host
+      Python packages, so optional ``onnx``/``numpy`` helpers belong in tests
+      and tooling, not in this module.
     """
 
     # ONNX data_type enum → (struct format char, element byte size)
@@ -86,67 +87,10 @@ class OnnxWeightParser:
         ``flat_values`` is a list of float for dtype 1/11 or list of int for
         dtype 6/7.
         """
-        try:
-            return OnnxWeightParser._parse_with_onnx(data)
-        except Exception:
-            return OnnxWeightParser._parse_raw_protobuf(data)
+        return OnnxWeightParser._parse_raw_protobuf(data)
 
     # ------------------------------------------------------------------
-    # Strategy 1: onnx library (preferred)
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _parse_with_onnx(
-        data: bytes,
-    ) -> dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]]:
-        import onnx
-        from onnx import numpy_helper
-        import numpy as np
-
-        model = onnx.load_from_string(data)
-        weights: dict[str, tuple[tuple[int, ...], int, list[float] | list[int]]] = {}
-
-        # 1. graph.initializer (standard location)
-        for init in model.graph.initializer:
-            arr = numpy_helper.to_array(init)
-            dtype_code = init.data_type
-            shape = tuple(int(d) for d in init.dims)
-            if dtype_code in (1, 11):
-                values: list[float] | list[int] = (
-                    arr.astype(np.float32).flatten().tolist()
-                )
-            elif dtype_code in (6, 7):
-                values = arr.flatten().tolist()
-            else:
-                values = arr.astype(np.float32).flatten().tolist()
-                dtype_code = 1
-            weights[init.name] = (shape, dtype_code, values)
-
-        # 2. Constant nodes (PaddleOCR stores weights here)
-        for node in model.graph.node:
-            if node.op_type != "Constant":
-                continue
-            if not node.output:
-                continue
-            name = node.output[0]
-            for attr in node.attribute:
-                if attr.name == "value" and attr.t is not None:
-                    t = attr.t
-                    shape = tuple(int(d) for d in t.dims) if t.dims else ()
-                    dtype_code = t.data_type
-                    arr = numpy_helper.to_array(t)
-                    if dtype_code in (1, 11):
-                        values = arr.astype(np.float32).flatten().tolist()
-                    elif dtype_code in (6, 7):
-                        values = arr.flatten().tolist()
-                    else:
-                        values = arr.astype(np.float32).flatten().tolist()
-                        dtype_code = 1
-                    weights[name] = (shape, dtype_code, values)
-
-        return weights
-
-    # ------------------------------------------------------------------
-    # Strategy 2: raw protobuf (no dependencies)
+    # Raw protobuf (no dependencies)
     # ------------------------------------------------------------------
     @staticmethod
     def _parse_raw_protobuf(
@@ -236,7 +180,7 @@ class OnnxWeightParser:
             offset = new_offset
             if fn == 1 and wt == 2:  # name
                 attr_name = value.decode("utf-8", errors="replace")
-            elif fn == 4 and wt == 2:  # t (TensorProto)
+            elif fn == 5 and wt == 2:  # t (TensorProto)
                 tensor_bytes = value
 
         if attr_name == "value" and tensor_bytes is not None:
@@ -263,30 +207,29 @@ class OnnxWeightParser:
             if new_offset is None:
                 break
             offset = new_offset
-            if field_num == 1 and wire_type == 2:
-                name = value.decode("utf-8", errors="replace")
-            elif field_num == 2 and wire_type == 0:
+            if field_num == 1 and wire_type == 0:
                 dims.append(value)
-            elif field_num == 2 and wire_type == 2:
+            elif field_num == 1 and wire_type == 2:
                 dims.extend(OnnxWeightParser._decode_packed_varints(value))
-            elif field_num == 3 and wire_type == 0:
+            elif field_num == 2 and wire_type == 0:
                 data_type = value
             elif field_num == 4 and wire_type == 2:
                 count = len(value) // 4
                 float_data = list(struct.unpack(f"<{count}f", value[: count * 4]))
             elif field_num == 4 and wire_type == 5:
                 float_data.append(struct.unpack("<f", value)[0])
+            elif field_num == 5 and wire_type == 2:
+                int32_data.extend(OnnxWeightParser._decode_packed_varints(value))
+            elif field_num == 5 and wire_type == 0:
+                int32_data.append(value)
             elif field_num == 7 and wire_type == 2:
                 # packed repeated int64 (int64_data)
-                count = len(value) // 8
-                int64_data = list(struct.unpack(f"<{count}q", value[: count * 8]))
+                int64_data.extend(OnnxWeightParser._decode_packed_varints(value))
             elif field_num == 7 and wire_type == 0:
                 int64_data.append(value)
             elif field_num == 8 and wire_type == 2:
-                # packed repeated int32 (int32_data, field 8 in some versions)
-                count = len(value) // 4
-                int32_data = list(struct.unpack(f"<{count}i", value[: count * 4]))
-            elif field_num == 13 and wire_type == 2:
+                name = value.decode("utf-8", errors="replace")
+            elif field_num == 9 and wire_type == 2:
                 raw_data = value
 
         shape = tuple(dims)

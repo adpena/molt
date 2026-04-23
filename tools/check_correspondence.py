@@ -203,6 +203,11 @@ def _parse_lean_builtin_mappings(text: str) -> list[tuple[str, str]]:
     return re.findall(r'\("(\w+)",\s*"([^"]+)"\)', text)
 
 
+def _normalize_lean_variant_name(name: str) -> str:
+    """Match `_parse_lean_inductive_variants` reserved-word normalization."""
+    return name[:-1] if name.endswith("_") else name
+
+
 def _parse_python_op_kinds(text: str) -> set[str]:
     kinds: set[str] = set()
     for m in re.finditer(r'"kind":\s*"(\w+)"', text):
@@ -540,7 +545,7 @@ def check_luau_operators() -> CategoryResult:
         if in_binop:
             m = re.match(r"\s*\|\s*\.(\w+)\s*=>\s*\.(\w+)", line)
             if m:
-                binop_map[m.group(1)] = m.group(2)
+                binop_map[_normalize_lean_variant_name(m.group(1))] = m.group(2)
             elif line.strip().startswith("def ") or line.strip().startswith("end "):
                 in_binop = False
 
@@ -554,7 +559,7 @@ def check_luau_operators() -> CategoryResult:
         if in_unop:
             m = re.match(r"\s*\|\s*\.(\w+)\s*=>\s*\.(\w+)", line)
             if m:
-                unop_map[m.group(1)] = m.group(2)
+                unop_map[_normalize_lean_variant_name(m.group(1))] = m.group(2)
             elif line.strip().startswith("def ") or (
                 line.strip().startswith("--") and "Section" in line
             ):

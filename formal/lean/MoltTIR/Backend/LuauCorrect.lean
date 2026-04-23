@@ -194,7 +194,7 @@ set_option maxHeartbeats 800000 in
 theorem emitBinOp_correct_mod (a b : Int) :
     evalLuauBinOp (emitBinOp .mod) (.number a) (.number b) =
       (MoltTIR.evalBinOp .mod (.int a) (.int b)).map valueToLuau := by
-  simp [emitBinOp, evalLuauBinOp, MoltTIR.evalBinOp, valueToLuau]
+  simp [emitBinOp, evalLuauBinOp, MoltTIR.evalBinOp]
   split <;> rfl
 
 /-- Comparison operator correspondence for eq. -/
@@ -290,8 +290,8 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
       all_goals (split at heval
         <;> simp only [Option.some.injEq] at heval
         <;> subst heval
-        <;> (first | (simp_all [emitBinOp, evalLuauBinOp, valueToLuau]; done)
-                   | (simp only [emitBinOp, evalLuauBinOp, valueToLuau, ite_false, ite_true];
+        <;> (first | (simp_all; done)
+                   | (simp only;
                       split <;> (first | rfl | omega | (intro h; omega)))))
     | some _, none => simp [ha_eval, hb_eval] at heval
     | none, _ => simp [ha_eval] at heval
@@ -308,7 +308,7 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
         | (subst heval; simp [emitUnOp, evalLuauUnOp, valueToLuau]; done)
         | (simp_all [emitUnOp, evalLuauUnOp, valueToLuau]; done)
         | (subst heval; simp [emitUnOp, evalLuauUnOp, valueToLuau]; done)
-        | sorry)
+        | (simp_all [emitUnOp, evalLuauUnOp, valueToLuau]; done))
     | none => simp [ha_eval] at heval
 
 /-- Instruction emission preserves environment correspondence.

@@ -107,7 +107,9 @@ def emitTableAccess (tbl : LuauExpr) (idx : LuauExpr) : LuauExpr :=
 
 /-- Known IR builtin function names and their Luau equivalents.
     In the real backend (emit_builtin_func in luau.rs), each builtin
-    is either mapped to a Luau stdlib call or a prelude helper function. -/
+    is either mapped to a Luau stdlib call or a prelude helper function.
+    List/dict indexing is modeled by emitTableAccess and store/index ops,
+    not by separate builtin helper functions. -/
 def builtinMapping : List (String × String) :=
   [ ("print", "print"),
     ("len", "molt_len"),
@@ -130,8 +132,6 @@ def builtinMapping : List (String × String) :=
     ("all", "molt_all"),
     ("isinstance", "molt_isinstance"),
     ("list_append", "molt_list_append"),
-    ("list_get", "molt_list_get"),
-    ("list_set", "molt_list_set"),
     ("dict_get", "molt_dict_get"),
     ("dict_set", "molt_dict_set") ]
 

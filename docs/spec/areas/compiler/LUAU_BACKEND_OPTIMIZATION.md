@@ -8,6 +8,28 @@ Formal models: `formal/lean/MoltTIR/Backend/Luau*.lean` (5 files), `formal/quint
 
 ## 1. Current Luau Emission Quality
 
+Canonical generated OpIR support matrix:
+`docs/spec/areas/compiler/luau_support_matrix.generated.md`. Update it with
+`python3 tools/gen_luau_support_matrix.py --write` whenever Luau lowering moves,
+and gate with `python3 tools/gen_luau_support_matrix.py --check`.
+
+### 1.0 Modern Luau Target Baseline
+
+Molt targets the current and forward Luau surface, relying on Luau's own broad
+backward compatibility instead of adding Molt-side legacy Lua shims. The backend
+may use modern Luau syntax and APIs when they improve correctness or performance:
+
+- `--!strict` / `--!native` file directives and function-level `@native`.
+- Luau type annotations for locals, parameters, returns, arrays (`{T}`), dictionaries (`{[K]: V}`), and casts (`::`).
+- Luau expression forms already emitted by the backend, including if-expressions and compound assignment.
+- Current table APIs: `table.create`, `table.find`, `table.clear`, `table.freeze`, `table.isfrozen`, `table.clone`, `table.move`, and `table.unpack`.
+- Current buffer APIs for future bytes/bytearray/memoryview lowering where the Python surface can be represented faithfully.
+
+Do not add legacy-Lua fallback syntax or Molt compatibility shims that obscure
+the emitted program. If a Python feature cannot be represented faithfully on
+current/future Luau, checked Luau emission must fail closed until the feature is
+implemented against the modern Luau API surface.
+
 ### 1.1 Compilation Pipeline
 
 The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Luau source text in four phases:
@@ -23,7 +45,7 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 |---|---|---|
 | Integer arithmetic (`+`, `-`, `*`) | Direct operators (`+`, `-`, `*`) | Optimal |
 | Float division (`/`) | Direct `/` | Optimal |
-| Floor division (`//`) | `math_floor(a / b)` inline | Good -- no helper call |
+| Floor division (`//`) | zero-check + direct Luau `//` | Good -- no helper call |
 | Modulo (`%`) | Direct `%` operator | Good -- matches Python for positive divisors |
 | Power (`**`) | Direct `^` operator | Good -- inlined from `molt_pow()` |
 | Bitwise ops | `bit32.band/bor/bxor/lshift/rshift` | Correct -- 32-bit limitation |
@@ -34,21 +56,21 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | Set `set()` | `{}` table (values as keys mapped to `true`) | Correct |
 | `range(start, stop, step)` | `molt_range()` helper or `for i = start, stop-1, step do` | Good |
 | `for x in iterable` | `for _, x in ipairs(t) do` (via `lower_iter_to_for`) | Good |
-| `list.append(x)` | `table.insert(list, x)` | Correct -- see perf note |
+| `list.append(x)` | `list[#list + 1] = x` when list-typed | Good -- no helper call |
 | `dict[key] = val` | `dict[key] = val` | Optimal |
 | `len(x)` | `molt_len(x)` helper | Correct |
 | `print(...)` | `molt_print(...)` helper (Python-style formatting) | Correct |
 | `str(x)` | `molt_str(x)` helper (Python-style `True`/`False`/`None`) | Correct |
 | String concat (`+`) | Type-guarded `..` or `+` depending on `fast_int` hint | Acceptable |
 | String methods (`.upper()`, `.split()`, etc.) | Mapped to `string.*` or `molt_string.*` | Partial |
-| `if/elif/else` | Structured `if/else/end` | Correct (known bug with elif goto: see Bug 4) |
+| `if/elif/else` | Structured `if/else/end` plus checked goto elimination for remaining jump patterns | Partial -- complex branch propagation needs differential coverage |
 | `while` loop | `while true do ... break end` | Correct |
 | `for i in range(n)` | `for i = 0, n-1, 1 do` (via `for_range`) | Optimal |
 | Function def/call | `local function f(...) ... end` / `f(...)` | Correct |
 | Closures/upvalues | `__closure_*` slot variables | Correct |
 | Tuple return | `return a, b, c` or `return table.unpack(t)` | Partial (Bug 5) |
 | Exception `raise` | `error(msg)` | Minimal |
-| Try/except | `pcall` stubs | Stub only |
+| Try/except | `pcall` lowering for admitted patterns | Partial -- checked output rejects remaining semantic stubs |
 | Generator/yield | `coroutine.yield` / `coroutine.wrap` | Correct for listcomp/genexpr |
 | Class/object | Empty table `{}` | Minimal -- no method dispatch |
 | `import math` | `molt_math` prelude table | Correct |
@@ -117,9 +139,9 @@ Luau uses gradual typing. **Type annotations directly influence native codegen q
 - Vector3-typed parameters trigger SIMD-optimized paths in the native compiler
 - Incorrectly typed calls (e.g., passing `true` to a `string` param) cause de-optimization
 
-**Current state**: The Molt backend emits type annotations on prelude helpers (e.g., `molt_range(start: number, stop: number, step: number?): {number}`) but does **not** annotate user function parameters or return types. This is a significant missed optimization.
+**Current state**: The Molt backend emits type annotations on prelude helpers and maps user function parameter type hints through `python_type_to_luau`. Return types are not yet emitted.
 
-**Recommendation**: Propagate Molt's type inference results into Luau type annotations. For functions where all parameters have known types (int, float, string, bool), emit:
+**Recommendation**: Extend Molt's type inference propagation into return annotations and nested container annotations. For functions where all parameters and returns have known types (int, float, string, bool), emit:
 ```luau
 local function user_func(x: number, name: string): number
 ```
@@ -129,9 +151,9 @@ This would enable native codegen to skip type guards on every function entry.
 
 Luau's `@native` attribute requests native compilation for individual functions. It does **not** apply recursively to inner functions.
 
-**Current state**: The backend emits `@native` on three prelude helpers (`molt_range`, `molt_reversed`, `molt_sum`, `molt_map`) but not on user-defined functions. The `review_luau_perf()` function (line 2975) flags `local function` definitions missing `@native` but only reports -- it does not auto-fix.
+**Current state**: The backend emits `--!native` at file level, emits `@native` on several hot helpers, and emits `@native` before local user-defined functions that are not assigned through forward declarations. The remaining optimization problem is selectivity and native-code budget management, not absence of annotations.
 
-**Recommendation**: Emit `@native` on all user functions that:
+**Recommendation**: Keep `@native` on hot user functions that:
 1. Contain tight loops (for-range, while-true)
 2. Are arithmetic-heavy (many numeric ops, no string/table construction)
 3. Do not contain coroutine/yield operations (native codegen may not support these)
@@ -142,7 +164,7 @@ The `@native` attribute costs memory for compiled code (Roblox enforces a per-ex
 
 Luau tables have two parts: **array** (integer keys 1..n) and **hash** (everything else). The array part is faster for sequential access.
 
-**Current state**: The backend emits all collections as `{}` empty constructors. Lists use `table.insert()` for append (triggers array-part growth). Dicts use `[key] = val` (hash part).
+**Current state**: The backend emits many collection constructors as `{}` and uses direct indexed assignment for typed list append. Some helpers and repeat/range paths already use `table.create`; broader preallocation is still incomplete. Dicts use `[key] = val` (hash part).
 
 **Optimization opportunities**:
 
@@ -154,7 +176,7 @@ Luau tables have two parts: **array** (integer keys 1..n) and **hash** (everythi
    -- Better:  local v1 = table.create(count, val)
    ```
 
-3. **Avoid `table.insert()` in hot loops**: Use indexed assignment `result[n] = x; n += 1` instead of `table.insert(result, x)`. The `review_luau_perf()` function already flags this but the backend still emits `table.insert` for `list_append`, `list_extend`, etc.
+3. **Avoid remaining `table.insert()` in hot loops**: Prefer indexed assignment `result[n] = x; n += 1` where order and shifting semantics do not require `table.insert`.
 
 ### 2.4 Local Variable Optimization
 
@@ -240,7 +262,7 @@ The Lean formalization explicitly acknowledges this: "Molt only compiles program
 **Python**: `True`/`False` are instances of `int` subclass. `True + True == 2`.
 **Luau**: `true`/`false` are not numbers. `true + true` is a type error.
 
-**Current handling**: `molt_bool(x)` truthiness function handles Python semantics (empty table/string/0/nil/false are falsy). Arithmetic on booleans is not handled -- would need `if type(x) == "boolean" then x and 1 or 0` coercion.
+**Current handling**: `molt_bool(x)` truthiness function handles Python semantics (empty table/string/0/nil/false are falsy). Known boolean operands in arithmetic lower through inline Luau if-expressions (`if b then 1 else 0`) to preserve Python's `bool`-as-`int` behavior without helper calls or allocation. Remaining work: add end-to-end CPython-vs-Lune coverage for mixed bool/int/float arithmetic and unsupported object overload paths.
 
 ### 3.5 Floor Division and Modulo Edge Cases
 
@@ -335,13 +357,14 @@ The backend conditionally emits 20+ runtime helpers. Each is only included if re
 
 ### 5.3 Missing Runtime Support
 
-The following Python builtins have no Luau implementation and emit `nil`:
+The following Python surfaces are not fully admitted in checked Luau output. If
+they still lower to semantic nil/stub markers, checked emission rejects them:
 - `open()` / file I/O (Roblox sandbox prohibits filesystem access)
-- `isinstance()` / `issubclass()` (stub returns `true`)
+- malformed or unsupported `isinstance()` / `issubclass()` forms
 - `super()` / class inheritance
 - `property` / `classmethod` / `staticmethod`
 - `getattr()` / `setattr()` / `delattr()` with dynamic names
-- `async` / `await` (emitted as synchronous stubs)
+- `async` / `await`
 
 ---
 
@@ -382,29 +405,23 @@ Transpiled Luau runs in Roblox Studio/runtime context where:
 
 ## 7. Known Bugs and Limitations
 
-See `docs/architecture/luau-backend-known-bugs.md` for the 5 known bugs:
-
-1. **Global variable subscript precedence** -- `or nil[i]` vs `(... or nil)[i]`
-2. **type_hint not propagated** -- list type lost through function params/subscripts
-3. **math.floor not resolved** -- stdlib attribute access through module cache
-4. **elif goto emitted as comment** -- control flow broken for complex elif chains
-5. **Tuple returns produce nil** -- multi-return through module cache path
-
-**Working patterns**: Flat parallel float arrays, no `global` list access, no nested lists, simple if/else (not elif chains), no tuple returns, local math aliases.
+See `docs/architecture/luau-backend-known-bugs.md` for historical repros that
+still need fresh checked-build and CPython-vs-Lune classification. Do not treat
+historical workaround patterns as accepted support lanes.
 
 ---
 
 ## 8. Optimization Roadmap
 
 ### P0 -- Correctness (blocks production use)
-- Fix Bug 1: Parenthesize `module_get_global` expressions used as subscript/method bases
-- Fix Bug 4: Emit real `goto`/`label` for elif chains (already partially done -- `br_if` emits real goto)
-- Fix Bug 5: Ensure tuple returns work through module cache path
+- Generate and gate a Luau support matrix for every emitted `OpIR` kind.
+- Add fresh CPython-vs-Lune regressions for historical global/module, nested-list, math-attribute, elif, and tuple-return repros.
+- Keep checked emission fail-closed for all unsupported markers and semantic stubs.
 
 ### P1 -- Performance (measurable impact)
-- Emit `@native` on user functions with loops/arithmetic
-- Emit Luau type annotations from Molt type inference (number, string, boolean params/returns)
-- Replace `table.insert(t, v)` with `t[#t+1] = v` or counter-based `t[n] = v; n += 1` in emitted code
+- Add native-code budget tracking for `@native` user functions with loops/arithmetic.
+- Emit Luau return annotations from Molt type inference (number, string, boolean returns).
+- Replace remaining avoidable `table.insert(t, v)` with `t[#t+1] = v` or counter-based `t[n] = v; n += 1` in emitted code.
 - Pre-allocate tables with `table.create(n)` when size is known (range-based loops, list comprehensions)
 - Eliminate builtin wrapper closures for statically-resolved calls
 

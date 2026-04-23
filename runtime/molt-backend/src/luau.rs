@@ -261,17 +261,11 @@ impl LuauBackend {
     }
 
     /// Compile via the IR pipeline with validation and performance review.
-    /// Returns the source directly, printing warnings to stderr on validation
-    /// failures (non-fatal — allows iterative development).
-    pub fn compile_via_ir(&mut self, ir: &SimpleIR) -> String {
-        match self.compile_checked(ir) {
-            Ok(source) => source,
-            Err(msg) => {
-                eprintln!("[molt-luau] Validation warning: {msg}");
-                let mut fallback = LuauBackend::new();
-                fallback.compile(ir)
-            }
-        }
+    ///
+    /// This path is intentionally fail-closed: preview/IR-pipeline builds must
+    /// not emit unchecked Luau when validation discovers unsupported semantics.
+    pub fn compile_via_ir(&mut self, ir: &SimpleIR) -> Result<String, String> {
+        self.compile_checked(ir)
     }
 
     /// Compile the given IR and reject preview-blocker markers that would
@@ -698,6 +692,9 @@ impl LuauBackend {
                     let hint = match py_type.as_str() {
                         s if s.starts_with("list") || s.starts_with("List") => "list",
                         s if s.starts_with("dict") || s.starts_with("Dict") => "dict",
+                        "int" | "Int" => "int",
+                        "float" | "Float" => "float",
+                        "bool" | "Bool" | "boolean" => "bool",
                         "str" | "Str" | "string" => "str",
                         _ => continue,
                     };
@@ -1132,6 +1129,9 @@ impl LuauBackend {
                 } else {
                     "false"
                 };
+                if let Some(ref n) = op.out {
+                    self.var_type_hints.insert(n.clone(), "bool".to_string());
+                }
                 self.emit_line(&format!("local {out} = {val}"));
             }
             "const_none" | "none_const" => {
@@ -1264,26 +1264,27 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
+                    let lhs_num = self.numeric_operand_expr(&args[0]);
+                    let rhs_num = self.numeric_operand_expr(&args[1]);
                     let is_numeric = op.fast_int == Some(true)
                         || op.fast_float == Some(true)
-                        || op.fast_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int") | Some("float"))
                         || self
                             .var_type_hints
                             .get(&args[0])
-                            .is_some_and(|h| h == "int" || h == "float")
+                            .is_some_and(|h| h == "int" || h == "float" || h == "bool")
                         || self
                             .var_type_hints
                             .get(&args[1])
-                            .is_some_and(|h| h == "int" || h == "float");
+                            .is_some_and(|h| h == "int" || h == "float" || h == "bool");
                     if is_numeric {
                         if let Some(ref n) = op.out {
                             self.var_type_hints.insert(n.clone(), "int".to_string());
                         }
-                        self.emit_line(&format!("local {out} = {lhs} + {rhs}"));
+                        self.emit_line(&format!("local {out} = {lhs_num} + {rhs_num}"));
                     } else {
                         self.emit_line(&format!(
-                            "local {out} = if type({lhs}) == \"string\" or type({rhs}) == \"string\" then tostring({lhs}) .. tostring({rhs}) else {lhs} + {rhs}"
+                            "local {out} = if type({lhs}) == \"string\" or type({rhs}) == \"string\" then tostring({lhs}) .. tostring({rhs}) else {lhs_num} + {rhs_num}"
                         ));
                     }
                 }
@@ -1295,44 +1296,47 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
-                    let lhs = sanitize_ident(&args[0]);
+                    let lhs = self.numeric_operand_expr(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
+                    let rhs_num = self.numeric_operand_expr(&args[1]);
                     self.emit_line(&format!(
                         "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"division by zero\"}}) end"
                     ));
-                    self.emit_line(&format!("local {out} = {lhs} / {rhs}"));
+                    self.emit_line(&format!("local {out} = {lhs} / {rhs_num}"));
                 }
             }
             "mod" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
-                    let lhs = sanitize_ident(&args[0]);
+                    let lhs = self.numeric_operand_expr(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
+                    let rhs_num = self.numeric_operand_expr(&args[1]);
                     self.emit_line(&format!(
                         "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"integer modulo by zero\"}}) end"
                     ));
-                    self.emit_line(&format!("local {out} = {lhs} % {rhs}"));
+                    self.emit_line(&format!("local {out} = {lhs} % {rhs_num}"));
                 }
             }
             "floordiv" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
-                    let lhs = sanitize_ident(&args[0]);
+                    let lhs = self.numeric_operand_expr(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
+                    let rhs_num = self.numeric_operand_expr(&args[1]);
                     self.emit_line(&format!(
                         "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"integer division or modulo by zero\"}}) end"
                     ));
-                    self.emit_line(&format!("local {out} = {lhs} // {rhs}"));
+                    self.emit_line(&format!("local {out} = {lhs} // {rhs_num}"));
                 }
             }
             "pow" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
-                    let lhs = sanitize_ident(&args[0]);
-                    let rhs = sanitize_ident(&args[1]);
+                    let lhs = self.numeric_operand_expr(&args[0]);
+                    let rhs = self.numeric_operand_expr(&args[1]);
                     // Direct ^ operator — no helper call overhead.
                     self.emit_line(&format!("local {out} = {lhs} ^ {rhs}"));
                 }
@@ -2543,16 +2547,19 @@ impl LuauBackend {
                     if container_is_str {
                         // Luau does not support string[index]; use string.sub.
                         // Python uses 0-based indexing, Luau uses 1-based.
+                        let idx_var = format!("__idx_{out}");
                         if key_known_nonneg {
-                            self.emit_line(&format!(
-                                "local {out} = string.sub({container}, {key} + 1, {key} + 1)"
-                            ));
+                            self.emit_line(&format!("local {idx_var} = {key} + 1"));
                         } else {
                             // Handle negative indexing for strings too.
                             self.emit_line(&format!(
-                                "local {out} = if {key} >= 0 then string.sub({container}, {key} + 1, {key} + 1) else string.sub({container}, #{container} + {key} + 1, #{container} + {key} + 1)"
+                                "local {idx_var} = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
                             ));
                         }
+                        self.emit_index_bounds_guard(&idx_var, &container, "string index out of range");
+                        self.emit_line(&format!(
+                            "local {out} = string.sub({container}, {idx_var}, {idx_var})"
+                        ));
                         // Propagate str type to output.
                         if let Some(ref out_name) = op.out {
                             self.var_type_hints
@@ -2579,7 +2586,24 @@ impl LuauBackend {
                             self.var_type_hints
                                 .insert(out_name.clone(), "list".to_string());
                         }
-                        if key_known_nonneg {
+                        let known_list_like =
+                            container_is_list || matches!(op.type_hint.as_deref(), Some("list"));
+                        if known_list_like {
+                            let idx_var = format!("__idx_{out}");
+                            if key_known_nonneg {
+                                self.emit_line(&format!("local {idx_var} = {key} + 1"));
+                            } else {
+                                self.emit_line(&format!(
+                                    "local {idx_var} = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
+                                ));
+                            }
+                            self.emit_index_bounds_guard(
+                                &idx_var,
+                                &container,
+                                "list index out of range",
+                            );
+                            self.emit_line(&format!("local {out} = {container}[{idx_var}]"));
+                        } else if key_known_nonneg {
                             // Known non-negative: skip negative index ternary.
                             self.emit_line(&format!("local {out} = {container}[{key} + 1]"));
                         } else if key_is_int {
@@ -4011,8 +4035,17 @@ impl LuauBackend {
         let out = self.out_var(op);
         let args = op.args.as_deref().unwrap_or(&[]);
         if args.len() >= 2 {
-            let lhs = sanitize_ident(&args[0]);
-            let rhs = sanitize_ident(&args[1]);
+            let arithmetic = matches!(operator, "+" | "-" | "*" | "/" | "%" | "//" | "^");
+            let lhs = if arithmetic {
+                self.numeric_operand_expr(&args[0])
+            } else {
+                sanitize_ident(&args[0])
+            };
+            let rhs = if arithmetic {
+                self.numeric_operand_expr(&args[1])
+            } else {
+                sanitize_ident(&args[1])
+            };
             // Parenthesize comparison/boolean results to prevent precedence
             // issues when the sink pass inlines into `not` expressions.
             // Without parens: `not a == b` → `(not a) == b` (wrong).
@@ -4054,6 +4087,25 @@ impl LuauBackend {
             .as_deref()
             .map(sanitize_ident)
             .unwrap_or_else(|| "_".to_string())
+    }
+
+    fn numeric_operand_expr(&self, raw_name: &str) -> String {
+        let ident = sanitize_ident(raw_name);
+        if self
+            .var_type_hints
+            .get(raw_name)
+            .is_some_and(|hint| hint == "bool")
+        {
+            format!("(if {ident} then 1 else 0)")
+        } else {
+            ident
+        }
+    }
+
+    fn emit_index_bounds_guard(&mut self, idx: &str, container: &str, message: &str) {
+        self.emit_line(&format!(
+            "if {idx} < 1 or {idx} > #{container} then error({{__type=\"IndexError\", __msg=\"{message}\"}}) end"
+        ));
     }
 
     /// Wrap a condition identifier in `molt_bool()` if it's not a known boolean.
@@ -4102,14 +4154,26 @@ fn collect_luau_preview_blockers(source: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            // Only flag patterns that indicate truly broken control flow.
-            // goto/branch ops now emit real Luau labels and gotos for
-            // Roblox Studio compatibility.  Nil-stub comments like
-            // `-- [exception_last]` are harmless Luau.
-            let is_blocker = trimmed.contains("-- [unsupported op:")
-                || trimmed.contains("error(\"[unsupported op:");
-            if is_blocker {
-                Some(trimmed.to_string())
+            if trimmed.contains("-- [unsupported op:")
+                || trimmed.contains("error(\"[unsupported op:")
+            {
+                return Some(format!("unsupported marker: {trimmed}"));
+            }
+
+            let semantic_stub = trimmed.contains("-- [async:")
+                || trimmed.contains("-- [file:")
+                || trimmed.contains("-- [context:")
+                || trimmed.contains("-- [internal:")
+                || trimmed.contains("-- [stub:")
+                || trimmed.contains("-- [class op:")
+                || trimmed.contains("-- [try_start]")
+                || trimmed.contains("-- [try_end]")
+                || (trimmed.contains(" = nil -- [")
+                    && !trimmed.contains("-- [exception_last]")
+                    && !trimmed.contains("-- [exception_message]")
+                    && !trimmed.contains("-- [missing]"));
+            if semantic_stub {
+                Some(format!("semantic stub marker: {trimmed}"))
             } else {
                 None
             }
@@ -4238,6 +4302,8 @@ fn python_type_to_luau(hint: &str) -> &'static str {
         "None" | "NoneType" => "nil",
         "list" | "List" => "{any}",
         "dict" | "Dict" => "{[any]: any}",
+        s if s.starts_with("list[") || s.starts_with("List[") => "{any}",
+        s if s.starts_with("dict[") || s.starts_with("Dict[") => "{[any]: any}",
         _ => "any",
     }
 }
@@ -8909,10 +8975,23 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_luau_source_accepts_stub_comments() {
-        // Stub comments like [async: spawn] are harmless nil assignments.
-        let source = "--!strict\nfunction molt_main()\n\tlocal v0 = nil -- [async: spawn]\nend\n";
-        assert!(validate_luau_source(source).is_ok());
+    fn test_validate_luau_source_rejects_semantic_stub_comments() {
+        let markers = [
+            "local v0 = nil -- [async: spawn]",
+            "local v0 = nil -- [file: file_open]",
+            "local v0 = nil -- [context: context_enter]",
+            "local v0 = nil -- [internal: frame_locals_set]",
+            "local v0 = true -- [stub: isinstance]",
+            "-- [class op: class_merge_layout]",
+            "local v0 = nil -- [bridge_unavailable]",
+        ];
+        for marker in markers {
+            let source = format!("--!strict\nfunction molt_main()\n\t{marker}\nend\n");
+            let err = validate_luau_source(&source)
+                .expect_err("semantic stub marker should be rejected");
+            assert!(err.contains("semantic stub marker"));
+            assert!(err.contains(marker));
+        }
     }
 
     #[test]
@@ -8964,6 +9043,32 @@ mod tests {
     }
 
     #[test]
+    fn test_compile_via_ir_rejects_unsupported_output() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "unsupported_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "matmul".to_string(),
+                    out: Some("v0".to_string()),
+                    args: Some(vec!["v1".to_string(), "v2".to_string()]),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let err = backend
+            .compile_via_ir(&ir)
+            .expect_err("preview/IR path must reject unsupported output");
+        assert!(err.contains("unsupported marker"));
+        assert!(err.contains("[unsupported op: matmul]"));
+    }
+
+    #[test]
     fn test_param_type_hint_list_propagation() {
         // Bug 2 fix: list type hint on function parameters must propagate
         // so that .append() emits table.insert() instead of a method call.
@@ -8999,6 +9104,117 @@ mod tests {
         assert!(
             !output.contains("xs:append"),
             "Must NOT emit method call for list.append(), got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_bool_arithmetic_coerces_bool_operands() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "bool_arithmetic".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_bool".to_string(),
+                        value: Some(1),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_bool".to_string(),
+                        value: Some(0),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "add".to_string(),
+                        args: Some(vec!["v0".to_string(), "v1".to_string()]),
+                        out: Some("v2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "sub".to_string(),
+                        args: Some(vec!["v0".to_string(), "v1".to_string()]),
+                        out: Some("v3".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "mul".to_string(),
+                        args: Some(vec!["v0".to_string(), "v1".to_string()]),
+                        out: Some("v4".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("then 1 else 0"),
+            "bool operands must be numerically coerced in arithmetic, got:\n{output}"
+        );
+        assert!(
+            !output.contains("true + false"),
+            "bool addition must not emit raw Luau boolean arithmetic, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_list_and_string_get_item_emit_index_error_guards() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "index_guards".to_string(),
+                params: vec!["xs".to_string(), "s".to_string(), "i".to_string()],
+                param_types: Some(vec![
+                    "list[int]".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "get_item".to_string(),
+                        args: Some(vec!["xs".to_string(), "i".to_string()]),
+                        out: Some("v0".to_string()),
+                        type_hint: Some("list".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "get_item".to_string(),
+                        args: Some(vec!["s".to_string(), "i".to_string()]),
+                        out: Some("v1".to_string()),
+                        type_hint: Some("str".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__type=\"IndexError\""),
+            "list/string indexing must guard out-of-range accesses, got:\n{output}"
+        );
+        assert!(
+            output.contains("list index out of range")
+                && output.contains("string index out of range"),
+            "expected list and string IndexError messages, got:\n{output}"
         );
     }
 
