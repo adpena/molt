@@ -3827,15 +3827,6 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     }
                     return MoltObject::from_int(bytes[i as usize] as i64).bits();
                 }
-                // Promote list_bool to regular list for slice access
-                // (rare path — slice getitem on bool lists is not perf-critical).
-                if type_id == TYPE_ID_LIST_BOOL {
-                    if let Some(slice_ptr) = key.as_ptr()
-                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
-                    {
-                        crate::object::ops_list::promote_list_bool_public(_py, ptr);
-                    }
-                }
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_LIST {
                     if let Some(slice_ptr) = key.as_ptr()
@@ -4209,6 +4200,11 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
         let key = obj_from_bits(key_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
+                if object_type_id(ptr) == TYPE_ID_LIST_BOOL
+                    || object_type_id(ptr) == TYPE_ID_LIST_INT
+                {
+                    crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
+                }
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_LIST {
                     if let Some(slice_ptr) = key.as_ptr()
@@ -4763,6 +4759,11 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
         let key = obj_from_bits(key_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
+                if object_type_id(ptr) == TYPE_ID_LIST_BOOL
+                    || object_type_id(ptr) == TYPE_ID_LIST_INT
+                {
+                    crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
+                }
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_LIST {
                     if let Some(slice_ptr) = key.as_ptr()
@@ -6972,7 +6973,30 @@ pub unsafe extern "C" fn molt_unpack_sequence(
         };
         unsafe {
             let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            if type_id == TYPE_ID_LIST_BOOL {
+                let elems = crate::object::layout::list_bool_vec_ref(ptr);
+                let actual = elems.len();
+                if actual < expected {
+                    let msg = format!(
+                        "not enough values to unpack (expected {}, got {})",
+                        expected, actual
+                    );
+                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    return MoltObject::none().bits();
+                }
+                if actual > expected {
+                    let msg = format!(
+                        "too many values to unpack (expected {}, got {})",
+                        expected, actual
+                    );
+                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    return MoltObject::none().bits();
+                }
+                let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
+                for (i, &raw) in elems.iter().enumerate().take(expected) {
+                    out_slice[i] = MoltObject::from_bool(raw != 0).bits();
+                }
+            } else if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 let elems: &[u64] = seq_vec_ref(ptr);
                 let actual = elems.len();
                 if actual < expected {
@@ -7296,7 +7320,10 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
             if type_id == TYPE_ID_BYTEARRAY {
                 return bytes_len(ptr) > 0;
             }
-            if type_id == TYPE_ID_LIST {
+            if type_id == TYPE_ID_LIST
+                || type_id == TYPE_ID_LIST_INT
+                || type_id == TYPE_ID_LIST_BOOL
+            {
                 return list_len(ptr) > 0;
             }
             if type_id == TYPE_ID_TUPLE {
@@ -7498,7 +7525,7 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_STRING => Cow::Borrowed("str"),
                 TYPE_ID_BYTES => Cow::Borrowed("bytes"),
                 TYPE_ID_BYTEARRAY => Cow::Borrowed("bytearray"),
-                TYPE_ID_LIST | TYPE_ID_LIST_INT => Cow::Borrowed("list"),
+                TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => Cow::Borrowed("list"),
                 TYPE_ID_TUPLE => Cow::Borrowed("tuple"),
                 TYPE_ID_DICT => Cow::Borrowed("dict"),
                 TYPE_ID_DICT_KEYS_VIEW => Cow::Borrowed("dict_keys"),
@@ -10624,8 +10651,22 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
         return molt_index(list_bits, index_bits);
     };
     unsafe {
-        // 3. Must actually be a list.
-        if object_type_id(ptr) != TYPE_ID_LIST {
+        // 3. Must actually be a list (regular or specialized).
+        let tid = object_type_id(ptr);
+        if tid == TYPE_ID_LIST_BOOL {
+            // list[bool] fast path — u8 storage, no refcount needed.
+            let mut idx = index_obj.as_int_unchecked();
+            let storage = &*crate::object::layout::list_bool_storage_ptr(ptr);
+            let len = storage.len as i64;
+            if idx < 0 {
+                idx += len;
+            }
+            if idx < 0 || idx >= len {
+                return molt_index(list_bits, index_bits);
+            }
+            return MoltObject::from_bool(*storage.data.add(idx as usize) != 0).bits();
+        }
+        if tid != TYPE_ID_LIST {
             return molt_index(list_bits, index_bits);
         }
         // 4. Extract index and list length.
@@ -10818,18 +10859,129 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
 /// Get element from a specialized list[int].
 /// Returns a NaN-boxed int (boxes the raw i64 on return).
 /// No refcounting needed — ints are inline NaN-boxed values.
+#[inline]
+fn list_specialized_index_from_bits(index_bits: u64) -> Option<i64> {
+    let index_obj = obj_from_bits(index_bits);
+    if let Some(i) = to_i64(index_obj) {
+        return Some(i);
+    }
+    crate::with_gil_entry!(_py, {
+        let key = obj_from_bits(index_bits);
+        let type_err = format!(
+            "list indices must be integers or slices, not {}",
+            type_name(_py, key)
+        );
+        index_i64_with_overflow(_py, index_bits, &type_err, None)
+    })
+}
+
+#[inline]
+fn list_index_out_of_range_error() -> u64 {
+    crate::with_gil_entry!(_py, { raise_exception::<_>(_py, "IndexError", "list index out of range") })
+}
+
+#[inline]
+fn list_assignment_out_of_range_error() -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_exception::<_>(_py, "IndexError", "list assignment index out of range")
+    })
+}
+
+unsafe fn list_int_slice_to_boxed_list(_py: &PyToken<'_>, ptr: *mut u8, slice_ptr: *mut u8) -> u64 {
+    unsafe {
+        let len = list_len(ptr) as isize;
+        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+        let (start, stop, step) =
+            match normalize_slice_indices(_py, len, start_obj, stop_obj, step_obj) {
+                Ok(vals) => vals,
+                Err(err) => return slice_error(_py, err),
+            };
+        let elems = crate::object::layout::list_int_vec_ref(ptr);
+        let mut out: Vec<u64>;
+        if step == 1 {
+            let s = start as usize;
+            let mut e = stop as usize;
+            if s > e {
+                e = s;
+            }
+            out = Vec::with_capacity(e.saturating_sub(s));
+            for raw in elems.iter().skip(s).take(e.saturating_sub(s)) {
+                out.push(MoltObject::from_int(*raw).bits());
+            }
+        } else {
+            let indices = collect_slice_indices(start, stop, step);
+            out = Vec::with_capacity(indices.len());
+            for idx in indices {
+                out.push(MoltObject::from_int(elems[idx]).bits());
+            }
+        }
+        let out_ptr = alloc_list_with_capacity_owned(_py, &out, out.len());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    }
+}
+
+unsafe fn list_bool_slice_to_boxed_list(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    slice_ptr: *mut u8,
+) -> u64 {
+    unsafe {
+        let len = list_len(ptr) as isize;
+        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+        let (start, stop, step) =
+            match normalize_slice_indices(_py, len, start_obj, stop_obj, step_obj) {
+                Ok(vals) => vals,
+                Err(err) => return slice_error(_py, err),
+            };
+        let elems = crate::object::layout::list_bool_vec_ref(ptr);
+        let mut out: Vec<u64>;
+        if step == 1 {
+            let s = start as usize;
+            let mut e = stop as usize;
+            if s > e {
+                e = s;
+            }
+            out = Vec::with_capacity(e.saturating_sub(s));
+            for raw in elems.iter().skip(s).take(e.saturating_sub(s)) {
+                out.push(MoltObject::from_bool(*raw != 0).bits());
+            }
+        } else {
+            let indices = collect_slice_indices(start, stop, step);
+            out = Vec::with_capacity(indices.len());
+            for idx in indices {
+                out.push(MoltObject::from_bool(elems[idx] != 0).bits());
+            }
+        }
+        let out_ptr = alloc_list_with_capacity_owned(_py, &out, out.len());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 {
-    let index_obj = obj_from_bits(index_bits);
     let list_obj = obj_from_bits(list_bits);
     let Some(ptr) = list_obj.as_ptr() else {
         return MoltObject::none().bits();
     };
     unsafe {
-        let mut idx = if index_obj.is_int() {
-            index_obj.as_int_unchecked()
-        } else {
-            return molt_index(list_bits, index_bits);
+        let index_obj = obj_from_bits(index_bits);
+        if let Some(slice_ptr) = index_obj.as_ptr()
+            && object_type_id(slice_ptr) == TYPE_ID_SLICE
+        {
+            return crate::with_gil_entry!(_py, { list_int_slice_to_boxed_list(_py, ptr, slice_ptr) });
+        }
+        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
+            return MoltObject::none().bits();
         };
         let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
         let len = storage.len as i64;
@@ -10837,10 +10989,9 @@ pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 
             idx += len;
         }
         if idx < 0 || idx >= len {
-            return molt_index(list_bits, index_bits);
+            return list_index_out_of_range_error();
         }
         let raw_val = *storage.data.add(idx as usize);
-        // Box the raw i64 into a NaN-boxed int — no heap allocation, no refcount
         MoltObject::from_int(raw_val).bits()
     }
 }
@@ -10958,41 +11109,127 @@ pub extern "C" fn molt_list_int_setitem_nogil(
 /// Expects a NaN-boxed int value — extracts raw i64 and stores directly.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    let index_obj = obj_from_bits(index_bits);
     let list_obj = obj_from_bits(list_bits);
-    let value_obj = obj_from_bits(value_bits);
     let Some(ptr) = list_obj.as_ptr() else {
         return MoltObject::none().bits();
     };
+    let index_obj = obj_from_bits(index_bits);
+    if let Some(slice_ptr) = index_obj.as_ptr()
+        && unsafe { object_type_id(slice_ptr) == TYPE_ID_SLICE }
+    {
+        crate::with_gil_entry!(_py, {
+            unsafe {
+                crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
+            }
+        });
+        return molt_store_index(list_bits, index_bits, value_bits);
+    }
+    let value_obj = obj_from_bits(value_bits);
+    if !value_obj.is_int() {
+        crate::with_gil_entry!(_py, {
+            unsafe {
+                crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
+            }
+        });
+        return molt_store_index(list_bits, index_bits, value_bits);
+    }
     unsafe {
-        let mut idx = if index_obj.is_int() {
-            index_obj.as_int_unchecked()
-        } else {
+        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
             return MoltObject::none().bits();
         };
-        let raw_value = if value_obj.is_int() {
-            value_obj.as_int_unchecked()
-        } else if value_obj.is_bool() {
-            if value_obj.as_bool().unwrap_or(false) {
-                1i64
-            } else {
-                0i64
-            }
-        } else {
-            0i64 // store 0 for non-int values (False → 0)
-        };
+        let raw_value = value_obj.as_int_unchecked();
         let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
         let len = storage.len as i64;
         if idx < 0 {
             idx += len;
         }
         if idx < 0 || idx >= len {
-            return MoltObject::none().bits();
+            return list_assignment_out_of_range_error();
         }
         *storage.data.add(idx as usize) = raw_value;
-        // No refcount changes — raw i64 values have no heap allocation.
-        // Return the list itself to match the molt_store_index contract
-        // (the compiler may assign the result back to the container variable).
+        list_bits
+    }
+}
+
+/// Get element from a specialized list[bool].
+/// Returns a NaN-boxed bool (True or False).
+/// No refcounting needed -- bools are inline NaN-boxed values.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_bool_getitem(list_bits: u64, index_bits: u64) -> u64 {
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        let index_obj = obj_from_bits(index_bits);
+        if let Some(slice_ptr) = index_obj.as_ptr()
+            && object_type_id(slice_ptr) == TYPE_ID_SLICE
+        {
+            return crate::with_gil_entry!(_py, { list_bool_slice_to_boxed_list(_py, ptr, slice_ptr) });
+        }
+        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
+            return MoltObject::none().bits();
+        };
+        let storage = &*crate::object::layout::list_bool_storage_ptr(ptr);
+        let len = storage.len as i64;
+        if idx < 0 {
+            idx += len;
+        }
+        if idx < 0 || idx >= len {
+            return list_index_out_of_range_error();
+        }
+        let raw_val = *storage.data.add(idx as usize);
+        MoltObject::from_bool(raw_val != 0).bits()
+    }
+}
+
+/// Set element in a specialized list[bool].
+/// Accepts NaN-boxed bool or int value -- converts to u8 (0 or 1).
+/// No refcounting needed -- bools are inline NaN-boxed values.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_bool_setitem(
+    list_bits: u64,
+    index_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    let index_obj = obj_from_bits(index_bits);
+    if let Some(slice_ptr) = index_obj.as_ptr()
+        && unsafe { object_type_id(slice_ptr) == TYPE_ID_SLICE }
+    {
+        crate::with_gil_entry!(_py, {
+            unsafe {
+                crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
+            }
+        });
+        return molt_store_index(list_bits, index_bits, value_bits);
+    }
+    let value_obj = obj_from_bits(value_bits);
+    let Some(value_bool) = value_obj.as_bool() else {
+        crate::with_gil_entry!(_py, {
+            unsafe {
+                crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
+            }
+        });
+        return molt_store_index(list_bits, index_bits, value_bits);
+    };
+    unsafe {
+        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
+            return MoltObject::none().bits();
+        };
+        let raw_value: u8 = if value_bool { 1 } else { 0 };
+        let storage = &mut *crate::object::layout::list_bool_storage_ptr(ptr);
+        let len = storage.len as i64;
+        if idx < 0 {
+            idx += len;
+        }
+        if idx < 0 || idx >= len {
+            return list_assignment_out_of_range_error();
+        }
+        *storage.data.add(idx as usize) = raw_value;
         list_bits
     }
 }
@@ -11091,8 +11328,13 @@ pub extern "C" fn molt_list_setitem_int_fast(
         return molt_store_index(list_bits, index_bits, val_bits);
     };
     unsafe {
-        // 3. Must actually be a list.
-        if object_type_id(ptr) != TYPE_ID_LIST {
+        // 3. Must actually be a list (regular or specialized).
+        let tid = object_type_id(ptr);
+        if tid == TYPE_ID_LIST_BOOL {
+            // list[bool] fast path — delegate to specialized setitem.
+            return molt_list_bool_setitem(list_bits, index_bits, val_bits);
+        }
+        if tid != TYPE_ID_LIST {
             return molt_store_index(list_bits, index_bits, val_bits);
         }
         // 4. Extract index and list length.

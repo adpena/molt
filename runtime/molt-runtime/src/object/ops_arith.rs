@@ -487,13 +487,11 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                         let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_BOOL);
                         if out_ptr.is_null() {
                             // Reconstruct and drop the vec to free the buffer.
-                            drop(unsafe { (*Box::from_raw(storage_ptr)).into_vec() });
+                            drop((*Box::from_raw(storage_ptr)).into_vec());
                             return raise_exception::<_>(_py, "MemoryError", "out of memory");
                         }
-                        unsafe {
-                            *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) =
-                                storage_ptr;
-                        }
+                        *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) =
+                            storage_ptr;
                         return Some(MoltObject::from_ptr(out_ptr).bits());
                     }
 

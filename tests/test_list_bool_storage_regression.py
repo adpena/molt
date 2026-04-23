@@ -23,6 +23,19 @@ SCRIPT = (
     "print(xs[2])\n"
 )
 
+INT_SCRIPT = (
+    "xs = [0] * 4\n"
+    "print(xs)\n"
+    "print(xs[1])\n"
+    "xs[1] = 7\n"
+    "print(xs)\n"
+    "print(xs[1])\n"
+    "xs[2] = 'x'\n"
+    "print(xs)\n"
+    "print(xs[2])\n"
+    "print(xs[1:3])\n"
+)
+
 
 def _env(root: Path) -> dict[str, str]:
     env = os.environ.copy()
@@ -43,6 +56,18 @@ def _expected_lines() -> list[str]:
         "True",
         "[False, True, 1, False]",
         "1",
+    ]
+
+
+def _expected_int_lines() -> list[str]:
+    return [
+        "[0, 0, 0, 0]",
+        "0",
+        "[0, 7, 0, 0]",
+        "7",
+        "[0, 7, 'x', 0]",
+        "x",
+        "[7, 'x']",
     ]
 
 
@@ -73,6 +98,35 @@ def test_list_bool_storage_regression_native(tmp_path: Path) -> None:
     assert run.returncode == 0, run.stderr
     lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
     assert lines == _expected_lines()
+
+
+def test_list_int_storage_regression_native(tmp_path: Path) -> None:
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for native regression test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "list_int_storage_native.py"
+    src.write_text(INT_SCRIPT, encoding="utf-8")
+
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(src),
+        ],
+        cwd=root,
+        env=_env(root),
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert run.returncode == 0, run.stderr
+    lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
+    assert lines == _expected_int_lines()
 
 
 def test_list_bool_storage_regression_linked_wasm(tmp_path: Path) -> None:
