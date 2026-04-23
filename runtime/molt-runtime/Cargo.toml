@@ -17,7 +17,7 @@ default = ["stdlib_full", "wasi_host"]
 # Full stdlib — everything included (default for native builds)
 stdlib_full = [
     "simdutf",
-    "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
+    "stdlib_crypto", "stdlib_crypto_legacy", "stdlib_compression", "stdlib_serialization",
     "stdlib_archive", "stdlib_ast", "stdlib_fs_extra", "stdlib_unicode_names",
     "stdlib_tk", "stdlib_net", "stdlib_asyncio", "stdlib_email",
     "stdlib_math", "stdlib_decimal", "stdlib_regex", "stdlib_collections", "stdlib_path", "stdlib_serial", "stdlib_logging", "stdlib_concurrent",
@@ -60,12 +60,16 @@ stdlib_server = [
 ]
 
 # Individual feature groups
+# Core crypto: sha3, blake2, hmac, pbkdf2, scrypt — safe for server and full tiers.
 stdlib_crypto = [
     "dep:molt-runtime-crypto",
-    "dep:sha3",
-    "dep:blake2", "dep:blake2b_simd", "dep:blake2s_simd",
-    "dep:md4", "dep:ripemd",
-    "dep:hmac", "dep:pbkdf2", "dep:scrypt", "dep:subtle",
+    "molt-runtime-crypto/full",
+]
+# Legacy crypto: md4, ripemd160 — deprecated/weak algorithms, stdlib_full only.
+# Not enabled for stdlib_edge, stdlib_micro, stdlib_standard, or stdlib_server.
+stdlib_crypto_legacy = [
+    "dep:molt-runtime-crypto",
+    "molt-runtime-crypto/legacy",
 ]
 stdlib_compression = ["dep:bzip2", "dep:flate2", "dep:xz2", "dep:molt-runtime-compression"]
 stdlib_serialization = ["dep:rmpv", "dep:serde_cbor"]
@@ -170,21 +174,12 @@ unicode-casefold = "0.2"
 wtf8 = "0.1"
 unicode_names2 = { version = "2.0", optional = true }
 
-# Crypto (all optional)
-blake2 = { version = "0.10", optional = true }
-blake2b_simd = { version = "1.0", optional = true }
-blake2s_simd = { version = "1.0", optional = true }
+# Crypto (always-on subset used directly by molt-runtime internals)
+# Full crypto implementation lives in molt-runtime-crypto, gated by stdlib_crypto.
 digest = "0.11"
-hmac = { version = "0.13", optional = true }
-md4 = { version = "0.11", optional = true }
 md-5 = "0.11"
-pbkdf2 = { version = "0.12", optional = true }
-ripemd = { version = "0.2", optional = true }
-scrypt = { version = "0.11", optional = true }
 sha1 = "0.11"
 sha2 = "0.11"
-sha3 = { version = "0.10", optional = true }
-subtle = { version = "2.6", optional = true }
 
 # Compression (all optional)
 bzip2 = { version = "0.6", optional = true }
