@@ -3,6 +3,7 @@ pub mod bolt;
 pub mod cache;
 pub mod cfg;
 pub mod deopt;
+pub mod dominators;
 pub mod function;
 pub mod lir;
 pub mod lower_from_simple;

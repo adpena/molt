@@ -2186,7 +2186,7 @@ impl LuauBackend {
                     let list = sanitize_ident(&args[0]);
                     let other = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "for __i = 1, #{other} do {list}[#{list} + 1] = {other}[__i] end"
+                        "table.move({other}, 1, #{other}, #{list} + 1, {list})"
                     ));
                 }
             }
@@ -3723,7 +3723,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_startswith" => {
+            "string_startswith" | "string_startswith_slice" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -3733,16 +3733,16 @@ impl LuauBackend {
                         let start = sanitize_ident(&args[2]);
                         let end = sanitize_ident(&args[3]);
                         self.emit_line(&format!(
-                            "local {out}; do local __n = #{s}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __slice = string.sub({s}, __start + 1, __end); {out} = (string.sub(__slice, 1, #{prefix}) == {prefix}) end"
+                            "local {out}; do local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __slice = string.sub({s}, __start + 1, __end); {out} = if {prefix} == \"\" then (__start_raw <= __n and __start <= __end) else (string.sub(__slice, 1, #{prefix}) == {prefix}) end"
                         ));
                     } else {
                         self.emit_line(&format!(
-                            "local {out} = (string.sub({s}, 1, #{prefix}) == {prefix})"
+                            "local {out} = ({prefix} == \"\" or string.sub({s}, 1, #{prefix}) == {prefix})"
                         ));
                     }
                 }
             }
-            "string_endswith" => {
+            "string_endswith" | "string_endswith_slice" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -3752,11 +3752,11 @@ impl LuauBackend {
                         let start = sanitize_ident(&args[2]);
                         let end = sanitize_ident(&args[3]);
                         self.emit_line(&format!(
-                            "local {out}; do local __n = #{s}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __slice = string.sub({s}, __start + 1, __end); {out} = (string.sub(__slice, -#{suffix}) == {suffix}) end"
+                            "local {out}; do local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __slice = string.sub({s}, __start + 1, __end); {out} = if {suffix} == \"\" then (__start_raw <= __n and __start <= __end) else (string.sub(__slice, -#{suffix}) == {suffix}) end"
                         ));
                     } else {
                         self.emit_line(&format!(
-                            "local {out} = (string.sub({s}, -#{suffix}) == {suffix})"
+                            "local {out} = ({suffix} == \"\" or string.sub({s}, -#{suffix}) == {suffix})"
                         ));
                     }
                 }
@@ -3771,18 +3771,25 @@ impl LuauBackend {
                     // Escape Lua pattern magic characters in search string so gsub
                     // does literal matching. Also escape % in replacement string
                     // since gsub interprets %0, %1, etc. as capture references.
-                    self.emit_line(&format!(
-                        "local {out} = (string.gsub({s}, \
-                         {old}:gsub(\"[%(%)%.%%%+%-%*%?%[%]%^%$]\", \"%%%0\"), \
-                         ({new_val}):gsub(\"%%\", \"%%%%\")))"
-                    ));
+                    if args.len() >= 4 {
+                        let count = sanitize_ident(&args[3]);
+                        self.emit_line(&format!(
+                            "local {out}; do local __pattern = {old}:gsub(\"[%(%)%.%%%+%-%*%?%[%]%^%$]\", \"%%%0\"); local __replacement = ({new_val}):gsub(\"%%\", \"%%%%\"); if {count} >= 0 then {out} = (string.gsub({s}, __pattern, __replacement, {count})) else {out} = (string.gsub({s}, __pattern, __replacement)) end end"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "local {out} = (string.gsub({s}, \
+                             {old}:gsub(\"[%(%)%.%%%+%-%*%?%[%]%^%$]\", \"%%%0\"), \
+                             ({new_val}):gsub(\"%%\", \"%%%%\")))"
+                        ));
+                    }
                     if let Some(ref out_name) = op.out {
                         self.var_type_hints
                             .insert(out_name.clone(), "str".to_string());
                     }
                 }
             }
-            "string_find" => {
+            "string_find" | "string_find_slice" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -3792,13 +3799,53 @@ impl LuauBackend {
                         let start = sanitize_ident(&args[2]);
                         let end = sanitize_ident(&args[3]);
                         self.emit_line(&format!(
-                            "local {out}; do local __n = #{s}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __found = string.find({s}, {sub}, __start + 1, true); if __found and __found <= __end then {out} = __found - 1 else {out} = -1 end end"
+                            "local {out}; do local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; if {sub} == \"\" then {out} = if __start_raw <= __n and __start <= __end then __start else -1 else local __found = string.find({s}, {sub}, __start + 1, true); if __found and __found <= __end then {out} = __found - 1 else {out} = -1 end end end"
                         ));
                     } else {
                         self.emit_line(&format!(
                             "local {out} = (string.find({s}, {sub}, 1, true) or 0) - 1"
                         ));
                     }
+                }
+            }
+            "string_rfind" | "string_rfind_slice" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let sub = sanitize_ident(&args[1]);
+                    let bounds = if args.len() >= 4 {
+                        let start = sanitize_ident(&args[2]);
+                        let end = sanitize_ident(&args[3]);
+                        format!(
+                            "local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end;"
+                        )
+                    } else {
+                        format!("local __n = #{s}; local __start_raw = 0; local __start = 0; local __end = __n;")
+                    };
+                    self.emit_line(&format!(
+                        "local {out}; do {bounds} if {sub} == \"\" then {out} = if __start_raw <= __n and __start <= __end then __end else -1 else local __last = -1; local __pos = __start + 1; while true do local __found = string.find({s}, {sub}, __pos, true); if not __found or __found > __end then break end; __last = __found - 1; __pos = __found + 1 end; {out} = __last end end"
+                    ));
+                }
+            }
+            "string_count" | "string_count_slice" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let sub = sanitize_ident(&args[1]);
+                    let source_expr = if args.len() >= 4 {
+                        let start = sanitize_ident(&args[2]);
+                        let end = sanitize_ident(&args[3]);
+                        format!(
+                            "do local __n = #{s}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __src = string.sub({s}, __start + 1, __end);"
+                        )
+                    } else {
+                        format!("do local __src = {s};")
+                    };
+                    self.emit_line(&format!(
+                        "local {out}; {source_expr} local __sub = {sub}; if __sub == \"\" then {out} = #__src + 1 else local __count = 0; local __pos = 1; while true do local __i, __j = string.find(__src, __sub, __pos, true); if not __i then break end; __count += 1; __pos = __j + 1 end; {out} = __count end end"
+                    ));
                 }
             }
             "string_split" => {
@@ -9540,6 +9587,38 @@ mod tests {
     }
 
     #[test]
+    fn test_list_extend_uses_table_move_fast_path() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "list_extend_fast_path".to_string(),
+                params: vec!["dst".to_string(), "src".to_string()],
+                param_types: Some(vec!["list[int]".to_string(), "list[int]".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "list_extend".to_string(),
+                        args: Some(vec!["dst".to_string(), "src".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("table.move(src, 1, #src, #dst + 1, dst)")
+                && !output.contains("for __i = 1, #src"),
+            "list_extend must use Luau table.move fast path, got:\n{output}"
+        );
+    }
+
+    #[test]
     fn test_list_repeat_clamps_negative_count_to_empty() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -9634,6 +9713,78 @@ mod tests {
     }
 
     #[test]
+    fn test_string_slice_opcode_aliases_use_range_lowering() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_slice_opcode_aliases".to_string(),
+                params: vec![
+                    "s".to_string(),
+                    "needle".to_string(),
+                    "start".to_string(),
+                    "end_idx".to_string(),
+                ],
+                param_types: Some(vec![
+                    "str".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_find_slice".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_startswith_slice".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_endswith_slice".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__start_raw")
+                && !output.contains("[unsupported op: string_find_slice]")
+                && !output.contains("[unsupported op: string_startswith_slice]")
+                && !output.contains("[unsupported op: string_endswith_slice]"),
+            "slice op aliases must use range-aware string lowering, got:\n{output}"
+        );
+    }
+
+    #[test]
     fn test_string_find_honors_start_end_bounds() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -9684,6 +9835,126 @@ mod tests {
     }
 
     #[test]
+    fn test_string_rfind_honors_start_end_bounds() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_rfind_bounds".to_string(),
+                params: vec![
+                    "s".to_string(),
+                    "needle".to_string(),
+                    "start".to_string(),
+                    "end_idx".to_string(),
+                ],
+                param_types: Some(vec![
+                    "str".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_rfind_slice".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__last")
+                && output.contains("__found")
+                && !output.contains("[unsupported op: string_rfind_slice]"),
+            "string_rfind_slice must lower to bounded reverse find, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_empty_needle_edge_cases_are_explicit() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_empty_needle_edges".to_string(),
+                params: vec![
+                    "s".to_string(),
+                    "needle".to_string(),
+                    "start".to_string(),
+                    "end_idx".to_string(),
+                ],
+                param_types: Some(vec![
+                    "str".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_find".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_startswith".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_endswith".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("needle == \"\"")
+                && output.contains("__start_raw")
+                && output.contains("__start_raw <= __n"),
+            "empty substring cases must be explicit and Python-shaped, got:\n{output}"
+        );
+    }
+
+    #[test]
     fn test_string_split_rejects_empty_separator() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -9713,6 +9984,110 @@ mod tests {
             output.contains("__type=\"ValueError\"")
                 && output.contains("empty separator"),
             "str.split must reject empty separator instead of looping, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_replace_honors_count_argument() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_replace_count".to_string(),
+                params: vec![
+                    "s".to_string(),
+                    "old".to_string(),
+                    "new_value".to_string(),
+                    "count".to_string(),
+                ],
+                param_types: Some(vec![
+                    "str".to_string(),
+                    "str".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_replace".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "old".to_string(),
+                            "new_value".to_string(),
+                            "count".to_string(),
+                        ]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("if count >= 0 then")
+                && output.contains("__pattern")
+                && output.contains("__replacement"),
+            "str.replace(old, new, count) must pass bounded count to gsub, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_count_and_count_slice_lower_to_nonoverlap_loop() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_count_ops".to_string(),
+                params: vec![
+                    "s".to_string(),
+                    "needle".to_string(),
+                    "start".to_string(),
+                    "end_idx".to_string(),
+                ],
+                param_types: Some(vec![
+                    "str".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_count".to_string(),
+                        args: Some(vec!["s".to_string(), "needle".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_count_slice".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__sub == \"\"")
+                && output.contains("__count += 1")
+                && output.contains("__pos = __j + 1"),
+            "string_count ops must use Python non-overlapping count loop, got:\n{output}"
         );
     }
 

@@ -7,11 +7,11 @@
 ## Summary
 
 - `compile-error`: `7`
-- `implemented-exact`: `314`
+- `implemented-exact`: `319`
 - `implemented-target-limited`: `18`
 - `not-admitted`: `24`
 - `runtime-capability-error`: `5`
-- `total`: `368`
+- `total`: `373`
 
 ## Matrix
 
@@ -350,9 +350,13 @@
 | `str_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_concat` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_const` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_count` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_count_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_endswith` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_endswith_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_eq` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_find` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_find_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_format` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_join` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_lower` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -364,6 +368,7 @@
 | `string_split_sep_dict_inc` | `compile-error` | Checked Luau emission rejects unsupported markers. |
 | `string_split_ws_dict_inc` | `compile-error` | Checked Luau emission rejects unsupported markers. |
 | `string_startswith` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_startswith_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_strip` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_upper` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `sub` | `implemented-exact` | Lowered without checked-output stub markers. |

@@ -9,9 +9,9 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Progress Summary (Generated)
-- Total audited modules: `913`
+- Total audited modules: `916`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `872`
+- `intrinsic-partial`: `875`
 - `probe-only`: `0`
 - `python-only`: `0`
 
@@ -837,6 +837,7 @@
 - `tinygrad.nl_template_filler`
 - `tinygrad.nn`
 - `tinygrad.onnx_interpreter`
+- `tinygrad.openpilot_demo`
 - `tinygrad.paddleocr`
 - `tinygrad.paddleocr_bench`
 - `tinygrad.paddleocr_driver`
@@ -855,6 +856,7 @@
 - `tinygrad.tree_attention`
 - `tinygrad.turbo_quant`
 - `tinygrad.wasm_driver`
+- `tinygrad.whisper_demo`
 - `tkinter`
 - `tkinter.__main__`
 - `tkinter._support`
@@ -903,6 +905,7 @@
 - `turtledemo.two_canvases`
 - `turtledemo.yinyang`
 - `typing`
+- `typing_extensions`
 - `unicodedata`
 - `unittest`
 - `unittest.__main__`

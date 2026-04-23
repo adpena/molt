@@ -23,7 +23,12 @@ from __future__ import annotations
 
 from typing import Any, IO
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 __all__ = ["TOMLDecodeError", "loads", "load"]
+
+_MOLT_TOMLLIB_RUNTIME_READY = _require_intrinsic("molt_tomllib_runtime_ready")
+_MOLT_TOMLLIB_RUNTIME_READY()
 
 
 class TOMLDecodeError(ValueError):
@@ -666,3 +671,6 @@ def load(fp: IO[bytes]) -> dict[str, Any]:
     else:
         raise TypeError(f"fp.read() returned {type(b).__name__}, expected bytes")
     return loads(s)
+
+
+globals().pop("_require_intrinsic", None)

@@ -1,7 +1,17 @@
-"""unittest.__main__ — allows ``python -m unittest`` invocation for Molt."""
+"""Intrinsic-first stdlib module stub for `unittest.__main__`."""
 
 from __future__ import annotations
 
-from unittest import main
+from _intrinsics import require_intrinsic as _require_intrinsic
 
-main(module=None, exit=True)
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
+
+
+def __getattr__(attr: str):
+    raise RuntimeError(
+        'stdlib module "unittest.__main__" is not fully lowered yet; only an '
+        "intrinsic-first stub is available."
+    )
+
+
+globals().pop("_require_intrinsic", None)

@@ -1,34 +1,17 @@
-"""unittest.case — re-exported from unittest for Molt.
-
-CPython exposes the TestCase class through both ``unittest`` and
-``unittest.case``.  This module provides the latter so that code doing
-``from unittest.case import TestCase`` works correctly.
-"""
+"""Intrinsic-first stdlib module stub for `unittest.case`."""
 
 from __future__ import annotations
 
-# Re-export everything from the parent package so that
-# ``from unittest.case import TestCase`` and friends work.
-from unittest import (
-    TestCase,
-    SkipTest,
-    skip,
-    skipIf,
-    skipUnless,
-    _AssertRaisesContext,
-    _AssertRaisesRegexContext,
-)
+from _intrinsics import require_intrinsic as _require_intrinsic
 
-__all__ = [
-    "TestCase",
-    "SkipTest",
-    "skip",
-    "skipIf",
-    "skipUnless",
-    "_AssertRaisesContext",
-    "_AssertRaisesRegexContext",
-]
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
-# Expose the module-level DONT_ACCEPT_NONE / DONT_ACCEPT_BARE_BOOLEANS flags
-# that CPython's unittest.case carries (used by some test frameworks).
-DIFF_OMIT_IDENTICAL = True
+
+def __getattr__(attr: str):
+    raise RuntimeError(
+        'stdlib module "unittest.case" is not fully lowered yet; only an '
+        "intrinsic-first stub is available."
+    )
+
+
+globals().pop("_require_intrinsic", None)
