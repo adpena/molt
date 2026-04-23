@@ -3789,31 +3789,43 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_find" | "string_find_slice" => {
+            "string_find" | "string_find_slice" | "string_index" | "string_index_slice" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let sub = sanitize_ident(&args[1]);
+                    let needs_error = op.kind.contains("index");
+                    let error_guard = if needs_error {
+                        format!("; if {out} == -1 then error({{__type=\"ValueError\", __msg=\"substring not found\"}}) end")
+                    } else {
+                        String::new()
+                    };
                     if args.len() >= 4 {
                         let start = sanitize_ident(&args[2]);
                         let end = sanitize_ident(&args[3]);
                         self.emit_line(&format!(
-                            "local {out}; do local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; if {sub} == \"\" then {out} = if __start_raw <= __n and __start <= __end then __start else -1 else local __found = string.find({s}, {sub}, __start + 1, true); if __found and __found <= __end then {out} = __found - 1 else {out} = -1 end end end"
+                            "local {out}; do local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; if {sub} == \"\" then {out} = if __start_raw <= __n and __start <= __end then __start else -1 else local __found = string.find({s}, {sub}, __start + 1, true); if __found and __found <= __end then {out} = __found - 1 else {out} = -1 end end{error_guard} end"
                         ));
                     } else {
                         self.emit_line(&format!(
-                            "local {out} = (string.find({s}, {sub}, 1, true) or 0) - 1"
+                            "local {out} = (string.find({s}, {sub}, 1, true) or 0) - 1{error_guard}"
                         ));
                     }
                 }
             }
-            "string_rfind" | "string_rfind_slice" => {
+            "string_rfind" | "string_rfind_slice" | "string_rindex" | "string_rindex_slice" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let sub = sanitize_ident(&args[1]);
+                    let needs_error = op.kind.contains("rindex");
+                    let error_guard = if needs_error {
+                        format!("; if {out} == -1 then error({{__type=\"ValueError\", __msg=\"substring not found\"}}) end")
+                    } else {
+                        String::new()
+                    };
                     let bounds = if args.len() >= 4 {
                         let start = sanitize_ident(&args[2]);
                         let end = sanitize_ident(&args[3]);
@@ -3824,7 +3836,7 @@ impl LuauBackend {
                         format!("local __n = #{s}; local __start_raw = 0; local __start = 0; local __end = __n;")
                     };
                     self.emit_line(&format!(
-                        "local {out}; do {bounds} if {sub} == \"\" then {out} = if __start_raw <= __n and __start <= __end then __end else -1 else local __last = -1; local __pos = __start + 1; while true do local __found = string.find({s}, {sub}, __pos, true); if not __found or __found > __end then break end; __last = __found - 1; __pos = __found + 1 end; {out} = __last end end"
+                        "local {out}; do {bounds} if {sub} == \"\" then {out} = if __start_raw <= __n and __start <= __end then __end else -1 else local __last = -1; local __pos = __start + 1; while true do local __found = string.find({s}, {sub}, __pos, true); if not __found or __found > __end then break end; __last = __found - 1; __pos = __found + 1 end; {out} = __last end{error_guard} end"
                     ));
                 }
             }
@@ -3845,6 +3857,48 @@ impl LuauBackend {
                     };
                     self.emit_line(&format!(
                         "local {out}; {source_expr} local __sub = {sub}; if __sub == \"\" then {out} = #__src + 1 else local __count = 0; local __pos = 1; while true do local __i, __j = string.find(__src, __sub, __pos, true); if not __i then break end; __count += 1; __pos = __j + 1 end; {out} = __count end end"
+                    ));
+                }
+            }
+            "string_partition" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let sep = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out}; do if {sep} == \"\" then error({{__type=\"ValueError\", __msg=\"empty separator\"}}) end; local __i, __j = string.find({s}, {sep}, 1, true); if __i then {out} = {{string.sub({s}, 1, __i - 1), {sep}, string.sub({s}, __j + 1)}} else {out} = {{{s}, \"\", \"\"}} end end"
+                    ));
+                    if let Some(ref out_name) = op.out {
+                        self.tuple_vars.insert(out_name.clone());
+                    }
+                }
+            }
+            "string_rpartition" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let sep = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out}; do if {sep} == \"\" then error({{__type=\"ValueError\", __msg=\"empty separator\"}}) end; local __last_i, __last_j = nil, nil; local __pos = 1; while true do local __i, __j = string.find({s}, {sep}, __pos, true); if not __i then break end; __last_i, __last_j = __i, __j; __pos = __i + 1 end; if __last_i then {out} = {{string.sub({s}, 1, __last_i - 1), {sep}, string.sub({s}, __last_j + 1)}} else {out} = {{\"\", \"\", {s}}} end end"
+                    ));
+                    if let Some(ref out_name) = op.out {
+                        self.tuple_vars.insert(out_name.clone());
+                    }
+                }
+            }
+            "string_splitlines" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(s) = args.first() {
+                    let s = sanitize_ident(s);
+                    let keep = args
+                        .get(1)
+                        .map(|arg| sanitize_ident(arg))
+                        .unwrap_or_else(|| "false".to_string());
+                    self.emit_line(&format!(
+                        "local {out}; do local __keep = {keep}; local __lines = {{}}; local __n = 0; local __line_start = 1; local __i = 1; while __i <= #{s} do local __c = string.sub({s}, __i, __i); if __c == \"\\n\" or __c == \"\\r\" then local __line_end = __i - 1; local __next = __i + 1; if __c == \"\\r\" and __next <= #{s} and string.sub({s}, __next, __next) == \"\\n\" then __next += 1 end; __n += 1; if __keep then __lines[__n] = string.sub({s}, __line_start, __next - 1) else __lines[__n] = string.sub({s}, __line_start, __line_end) end; __line_start = __next; __i = __next else __i += 1 end end; if __line_start <= #{s} then __n += 1; __lines[__n] = string.sub({s}, __line_start) end; {out} = __lines end"
                     ));
                 }
             }
@@ -9880,6 +9934,239 @@ mod tests {
                 && output.contains("__found")
                 && !output.contains("[unsupported op: string_rfind_slice]"),
             "string_rfind_slice must lower to bounded reverse find, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_index_rindex_raise_value_error_when_missing() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_index_rindex_errors".to_string(),
+                params: vec![
+                    "s".to_string(),
+                    "needle".to_string(),
+                    "start".to_string(),
+                    "end_idx".to_string(),
+                ],
+                param_types: Some(vec![
+                    "str".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_index_slice".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_rindex_slice".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__type=\"ValueError\"")
+                && output.contains("substring not found")
+                && !output.contains("[unsupported op: string_index_slice]")
+                && !output.contains("[unsupported op: string_rindex_slice]"),
+            "string index/rindex must raise ValueError when missing, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_partition_and_rpartition_lower_to_tuple_tables() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_partition_ops".to_string(),
+                params: vec!["s".to_string(), "sep".to_string()],
+                param_types: Some(vec!["str".to_string(), "str".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_partition".to_string(),
+                        args: Some(vec!["s".to_string(), "sep".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_rpartition".to_string(),
+                        args: Some(vec!["s".to_string(), "sep".to_string()]),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("empty separator")
+                && output.contains("{s, \"\", \"\"}")
+                && output.contains("{\"\", \"\", s}")
+                && output.contains("string_partition")
+                && !output.contains("[unsupported op: string_partition]"),
+            "string partition/rpartition must lower to Python tuple tables, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_removeprefix_suffix_get_attr_indirect_path() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_remove_affix".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("foobar".to_string()),
+                        out: Some("s".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "get_attr_generic_obj".to_string(),
+                        args: Some(vec!["s".to_string()]),
+                        s_value: Some("removeprefix".to_string()),
+                        out: Some("m0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("foo".to_string()),
+                        out: Some("p".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_new".to_string(),
+                        out: Some("a0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_push_pos".to_string(),
+                        args: Some(vec!["a0".to_string(), "p".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_indirect".to_string(),
+                        args: Some(vec!["m0".to_string(), "a0".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "get_attr_generic_obj".to_string(),
+                        args: Some(vec!["s".to_string()]),
+                        s_value: Some("removesuffix".to_string()),
+                        out: Some("m1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("bar".to_string()),
+                        out: Some("q".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_new".to_string(),
+                        out: Some("a1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_push_pos".to_string(),
+                        args: Some(vec!["a1".to_string(), "q".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_indirect".to_string(),
+                        args: Some(vec!["m1".to_string(), "a1".to_string()]),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("function(__args)")
+                && output.contains("string.sub(s, 1, #__prefix)")
+                && output.contains("string.sub(s, -#__suffix)")
+                && !output.contains("s.removeprefix")
+                && !output.contains("s.removesuffix"),
+            "string remove-prefix/suffix method attrs must lower to callable closures, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_splitlines_lowers_with_keepends_flag() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_splitlines_op".to_string(),
+                params: vec!["s".to_string(), "keep".to_string()],
+                param_types: Some(vec!["str".to_string(), "bool".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_splitlines".to_string(),
+                        args: Some(vec!["s".to_string(), "keep".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__keep")
+                && output.contains("\\r")
+                && output.contains("\\n")
+                && output.contains("__next += 1")
+                && output.contains("__line_start"),
+            "string_splitlines must lower with CR/LF handling and keepends flag, got:\n{output}"
         );
     }
 

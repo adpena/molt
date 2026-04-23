@@ -5,8 +5,8 @@ use molt_obj_model::MoltObject;
 
 use crate::{
     HEADER_FLAG_SKIP_CLASS_DECREF, PyToken, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS,
-    TYPE_ID_DICT, TYPE_ID_ELLIPSIS, TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_PROPERTY,
-    TYPE_ID_RANGE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
+    TYPE_ID_DICT, TYPE_ID_ELLIPSIS, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED,
+    TYPE_ID_PROPERTY, TYPE_ID_RANGE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
     alloc_classmethod_obj, alloc_dict_with_pairs, alloc_generic_alias, alloc_instance_for_class,
     alloc_list, alloc_property_obj, alloc_staticmethod_obj, alloc_string, alloc_super_obj,
     alloc_tuple, apply_class_slots_layout, attr_lookup_ptr_allow_missing,
@@ -16,16 +16,17 @@ use crate::{
     class_set_bases_bits, class_set_layout_version_bits, class_set_mro_bits,
     class_set_qualname_bits, clear_exception, dataclass_set_class_raw, dec_ref_bits,
     dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
-    dict_update_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits,
-    init_atomic_bits, instance_dict_bits, intern_static_name, is_builtin_class_bits, is_truthy,
-    isinstance_runtime, issubclass_bits, issubclass_runtime, maybe_ptr_from_bits, missing_bits,
-    molt_alloc, molt_call_bind, molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos,
-    molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin,
-    molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len, molt_object_setattr,
-    molt_repr_from_obj, molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_eq,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, property_del_bits,
-    property_get_bits, property_set_bits, raise_exception, raise_not_iterable, runtime_state,
-    seq_vec_ref, string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
+    dict_update_set_in_place, exception_pending, generic_alias_origin_bits, header_from_obj_ptr,
+    inc_ref_bits, init_atomic_bits, instance_dict_bits, intern_static_name, is_builtin_class_bits,
+    is_truthy, isinstance_runtime, issubclass_bits, issubclass_runtime, maybe_ptr_from_bits,
+    missing_bits, molt_alloc, molt_call_bind, molt_callargs_new, molt_callargs_push_kw,
+    molt_callargs_push_pos, molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq,
+    molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len,
+    molt_object_setattr, molt_repr_from_obj, molt_setitem_method, molt_str_from_obj,
+    molt_string_isidentifier, obj_eq, obj_from_bits, object_class_bits, object_set_class_bits,
+    object_type_id, property_del_bits, property_get_bits, property_set_bits, raise_exception,
+    raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, to_i64,
+    tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 #[unsafe(no_mangle)]
@@ -1218,6 +1219,35 @@ pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u6
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_generic_alias_mro_entries(alias_bits: u64, _bases_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(alias_ptr) = obj_from_bits(alias_bits).as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "GenericAlias.__mro_entries__ expected GenericAlias",
+            );
+        };
+        unsafe {
+            if object_type_id(alias_ptr) != TYPE_ID_GENERIC_ALIAS {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "GenericAlias.__mro_entries__ expected GenericAlias",
+                );
+            }
+            let origin_bits = generic_alias_origin_bits(alias_ptr);
+            let tuple_ptr = alloc_tuple(_py, &[origin_bits]);
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
         }
     })
 }
