@@ -241,7 +241,8 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let mut header_chain: Vec<BlockId> = Vec::new();
         let mut guard_chain: Vec<BlockId> = Vec::new();
         let mut guard_raise_blocks: Vec<BlockId> = Vec::new();
-        let mut cond_bid = func.loop_cond_blocks.get(bid).copied().unwrap_or(*bid);
+        let explicit_cond_bid = func.loop_cond_blocks.get(bid).copied();
+        let mut cond_bid = explicit_cond_bid.unwrap_or(*bid);
         let mut chain_visited: HashSet<BlockId> = HashSet::new();
         chain_visited.insert(*bid);
         if cond_bid != *bid {
@@ -283,54 +284,56 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             false
         };
 
-        loop {
-            let Some(blk) = func.blocks.get(&cond_bid) else {
-                break;
-            };
-            match &blk.terminator {
-                Terminator::CondBranch {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    let then_raises = is_guard_raise_path(then_block);
-                    let else_raises = is_guard_raise_path(else_block);
-                    if !then_raises && !else_raises {
-                        break; // Neither path raises — this is the loop control
+        if explicit_cond_bid.is_none() {
+            loop {
+                let Some(blk) = func.blocks.get(&cond_bid) else {
+                    break;
+                };
+                match &blk.terminator {
+                    Terminator::CondBranch {
+                        then_block,
+                        else_block,
+                        ..
+                    } => {
+                        let then_raises = is_guard_raise_path(then_block);
+                        let else_raises = is_guard_raise_path(else_block);
+                        if !then_raises && !else_raises {
+                            break; // Neither path raises — this is the loop control
+                        }
+                        // One path raises — this is a guard CondBranch.
+                        // Record it as a guard (not a non-guard chain block).
+                        if cond_bid != *bid {
+                            guard_chain.push(cond_bid);
+                        }
+                        // Collect raise-path blocks for consumption.
+                        let raise_bid = if then_raises {
+                            *then_block
+                        } else {
+                            *else_block
+                        };
+                        guard_raise_blocks.extend(collect_guard_raise_path_blocks(func, raise_bid));
+                        // Follow the non-raising path.
+                        let next = if then_raises {
+                            *else_block
+                        } else {
+                            *then_block
+                        };
+                        if !chain_visited.insert(next) {
+                            break; // Cycle — this IS the loop control
+                        }
+                        cond_bid = next;
                     }
-                    // One path raises — this is a guard CondBranch.
-                    // Record it as a guard (not a non-guard chain block).
-                    if cond_bid != *bid {
-                        guard_chain.push(cond_bid);
+                    Terminator::Branch { target, .. } => {
+                        if !chain_visited.insert(*target) {
+                            break; // Cycle
+                        }
+                        if cond_bid != *bid {
+                            header_chain.push(cond_bid);
+                        }
+                        cond_bid = *target;
                     }
-                    // Collect raise-path blocks for consumption.
-                    let raise_bid = if then_raises {
-                        *then_block
-                    } else {
-                        *else_block
-                    };
-                    guard_raise_blocks.extend(collect_guard_raise_path_blocks(func, raise_bid));
-                    // Follow the non-raising path.
-                    let next = if then_raises {
-                        *else_block
-                    } else {
-                        *then_block
-                    };
-                    if !chain_visited.insert(next) {
-                        break; // Cycle — this IS the loop control
-                    }
-                    cond_bid = next;
+                    _ => break, // Return/Unreachable — give up
                 }
-                Terminator::Branch { target, .. } => {
-                    if !chain_visited.insert(*target) {
-                        break; // Cycle
-                    }
-                    if cond_bid != *bid {
-                        header_chain.push(cond_bid);
-                    }
-                    cond_bid = *target;
-                }
-                _ => break, // Return/Unreachable — give up
             }
         }
         let Some(cond_block_data) = func.blocks.get(&cond_bid) else {
@@ -5664,6 +5667,145 @@ mod tests {
                 .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
                     && op.value == Some(100)),
             "cleanup label 100 must remain materialized after a raise-and-branch chain: {out:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
+        let mut func = TirFunction::new(
+            "explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises".into(),
+            vec![TirType::Bool, TirType::Bool],
+            TirType::None,
+        );
+        let header = func.entry_block;
+        let cond = func.fresh_block();
+        let exit_raise = func.fresh_block();
+        let body = func.fresh_block();
+        let nested_cond = func.fresh_block();
+        let nested_then = func.fresh_block();
+        let nested_join = func.fresh_block();
+        let cleanup = func.fresh_block();
+        let raise_value = func.fresh_value();
+
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.loop_break_kinds
+            .insert(header, LoopBreakKind::BreakIfTrue);
+        func.loop_cond_blocks.insert(header, cond);
+
+        func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
+            target: cond,
+            args: vec![],
+        };
+        func.blocks.insert(
+            cond,
+            TirBlock {
+                id: cond,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(0),
+                    then_block: exit_raise,
+                    then_args: vec![],
+                    else_block: body,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit_raise,
+            TirBlock {
+                id: exit_raise,
+                args: vec![],
+                ops: vec![
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ConstInt,
+                        operands: vec![],
+                        results: vec![raise_value],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Raise,
+                        operands: vec![raise_value],
+                        results: vec![],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    target: cleanup,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: nested_cond,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            nested_cond,
+            TirBlock {
+                id: nested_cond,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(1),
+                    then_block: nested_then,
+                    then_args: vec![],
+                    else_block: nested_join,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            nested_then,
+            TirBlock {
+                id: nested_then,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: nested_join,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            nested_join,
+            TirBlock {
+                id: nested_join,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            cleanup,
+            TirBlock {
+                id: cleanup,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+
+        assert!(
+            validate_labels(&ops),
+            "explicit loop condition lowering must not leave dangling labels: {ops:?}"
         );
     }
 
