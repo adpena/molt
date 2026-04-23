@@ -130,7 +130,7 @@ nemotron_image = (
     .run_commands(
         # Install git-lfs and build dependencies
         "apt-get update && apt-get install -y git-lfs && git lfs install",
-        "pip install hatchling httpx pillow",
+        "pip install hatchling httpx pillow 'fastapi[standard]'",
         # Clone and build nemotron-ocr (CUDA C++ extension + Python package)
         "git clone https://huggingface.co/nvidia/nemotron-ocr-v2 /models/nemotron-ocr-v2",
         "cd /models/nemotron-ocr-v2/nemotron-ocr && pip install --no-build-isolation .",
