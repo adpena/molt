@@ -58,7 +58,7 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | `list.insert` | Clamped 0-to-1 index conversion before `table.insert` or append | Correct for admitted list subset |
 | `list.extend` / star expansion | `table.move(src, 1, #src, #dst + 1, dst)` | Optimized bulk array append |
 | List repetition | `table.create(math.max(0, count), value)` | Correct negative-count empty-list behavior with preallocation |
-| `str.startswith` / `str.endswith` | Direct `string.sub` checks with optional bound normalization | Correct for admitted string subset |
+| `str.startswith` / `str.endswith` | Direct `string.sub` checks with optional bound normalization, including tuple affix args | Correct for admitted string subset |
 | `str.find` / `str.rfind` | Plain `string.find` loops with optional bound normalization | Correct for admitted string subset |
 | `str.index` / `str.rindex` | `find` / `rfind` lowering plus `ValueError` guard | Correct for admitted string subset |
 | `str.count` | Plain `string.find` non-overlap loop with optional bound normalization | Correct for admitted string subset |

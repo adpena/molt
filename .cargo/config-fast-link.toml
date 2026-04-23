@@ -1,0 +1,11 @@
+# Use mold linker on Linux for 30-50% faster incremental link times.
+# Install: sudo apt install mold (or brew install mold on macOS)
+# Activate: cp .cargo/config-fast-link.toml .cargo/config.toml
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

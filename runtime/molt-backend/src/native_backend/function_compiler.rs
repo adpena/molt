@@ -372,6 +372,7 @@ struct FunctionPreanalysis {
     bool_like_vars: BTreeSet<String>,
     float_like_vars: BTreeSet<String>,
     str_like_vars: BTreeSet<String>,
+    none_like_vars: BTreeSet<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -493,6 +494,7 @@ fn preanalyze_function_ir(
     let mut int_like_vars: BTreeSet<String> = BTreeSet::new();
     let mut bool_like_vars: BTreeSet<String> = BTreeSet::new();
     let mut float_like_vars: BTreeSet<String> = BTreeSet::new();
+    let mut none_like_vars: BTreeSet<String> = BTreeSet::new();
     let mut str_like_vars: BTreeSet<String> = BTreeSet::new();
 
     for name in &func_ir.params {
@@ -870,6 +872,7 @@ fn preanalyze_function_ir(
                 }
                 "const_bool" => bool_like_vars.insert(out.clone()),
                 "const_float" => float_like_vars.insert(out.clone()),
+                "const_none" => none_like_vars.insert(out.clone()),
                 "const_str" => str_like_vars.insert(out.clone()),
                 "copy" | "copy_var" | "load_var" | "identity_alias" => {
                     let src = op
@@ -885,6 +888,8 @@ fn preanalyze_function_ir(
                             float_like_vars.insert(out.clone())
                         } else if str_like_vars.contains(src) {
                             str_like_vars.insert(out.clone())
+                        } else if none_like_vars.contains(src) {
+                            none_like_vars.insert(out.clone())
                         } else {
                             false
                         }
@@ -960,6 +965,7 @@ fn preanalyze_function_ir(
         bool_like_vars,
         float_like_vars,
         str_like_vars,
+        none_like_vars,
     }
 }
 
@@ -1191,6 +1197,7 @@ impl SimpleBackend {
             bool_like_vars,
             float_like_vars,
             str_like_vars,
+            none_like_vars,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
@@ -1431,6 +1438,16 @@ impl SimpleBackend {
         let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
         let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
         let var_is_str = |name: &str| scalar_fast_paths_enabled && str_like_vars.contains(name);
+        // A variable is "known non-heap" when its NaN-boxed representation is
+        // guaranteed to never be a heap pointer: ints, bools, floats, and None
+        // are all tagged inline values. Strings ARE heap pointers and must NOT
+        // be included here.
+        let var_is_known_non_heap = |name: &str| {
+            int_like_vars.contains(name)
+                || bool_like_vars.contains(name)
+                || float_like_vars.contains(name)
+                || none_like_vars.contains(name)
+        };
         let op_prefers_int_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
                 && matches!(
@@ -7860,9 +7877,23 @@ impl SimpleBackend {
                                 builder
                                     .ins()
                                     .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+                            // Dec-ref old element — only needed if the old
+                            // value could be a heap pointer.  When the stored
+                            // value is a proven non-heap type (bool/int/float/None)
+                            // AND the list was populated with the same kind of
+                            // non-heap values, the old element is also non-heap.
+                            // We cannot prove element homogeneity statically yet,
+                            // so always emit the dec_ref for now.
                             emit_dec_ref_obj(&mut builder, old_elem, local_dec_ref_obj, &nbc);
-                            // Inc-ref new value
-                            emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
+                            // Inc-ref new value — skip entirely when the value
+                            // being stored is a compile-time-proven non-heap type
+                            // (int, bool, float, None).  These NaN-boxed values
+                            // have no heap allocation, so is_ptr() is always false
+                            // and the refcount bump would be a no-op after the
+                            // tag check.  Eliding it saves ~2 cycles per store.
+                            if !var_is_known_non_heap(&args[2]) {
+                                emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
+                            }
                             // Store new value
                             builder.ins().store(MemFlags::trusted(), *val, elem_addr, 0);
                             jump_block(&mut builder, merge_block, &[]);

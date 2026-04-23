@@ -969,6 +969,28 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 }
                 return "[]".to_string();
             }
+            if type_id == TYPE_ID_LIST_BOOL {
+                // Specialized list[bool]: flat u8 storage via ListBoolStorage (#[repr(C)]).
+                // Format as a regular Python list with True/False for display parity.
+                let guard = ReprGuard::new(_py, ptr);
+                if !guard.active() {
+                    return "[...]".to_string();
+                }
+                let storage_ptr = crate::object::layout::list_bool_storage_ptr(ptr);
+                if !storage_ptr.is_null() {
+                    let elems = crate::object::layout::list_bool_vec_ref(ptr);
+                    let mut out = String::from("[");
+                    for (idx, val) in elems.iter().enumerate() {
+                        if idx > 0 {
+                            out.push_str(", ");
+                        }
+                        out.push_str(if *val != 0 { "True" } else { "False" });
+                    }
+                    out.push(']');
+                    return out;
+                }
+                return "[]".to_string();
+            }
             if type_id == TYPE_ID_TUPLE {
                 if let Some(rendered) =
                     try_subclass_repr_override(_py, ptr, builtin_classes(_py).tuple)
@@ -1236,7 +1258,7 @@ fn type_name_for_format_error(obj: MoltObject) -> &'static str {
             match object_type_id(ptr) {
                 TYPE_ID_STRING => "str",
                 TYPE_ID_BYTES => "bytes",
-                TYPE_ID_LIST | TYPE_ID_LIST_INT => "list",
+                TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => "list",
                 TYPE_ID_TUPLE => "tuple",
                 TYPE_ID_DICT => "dict",
                 TYPE_ID_SET => "set",

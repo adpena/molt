@@ -441,6 +441,7 @@ pub(crate) unsafe fn reversed_new_impl(_py: &PyToken<'_>, seq_bits: u64) -> u64 
             }
             if type_id == TYPE_ID_LIST
                 || type_id == TYPE_ID_LIST_INT
+                || type_id == TYPE_ID_LIST_BOOL
                 || type_id == TYPE_ID_TUPLE
                 || type_id == TYPE_ID_STRING
                 || type_id == TYPE_ID_BYTES
@@ -461,7 +462,7 @@ pub(crate) unsafe fn reversed_new_impl(_py: &PyToken<'_>, seq_bits: u64) -> u64 
                     || type_id == TYPE_ID_DICT_ITEMS_VIEW
                 {
                     dict_view_len(ptr)
-                } else if type_id == TYPE_ID_LIST || type_id == TYPE_ID_LIST_INT {
+                } else if type_id == TYPE_ID_LIST || type_id == TYPE_ID_LIST_INT || type_id == TYPE_ID_LIST_BOOL {
                     list_len(ptr)
                 } else {
                     tuple_len(ptr)
@@ -656,6 +657,7 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 }
                 if type_id == TYPE_ID_LIST
                     || type_id == TYPE_ID_LIST_INT
+                    || type_id == TYPE_ID_LIST_BOOL
                     || type_id == TYPE_ID_TUPLE
                     || type_id == TYPE_ID_STRING
                     || type_id == TYPE_ID_BYTES
@@ -1225,6 +1227,19 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                     false,
                                 )
                             }
+                        } else if target_type == TYPE_ID_LIST_BOOL {
+                            let elems = crate::object::layout::list_bool_vec_ref(target_ptr);
+                            let len = elems.len();
+                            let idx = idx.min(len);
+                            if idx == 0 {
+                                (0, None, false)
+                            } else {
+                                (
+                                    idx - 1,
+                                    Some(MoltObject::from_bool(elems[idx - 1] != 0).bits()),
+                                    false,
+                                )
+                            }
                         } else if target_type == TYPE_ID_RANGE {
                             let Some((start, stop, step)) = range_components_bigint(target_ptr)
                             else {
@@ -1512,6 +1527,22 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         iter_set_index(ptr, idx + 1);
                         return iter_return_cached(_py, ptr, val_bits, false, false);
                     }
+                    if target_type == TYPE_ID_LIST_BOOL {
+                        let elems = crate::object::layout::list_bool_vec_ref(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
+                        }
+                        let val_bits = MoltObject::from_bool(elems[idx] != 0).bits();
+                        iter_set_index(ptr, idx + 1);
+                        return iter_return_cached(_py, ptr, val_bits, false, false);
+                    }
                     if target_type == TYPE_ID_RANGE {
                         if let Some((start_i64, stop_i64, step_i64)) =
                             range_components_i64(target_ptr)
@@ -1749,6 +1780,20 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut 
                             return done_true;
                         }
                         let val_bits = MoltObject::from_int(elems[idx]).bits();
+                        *value_out = val_bits;
+                        iter_set_index(ptr, idx + 1);
+                        return done_false;
+                    }
+
+                    // ── LIST_BOOL fast path (zero alloc) ────────
+                    // Raw u8 storage — box on read, no refcount needed.
+                    if target_type == TYPE_ID_LIST_BOOL {
+                        let elems = crate::object::layout::list_bool_vec_ref(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return done_true;
+                        }
+                        let val_bits = MoltObject::from_bool(elems[idx] != 0).bits();
                         *value_out = val_bits;
                         iter_set_index(ptr, idx + 1);
                         return done_false;
