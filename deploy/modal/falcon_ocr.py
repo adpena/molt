@@ -42,9 +42,9 @@ falcon_ocr_image = (
     image=falcon_ocr_image,
     gpu="A10G",  # 24 GB VRAM — fits 300M VLM comfortably with INT8
     timeout=120,
-    allow_concurrent_inputs=16,
-    container_idle_timeout=300,  # 5 min idle before scale-to-zero
+    scaledown_window=300,  # 5 min idle before scale-to-zero
 )
+@modal.concurrent(max_inputs=16)
 class FalconOCR:
     """Persistent vLLM-backed Falcon-OCR inference server."""
 
@@ -119,10 +119,9 @@ class FalconOCR:
     image=falcon_ocr_image,
     gpu="A10G",
     timeout=120,
-    allow_concurrent_inputs=16,
-    container_idle_timeout=300,
+    scaledown_window=300,
 )
-@modal.web_endpoint(method="POST", docs=True)
+@modal.fastapi_endpoint(method="POST", docs=True)
 async def ocr_endpoint(item: dict) -> dict:
     """
     HTTP POST endpoint for OCR inference.
