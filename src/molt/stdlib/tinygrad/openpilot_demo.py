@@ -92,12 +92,18 @@ class ConvBnAct:
     def __call__(self, x: Tensor) -> Tensor:
         # Grouped conv dispatch: depthwise when groups == c_in
         if self.groups == 1:
-            out = Tensor.conv2d(x, self.weight, self.bias,
-                                stride=self.stride, padding=self.padding)
+            out = Tensor.conv2d(
+                x, self.weight, self.bias, stride=self.stride, padding=self.padding
+            )
         else:
-            out = _grouped_conv2d(x, self.weight, self.bias,
-                                  stride=self.stride, padding=self.padding,
-                                  groups=self.groups)
+            out = _grouped_conv2d(
+                x,
+                self.weight,
+                self.bias,
+                stride=self.stride,
+                padding=self.padding,
+                groups=self.groups,
+            )
         if self.act:
             # Swish/SiLU: x * sigmoid(x)
             out = out * out.sigmoid()
@@ -152,18 +158,19 @@ class MBConv:
         se_ratio: float = 0.25,
     ) -> None:
         expanded = c_in * expand_ratio
-        self.use_residual = (stride == 1 and c_in == c_out)
+        self.use_residual = stride == 1 and c_in == c_out
 
         # Expansion phase (1x1 conv, skip if expand_ratio == 1)
-        self.expand = (
-            ConvBnAct(c_in, expanded, kernel=1)
-            if expand_ratio != 1 else None
-        )
+        self.expand = ConvBnAct(c_in, expanded, kernel=1) if expand_ratio != 1 else None
 
         # Depthwise phase (groups == expanded for depthwise separable)
         self.depthwise = ConvBnAct(
-            expanded, expanded, kernel=kernel, stride=stride,
-            groups=expanded, act=True,
+            expanded,
+            expanded,
+            kernel=kernel,
+            stride=stride,
+            groups=expanded,
+            act=True,
         )
 
         # Squeeze-Excitation
@@ -221,8 +228,13 @@ class EfficientNetB2Backbone:
         self.head_conv = ConvBnAct(352, 1408, kernel=1)
 
     def _make_stage(
-        self, c_in: int, c_out: int, kernel: int,
-        stride: int, expand: int, num_blocks: int,
+        self,
+        c_in: int,
+        c_out: int,
+        kernel: int,
+        stride: int,
+        expand: int,
+        num_blocks: int,
     ) -> list:
         blocks = [MBConv(c_in, c_out, kernel, stride, expand)]
         for _ in range(1, num_blocks):
@@ -318,7 +330,7 @@ class PlanHead:
 
     def __call__(self, h: Tensor) -> Tensor:
         x = (h @ self.fc1[0].T + self.fc1[1]).relu()
-        return h @ self.fc2[0].T + self.fc2[1]
+        return x @ self.fc2[0].T + self.fc2[1]
 
 
 class LaneHead:
@@ -440,10 +452,10 @@ class SupercomboModel:
         hidden = self.gru(context, initial_state)  # (1, 512)
 
         # 5. Multi-head decode
-        plan = self.plan_head(hidden)    # (1, 4955)
-        lanes = self.lane_head(hidden)   # (1, 528)
-        leads = self.lead_head(hidden)   # (1, 429)
-        meta = self.meta_head(hidden)    # (1, 560)
+        plan = self.plan_head(hidden)  # (1, 4955)
+        lanes = self.lane_head(hidden)  # (1, 528)
+        leads = self.lead_head(hidden)  # (1, 429)
+        meta = self.meta_head(hidden)  # (1, 560)
 
         # 6. Pack outputs into single tensor
         predictions = _concat_features(plan, lanes, leads, meta)  # (1, 6472)
@@ -497,9 +509,7 @@ def predict(
     Returns (predictions, new_hidden_state).
     """
     if _model is None:
-        raise RuntimeError(
-            "Model not initialized. Call init_from_onnx() first."
-        )
+        raise RuntimeError("Model not initialized. Call init_from_onnx() first.")
     return _model.forward(input_imgs, desire, traffic_convention, initial_state)
 
 
@@ -532,6 +542,7 @@ def _concat_features(*tensors: Tensor) -> Tensor:
         total_dim += t.shape[-1]
 
     from tinygrad.lazy import LazyBuffer, LazyOp
+
     op = LazyOp("LOAD", (), dtype=dtypes.float32, shape=(1, total_dim))
     return Tensor(LazyBuffer(op, dtypes.float32, (1, total_dim), data=all_data))
 
@@ -562,25 +573,31 @@ def _grouped_conv2d(
     group_outputs = []
     for g in range(groups):
         # Slice input channels for this group
-        x_g = x.shrink([
-            (0, n),
-            (g * c_in_per_group, (g + 1) * c_in_per_group),
-            (0, h),
-            (0, w_dim),
-        ])
+        x_g = x.shrink(
+            [
+                (0, n),
+                (g * c_in_per_group, (g + 1) * c_in_per_group),
+                (0, h),
+                (0, w_dim),
+            ]
+        )
         # Slice weight filters for this group
-        w_g = weight.shrink([
-            (g * c_out_per_group, (g + 1) * c_out_per_group),
-            (0, c_in_per_group),
-            (0, weight.shape[2]),
-            (0, weight.shape[3]),
-        ])
+        w_g = weight.shrink(
+            [
+                (g * c_out_per_group, (g + 1) * c_out_per_group),
+                (0, c_in_per_group),
+                (0, weight.shape[2]),
+                (0, weight.shape[3]),
+            ]
+        )
         # Per-group bias
         b_g = None
         if bias is not None:
-            b_g = bias.shrink([
-                (g * c_out_per_group, (g + 1) * c_out_per_group),
-            ])
+            b_g = bias.shrink(
+                [
+                    (g * c_out_per_group, (g + 1) * c_out_per_group),
+                ]
+            )
         out_g = Tensor.conv2d(x_g, w_g, b_g, stride=stride, padding=padding)
         group_outputs.append(out_g)
 
@@ -599,5 +616,6 @@ def _grouped_conv2d(
 
     final_shape = (n_out, c_out, h_out, w_out)
     from tinygrad.lazy import LazyBuffer, LazyOp
+
     op = LazyOp("LOAD", (), dtype=dtypes.float32, shape=final_shape)
     return Tensor(LazyBuffer(op, dtypes.float32, final_shape, data=all_data))

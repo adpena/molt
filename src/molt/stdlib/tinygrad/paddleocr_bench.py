@@ -16,7 +16,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
-import tinygrad.realize
 from tinygrad.tensor import Tensor
 
 
@@ -31,24 +30,24 @@ def main():
     # Run conv2d (the hot op in PaddleOCR)
     print("Running conv2d...")
     y = x.conv2d(w, padding=1)
-    y_data = y.tolist()
+    y_sample = y.tolist()[0][0][0][0]
 
-    print(f"Conv2d output shape: {y.shape}")
+    print(f"Conv2d output shape: {y.shape}, sample={y_sample}")
 
     # Run ReLU (activation fusion target)
     z = y.relu()
-    z_data = z.tolist()
-    print(f"ReLU output shape: {z.shape}")
+    z_sample = z.tolist()[0][0][0][0]
+    print(f"ReLU output shape: {z.shape}, sample={z_sample}")
 
     # Chain conv2d + relu (PaddleOCR fused pattern)
     w2 = Tensor.rand(16, 8, 3, 3)
     y2 = z.conv2d(w2, padding=1)
-    y2_data = y2.tolist()
-    print(f"Conv2d layer 2 output shape: {y2.shape}")
+    y2_sample = y2.tolist()[0][0][0][0]
+    print(f"Conv2d layer 2 output shape: {y2.shape}, sample={y2_sample}")
 
     r2 = y2.relu()
-    r2_data = r2.tolist()
-    print(f"ReLU layer 2 output shape: {r2.shape}")
+    r2_sample = r2.tolist()[0][0][0][0]
+    print(f"ReLU layer 2 output shape: {r2.shape}, sample={r2_sample}")
 
     print("PASS: compiled tinygrad inference loop works")
     return 0
