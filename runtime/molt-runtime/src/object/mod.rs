@@ -1680,6 +1680,29 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     "molt dec_ref_zero ptr=0x{:x} type_id={}",
                     ptr as usize, type_id
                 );
+                if type_id == TYPE_ID_CODE {
+                    let filename_bits = code_filename_bits(ptr);
+                    let name_bits = code_name_bits(ptr);
+                    let varnames_bits = code_varnames_bits(ptr);
+                    let filename = crate::string_obj_to_owned(obj_from_bits(filename_bits))
+                        .unwrap_or_else(|| "<non-str>".to_string());
+                    let name = crate::string_obj_to_owned(obj_from_bits(name_bits))
+                        .unwrap_or_else(|| "<non-str>".to_string());
+                    let varnames_ptr = obj_from_bits(varnames_bits)
+                        .as_ptr()
+                        .map(|p| p as usize)
+                        .unwrap_or(0);
+                    eprintln!(
+                        "molt dec_ref_zero code name={} file={} varnames=0x{:x}",
+                        name, filename, varnames_ptr
+                    );
+                } else if type_id == TYPE_ID_TUPLE {
+                    let vec_ptr = seq_vec_ptr(ptr) as usize;
+                    eprintln!(
+                        "molt dec_ref_zero tuple ptr=0x{:x} vec=0x{:x}",
+                        ptr as usize, vec_ptr
+                    );
+                }
             }
             if type_id == TYPE_ID_FUNCTION && {
                 static TRACE: OnceLock<bool> = OnceLock::new();
