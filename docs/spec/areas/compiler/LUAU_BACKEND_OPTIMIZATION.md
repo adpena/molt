@@ -54,6 +54,7 @@ The Luau backend (`LuauBackend` in `luau.rs`) transpiles Molt's `SimpleIR` to Lu
 | List literal `[]` | `{}` table constructor | Optimal |
 | List/string indexing | 0-to-1 index adjustment plus bounds guard for known list/string containers | Correct -- raises `IndexError` on out-of-range reads |
 | List assignment/deletion | 0-to-1 index adjustment plus bounds guard for known list containers | Correct -- raises `IndexError` on out-of-range mutation |
+| `list.pop` / `list.index` | Direct `table.remove` / `ipairs` loops with explicit Python error guards | Correct for admitted list subset |
 | Dict literal `{}` | `{[k1]=v1, ...}` keyed table | Optimal |
 | Set `set()` | `{}` table (values as keys mapped to `true`) | Correct |
 | `range(start, stop, step)` | `molt_range()` helper or `for i = start, stop-1, step do` | Good |
@@ -250,7 +251,7 @@ The Lean formalization explicitly acknowledges this: "Molt only compiles program
 **Python**: 0-based, `s[0]` is first character. `s[-1]` is last.
 **Luau**: 1-based, `string.sub(s, 1, 1)` is first character.
 
-**Current handling**: The backend adjusts numeric indices with `+ 1` for non-negative indices and `#container + idx + 1` for negative indices. Known list and string reads emit direct bounds guards that raise `IndexError` before table/string access. Known list assignment and deletion emit scoped bounds guards before mutation. Remaining work: extend exact bounds/error coverage across unknown container dispatch and all string method edge cases.
+**Current handling**: The backend adjusts numeric indices with `+ 1` for non-negative indices and `#container + idx + 1` for negative indices. Known list and string reads emit direct bounds guards that raise `IndexError` before table/string access. Known list assignment/deletion and `list.pop` emit scoped bounds guards before mutation. `list.index` raises `ValueError` when missing. Remaining work: extend exact bounds/error coverage across unknown container dispatch and all string method edge cases.
 
 ### 3.3 None vs nil
 

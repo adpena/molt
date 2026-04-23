@@ -66,27 +66,35 @@ fn raw_matmul(a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usize, n: usize)
 }
 
 fn gpu_matmul(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
-    // Matmul as a series of primitive ops: multiply + reduce_sum
-    // For each output element [i,j], compute sum(A[i,:] * B[:,j])
+    // Matmul as a fused Mul + ReduceSum kernel.
     //
-    // In the primitive stack, we build this as:
-    // 1. Broadcast A from [m,k] and B from [k,n] to [m,k,n]
-    // 2. Elementwise MUL
-    // 3. ReduceSum over axis 1 (k dimension)
+    // This mirrors the real lazy graph pattern:
+    //   1. Broadcast A (M x K) and B (K x N) to (M x K x N)
+    //   2. Elementwise MUL in the broadcast space
+    //   3. ReduceSum over K to produce (M x N)
     //
-    // For the CpuDevice interpreter, we construct the kernel directly.
+    // The fused kernel representation uses:
+    //   - bufs[0]: output (M*N elements)
+    //   - bufs[1]: A buffer (M*K elements, broadcast-expanded to M*K*N logically)
+    //   - bufs[2]: B buffer (K*N elements, broadcast-expanded to M*K*N logically)
+    //   - ops[0]: Mul(Buf(1), Buf(2))
+    //   - ops[1]: ReduceSum(Op(0))
     let out_n = m * n;
-    let out_buf = vec![0u8; out_n * 4];
+    let mkn = m * k * n;
 
-    // Direct computation via raw kernel for molt-gpu overhead measurement:
-    // We measure the full pipeline: schedule + fuse + interpret.
-    // Use per-element reduce kernel: for each output [i,j], reduce over k.
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        ops: vec![
+            FusedOp {
+                op: PrimitiveOp::Mul,
+                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                dst_dtype: DType::Float32,
+            },
+            FusedOp {
+                op: PrimitiveOp::ReduceSum,
+                srcs: vec![FusedSrc::Op(0)],
+                dst_dtype: DType::Float32,
+            },
+        ],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -96,7 +104,13 @@ fn gpu_matmul(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: usize) -> V
             },
             BufferBinding {
                 buf_id: 1,
-                st: ShapeTracker::contiguous(&[out_n * k]),
+                st: ShapeTracker::contiguous(&[mkn]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[mkn]),
                 dtype: DType::Float32,
                 access: BufferAccess::Read,
             },
@@ -107,27 +121,11 @@ fn gpu_matmul(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: usize) -> V
         vectorize_width: 1,
     };
 
-    // Pre-compute the element-wise products: A[i,k] * B[k,j] for all (i,k,j).
-    let mut products = vec![0f32; m * k * n];
-    for i in 0..m {
-        for kk in 0..k {
-            for j in 0..n {
-                products[i * k * n + kk * n + j] = a_data[i * k + kk] * b_data[kk * n + j];
-            }
-        }
-    }
-    // Reshape products for reduce: [out_n, k] layout where reduce is over k.
-    let mut reduce_input = vec![0f32; out_n * k];
-    for i in 0..m {
-        for j in 0..n {
-            for kk in 0..k {
-                reduce_input[(i * n + j) * k + kk] = products[i * k * n + kk * n + j];
-            }
-        }
-    }
-    let reduce_input_bytes = f32_to_bytes(&reduce_input);
+    let a_bytes = f32_to_bytes(a_data);
+    let b_bytes = f32_to_bytes(b_data);
+    let out_buf = vec![0u8; out_n * 4];
 
-    let mut bufs = vec![out_buf, reduce_input_bytes];
+    let mut bufs = vec![out_buf, a_bytes, b_bytes];
     interpret::execute_kernel(&kernel, &mut bufs);
     bytes_to_f32(&bufs[0])
 }
