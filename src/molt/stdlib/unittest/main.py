@@ -1,15 +1,7 @@
-"""Intrinsic-first stdlib module stub for `unittest.main`."""
+"""unittest.main — re-exported from unittest for Molt."""
 
-from _intrinsics import require_intrinsic as _require_intrinsic
+from __future__ import annotations
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
+from unittest import main
 
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `unittest.main` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "unittest.main" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
-
-
-globals().pop("_require_intrinsic", None)
+__all__ = ["main"]

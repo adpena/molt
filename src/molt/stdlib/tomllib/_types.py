@@ -1,15 +1,20 @@
-"""Intrinsic-first stdlib module stub for `tomllib._types`."""
+"""tomllib._types — internal type aliases for Molt's TOML parser."""
 
-from _intrinsics import require_intrinsic as _require_intrinsic
+from __future__ import annotations
 
-_require_intrinsic("molt_capabilities_has")
+from typing import Any, Dict, List, Union
 
+# Key type used internally
+Key = str
 
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tomllib._types` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "tomllib._types" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
+# The TOML value type (recursive)
+TOMLValue = Union[
+    str,
+    int,
+    float,
+    bool,
+    "Dict[str, Any]",
+    "List[Any]",
+]
 
-
-globals().pop("_require_intrinsic", None)
+__all__: list[str] = []

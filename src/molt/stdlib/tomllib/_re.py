@@ -1,15 +1,10 @@
-"""Intrinsic-first stdlib module stub for `tomllib._re`."""
+"""tomllib._re — compiled regex patterns for Molt's TOML parser.
 
-from _intrinsics import require_intrinsic as _require_intrinsic
+All parsing in Molt's tomllib is done via the recursive-descent _Parser in
+``tomllib/__init__.py``.  This module exists only for API compatibility with
+code that does ``from tomllib._re import ...``.  It is not used internally.
+"""
 
-_require_intrinsic("molt_capabilities_has")
+from __future__ import annotations
 
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `tomllib._re` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "tomllib._re" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
-
-
-globals().pop("_require_intrinsic", None)
+__all__: list[str] = []
