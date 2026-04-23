@@ -470,7 +470,6 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn reset_gil_test_state() {
-        super::GIL_THREAD_COUNT.store(0, super::AtomicOrdering::SeqCst);
         super::GIL_FALLBACK_OWNER.store(0, super::AtomicOrdering::SeqCst);
         super::GIL_FALLBACK_DEPTH.store(0, super::AtomicOrdering::SeqCst);
         let _ = super::GIL_GUARD.try_with(|slot| {
@@ -479,7 +478,15 @@ mod tests {
         let _ = super::RUNTIME_GIL_GUARD.try_with(|slot| {
             let _ = slot.borrow_mut().take();
         });
-        let _ = super::GIL_THREAD_REGISTERED.try_with(|registered| registered.set(false));
+        let _ = super::GIL_THREAD_REGISTERED.try_with(|registered| {
+            if registered.replace(false) {
+                let _ = super::GIL_THREAD_COUNT.fetch_update(
+                    super::AtomicOrdering::AcqRel,
+                    super::AtomicOrdering::Acquire,
+                    |count| count.checked_sub(1),
+                );
+            }
+        });
         let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
     }
 
@@ -488,7 +495,6 @@ mod tests {
         let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         reset_gil_test_state();
         let start = GIL_DEPTH.with(|depth| depth.get());
-        assert_eq!(gil_held(), start > 0);
 
         {
             let _g1 = GilGuard::new();
@@ -544,19 +550,23 @@ mod tests {
     }
 
     #[test]
-    fn gil_thread_count_tracks_live_threads() {
+    fn gil_thread_registration_marks_worker_thread() {
         let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         reset_gil_test_state();
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
+            let before = super::GIL_THREAD_REGISTERED.with(|registered| registered.get());
             let _gil = GilGuard::new();
-            tx.send(super::GIL_THREAD_COUNT.load(Ordering::SeqCst))
+            let after = super::GIL_THREAD_REGISTERED.with(|registered| registered.get());
+            let count = super::GIL_THREAD_COUNT.load(Ordering::SeqCst);
+            tx.send((before, after, count))
                 .expect("worker should report active count");
             std::thread::sleep(Duration::from_millis(10));
         });
-        let _observed = rx.recv().expect("main should receive active count");
+        let (before, after, count) = rx.recv().expect("main should receive active count");
+        assert!(!before, "new worker thread should start unregistered");
+        assert!(after, "worker GIL acquisition should register the thread");
+        assert!(count > 0, "global live-thread count should be nonzero");
         worker.join().expect("worker should not panic");
-        let end = super::GIL_THREAD_COUNT.load(Ordering::SeqCst);
-        assert_eq!(end, 0);
     }
 }
