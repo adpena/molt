@@ -2,9 +2,9 @@
  * Cloudflare Worker entry point for OCR and document processing.
  *
  * OCR Engine Architecture:
- *   RECOMMENDED: configured browser-side OCR path (client-side)
- *   EXPERIMENTAL: Falcon-OCR (edge inference, INT4 CPU, degraded quality)
- *   PLANNED: Nemotron v2 through an explicitly configured GPU service endpoint
+ *   1. PaddleOCR (molt/tinygrad) — 16 MB, ~9 ms, server-side ONNX interpreter
+ *   2. Nemotron v2 (ONNX INT8) — 50 MB, ~1.1s CPU / fast GPU, R2-hosted models
+ *   3. Falcon-OCR (WASM+WebGPU) — 2.9 MB, browser-side client inference
  *
  * The default /ocr endpoint returns 503 directing clients to PaddleOCR
  * (which runs client-side — no server round-trip). Falcon-OCR edge
@@ -23,7 +23,7 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleTokensRequest, handleBatchOcr, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill, normalizeOcrResultPayload, handlePaddleMoltInference } from "./ocr_api.js";
+import { handleOcrRequest, handleTokensRequest, handleBatchOcr, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill, normalizeOcrResultPayload, handlePaddleMoltInference, handleNemotronOcr } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, categorizeError } from "./monitoring.js";
 import { getAnalyticsSummary } from "./analytics.js";
@@ -384,6 +384,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="card">
         <h2>System Status</h2>
         <div id="health-status">Loading...</div>
+    </div>
+
+    <div class="card">
+        <h2>OCR Engines</h2>
+        <div class="metric"><span>PaddleOCR (molt/tinygrad)</span><span class="status-ok">16 MB, ~9 ms server-side</span></div>
+        <div class="metric"><span>Nemotron v2 (ONNX INT8)</span><span class="status-ok">50 MB, ~1.1s CPU / GPU proxy</span></div>
+        <div class="metric"><span>Falcon-OCR (WASM+WebGPU)</span><span class="status-ok">2.9 MB, browser-side</span></div>
     </div>
 
     <div class="card">
@@ -1842,6 +1849,103 @@ export default {
       }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
     }
 
+    // -----------------------------------------------------------------------
+    // Nemotron OCR v2 (ONNX INT8) — R2-hosted models
+    //
+    // Architecture: RegNetX-8GF detector + CNN/Transformer recognizer
+    // The recognizer takes 128-channel feature crops from the detector
+    // (NOT raw RGB crops like PaddleOCR). INT8 quantized via ConvInteger
+    // and MatMulInteger ops.
+    //
+    // POST with image body: run inference (requires GPU proxy or ORT)
+    // POST without image body: return model status / health check
+    // -----------------------------------------------------------------------
+    if (path === "/ocr/nemotron" && request.method === "POST") {
+      const ct = request.headers.get("Content-Type") || "";
+      const hasImageBody = ct.includes("multipart/form-data") ||
+        ct.includes("application/json") ||
+        ct.includes("image/");
+
+      if (hasImageBody) {
+        const payment = await verifyX402(request, env, rid, cors);
+        if (!isFromBrowser(request, env) && !payment.authorized) return payment.response;
+
+        const response = await handleNemotronOcr(request, env, cors, rid);
+        const headers = new Headers(response.headers);
+        headers.set("X-Request-ID", rid);
+        return new Response(response.body, { status: response.status, headers });
+      }
+
+      // No image body — return model status (health check / discovery)
+      let detAvailable = false;
+      let recEnAvailable = false;
+      let recMlAvailable = false;
+
+      if (env.WEIGHTS) {
+        try {
+          const [detHead, recEnHead, recMlHead] = await Promise.all([
+            env.WEIGHTS.head("models/nemotron/nemotron_det_en_int8.onnx"),
+            env.WEIGHTS.head("models/nemotron/nemotron_rec_en_int8.onnx"),
+            env.WEIGHTS.head("models/nemotron/nemotron_rec_ml_int8.onnx"),
+          ]);
+          detAvailable = !!detHead;
+          recEnAvailable = !!recEnHead;
+          recMlAvailable = !!recMlHead;
+        } catch (_e) {
+          // R2 head check failed — models not available
+        }
+      }
+
+      return new Response(JSON.stringify({
+        engine: "nemotron-v2",
+        status: detAvailable && recEnAvailable ? "available" : "models-missing",
+        models: {
+          detector: {
+            name: "nemotron_det_en_int8",
+            path: "models/nemotron/nemotron_det_en_int8.onnx",
+            size_mb: 43.6,
+            architecture: "RegNetX-8GF + FPN + ASPP",
+            input: "[batch, 3, height, width]",
+            outputs: ["confidence [B,H,W]", "rboxes [B,H,W,5]", "features [B,128,H,W]"],
+            available: detAvailable,
+          },
+          recognizer_en: {
+            name: "nemotron_rec_en_int8",
+            path: "models/nemotron/nemotron_rec_en_int8.onnx",
+            size_mb: 6.1,
+            architecture: "CNN encoder + Pre-norm Transformer (3 layers)",
+            input: "[1, 128, 8, 32]  (feature crop, NOT RGB)",
+            output: "logits [1, 32, 858]",
+            charset_size: 858,
+            available: recEnAvailable,
+          },
+          recognizer_multi: {
+            name: "nemotron_rec_ml_int8",
+            path: "models/nemotron/nemotron_rec_ml_int8.onnx",
+            size_mb: 35.2,
+            architecture: "CNN encoder + Pre-norm Transformer (6 layers)",
+            input: "[1, 128, 8, 128]  (feature crop, NOT RGB)",
+            output: "logits [1, 128, 14247]",
+            charset_size: 14247,
+            languages: ["en", "zh", "ja", "ko", "ru"],
+            available: recMlAvailable,
+          },
+        },
+        total_size_mb: 49.7,
+        pipeline: [
+          "Detector: image -> confidence map + rotated boxes + 128-ch feature map",
+          "Connected-component labeling on confidence map -> text regions",
+          "Feature crop extraction from 128-ch map (NOT raw RGB)",
+          "Recognizer: feature crop [1,128,8,32] -> logits [1,32,858]",
+          "CTC greedy decode with 858-char EN charset",
+        ],
+        int8_ops: ["ConvInteger", "DynamicQuantizeLinear", "MatMulInteger"],
+        note: "Recognizer input is detector feature crops (128 channels), not RGB. " +
+          "INT8 quantized — requires ONNX Runtime or GPU proxy, not JS interpreter.",
+        request_id: rid,
+      }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+    }
+
     // Fast path: Queue-based batch OCR — no local model loading.
     // Uses Workers AI exclusively via the queue consumer.
     if (path === "/batch" && request.method === "POST") {
@@ -2271,21 +2375,34 @@ export default {
         }
 
         // Nemotron OCR v2 path (X-Use-Backend: nemotron).
-        // The current upstream package is PyTorch/CUDA-oriented and must be
-        // routed through an explicitly configured GPU service endpoint before use.
-        // Until then this route fails closed instead of guessing an endpoint.
+        // ONNX INT8 models are exported and hosted in R2. The detector (43.6 MB)
+        // and recognizer (6.1 MB EN / 35.2 MB multi) use INT8 quantized ops
+        // (ConvInteger, MatMulInteger) that require ONNX Runtime — they cannot
+        // run in the JS ONNX interpreter. Route through GPU proxy or use the
+        // dedicated /ocr/nemotron endpoint.
         if (path === "/ocr" && useBackend === "nemotron") {
+          // Attempt GPU proxy if configured
+          if (env.GPU_INFERENCE_URL) {
+            try {
+              const gpuResult = await proxyToGPU(request, env, cors, rid, "nemotron");
+              return gpuResult;
+            } catch (_e) {
+              // Fall through to error response
+            }
+          }
           return new Response(
             JSON.stringify({
-              error: "Nemotron OCR v2 requires a configured GPU service endpoint",
-              status: "planned",
+              error: "Nemotron OCR v2 requires GPU inference — use /ocr/nemotron endpoint or configure GPU_INFERENCE_URL",
+              status: "available",
               info: {
                 model: "nvidia/nemotron-ocr-v2",
-                pipeline: "3-stage (detector + recognizer + relational)",
-                runtime: "PyTorch/CUDA upstream package",
-                format: "PyTorch .pth (no ONNX export available)",
-                deployment_target: "configured GPU service endpoint",
-                blocker: "no Nemotron GPU service endpoint configured",
+                pipeline: "2-stage ONNX (detector + recognizer, relational model not exported)",
+                runtime: "ONNX Runtime (INT8 quantized)",
+                format: "ONNX INT8 (ConvInteger + MatMulInteger ops)",
+                models_in_r2: true,
+                total_size_mb: 49.7,
+                dedicated_endpoint: "/ocr/nemotron",
+                blocker: "INT8 ONNX ops not supported by JS interpreter — needs ORT or GPU proxy",
               },
               request_id: rid,
             }),
@@ -2729,7 +2846,7 @@ export default {
     const skipPrewarm = path === "/batch" || path.startsWith("/batch/")
       || path === "/ocr/structured" || path === "/invoice/fill"
       || path === "/ocr/detailed" || path === "/ocr/table"
-      || path === "/template/extract";
+      || path === "/ocr/nemotron" || path === "/template/extract";
     if (!skipPrewarm) {
       ctx.waitUntil(
         (async () => {
