@@ -328,9 +328,12 @@ mod native_backend_consts {
     // Data pointer = header_ptr + 24, so offsets from data_ptr are negative.
     // NOTE: HEADER_STATE_OFFSET removed — state lives in cold header now;
     // the native JIT uses molt_obj_get_state/molt_obj_set_state C API calls.
+    pub(super) const HEADER_TYPE_ID_OFFSET: i32 = -HEADER_SIZE_BYTES; // type_id @ header+0
     pub(super) const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
     pub(super) const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 8);
     pub(super) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
+    /// TYPE_ID_LIST_BOOL (250) — used by the JIT to inline list_bool access.
+    pub(super) const JIT_TYPE_ID_LIST_BOOL: i64 = 250;
 }
 
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
@@ -3094,6 +3097,21 @@ impl SimpleBackend {
                                     func_name, errors
                                 );
                             }
+                            #[cfg(debug_assertions)]
+                            {
+                                let repr_violations =
+                                    crate::tir::verify_lir_repr::verify_register_passable(
+                                        &lir_func,
+                                    );
+                                if !repr_violations.is_empty() {
+                                    eprintln!(
+                                        "[LIR-repr] {} register-passable violation(s) in '{}': {:?}",
+                                        repr_violations.len(),
+                                        func_name,
+                                        repr_violations,
+                                    );
+                                }
+                            }
                             let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
                                 &tir_func, &type_map,
                             );
@@ -4014,6 +4032,19 @@ mod tests {
             crate::tir::verify_lir::verify_lir_function(&lir).is_ok(),
             "LIR verification failed after TIR optimization"
         );
+        #[cfg(debug_assertions)]
+        {
+            let repr_violations =
+                crate::tir::verify_lir_repr::verify_register_passable(&lir);
+            if !repr_violations.is_empty() {
+                log::warn!(
+                    "[LIR-repr] {} register-passable violation(s) in '{}': {:?}",
+                    repr_violations.len(),
+                    func.name,
+                    repr_violations,
+                );
+            }
+        }
         let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir, &type_map);
         assert!(
             crate::tir::lower_to_simple::validate_labels(&ops),
