@@ -9351,6 +9351,39 @@ mod tests {
     }
 
     #[test]
+    fn test_dict_popitem_emits_empty_dict_key_error_guard() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "dict_popitem_guard".to_string(),
+                params: vec!["d".to_string()],
+                param_types: Some(vec!["dict[str, int]".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "dict_popitem".to_string(),
+                        args: Some(vec!["d".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__type=\"KeyError\"")
+                && output.contains("popitem(): dictionary is empty"),
+            "dict.popitem must guard empty dictionaries, got:\n{output}"
+        );
+    }
+
+    #[test]
     fn test_lower_try_to_pcall_basic() {
         let ops = vec![
             OpIR {

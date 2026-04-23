@@ -22,6 +22,8 @@ All ops decompose to tinygrad's 26 compute primitives.
 
 from __future__ import annotations
 
+import struct
+
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
@@ -102,17 +104,10 @@ class OnnxInterpreter:
         """Parse ONNX model and prepare for execution.
 
         Extracts the computation graph (nodes, constants, I/O names).
-        Uses the onnx library for reliability. The raw protobuf weight parser
-        is intentionally not used as a graph-execution fallback because ONNX
-        graph decoding requires node, edge, attribute, and I/O metadata.
+        Uses a dependency-free ONNX protobuf reader so compiled Molt binaries
+        never depend on host Python packages such as ``onnx`` or ``numpy``.
         """
-        try:
-            self._load_with_onnx(onnx_bytes)
-        except ImportError as exc:
-            raise RuntimeError(
-                "ONNX graph execution requires the 'onnx' package. "
-                "The built-in raw parser is weight-only and cannot execute graphs."
-            ) from exc
+        self._load_raw(onnx_bytes)
         self.optimize_graph()
 
     def run(
@@ -488,111 +483,283 @@ class OnnxInterpreter:
     # Model loading
     # ------------------------------------------------------------------
 
-    def _load_with_onnx(self, data: bytes) -> None:
-        import onnx
-        from onnx import numpy_helper
-        import numpy as np
-
-        model = onnx.load_from_string(data)
-        graph = model.graph
-
-        self._input_names = [inp.name for inp in graph.input]
-        self._output_names = [out.name for out in graph.output]
-
-        # Load initializers as constants
-        for init in graph.initializer:
-            arr = numpy_helper.to_array(init).astype(np.float32)
-            shape = tuple(int(d) for d in arr.shape)
-            values = arr.flatten().tolist()
-            self._values[init.name] = _make_tensor(values, shape)
-
-        # Walk nodes
-        for node in graph.node:
-            if node.op_type == "Constant":
-                # Extract constant value and store
-                name = node.output[0] if node.output else ""
-                if not name:
-                    continue
-                for attr in node.attribute:
-                    if attr.name == "value" and attr.t is not None:
-                        t = attr.t
-                        arr = numpy_helper.to_array(t)
-                        # Keep int64 constants as int for shape ops
-                        if t.data_type in (6, 7):
-                            shape = (
-                                tuple(int(d) for d in arr.shape)
-                                if arr.shape
-                                else (arr.size,)
-                            )
-                            values = arr.flatten().tolist()
-                            self._values[name] = _make_int_tensor(values, shape)
-                        else:
-                            arr = arr.astype(np.float32)
-                            shape = (
-                                tuple(int(d) for d in arr.shape)
-                                if arr.shape
-                                else (arr.size,)
-                            )
-                            values = arr.flatten().tolist()
-                            self._values[name] = _make_tensor(values, shape)
-                    elif attr.name == "value_int":
-                        self._values[name] = _make_int_tensor([attr.i], (1,))
-                    elif attr.name == "value_float":
-                        self._values[name] = _make_tensor([attr.f], (1,))
-                continue
-
-            # Parse attributes
-            attrs: dict[str, object] = {}
-            for attr in node.attribute:
-                if attr.type == 1:  # FLOAT
-                    attrs[attr.name] = attr.f
-                elif attr.type == 2:  # INT
-                    attrs[attr.name] = attr.i
-                elif attr.type == 3:  # STRING
-                    attrs[attr.name] = attr.s
-                elif attr.type == 4:  # TENSOR
-                    attrs[attr.name] = attr.t
-                elif attr.type == 6:  # FLOATS
-                    attrs[attr.name] = list(attr.floats)
-                elif attr.type == 7:  # INTS
-                    attrs[attr.name] = list(attr.ints)
-
-            self._graph_nodes.append(
-                {
-                    "op_type": node.op_type,
-                    "inputs": list(node.input),
-                    "outputs": list(node.output),
-                    "attrs": attrs,
-                }
-            )
-
     def _load_raw(self, data: bytes) -> None:
-        """Weight-only raw protobuf parser.
+        """Parse ONNX ModelProto bytes without host dependencies."""
+        graph_bytes = _extract_field(data, 7, 2)
+        if graph_bytes is None:
+            raise ValueError("ONNX model missing GraphProto field")
 
-        Uses the existing OnnxWeightParser for weight extraction and
-        deliberately raises before graph execution. This path exists only
-        to provide a clear error when the full ``onnx`` graph parser is
-        unavailable.
-        """
-        from tinygrad.paddleocr import OnnxWeightParser
+        offset = 0
+        while offset < len(graph_bytes):
+            field_num, wire_type, value, new_offset = _read_field(graph_bytes, offset)
+            if new_offset is None:
+                break
+            offset = new_offset
 
-        parsed = OnnxWeightParser.parse(data)
-        for name, (shape, dtype_code, values) in parsed.items():
-            if not shape:
-                shape = (len(values),)
-            if dtype_code in (6, 7):
-                self._values[name] = _make_int_tensor(values, shape)
-            else:
-                self._values[name] = _make_tensor(values, shape)
+            if field_num == 1 and wire_type == 2:  # node
+                parsed = _parse_node_proto(value)
+                if parsed["op_type"] == "Constant":
+                    _load_constant_node(parsed, self._values)
+                else:
+                    self._graph_nodes.append(parsed)
+            elif field_num == 5 and wire_type == 2:  # initializer
+                name, shape, dtype_code, values = _parse_tensor_proto(value)
+                if name and values is not None:
+                    if not shape:
+                        shape = (len(values),)
+                    if dtype_code in (6, 7):
+                        self._values[name] = _make_int_tensor(values, shape)
+                    else:
+                        self._values[name] = _make_tensor(values, shape)
+            elif field_num == 11 and wire_type == 2:  # input
+                name = _parse_value_info_name(value)
+                if name:
+                    self._input_names.append(name)
+            elif field_num == 12 and wire_type == 2:  # output
+                name = _parse_value_info_name(value)
+                if name:
+                    self._output_names.append(name)
 
-        # Without the full onnx library, we cannot extract the computation
-        # graph (node list, I/O names). Raise so callers know to use the
-        # onnx library path for full graph execution.
-        raise RuntimeError(
-            "Raw protobuf loader extracted weights but cannot parse the "
-            "computation graph. Install the 'onnx' package for full graph "
-            "execution."
-        )
+
+def _load_constant_node(node: dict, values: dict[str, Tensor]) -> None:
+    name = node["outputs"][0] if node["outputs"] else ""
+    if not name:
+        return
+    attrs = node["attrs"]
+    tensor = attrs.get("value")
+    if isinstance(tensor, tuple):
+        _tensor_name, shape, dtype_code, data = tensor
+        if data is None:
+            return
+        if not shape:
+            shape = (len(data),)
+        if dtype_code in (6, 7):
+            values[name] = _make_int_tensor(data, shape)
+        else:
+            values[name] = _make_tensor(data, shape)
+        return
+    if "value_int" in attrs:
+        values[name] = _make_int_tensor([int(attrs["value_int"])], (1,))
+    elif "value_float" in attrs:
+        values[name] = _make_tensor([float(attrs["value_float"])], (1,))
+
+
+def _parse_node_proto(data: bytes) -> dict:
+    inputs: list[str] = []
+    outputs: list[str] = []
+    op_type = ""
+    attrs: dict[str, object] = {}
+    offset = 0
+    while offset < len(data):
+        field_num, wire_type, value, new_offset = _read_field(data, offset)
+        if new_offset is None:
+            break
+        offset = new_offset
+        if field_num == 1 and wire_type == 2:
+            inputs.append(value.decode("utf-8", errors="replace"))
+        elif field_num == 2 and wire_type == 2:
+            outputs.append(value.decode("utf-8", errors="replace"))
+        elif field_num == 4 and wire_type == 2:
+            op_type = value.decode("utf-8", errors="replace")
+        elif field_num == 5 and wire_type == 2:
+            name, attr_value = _parse_attribute_proto(value)
+            if name:
+                attrs[name] = attr_value
+    return {
+        "op_type": op_type,
+        "inputs": inputs,
+        "outputs": outputs,
+        "attrs": attrs,
+    }
+
+
+def _parse_attribute_proto(data: bytes) -> tuple[str, object]:
+    name = ""
+    attr_value: object = None
+    floats: list[float] = []
+    ints: list[int] = []
+    offset = 0
+    while offset < len(data):
+        field_num, wire_type, value, new_offset = _read_field(data, offset)
+        if new_offset is None:
+            break
+        offset = new_offset
+        if field_num == 1 and wire_type == 2:
+            name = value.decode("utf-8", errors="replace")
+        elif field_num == 2 and wire_type == 5:
+            attr_value = struct.unpack("<f", value)[0]
+        elif field_num == 3 and wire_type == 0:
+            attr_value = int(value)
+        elif field_num == 4 and wire_type == 2:
+            attr_value = value
+        elif field_num == 5 and wire_type == 2:
+            attr_value = _parse_tensor_proto(value)
+        elif field_num == 6 and wire_type == 2:
+            floats.extend(_decode_packed_float32(value))
+        elif field_num == 6 and wire_type == 5:
+            floats.append(struct.unpack("<f", value)[0])
+        elif field_num == 7 and wire_type == 2:
+            ints.extend(_decode_packed_varints(value))
+        elif field_num == 7 and wire_type == 0:
+            ints.append(int(value))
+    if floats:
+        attr_value = floats
+    if ints:
+        attr_value = ints
+    return name, attr_value
+
+
+def _parse_value_info_name(data: bytes) -> str:
+    offset = 0
+    while offset < len(data):
+        field_num, wire_type, value, new_offset = _read_field(data, offset)
+        if new_offset is None:
+            break
+        offset = new_offset
+        if field_num == 1 and wire_type == 2:
+            return value.decode("utf-8", errors="replace")
+    return ""
+
+
+def _parse_tensor_proto(
+    data: bytes,
+) -> tuple[str, tuple[int, ...], int, list[float] | list[int] | None]:
+    name = ""
+    dims: list[int] = []
+    data_type = 0
+    raw_data: bytes | None = None
+    float_data: list[float] = []
+    int64_data: list[int] = []
+    int32_data: list[int] = []
+
+    offset = 0
+    while offset < len(data):
+        field_num, wire_type, value, new_offset = _read_field(data, offset)
+        if new_offset is None:
+            break
+        offset = new_offset
+        if field_num == 1 and wire_type == 0:
+            dims.append(int(value))
+        elif field_num == 1 and wire_type == 2:
+            dims.extend(_decode_packed_varints(value))
+        elif field_num == 2 and wire_type == 0:
+            data_type = int(value)
+        elif field_num == 4 and wire_type == 2:
+            float_data.extend(_decode_packed_float32(value))
+        elif field_num == 4 and wire_type == 5:
+            float_data.append(struct.unpack("<f", value)[0])
+        elif field_num == 5 and wire_type == 2:
+            int32_data.extend(_decode_packed_varints(value))
+        elif field_num == 5 and wire_type == 0:
+            int32_data.append(int(value))
+        elif field_num == 7 and wire_type == 2:
+            int64_data.extend(_decode_packed_varints(value))
+        elif field_num == 7 and wire_type == 0:
+            int64_data.append(int(value))
+        elif field_num == 8 and wire_type == 2:
+            name = value.decode("utf-8", errors="replace")
+        elif field_num == 9 and wire_type == 2:
+            raw_data = value
+
+    shape = tuple(dims)
+    if raw_data is not None:
+        if data_type == 1:
+            return name, shape, data_type, _decode_packed_float32(raw_data)
+        if data_type == 6:
+            count = len(raw_data) // 4
+            return name, shape, data_type, list(
+                struct.unpack(f"<{count}i", raw_data[: count * 4])
+            )
+        if data_type == 7:
+            count = len(raw_data) // 8
+            return name, shape, data_type, list(
+                struct.unpack(f"<{count}q", raw_data[: count * 8])
+            )
+        if data_type == 11:
+            count = len(raw_data) // 8
+            return name, shape, data_type, [
+                float(x) for x in struct.unpack(f"<{count}d", raw_data[: count * 8])
+            ]
+
+    if data_type in (1, 11) and float_data:
+        return name, shape, data_type, float_data
+    if data_type == 6 and int32_data:
+        return name, shape, data_type, int32_data
+    if data_type == 7 and int64_data:
+        return name, shape, data_type, int64_data
+    if float_data:
+        return name, shape, data_type or 1, float_data
+    return name, shape, data_type, None
+
+
+def _extract_field(data: bytes, field_num: int, wire_type: int) -> bytes | None:
+    offset = 0
+    while offset < len(data):
+        fn, wt, value, new_offset = _read_field(data, offset)
+        if new_offset is None:
+            break
+        if fn == field_num and wt == wire_type:
+            return value
+        offset = new_offset
+    return None
+
+
+def _read_field(data: bytes, offset: int) -> tuple[int, int, object, int | None]:
+    if offset >= len(data):
+        return 0, 0, None, None
+    tag, offset = _read_varint(data, offset)
+    if offset is None:
+        return 0, 0, None, None
+    wire_type = tag & 0x7
+    field_num = tag >> 3
+    if wire_type == 0:
+        value, offset = _read_varint(data, offset)
+        return field_num, wire_type, value, offset
+    if wire_type == 1:
+        if offset + 8 > len(data):
+            return field_num, wire_type, None, None
+        return field_num, wire_type, data[offset : offset + 8], offset + 8
+    if wire_type == 2:
+        length, offset = _read_varint(data, offset)
+        if offset is None or offset + length > len(data):
+            return field_num, wire_type, None, None
+        return field_num, wire_type, data[offset : offset + length], offset + length
+    if wire_type == 5:
+        if offset + 4 > len(data):
+            return field_num, wire_type, None, None
+        return field_num, wire_type, data[offset : offset + 4], offset + 4
+    return field_num, wire_type, None, None
+
+
+def _read_varint(data: bytes, offset: int) -> tuple[int, int | None]:
+    result = 0
+    shift = 0
+    while offset < len(data):
+        b = data[offset]
+        offset += 1
+        result |= (b & 0x7F) << shift
+        if (b & 0x80) == 0:
+            return result, offset
+        shift += 7
+    return result, None
+
+
+def _decode_packed_varints(data: bytes) -> list[int]:
+    values: list[int] = []
+    offset = 0
+    while offset < len(data):
+        value, offset = _read_varint(data, offset)
+        if offset is None:
+            break
+        values.append(int(value))
+    return values
+
+
+def _decode_packed_float32(data: bytes) -> list[float]:
+    count = len(data) // 4
+    if count == 0:
+        return []
+    return list(struct.unpack(f"<{count}f", data[: count * 4]))
 
 
 # ---------------------------------------------------------------------------
