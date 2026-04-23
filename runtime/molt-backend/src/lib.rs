@@ -374,8 +374,9 @@ mod vec_layout {
             assert_eq!(v.len(), 7);
             assert_eq!(v.capacity(), 13);
 
-            let vec_bytes: &[u8; std::mem::size_of::<Vec<u64>>()] =
-                unsafe { &*(&v as *const Vec<u64> as *const [u8; std::mem::size_of::<Vec<u64>>()]) };
+            let vec_bytes: &[u8; std::mem::size_of::<Vec<u64>>()] = unsafe {
+                &*(&v as *const Vec<u64> as *const [u8; std::mem::size_of::<Vec<u64>>()])
+            };
 
             let data_ptr = v.as_ptr() as usize;
 

@@ -72,6 +72,13 @@ def test_builtin_features_from_import_graph_enable_gpu_primitives_for_tinygrad()
     assert "molt_gpu_primitives" in features
 
 
+def test_domain_features_from_required_runtime_exports_enable_stdlib_net() -> None:
+    features = cli._domain_features_from_required_runtime_exports(
+        {"molt_ssl_context_new", "molt_ssl_socket_write"}
+    )
+    assert "stdlib_net" in features
+
+
 def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
     cli._runtime_cargo_features_cached.cache_clear()
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")

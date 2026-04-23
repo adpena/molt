@@ -73,13 +73,6 @@ const POLL_TABLE_FUNCS: &[&str] = &[
     "contextlib_async_exitstack_enter_context_poll",
 ];
 
-fn intrinsic_manifest_name(runtime_name: &str) -> &str {
-    match runtime_name {
-        "molt_async_sleep_new" => "molt_async_sleep",
-        _ => runtime_name,
-    }
-}
-
 fn gpu_runtime_call_symbol(kind: &str) -> Option<&'static str> {
     match kind {
         "gpu_thread_id" => Some("molt_gpu_thread_id"),

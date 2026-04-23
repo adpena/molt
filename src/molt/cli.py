@@ -7789,6 +7789,19 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "molt_gpu_primitives",
 )
 
+_REQUIRED_RUNTIME_EXPORT_PREFIX_FEATURE_MAP: tuple[tuple[str, str], ...] = (
+    ("molt_ssl_", "stdlib_net"),
+    ("molt_socket_", "stdlib_net"),
+    ("molt_http_", "stdlib_net"),
+    ("molt_ipaddress_", "stdlib_net"),
+    ("molt_asyncio_", "stdlib_asyncio"),
+    ("molt_asyncgen_", "stdlib_asyncio"),
+    ("molt_future_", "stdlib_asyncio"),
+    ("molt_event_loop_", "stdlib_asyncio"),
+    ("molt_event_", "stdlib_asyncio"),
+    ("molt_pipe_transport_", "stdlib_asyncio"),
+)
+
 
 def _builtin_features_from_import_graph(
     resolved_modules: Collection[str] | None,
@@ -7846,6 +7859,20 @@ def _builtin_features_from_import_graph(
     if _resolved_modules_require_gpu_primitives(frozenset(resolved_modules)):
         features.append("molt_gpu_primitives")
 
+    return features
+
+
+def _domain_features_from_required_runtime_exports(
+    required_exports: Collection[str] | None,
+) -> list[str]:
+    if not required_exports:
+        return []
+    features: list[str] = []
+    for prefix, feature in _REQUIRED_RUNTIME_EXPORT_PREFIX_FEATURE_MAP:
+        if feature in features:
+            continue
+        if any(export_name.startswith(prefix) for export_name in required_exports):
+            features.append(feature)
     return features
 
 
@@ -23240,6 +23267,9 @@ def _ensure_runtime_wasm(
     resolved_modules: set[str] | frozenset[str] | None = None,
     required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
+    validate_exports = not reloc
+    effective_stdlib_profile = stdlib_profile or "micro"
+
     def _runtime_wasm_build_error_detail(
         build: subprocess.CompletedProcess[str],
     ) -> str | None:
@@ -23255,9 +23285,10 @@ def _ensure_runtime_wasm(
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if runtime_wasm.exists():
-            return _is_valid_runtime_wasm_artifact(
-                runtime_wasm
-            ) and _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+            return _is_valid_runtime_wasm_artifact(runtime_wasm) and (
+                not validate_exports
+                or _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+            )
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
@@ -23303,11 +23334,17 @@ def _ensure_runtime_wasm(
     )
     builtin_features = _builtin_features_from_import_graph(
         set(resolved_modules) if resolved_modules is not None else None,
-        stdlib_profile,
+        effective_stdlib_profile,
     )
+    required_export_features = _domain_features_from_required_runtime_exports(
+        required_exports
+    )
+    for feature in required_export_features:
+        if feature not in builtin_features:
+            builtin_features.append(feature)
     runtime_features = cargo_runtime_features
     fingerprint_features: tuple[str, ...] = runtime_features
-    if stdlib_profile == "micro":
+    if effective_stdlib_profile == "micro":
         fingerprint_features = tuple(
             list(runtime_features)
             + sorted(builtin_features)
@@ -23367,7 +23404,9 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
-            if not _runtime_wasm_exports_satisfy(runtime_wasm, required_exports):
+            if validate_exports and not _runtime_wasm_exports_satisfy(
+                runtime_wasm, required_exports
+            ):
                 if not json_output:
                     print(
                         "Hydrated runtime wasm artifact missing required exports.",
@@ -23436,7 +23475,10 @@ def _ensure_runtime_wasm(
         if (
             not needs_rebuild
             and _is_valid_runtime_wasm_artifact(runtime_wasm)
-            and _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+            and (
+                not validate_exports
+                or _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+            )
         ):
             if not reloc:
                 current_src = _resolve_built_runtime_wasm_artifact(
@@ -23470,6 +23512,7 @@ def _ensure_runtime_wasm(
             return True
         if (
             not needs_rebuild
+            and validate_exports
             and not _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
             and not json_output
         ):
@@ -23524,7 +23567,7 @@ def _ensure_runtime_wasm(
                 "wasm32-wasip1",
                 "--lib",
             ]
-        if stdlib_profile == "micro":
+        if effective_stdlib_profile == "micro":
             cmd.append("--no-default-features")
             micro_features = (
                 list(runtime_features) + sorted(builtin_features) + ["stdlib_micro"]
