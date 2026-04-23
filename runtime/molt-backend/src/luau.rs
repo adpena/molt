@@ -1919,25 +1919,12 @@ impl LuauBackend {
                                 // append returns None in Python; skip output.
                             }
                             "pop" => {
+                                let idx = args.get(1).map(|s| sanitize_ident(s));
                                 if let Some(ref out_name) = op.out {
                                     let out = sanitize_ident(out_name);
-                                    if args.len() > 1 {
-                                        let idx = sanitize_ident(&args[1]);
-                                        self.emit_line(&format!(
-                                            "local {out} = table.remove({obj}, if {idx} >= 0 then {idx} + 1 else #{obj} + {idx} + 1)"
-                                        ));
-                                    } else {
-                                        self.emit_line(&format!(
-                                            "local {out} = table.remove({obj})"
-                                        ));
-                                    }
-                                } else if args.len() > 1 {
-                                    let idx = sanitize_ident(&args[1]);
-                                    self.emit_line(&format!(
-                                        "table.remove({obj}, if {idx} >= 0 then {idx} + 1 else #{obj} + {idx} + 1)"
-                                    ));
+                                    self.emit_list_pop(&obj, idx.as_deref(), Some(&out));
                                 } else {
-                                    self.emit_line(&format!("table.remove({obj})"));
+                                    self.emit_list_pop(&obj, idx.as_deref(), None);
                                 }
                             }
                             "insert" => {
@@ -2184,31 +2171,12 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(list) = args.first() {
                     let list = sanitize_ident(list);
-                    if args.len() >= 2 {
-                        // list.pop(index) — handle negative indexing.
-                        let idx = sanitize_ident(&args[1]);
-                        if let Some(ref out_name) = op.out {
-                            let out = sanitize_ident(out_name);
-                            self.emit_line(&format!(
-                                "local {out}; do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 or __idx > #{list} then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; {out} = table.remove({list}, __idx) end"
-                            ));
-                        } else {
-                            self.emit_line(&format!(
-                                "do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 or __idx > #{list} then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; table.remove({list}, __idx) end"
-                            ));
-                        }
+                    let idx = args.get(1).map(|s| sanitize_ident(s));
+                    if let Some(ref out_name) = op.out {
+                        let out = sanitize_ident(out_name);
+                        self.emit_list_pop(&list, idx.as_deref(), Some(&out));
                     } else {
-                        // list.pop() — remove last element.
-                        if let Some(ref out_name) = op.out {
-                            let out = sanitize_ident(out_name);
-                            self.emit_line(&format!(
-                                "local {out}; if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; {out} = table.remove({list})"
-                            ));
-                        } else {
-                            self.emit_line(&format!(
-                                "if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; table.remove({list})"
-                            ));
-                        }
+                        self.emit_list_pop(&list, idx.as_deref(), None);
                     }
                 }
             }
@@ -2285,9 +2253,17 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = -1; do local __found = false; for __i, __v in ipairs({list}) do if __v == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
-                    ));
+                    if args.len() >= 4 {
+                        let start = sanitize_ident(&args[2]);
+                        let stop = sanitize_ident(&args[3]);
+                        self.emit_line(&format!(
+                            "local {out} = -1; do local __n = #{list}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __stop = if {stop} < 0 then __n + {stop} else {stop}; if __stop < 0 then __stop = 0 end; if __stop > __n then __stop = __n end; local __found = false; for __i = __start + 1, __stop do if {list}[__i] == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "local {out} = -1; do local __found = false; for __i, __v in ipairs({list}) do if __v == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
+                        ));
+                    }
                 }
             }
             "list_repeat_range" => {
@@ -3753,9 +3729,17 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let prefix = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = (string.sub({s}, 1, #{prefix}) == {prefix})"
-                    ));
+                    if args.len() >= 4 {
+                        let start = sanitize_ident(&args[2]);
+                        let end = sanitize_ident(&args[3]);
+                        self.emit_line(&format!(
+                            "local {out}; do local __n = #{s}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __slice = string.sub({s}, __start + 1, __end); {out} = (string.sub(__slice, 1, #{prefix}) == {prefix}) end"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "local {out} = (string.sub({s}, 1, #{prefix}) == {prefix})"
+                        ));
+                    }
                 }
             }
             "string_endswith" => {
@@ -3764,9 +3748,17 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let suffix = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = (string.sub({s}, -#{suffix}) == {suffix})"
-                    ));
+                    if args.len() >= 4 {
+                        let start = sanitize_ident(&args[2]);
+                        let end = sanitize_ident(&args[3]);
+                        self.emit_line(&format!(
+                            "local {out}; do local __n = #{s}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end; local __slice = string.sub({s}, __start + 1, __end); {out} = (string.sub(__slice, -#{suffix}) == {suffix}) end"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "local {out} = (string.sub({s}, -#{suffix}) == {suffix})"
+                        ));
+                    }
                 }
             }
             "string_replace" => {
@@ -4142,6 +4134,23 @@ impl LuauBackend {
         self.emit_line(&format!(
             "do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 then __idx = 1 end; if __idx > #{list} + 1 then __idx = #{list} + 1 end; if __idx == #{list} + 1 then {list}[#{list} + 1] = {val} else table.insert({list}, __idx, {val}) end end"
         ));
+    }
+
+    fn emit_list_pop(&mut self, list: &str, idx: Option<&str>, out: Option<&str>) {
+        match (idx, out) {
+            (Some(idx), Some(out)) => self.emit_line(&format!(
+                "local {out}; do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 or __idx > #{list} then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; {out} = table.remove({list}, __idx) end"
+            )),
+            (Some(idx), None) => self.emit_line(&format!(
+                "do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 or __idx > #{list} then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; table.remove({list}, __idx) end"
+            )),
+            (None, Some(out)) => self.emit_line(&format!(
+                "local {out}; if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; {out} = table.remove({list})"
+            )),
+            (None, None) => self.emit_line(&format!(
+                "if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; table.remove({list})"
+            )),
+        }
     }
 
     /// Wrap a condition identifier in `molt_bool()` if it's not a known boolean.
@@ -9355,6 +9364,98 @@ mod tests {
     }
 
     #[test]
+    fn test_call_method_list_pop_uses_python_error_guards() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "list_call_method_pop_guards".to_string(),
+                params: vec!["xs".to_string(), "i".to_string()],
+                param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "call_method".to_string(),
+                        s_value: Some("pop".to_string()),
+                        args: Some(vec!["xs".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_method".to_string(),
+                        s_value: Some("pop".to_string()),
+                        args: Some(vec!["xs".to_string(), "i".to_string()]),
+                        out: Some("v1".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("pop from empty list") && output.contains("pop index out of range"),
+            "list method pop must share direct list_pop Python guards, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_list_index_range_honors_start_stop_bounds() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "list_index_range_bounds".to_string(),
+                params: vec![
+                    "xs".to_string(),
+                    "needle".to_string(),
+                    "start".to_string(),
+                    "stop".to_string(),
+                ],
+                param_types: Some(vec![
+                    "list[int]".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "list_index_range".to_string(),
+                        args: Some(vec![
+                            "xs".to_string(),
+                            "needle".to_string(),
+                            "start".to_string(),
+                            "stop".to_string(),
+                        ]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__start")
+                && output.contains("__stop")
+                && output.contains("__n + start")
+                && output.contains("__n + stop")
+                && output.contains("for __i = __start + 1, __stop do"),
+            "list.index(value, start, stop) must honor range bounds, got:\n{output}"
+        );
+    }
+
+    #[test]
     fn test_dict_popitem_emits_empty_dict_key_error_guard() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -9459,6 +9560,68 @@ mod tests {
         assert!(
             output.contains("math.max(0, count)"),
             "list repetition must clamp negative counts to empty list, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_startswith_endswith_honor_start_end_bounds() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_prefix_suffix_bounds".to_string(),
+                params: vec![
+                    "s".to_string(),
+                    "prefix".to_string(),
+                    "suffix".to_string(),
+                    "start".to_string(),
+                    "end_idx".to_string(),
+                ],
+                param_types: Some(vec![
+                    "str".to_string(),
+                    "str".to_string(),
+                    "str".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "string_startswith".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "prefix".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "string_endswith".to_string(),
+                        args: Some(vec![
+                            "s".to_string(),
+                            "suffix".to_string(),
+                            "start".to_string(),
+                            "end_idx".to_string(),
+                        ]),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("__start")
+                && output.contains("__end")
+                && output.contains("string.sub(s, __start + 1, __end)"),
+            "startswith/endswith must normalize start/end bounds, got:\n{output}"
         );
     }
 

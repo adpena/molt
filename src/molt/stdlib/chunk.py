@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import struct
 
-__all__ = ['Chunk']
+__all__ = ["Chunk"]
 
 
 class Chunk:
@@ -48,21 +48,21 @@ class Chunk:
                 break
     """
 
-    def __init__(self, file, align: bool = True, bigendian: bool = True,
-                 inclheader: bool = False) -> None:
-        import sys
+    def __init__(
+        self, file, align: bool = True, bigendian: bool = True, inclheader: bool = False
+    ) -> None:
         self.closed = False
-        self.align = align       # whether to align to word (2-byte) boundaries
+        self.align = align  # whether to align to word (2-byte) boundaries
         if bigendian:
-            strflag = '>'
+            strflag = ">"
         else:
-            strflag = '<'
+            strflag = "<"
         self.file = file
         self.chunkname = file.read(4)
         if len(self.chunkname) < 4:
             raise EOFError
         try:
-            strh = struct.unpack_from(strflag + 'L', file.read(4))
+            strh = struct.unpack_from(strflag + "L", file.read(4))
         except struct.error:
             raise EOFError from None
         self.chunksize = strh[0]
@@ -92,7 +92,7 @@ class Chunk:
             finally:
                 self.closed = True
 
-    def __enter__(self) -> 'Chunk':
+    def __enter__(self) -> "Chunk":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -135,16 +135,14 @@ class Chunk:
         if self.closed:
             raise ValueError("I/O operation on closed file")
         if self.size_read >= self.chunksize:
-            return b''
+            return b""
         if size < 0:
             size = self.chunksize - self.size_read
         if size > self.chunksize - self.size_read:
             size = self.chunksize - self.size_read
         data = self.file.read(size)
         self.size_read += len(data)
-        if self.size_read == self.chunksize and \
-                self.align and \
-                (self.chunksize & 1):
+        if self.size_read == self.chunksize and self.align and (self.chunksize & 1):
             dummy = self.file.read(1)
             self.size_read += len(dummy)
         return data

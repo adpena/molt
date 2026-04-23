@@ -73,7 +73,5 @@ class _AssertNoLogsContext:
         if exc_type is not None:
             return False
         if self.records:
-            self._case.fail(
-                f"Unexpected logs triggered on {self._logger_name!r}"
-            )
+            self._case.fail(f"Unexpected logs triggered on {self._logger_name!r}")
         return False
