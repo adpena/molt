@@ -2747,8 +2747,6 @@ fn successors_of(block: &TirBlock) -> Vec<BlockId> {
 /// Annotate a SimpleIR [`OpIR`] with non-semantic transport metadata that is
 /// still required by specific backend consumers.
 fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId, TirType>) {
-    let _ = types;
-
     // Propagate StackAlloc: if the TIR op is StackAlloc, mark the SimpleIR op
     // so the native backend can emit stack allocation instead of heap allocation.
     if tir_op.opcode == OpCode::StackAlloc {
@@ -2766,6 +2764,112 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
     {
         opir.end_col_offset = Some(*ecol);
     }
+
+    // Propagate proven type information from the TIR type map into type_hint
+    // so the native backend's preanalysis can classify variables that the
+    // op-based heuristics cannot (e.g. values proven int after a TypeGuard).
+    //
+    // We skip ops whose SimpleIR kind already fully determines the output
+    // type in preanalysis (constants, comparisons, arithmetic, copies, etc.)
+    // to avoid redundant metadata.  Only ops that fall into the catch-all
+    // branch of the preanalysis benefit from type_hint.
+    if opir.type_hint.is_none()
+        && !tir_op.results.is_empty()
+        && !op_kind_already_classified(opir.kind.as_str())
+    {
+        if let Some(ty) = tir_op
+            .results
+            .first()
+            .and_then(|r| types.get(r))
+        {
+            match ty {
+                TirType::I64 => {
+                    opir.type_hint = Some("int".into());
+                }
+                TirType::F64 => {
+                    opir.type_hint = Some("float".into());
+                }
+                TirType::Bool => {
+                    opir.type_hint = Some("bool".into());
+                }
+                TirType::Str => {
+                    opir.type_hint = Some("str".into());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Returns true if the SimpleIR op kind is already classified by the native
+/// backend's preanalysis without needing a type_hint.  These ops have their
+/// output type fully determined by the op kind or by source-argument analysis.
+fn op_kind_already_classified(kind: &str) -> bool {
+    matches!(
+        kind,
+        // Constants — type determined by kind.
+        "const"
+            | "const_bool"
+            | "const_float"
+            | "const_none"
+            | "const_str"
+            | "loop_index_start"
+            | "loop_index_next"
+            | "len"
+            // Comparisons — always Bool.
+            | "lt"
+            | "le"
+            | "gt"
+            | "ge"
+            | "eq"
+            | "ne"
+            | "is"
+            | "bool"
+            | "cast_bool"
+            | "builtin_bool"
+            | "is_truthy"
+            | "not"
+            // Copies — type comes from source argument.
+            | "copy"
+            | "copy_var"
+            | "load_var"
+            | "identity_alias"
+            // Arithmetic — type inferred from operand lanes.
+            | "add"
+            | "inplace_add"
+            | "sub"
+            | "mul"
+            | "inplace_sub"
+            | "inplace_mul"
+            | "floordiv"
+            | "mod"
+            | "mod_"
+            | "inplace_floordiv"
+            | "inplace_mod"
+            | "bit_and"
+            | "bit_or"
+            | "bit_xor"
+            | "bitand"
+            | "bitor"
+            | "bitxor"
+            | "inplace_bit_and"
+            | "inplace_bit_or"
+            | "inplace_bit_xor"
+            | "lshift"
+            | "rshift"
+            | "shl"
+            | "shr"
+            | "neg"
+            | "pos"
+            | "abs"
+            | "invert"
+            | "builtin_abs"
+            // GPU intrinsics — always Int.
+            | "gpu_thread_id"
+            | "gpu_block_id"
+            | "gpu_block_dim"
+            | "gpu_grid_dim"
+    )
 }
 
 // ---------------------------------------------------------------------------
