@@ -19,12 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "runtime" / "molt-backend" / "src" / "luau.rs"
 DEFAULT_OUTPUT = (
-    ROOT
-    / "docs"
-    / "spec"
-    / "areas"
-    / "compiler"
-    / "luau_support_matrix.generated.md"
+    ROOT / "docs" / "spec" / "areas" / "compiler" / "luau_support_matrix.generated.md"
 )
 
 STATUSES = {
@@ -132,9 +127,15 @@ def _iter_arms(match_text: str) -> list[tuple[list[str], str]]:
 
 def _classify(op: str, body: str) -> Row:
     if "-- [unsupported op:" in body or 'error(\\"[unsupported op:' in body:
-        return Row(op, "compile-error", "Checked Luau emission rejects unsupported markers.")
+        return Row(
+            op, "compile-error", "Checked Luau emission rejects unsupported markers."
+        )
     if op in CAPABILITY_OPS:
-        return Row(op, "runtime-capability-error", "Roblox/Luau filesystem capability is unavailable.")
+        return Row(
+            op,
+            "runtime-capability-error",
+            "Roblox/Luau filesystem capability is unavailable.",
+        )
 
     semantic_markers = (
         "-- [async:",
@@ -147,9 +148,18 @@ def _classify(op: str, body: str) -> Row:
         "-- [",
     )
     if any(marker in body for marker in semantic_markers):
-        allowed = ("-- [exception_last]", "-- [exception_message]", "-- [missing]", "-- [vectorized:")
+        allowed = (
+            "-- [exception_last]",
+            "-- [exception_message]",
+            "-- [missing]",
+            "-- [vectorized:",
+        )
         if not any(marker in body for marker in allowed):
-            return Row(op, "not-admitted", "Checked Luau emission rejects semantic stub markers.")
+            return Row(
+                op,
+                "not-admitted",
+                "Checked Luau emission rejects semantic stub markers.",
+            )
 
     if op in TARGET_LIMITED_OPS:
         return Row(op, "implemented-target-limited", TARGET_LIMITED_OPS[op])
@@ -240,7 +250,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"missing generated file: {args.output}", file=sys.stderr)
             return 1
         if current != output:
-            print(f"generated Luau support matrix is stale: {args.output}", file=sys.stderr)
+            print(
+                f"generated Luau support matrix is stale: {args.output}",
+                file=sys.stderr,
+            )
             return 1
         print(f"generated Luau support matrix is current: {args.output}")
         return 0

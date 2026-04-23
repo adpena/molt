@@ -23,7 +23,7 @@ def _load_module() -> ModuleType:
 
 def test_classifies_luau_op_arms_from_fixture() -> None:
     mod = _load_module()
-    source = r'''
+    source = r"""
     fn emit_op(&mut self, op: &OpIR) {
         match op.kind.as_str() {
             "add" | "inplace_add" => {
@@ -41,7 +41,7 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             }
         }
     }
-    '''
+    """
 
     rows = {row.op: row for row in mod.collect_rows_from_text(source)}
 
@@ -58,13 +58,13 @@ def test_check_mode_detects_stale_generated_output(tmp_path: Path) -> None:
     source = tmp_path / "luau.rs"
     output = tmp_path / "luau_support_matrix.generated.md"
     source.write_text(
-        '''
+        """
         fn emit_op(&mut self, op: &OpIR) {
             match op.kind.as_str() {
                 "add" => { self.emit_line("local out = a + b"); }
             }
         }
-        ''',
+        """,
         encoding="utf-8",
     )
     output.write_text("stale\n", encoding="utf-8")

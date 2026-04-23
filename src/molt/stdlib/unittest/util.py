@@ -33,9 +33,7 @@ def strclass(cls) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
-def sorted_list_difference(
-    expected: list, actual: list
-) -> tuple[list, list]:
+def sorted_list_difference(expected: list, actual: list) -> tuple[list, list]:
     """Return (missing, unexpected) comparing two *sorted* lists."""
     missing: list = []
     unexpected: list = []
@@ -55,9 +53,7 @@ def sorted_list_difference(
     return missing, unexpected
 
 
-def unorderable_list_difference(
-    expected: list, actual: list
-) -> tuple[list, list]:
+def unorderable_list_difference(expected: list, actual: list) -> tuple[list, list]:
     """Return (missing, unexpected) comparing two *unsorted* lists."""
     missing: list = []
     unexpected: list = list(actual)
