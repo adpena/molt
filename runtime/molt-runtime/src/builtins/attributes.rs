@@ -24,6 +24,7 @@ use crate::*;
 static PROPERTY_DOCS: OnceLock<Mutex<HashMap<PtrSlot, u64>>> = OnceLock::new();
 static PROPERTY_DOC_NAME: AtomicU64 = AtomicU64::new(0);
 static ATTR_SITE_NAME_CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
+static GENERIC_ALIAS_MRO_ENTRIES: AtomicU64 = AtomicU64::new(0);
 
 /// Result-level inline cache entry for attribute lookups.
 /// Caches the full lookup result alongside the attribute name to skip
@@ -1485,6 +1486,16 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 }
                 "__unpacked__" => {
                     return Some(MoltObject::from_bool(false).bits());
+                }
+                "__mro_entries__" => {
+                    let func_bits = builtin_func_bits(
+                        _py,
+                        &GENERIC_ALIAS_MRO_ENTRIES,
+                        fn_addr!(molt_generic_alias_mro_entries),
+                        2,
+                    );
+                    let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                    return Some(molt_bound_method_new(func_bits, self_bits));
                 }
                 _ => {}
             }
