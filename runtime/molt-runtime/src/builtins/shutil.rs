@@ -21,6 +21,8 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
 use std::fs;
 use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,81 @@ fn copy_metadata(src: &Path, dst: &Path) -> std::io::Result<()> {
         let c_dst = std::ffi::CString::new(dst.as_os_str().as_bytes()).unwrap_or_default();
         unsafe {
             libc::utimensat(libc::AT_FDCWD, c_dst.as_ptr(), [atime, mtime].as_ptr(), 0);
+        }
+    }
+    Ok(())
+}
+
+fn copy_permissions_with_follow(
+    src: &Path,
+    dst: &Path,
+    follow_symlinks: bool,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let meta = if follow_symlinks {
+            fs::metadata(src)?
+        } else {
+            fs::symlink_metadata(src)?
+        };
+        let mode = meta.permissions().mode();
+        use std::os::unix::ffi::OsStrExt;
+        let c_dst = std::ffi::CString::new(dst.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "invalid path"))?;
+        let flags = if follow_symlinks {
+            0
+        } else {
+            libc::AT_SYMLINK_NOFOLLOW
+        };
+        let rc = unsafe { libc::fchmodat(libc::AT_FDCWD, c_dst.as_ptr(), mode, flags) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = follow_symlinks;
+        let meta = fs::metadata(src)?;
+        fs::set_permissions(dst, meta.permissions())
+    }
+}
+
+fn copy_stat_with_follow(src: &Path, dst: &Path, follow_symlinks: bool) -> std::io::Result<()> {
+    copy_permissions_with_follow(src, dst, follow_symlinks)?;
+    #[cfg(unix)]
+    {
+        let meta = if follow_symlinks {
+            fs::metadata(src)?
+        } else {
+            fs::symlink_metadata(src)?
+        };
+        let atime = libc::timespec {
+            tv_sec: meta.atime(),
+            tv_nsec: meta.atime_nsec(),
+        };
+        let mtime = libc::timespec {
+            tv_sec: meta.mtime(),
+            tv_nsec: meta.mtime_nsec(),
+        };
+        use std::os::unix::ffi::OsStrExt;
+        let c_dst = std::ffi::CString::new(dst.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "invalid path"))?;
+        let flags = if follow_symlinks {
+            0
+        } else {
+            libc::AT_SYMLINK_NOFOLLOW
+        };
+        let rc = unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                c_dst.as_ptr(),
+                [atime, mtime].as_ptr(),
+                flags,
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
         }
     }
     Ok(())
@@ -230,6 +307,78 @@ pub extern "C" fn molt_shutil_copy2(src_bits: u64, dst_bits: u64) -> u64 {
         }
         let _ = copy_metadata(&src, &dst);
         str_bits_local(_py, &dst.to_string_lossy())
+    })
+}
+
+/// `shutil.copymode(src, dst, follow_symlinks=True)` → None
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_shutil_copymode(
+    src_bits: u64,
+    dst_bits: u64,
+    follow_symlinks_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let allowed_r = has_capability(_py, "fs.read");
+        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
+        audit_capability_decision("shutil.copymode", "fs.read", audit_args.clone(), allowed_r);
+        let allowed_w = has_capability(_py, "fs.write");
+        audit_capability_decision("shutil.copymode", "fs.write", audit_args, allowed_w);
+        if !allowed_r || !allowed_w {
+            return raise_exception::<_>(
+                _py,
+                "PermissionError",
+                "missing fs.read/fs.write capability",
+            );
+        }
+        let src = match require_path_local(_py, src_bits, "src") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        let dst = match require_path_local(_py, dst_bits, "dst") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        let follow_symlinks = is_truthy(_py, obj_from_bits(follow_symlinks_bits));
+        match copy_permissions_with_follow(&src, &dst, follow_symlinks) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => shutil_err(_py, err, "copymode"),
+        }
+    })
+}
+
+/// `shutil.copystat(src, dst, follow_symlinks=True)` → None
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_shutil_copystat(
+    src_bits: u64,
+    dst_bits: u64,
+    follow_symlinks_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let allowed_r = has_capability(_py, "fs.read");
+        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
+        audit_capability_decision("shutil.copystat", "fs.read", audit_args.clone(), allowed_r);
+        let allowed_w = has_capability(_py, "fs.write");
+        audit_capability_decision("shutil.copystat", "fs.write", audit_args, allowed_w);
+        if !allowed_r || !allowed_w {
+            return raise_exception::<_>(
+                _py,
+                "PermissionError",
+                "missing fs.read/fs.write capability",
+            );
+        }
+        let src = match require_path_local(_py, src_bits, "src") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        let dst = match require_path_local(_py, dst_bits, "dst") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        let follow_symlinks = is_truthy(_py, obj_from_bits(follow_symlinks_bits));
+        match copy_stat_with_follow(&src, &dst, follow_symlinks) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => shutil_err(_py, err, "copystat"),
+        }
     })
 }
 
