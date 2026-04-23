@@ -164,10 +164,14 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_asyncgen_locals(_py, state);
     trace_shutdown("clear_thread_local_state");
     clear_thread_local_state(_py);
-    trace_shutdown("clear_builder_singletons");
-    clear_builder_singletons(_py);
+    // Code objects in the fn-ptr map own co_filename/co_name/co_varnames
+    // references that may point at interned/builder singletons. Release them
+    // before clearing those singleton pools, or code teardown can walk freed
+    // metadata during process shutdown.
     trace_shutdown("clear_fn_ptr_code_map");
     clear_fn_ptr_code_map(_py, state);
+    trace_shutdown("clear_builder_singletons");
+    clear_builder_singletons(_py);
     // Keep builtin classes alive until after cache + TLS teardown: releasing
     // them too early can trigger lock re-entry when later dec_ref paths perform
     // class attribute lookups during shutdown.
