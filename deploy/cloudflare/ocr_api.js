@@ -3665,3 +3665,142 @@ export async function handlePaddleMoltInference(request, env, cors, rid) {
     request_id: rid,
   }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 }
+
+// ---------------------------------------------------------------------------
+// Nemotron OCR v2 server-side inference handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Nemotron OCR v2 EN charset — 858 classes (0 = blank, 1-857 = characters).
+ *
+ * Extracted from nvidia/nemotron-ocr-v2 v2_english/charset.txt.
+ * The recognizer output is [1, 32, 858] logits; CTC-decode with this charset.
+ */
+const NEMOTRON_EN_CHARSET = [
+  " ","!","\"","#","$","%","&","'","(",")","*","+",",","-",".","/",
+  "0","1","2","3","4","5","6","7","8","9",":",";","<","=",">","?",
+  "@","A","B","C","D","E","F","G","H","I","J","K","L","M","N","O",
+  "P","Q","R","S","T","U","V","W","X","Y","Z","[","\\","]","^","_",
+  "`","a","b","c","d","e","f","g","h","i","j","k","l","m","n","o",
+  "p","q","r","s","t","u","v","w","x","y","z","{","|","}","~",
+  "\u00a0","\u00a1","\u00a2","\u00a3","\u00a4","\u00a5","\u00a6","\u00a7",
+  "\u00a8","\u00a9","\u00aa","\u00ab","\u00ac","\u00ad","\u00ae","\u00af",
+  "\u00b0","\u00b1","\u00b2","\u00b3","\u00b4","\u00b5","\u00b6","\u00b7",
+  "\u00b8","\u00b9","\u00ba","\u00bb","\u00bc","\u00bd","\u00be","\u00bf",
+  "\u00c0","\u00c1","\u00c2","\u00c3","\u00c4","\u00c5","\u00c6","\u00c7",
+  "\u00c8","\u00c9","\u00ca","\u00cb","\u00cc","\u00cd","\u00ce","\u00cf",
+  "\u00d0","\u00d1","\u00d2","\u00d3","\u00d4","\u00d5","\u00d6","\u00d7",
+  "\u00d8","\u00d9","\u00da","\u00db","\u00dc","\u00dd","\u00de","\u00df",
+  "\u00e0","\u00e1","\u00e2","\u00e3","\u00e4","\u00e5","\u00e6","\u00e7",
+  "\u00e8","\u00e9","\u00ea","\u00eb","\u00ec","\u00ed","\u00ee","\u00ef",
+  "\u00f0","\u00f1","\u00f2","\u00f3","\u00f4","\u00f5","\u00f6","\u00f7",
+  "\u00f8","\u00f9","\u00fa","\u00fb","\u00fc","\u00fd","\u00fe","\u00ff",
+];
+// Note: The full 857-char charset includes extended Unicode (CJK, Cyrillic, etc.)
+// beyond index 191. For EN inference the first 191 entries cover all Latin text.
+
+/**
+ * Handle Nemotron OCR v2 inference.
+ *
+ * Architecture differences from PaddleOCR:
+ *   - Detector outputs 3 tensors: confidence map, rotated boxes, 128-ch feature map
+ *   - Recognizer input is [1, 128, 8, 32] feature crops (NOT RGB image crops)
+ *   - INT8 quantized ops (ConvInteger, MatMulInteger, DynamicQuantizeLinear)
+ *     are NOT supported by the JS ONNX interpreter
+ *   - Requires ONNX Runtime or GPU proxy for actual inference
+ *
+ * Pipeline:
+ *   1. Decode image to RGB
+ *   2. Preprocess for RegNetX detector
+ *   3. Run detector -> confidence map + 128-ch features
+ *   4. Connected-component labeling -> text region bboxes
+ *   5. Extract feature crops from 128-ch map (not raw image)
+ *   6. Resize feature crops to [1, 128, 8, 32]
+ *   7. Run recognizer -> logits [1, 32, 858]
+ *   8. CTC greedy decode with NEMOTRON_EN_CHARSET
+ *
+ * @param {Request} request
+ * @param {object} env
+ * @param {object} cors
+ * @param {string} rid
+ * @returns {Promise<Response>}
+ */
+export async function handleNemotronOcr(request, env, cors, rid) {
+  const start = Date.now();
+
+  // Extract image from request
+  const imageResult = await extractImage(request, env);
+  if (imageResult.error) {
+    return new Response(JSON.stringify({
+      error: imageResult.error,
+      request_id: rid,
+    }), { status: imageResult.status, headers: { ...cors, "Content-Type": "application/json" } });
+  }
+
+  // Attempt GPU proxy if configured — Nemotron INT8 ops require ONNX Runtime
+  if (env.GPU_INFERENCE_URL) {
+    try {
+      const proxyUrl = new URL("/ocr/nemotron", env.GPU_INFERENCE_URL);
+      const proxyResponse = await fetch(proxyUrl.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": request.headers.get("Content-Type") || "application/octet-stream",
+          "X-Request-ID": rid,
+        },
+        body: imageResult.bytes,
+      });
+
+      if (proxyResponse.ok) {
+        const result = await proxyResponse.json();
+        return new Response(JSON.stringify({
+          ...result,
+          engine: "nemotron-v2",
+          backend: "gpu-proxy",
+          proxy_ms: Date.now() - start,
+          request_id: rid,
+        }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    } catch (_e) {
+      // GPU proxy failed — fall through to error
+    }
+  }
+
+  // No GPU proxy available — cannot run INT8 models in JS interpreter
+  // Return a structured error with model availability info
+  let modelsInR2 = false;
+  if (env.WEIGHTS) {
+    try {
+      const detHead = await env.WEIGHTS.head("models/nemotron/nemotron_det_en_int8.onnx");
+      modelsInR2 = !!detHead;
+    } catch (_e) {
+      // Ignore
+    }
+  }
+
+  return new Response(JSON.stringify({
+    engine: "nemotron-v2",
+    error: "Nemotron INT8 models require ONNX Runtime — JS interpreter does not support ConvInteger/MatMulInteger ops",
+    status: "requires-gpu",
+    models_in_r2: modelsInR2,
+    architecture: {
+      detector: {
+        input: "[batch, 3, H, W]",
+        outputs: {
+          confidence: "[B, H/4, W/4] — sigmoid -> text probability map",
+          rboxes: "[B, H/4, W/4, 5] — rotated bounding box parameters",
+          features: "[B, 128, H/4, W/4] — feature map for recognizer",
+        },
+        note: "Output downsampled 4x from input resolution",
+      },
+      recognizer: {
+        input: "[1, 128, 8, 32] — 128-channel feature crop (NOT RGB)",
+        output: "logits [1, 32, 858]",
+        charset_size: 858,
+        note: "Takes detector feature crops, not raw image crops (unlike PaddleOCR)",
+      },
+      int8_ops_required: ["ConvInteger", "DynamicQuantizeLinear", "MatMulInteger"],
+    },
+    hint: "Configure GPU_INFERENCE_URL or deploy via Modal (deploy/modal/nemotron_ocr.py)",
+    request_id: rid,
+  }), { status: 501, headers: { ...cors, "Content-Type": "application/json" } });
+}
