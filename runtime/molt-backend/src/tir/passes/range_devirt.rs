@@ -121,10 +121,7 @@ fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
                         && !op.results.is_empty()
                         && (1..=3).contains(&op.operands.len())
                     {
-                        call_builtin_defs.insert(
-                            op.results[0],
-                            (bid, op_idx, op.operands.clone()),
-                        );
+                        call_builtin_defs.insert(op.results[0], (bid, op_idx, op.operands.clone()));
                     }
                 }
                 OpCode::GetIter => {
@@ -164,14 +161,12 @@ fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
             let iter_val = op.operands[0];
 
             // Trace: iter_val -> GetIter(source) -> CallBuiltin("range", args)
-            let Some(&(get_iter_block, get_iter_idx, source_val)) =
-                get_iter_defs.get(&iter_val)
+            let Some(&(get_iter_block, get_iter_idx, source_val)) = get_iter_defs.get(&iter_val)
             else {
                 continue;
             };
 
-            let Some(&(call_block, call_idx, ref range_args)) =
-                call_builtin_defs.get(&source_val)
+            let Some(&(call_block, call_idx, ref range_args)) = call_builtin_defs.get(&source_val)
             else {
                 continue;
             };
@@ -329,8 +324,7 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
         c.step_val
     };
 
-    let offset2 = offset
-        + if c.step_val.0 == u32::MAX { 1 } else { 0 };
+    let offset2 = offset + if c.step_val.0 == u32::MAX { 1 } else { 0 };
 
     // 2. Remove CallBuiltin("range") and GetIter from setup block.
     //    We must remove them in reverse index order to preserve indices.
@@ -549,11 +543,7 @@ mod tests {
         }
     }
 
-    fn make_call_builtin(
-        name: &str,
-        operands: Vec<ValueId>,
-        results: Vec<ValueId>,
-    ) -> TirOp {
+    fn make_call_builtin(name: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         let mut attrs = AttrDict::new();
         attrs.insert("name".to_string(), AttrValue::Str(name.to_string()));
         TirOp {
@@ -596,7 +586,11 @@ mod tests {
         }
 
         let range_obj = func.fresh_value();
-        entry_ops.push(make_call_builtin("range", range_arg_vals.clone(), vec![range_obj]));
+        entry_ops.push(make_call_builtin(
+            "range",
+            range_arg_vals.clone(),
+            vec![range_obj],
+        ));
 
         let iter_val = func.fresh_value();
         entry_ops.push(make_op(OpCode::GetIter, vec![range_obj], vec![iter_val]));
@@ -643,7 +637,11 @@ mod tests {
         let body_block = TirBlock {
             id: body_id,
             args: vec![],
-            ops: vec![make_op(OpCode::Add, vec![elem_val, elem_val], vec![body_result])],
+            ops: vec![make_op(
+                OpCode::Add,
+                vec![elem_val, elem_val],
+                vec![body_result],
+            )],
             terminator: Terminator::Branch {
                 target: header_id,
                 args: vec![],
@@ -680,7 +678,10 @@ mod tests {
         let header_id = BlockId(1);
         let header = &func.blocks[&header_id];
         assert!(
-            !header.ops.iter().any(|op| op.opcode == OpCode::IterNextUnboxed),
+            !header
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::IterNextUnboxed),
             "IterNextUnboxed should be replaced"
         );
 
@@ -709,8 +710,15 @@ mod tests {
         let body_id = BlockId(2);
         let body = &func.blocks[&body_id];
         // There should be 2 Add ops: original body op + increment.
-        let add_count = body.ops.iter().filter(|op| op.opcode == OpCode::Add).count();
-        assert_eq!(add_count, 2, "body should have original Add + increment Add");
+        let add_count = body
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::Add)
+            .count();
+        assert_eq!(
+            add_count, 2,
+            "body should have original Add + increment Add"
+        );
 
         // The body's branch back to header should carry the next induction value.
         if let Terminator::Branch { target, args } = &body.terminator {
@@ -843,7 +851,10 @@ mod tests {
         func.blocks.insert(exit_id, exit);
 
         let stats = run(&mut func);
-        assert_eq!(stats.ops_removed, 0, "non-range loop should not be transformed");
+        assert_eq!(
+            stats.ops_removed, 0,
+            "non-range loop should not be transformed"
+        );
         assert_eq!(stats.values_changed, 0);
     }
 
