@@ -9,7 +9,6 @@ from typing import Any as _Any
 import builtins as _builtins
 import fractions as _fractions
 import math
-import numbers
 import random
 import sys
 from bisect import bisect_left as _bisect_left_impl
@@ -95,7 +94,6 @@ itemgetter = _make_type_proxy(_itemgetter_impl)
 
 _CPYTHON_API_HELPERS = (
     math,
-    numbers,
     random,
     sys,
     Fraction,
