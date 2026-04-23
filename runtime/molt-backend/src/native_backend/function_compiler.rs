@@ -164,11 +164,10 @@ fn infer_scalar_lane(
         // route to molt_list_getitem_int_fast / molt_list_setitem_int_fast
         // which skip tag-checking the index and avoid the full molt_index
         // dispatch.
-        "index" | "store_index" | "dict_set" => {
-            args.get(1)
-                .filter(|k| name_is_int_like(k, int_like_vars, bool_like_vars))
-                .map(|_| ScalarLane::Int)
-        }
+        "index" | "store_index" | "dict_set" => args
+            .get(1)
+            .filter(|k| name_is_int_like(k, int_like_vars, bool_like_vars))
+            .map(|_| ScalarLane::Int),
         _ => None,
     }
 }

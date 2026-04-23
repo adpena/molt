@@ -625,7 +625,7 @@ fn eval_build_list(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
 /// Fold BuildDict with all-constant operands to ConstVal::Dict.
 /// Dict operands are laid out as [k1, v1, k2, v2, ...].
 fn eval_build_dict(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
-    if operands.len() % 2 != 0 {
+    if !operands.len().is_multiple_of(2) {
         return None;
     }
     let n_entries = operands.len() / 2;
@@ -1029,7 +1029,9 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                         }
                     }
                     ints.sort();
-                    Some(ConstVal::List(ints.into_iter().map(ConstVal::Int).collect()))
+                    Some(ConstVal::List(
+                        ints.into_iter().map(ConstVal::Int).collect(),
+                    ))
                 }
                 _ => None,
             }
