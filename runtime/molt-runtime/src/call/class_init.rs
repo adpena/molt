@@ -406,19 +406,42 @@ pub(crate) unsafe fn call_class_init_with_args(
                 }
             }
         }
-        if class_bits == builtins.tuple {
+        if class_bits == builtins.tuple || issubclass_bits(class_bits, builtins.tuple) {
             match args.len() {
                 0 => {
                     let ptr = alloc_tuple(_py, &[]);
                     if ptr.is_null() {
                         return MoltObject::none().bits();
                     }
-                    return MoltObject::from_ptr(ptr).bits();
+                    let out_bits = MoltObject::from_ptr(ptr).bits();
+                    if class_bits != builtins.tuple {
+                        let old_class_bits = object_class_bits(ptr);
+                        if old_class_bits != class_bits {
+                            if old_class_bits != 0 {
+                                dec_ref_bits(_py, old_class_bits);
+                            }
+                            object_set_class_bits(_py, ptr, class_bits);
+                            inc_ref_bits(_py, class_bits);
+                        }
+                    }
+                    return out_bits;
                 }
                 1 => {
                     let Some(bits) = tuple_from_iter_bits(_py, args[0]) else {
                         return MoltObject::none().bits();
                     };
+                    if class_bits != builtins.tuple
+                        && let Some(ptr) = obj_from_bits(bits).as_ptr()
+                    {
+                        let old_class_bits = object_class_bits(ptr);
+                        if old_class_bits != class_bits {
+                            if old_class_bits != 0 {
+                                dec_ref_bits(_py, old_class_bits);
+                            }
+                            object_set_class_bits(_py, ptr, class_bits);
+                            inc_ref_bits(_py, class_bits);
+                        }
+                    }
                     return bits;
                 }
                 _ => {

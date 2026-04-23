@@ -1811,6 +1811,15 @@ pub(crate) fn builtin_class_method_bits(
             2,
         ));
     }
+    if class_bits == builtins.tuple && name == "__new__" {
+        return Some(builtin_func_bits_with_defaults_tuple(
+            _py,
+            &runtime_state(_py).method_cache.tuple_new,
+            fn_addr!(molt_tuple_new_bound),
+            2,
+            &[missing_bits(_py)],
+        ));
+    }
     if class_bits == builtins.generic_alias && name == "__new__" {
         return Some(builtin_func_bits(
             _py,
