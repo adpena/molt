@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, TextIO, cast
 from types import ModuleType
+import types as _types
 
 import io as _io
 import os as _os
@@ -1559,10 +1560,7 @@ class BufferingFormatter:
 # ── GenericAlias shim ─────────────────────────────────────────────────────────
 # CPython exposes types.GenericAlias as logging.GenericAlias.
 
-try:
-    from types import GenericAlias  # type: ignore[attr-defined]
-except ImportError:
-    GenericAlias = type(list[int])  # type: ignore[misc,assignment]
+GenericAlias = _types.GenericAlias
 
 
 def _install_handlers_submodule() -> ModuleType:

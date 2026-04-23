@@ -10595,6 +10595,95 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
     }
 }
 
+/// List getitem with a raw i64 index (no NaN-box tag check needed).
+///
+/// Called when the compiler has proven the index is an integer and holds
+/// it in a raw i64 Cranelift register. Skips the is_int() tag check and
+/// the as_int_unchecked() unbox — the index is already a plain i64.
+///
+/// The list operand is still NaN-boxed (it's a heap pointer).
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub extern "C" fn molt_list_getitem_raw_idx(list_bits: u64, raw_idx: i64) -> u64 {
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        // Not a pointer — fall back to generic path by boxing the index
+        return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_LIST {
+            return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
+        }
+        let mut idx = raw_idx;
+        let elems = seq_vec_ref(ptr);
+        let len = elems.len() as i64;
+        if idx < 0 {
+            idx += len;
+        }
+        if idx < 0 || idx >= len {
+            // Out of bounds — fall back to generic path which raises IndexError
+            return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
+        }
+        let val = elems[idx as usize];
+        let val_obj = obj_from_bits(val);
+        if let Some(val_ptr) = val_obj.as_ptr() {
+            let header = val_ptr.sub(std::mem::size_of::<crate::object::MoltHeader>())
+                as *mut crate::object::MoltHeader;
+            if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) == 0 {
+                (*header)
+                    .ref_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        val
+    }
+}
+
+/// List setitem with a raw i64 index.
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub extern "C" fn molt_list_setitem_raw_idx(list_bits: u64, raw_idx: i64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let list_obj = obj_from_bits(list_bits);
+        let Some(ptr) = list_obj.as_ptr() else {
+            return molt_list_setitem_int_fast(
+                list_bits,
+                MoltObject::from_int(raw_idx).bits(),
+                val_bits,
+            );
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_LIST {
+                return molt_list_setitem_int_fast(
+                    list_bits,
+                    MoltObject::from_int(raw_idx).bits(),
+                    val_bits,
+                );
+            }
+            let mut idx = raw_idx;
+            let elems = &mut *seq_vec_ptr(ptr);
+            let len = elems.len() as i64;
+            if idx < 0 {
+                idx += len;
+            }
+            if idx < 0 || idx >= len {
+                // Out of bounds — fall back to generic path which raises IndexError
+                return molt_list_setitem_int_fast(
+                    list_bits,
+                    MoltObject::from_int(raw_idx).bits(),
+                    val_bits,
+                );
+            }
+            // Dec-ref old value, store new, inc-ref new
+            let old = elems[idx as usize];
+            elems[idx as usize] = val_bits;
+            inc_ref_bits(_py, val_bits);
+            dec_ref_bits(_py, old);
+            MoltObject::none().bits()
+        }
+    })
+}
+
 // ── Specialized list[int] operations ────────────────────────────────
 //
 // When the compiler proves a list contains only integers, it uses these

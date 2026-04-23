@@ -188,6 +188,16 @@ fn shadow_value_for(
 
 #[cfg(feature = "native-backend")]
 #[inline]
+fn shadow_value_var_only(
+    builder: &mut FunctionBuilder<'_>,
+    raw_int_shadow: &BTreeMap<String, Variable>,
+    name: &str,
+) -> Option<Value> {
+    raw_int_shadow.get(name).map(|&var| builder.use_var(var))
+}
+
+#[cfg(feature = "native-backend")]
+#[inline]
 fn shadow_pair_available(
     raw_int_shadow: &BTreeMap<String, Variable>,
     raw_int_shadow_vals: &BTreeMap<String, Value>,
@@ -2546,7 +2556,15 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            None
+                            // Inside loops, only use Variable-backed shadows
+                            // (phi-correct across back-edges). Value-tier
+                            // shadows may hold stale SSA values from a
+                            // previous block/iteration.
+                            shadow_value_var_only(
+                                &mut builder,
+                                &raw_int_shadow,
+                                lhs_name,
+                            )
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -2556,7 +2574,11 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            None
+                            shadow_value_var_only(
+                                &mut builder,
+                                &raw_int_shadow,
+                                rhs_name,
+                            )
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -2620,11 +2642,13 @@ impl SimpleBackend {
                             // Proven-int path: op_prefers_int_lane guarantees both
                             // operands are int-like. Skip tag check, unbox directly.
                             // Overflow guard retained for BigInt fallback.
+                            // Propagate raw shadow so downstream ops skip unbox.
                             let fast_block = builder.create_block();
                             let slow_block = builder.create_block();
                             builder.set_cold_block(slow_block);
                             let merge_block = builder.create_block();
-                            builder.append_block_param(merge_block, types::I64);
+                            builder.append_block_param(merge_block, types::I64); // boxed
+                            builder.append_block_param(merge_block, types::I64); // raw shadow
                             let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
                             let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                             let sum = builder.ins().iadd(lhs_val, rhs_val);
@@ -2636,17 +2660,26 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            jump_block(&mut builder, merge_block, &[fast_res]);
+                            jump_block(&mut builder, merge_block, &[fast_res, sum]);
 
                             switch_to_block_materialized(&mut builder, slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                             let slow_res = builder.inst_results(call)[0];
-                            jump_block(&mut builder, merge_block, &[slow_res]);
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                             switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            builder.block_params(merge_block)[0]
+                            let merged_boxed = builder.block_params(merge_block)[0];
+                            let merged_raw = builder.block_params(merge_block)[1];
+                            if let Some(ref out__) = op.out {
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, merged_raw);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), merged_raw);
+                            }
+                            merged_boxed
                         }
                     } else {
                         let callee = Self::import_func_id_split(
@@ -3455,6 +3488,7 @@ impl SimpleBackend {
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, unbox directly.
                         // Overflow guard retained for BigInt fallback.
+                        // Propagate raw shadow so downstream ops skip unbox.
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3467,7 +3501,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -3479,15 +3514,24 @@ impl SimpleBackend {
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        jump_block(&mut builder, merge_block, &[fast_res, diff]);
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
+                        if let Some(ref out_name) = op.out {
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
+                        }
+                        merge_res
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
@@ -3644,6 +3688,7 @@ impl SimpleBackend {
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, unbox directly.
                         // Overflow guard retained for BigInt fallback.
+                        // Propagate raw shadow so downstream ops skip unbox.
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3656,7 +3701,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -3668,15 +3714,24 @@ impl SimpleBackend {
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        jump_block(&mut builder, merge_block, &[fast_res, diff]);
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
+                        if let Some(ref out_name) = op.out {
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
+                        }
+                        merge_res
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
@@ -3825,6 +3880,7 @@ impl SimpleBackend {
                         }
                         continue;
                     } else if op_prefers_int_lane(&op) {
+                        // Propagate raw shadow so downstream ops skip unbox.
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3837,7 +3893,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -3847,17 +3904,26 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        jump_block(&mut builder, merge_block, &[fast_res, prod]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
+                        if let Some(ref out_name) = op.out {
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
+                        }
+                        merge_res
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -3997,6 +4063,7 @@ impl SimpleBackend {
                         }
                         continue;
                     } else if op_prefers_int_lane(&op) {
+                        // Propagate raw shadow so downstream ops skip unbox.
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4009,7 +4076,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -4019,17 +4087,26 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        jump_block(&mut builder, merge_block, &[fast_res, prod]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
+                        if let Some(ref out_name) = op.out {
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
+                        }
+                        merge_res
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9216,7 +9293,9 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let in_active_loop = !loop_stack.is_empty();
                     let lr = if in_active_loop {
-                        None
+                        // Variable-backed shadows are phi-correct across loop
+                        // back-edges; Value-tier may be stale.
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -9226,7 +9305,7 @@ impl SimpleBackend {
                         )
                     };
                     let rr = if in_active_loop {
-                        None
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -9322,7 +9401,7 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let in_active_loop = !loop_stack.is_empty();
                     let lr = if in_active_loop {
-                        None
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -9332,7 +9411,7 @@ impl SimpleBackend {
                         )
                     };
                     let rr = if in_active_loop {
-                        None
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -9433,7 +9512,7 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let in_active_loop = !loop_stack.is_empty();
                     let lhs_shadow = if in_active_loop {
-                        None
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -9443,7 +9522,7 @@ impl SimpleBackend {
                         )
                     };
                     let rhs_shadow = if in_active_loop {
-                        None
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -9537,7 +9616,7 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let in_active_loop = !loop_stack.is_empty();
                     let lhs_shadow = if in_active_loop {
-                        None
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -9547,7 +9626,7 @@ impl SimpleBackend {
                         )
                     };
                     let rhs_shadow = if in_active_loop {
-                        None
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
