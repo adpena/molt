@@ -392,12 +392,355 @@ pub mod interpret {
         }
     }
 
+    /// Detected matmul pattern metadata.
+    /// Captures the dimensions and buffer indices for a pure matmul kernel.
+    struct MatmulPattern {
+        /// Index of A buffer in kernel.bufs (M x K).
+        a_buf_idx: usize,
+        /// Index of B buffer in kernel.bufs (K x N).
+        b_buf_idx: usize,
+        /// Optional bias buffer index in kernel.bufs (M x N or broadcast).
+        bias_buf_idx: Option<usize>,
+        /// M dimension (rows of A / rows of C).
+        m: usize,
+        /// K dimension (cols of A / rows of B, the reduce axis).
+        k: usize,
+        /// N dimension (cols of B / cols of C).
+        n: usize,
+        /// Element dtype (Float32 or Float64).
+        dtype: DType,
+    }
+
+    /// Detect if a FusedKernel represents a pure matmul (optionally with bias).
+    ///
+    /// Matches these patterns:
+    ///   Pattern 1: Mul(Buf(a), Buf(b)) -> ReduceSum(Op(0))
+    ///   Pattern 2: Mul(Buf(a), Buf(b)) -> ReduceSum(Op(0)) -> Add(Op(1), Buf(bias))
+    ///
+    /// Requirements:
+    /// - All buffers must be contiguous
+    /// - All buffers must share the same dtype (Float32 or Float64)
+    /// - Output buffer has M*N elements
+    /// - Physical A buffer has M*K elements, physical B buffer has K*N elements
+    /// - ReduceSum reduces over the K dimension
+    fn detect_matmul_pattern(kernel: &FusedKernel, bufs: &[Vec<u8>]) -> Option<MatmulPattern> {
+        let n_ops = kernel.ops.len();
+
+        // Must have 2 ops (Mul + ReduceSum) or 3 ops (Mul + ReduceSum + Add for bias)
+        if n_ops < 2 || n_ops > 3 {
+            return None;
+        }
+
+        // Op 0 must be Mul(Buf(a), Buf(b)) where a != b
+        let mul_op = &kernel.ops[0];
+        if mul_op.op != PrimitiveOp::Mul {
+            return None;
+        }
+        let (a_idx, b_idx) = match (&mul_op.srcs[0], &mul_op.srcs[1]) {
+            (FusedSrc::Buf(a), FusedSrc::Buf(b)) if a != b => (*a, *b),
+            _ => return None,
+        };
+
+        // Op 1 must be ReduceSum(Op(0))
+        let reduce_op = &kernel.ops[1];
+        if reduce_op.op != PrimitiveOp::ReduceSum {
+            return None;
+        }
+        match &reduce_op.srcs[0] {
+            FusedSrc::Op(0) => {}
+            _ => return None,
+        }
+
+        // Check for optional bias add as op 2
+        let bias_buf_idx = if n_ops == 3 {
+            let add_op = &kernel.ops[2];
+            if add_op.op != PrimitiveOp::Add {
+                return None;
+            }
+            // One source must be Op(1) (the reduce result), other must be Buf
+            match (&add_op.srcs[0], &add_op.srcs[1]) {
+                (FusedSrc::Op(1), FusedSrc::Buf(bias)) => Some(*bias),
+                (FusedSrc::Buf(bias), FusedSrc::Op(1)) => Some(*bias),
+                _ => return None,
+            }
+        } else {
+            None
+        };
+
+        // All buffers must be contiguous
+        for buf in &kernel.bufs {
+            if !buf.st.view().is_contiguous() {
+                return None;
+            }
+        }
+
+        // All buffers must share the same dtype, and it must be Float32 or Float64
+        let dtype = kernel.bufs[0].dtype;
+        if dtype != DType::Float32 && dtype != DType::Float64 {
+            return None;
+        }
+        for buf in &kernel.bufs {
+            if buf.dtype != dtype {
+                return None;
+            }
+        }
+
+        // Extract dimensions from buffer shapes and physical sizes.
+        //
+        // The ShapeTracker numels represent the LOGICAL (broadcast-expanded)
+        // element counts: both Mul inputs have M*K*N logical elements.
+        // The PHYSICAL buffer sizes are what matters for the fast path:
+        //   A physical: M*K elements
+        //   B physical: K*N elements
+        //   Output physical: M*N elements
+        //
+        // K = logical_numel / output_numel (the reduce dimension)
+        let output_numel = kernel.bufs[0].st.numel();
+        let logical_input_numel = kernel.bufs[a_idx].st.numel();
+
+        // Both Mul inputs must have the same logical element count
+        if kernel.bufs[b_idx].st.numel() != logical_input_numel {
+            return None;
+        }
+
+        // K = logical_input_numel / output_numel
+        if output_numel == 0 || logical_input_numel % output_numel != 0 {
+            return None;
+        }
+        let k = logical_input_numel / output_numel;
+        if k == 0 {
+            return None;
+        }
+
+        // Get physical element counts from actual buffer byte sizes.
+        let elem_size = match dtype {
+            DType::Float32 => 4,
+            DType::Float64 => 8,
+            _ => return None,
+        };
+
+        let a_phys_elems = bufs[a_idx].len() / elem_size;
+        let b_phys_elems = bufs[b_idx].len() / elem_size;
+
+        // Derive M and N from physical sizes:
+        //   a_phys_elems == M * K  =>  M = a_phys_elems / K
+        //   b_phys_elems == K * N  =>  N = b_phys_elems / K
+        if a_phys_elems % k != 0 || b_phys_elems % k != 0 {
+            return None;
+        }
+        let m = a_phys_elems / k;
+        let n = b_phys_elems / k;
+
+        if m * n != output_numel {
+            return None;
+        }
+        if m == 0 || n == 0 {
+            return None;
+        }
+
+        // If bias is present, it must have M*N elements (or be broadcastable,
+        // but we only fast-path exact match).
+        if let Some(bi) = bias_buf_idx {
+            let bias_numel = kernel.bufs[bi].st.numel();
+            if bias_numel != output_numel {
+                return None;
+            }
+        }
+
+        Some(MatmulPattern {
+            a_buf_idx: a_idx,
+            b_buf_idx: b_idx,
+            bias_buf_idx,
+            m,
+            k,
+            n,
+            dtype,
+        })
+    }
+
+    /// Execute a detected matmul pattern directly, bypassing the per-element
+    /// interpreter. Uses 32x32 tiled IKJ loop order for cache friendliness.
+    ///
+    /// C[i,j] = sum_k A[i,k] * B[k,j] (+ bias[i,j] if present)
+    #[inline(never)]
+    fn execute_matmul_fast(pattern: &MatmulPattern, bufs: &mut [Vec<u8>]) {
+        let MatmulPattern {
+            a_buf_idx,
+            b_buf_idx,
+            bias_buf_idx,
+            m,
+            k,
+            n,
+            dtype,
+        } = *pattern;
+
+        match dtype {
+            DType::Float32 => execute_matmul_f32(bufs, a_buf_idx, b_buf_idx, bias_buf_idx, m, k, n),
+            DType::Float64 => execute_matmul_f64(bufs, a_buf_idx, b_buf_idx, bias_buf_idx, m, k, n),
+            _ => unreachable!("detect_matmul_pattern only matches Float32/Float64"),
+        }
+    }
+
+    /// Tiled f32 matmul: C = A @ B (+ optional bias).
+    /// 32x32 tiles, IKJ loop order for cache locality on row-major data.
+    #[inline(never)]
+    fn execute_matmul_f32(
+        bufs: &mut [Vec<u8>],
+        a_idx: usize,
+        b_idx: usize,
+        bias_idx: Option<usize>,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) {
+        const TILE: usize = 32;
+
+        // Accumulate in a contiguous f32 buffer to avoid byte conversion overhead
+        // in the inner loop.
+        let mut c = vec![0.0f32; m * n];
+
+        let a_buf = &bufs[a_idx];
+        let b_buf = &bufs[b_idx];
+
+        // Tiled IKJ: iterate over tiles of (i, k) in A and (k, j) in B.
+        // Within each tile, the IKJ order broadcasts a[i,k] across B's row.
+        let mut ii = 0;
+        while ii < m {
+            let i_end = (ii + TILE).min(m);
+            let mut kk = 0;
+            while kk < k {
+                let k_end = (kk + TILE).min(k);
+                let mut jj = 0;
+                while jj < n {
+                    let j_end = (jj + TILE).min(n);
+
+                    // Micro-kernel: process tile [ii..i_end, kk..k_end] x [kk..k_end, jj..j_end]
+                    for i in ii..i_end {
+                        for ki in kk..k_end {
+                            let a_off = (i * k + ki) * 4;
+                            let a_val = f32::from_le_bytes(
+                                a_buf[a_off..a_off + 4].try_into().unwrap(),
+                            );
+                            let b_row_base = ki * n * 4;
+                            for j in jj..j_end {
+                                let b_off = b_row_base + j * 4;
+                                let b_val = f32::from_le_bytes(
+                                    b_buf[b_off..b_off + 4].try_into().unwrap(),
+                                );
+                                c[i * n + j] += a_val * b_val;
+                            }
+                        }
+                    }
+
+                    jj += TILE;
+                }
+                kk += TILE;
+            }
+            ii += TILE;
+        }
+
+        // Add bias if present
+        if let Some(bi) = bias_idx {
+            let bias_buf = &bufs[bi];
+            for idx in 0..m * n {
+                let off = idx * 4;
+                let bias_val =
+                    f32::from_le_bytes(bias_buf[off..off + 4].try_into().unwrap());
+                c[idx] += bias_val;
+            }
+        }
+
+        // Write results to output buffer
+        let out = &mut bufs[0];
+        for (idx, &val) in c.iter().enumerate() {
+            let off = idx * 4;
+            out[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        }
+    }
+
+    /// Tiled f64 matmul: C = A @ B (+ optional bias).
+    /// 32x32 tiles, IKJ loop order for cache locality on row-major data.
+    #[inline(never)]
+    fn execute_matmul_f64(
+        bufs: &mut [Vec<u8>],
+        a_idx: usize,
+        b_idx: usize,
+        bias_idx: Option<usize>,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) {
+        const TILE: usize = 32;
+
+        let mut c = vec![0.0f64; m * n];
+
+        let a_buf = &bufs[a_idx];
+        let b_buf = &bufs[b_idx];
+
+        let mut ii = 0;
+        while ii < m {
+            let i_end = (ii + TILE).min(m);
+            let mut kk = 0;
+            while kk < k {
+                let k_end = (kk + TILE).min(k);
+                let mut jj = 0;
+                while jj < n {
+                    let j_end = (jj + TILE).min(n);
+
+                    for i in ii..i_end {
+                        for ki in kk..k_end {
+                            let a_off = (i * k + ki) * 8;
+                            let a_val = f64::from_le_bytes(
+                                a_buf[a_off..a_off + 8].try_into().unwrap(),
+                            );
+                            let b_row_base = ki * n * 8;
+                            for j in jj..j_end {
+                                let b_off = b_row_base + j * 8;
+                                let b_val = f64::from_le_bytes(
+                                    b_buf[b_off..b_off + 8].try_into().unwrap(),
+                                );
+                                c[i * n + j] += a_val * b_val;
+                            }
+                        }
+                    }
+
+                    jj += TILE;
+                }
+                kk += TILE;
+            }
+            ii += TILE;
+        }
+
+        if let Some(bi) = bias_idx {
+            let bias_buf = &bufs[bi];
+            for idx in 0..m * n {
+                let off = idx * 8;
+                let bias_val =
+                    f64::from_le_bytes(bias_buf[off..off + 8].try_into().unwrap());
+                c[idx] += bias_val;
+            }
+        }
+
+        let out = &mut bufs[0];
+        for (idx, &val) in c.iter().enumerate() {
+            let off = idx * 8;
+            out[off..off + 8].copy_from_slice(&val.to_le_bytes());
+        }
+    }
+
     /// Interpret and execute a FusedKernel on CPU buffers.
     /// `bufs` are raw byte slices matching kernel.bufs order.
     /// bufs[0] is the output buffer (written to).
     #[inline(always)]
     pub fn execute_kernel(kernel: &FusedKernel, bufs: &mut [Vec<u8>]) {
         let output_numel = kernel.bufs[0].st.numel();
+
+        // Fast path: detect matmul pattern (Mul + ReduceSum, optionally + Add bias).
+        // Must be checked BEFORE the SIMD path since matmul contains a reduce op.
+        if let Some(pattern) = detect_matmul_pattern(kernel, bufs) {
+            execute_matmul_fast(&pattern, bufs);
+            return;
+        }
 
         // Check if SIMD fast path is applicable:
         // All buffers are Float32, all views are contiguous, no reduce ops.

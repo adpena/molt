@@ -2192,20 +2192,24 @@ impl LuauBackend {
                         if let Some(ref out_name) = op.out {
                             let out = sanitize_ident(out_name);
                             self.emit_line(&format!(
-                                "local {out} = table.remove({list}, if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1)"
+                                "local {out}; do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 or __idx > #{list} then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; {out} = table.remove({list}, __idx) end"
                             ));
                         } else {
                             self.emit_line(&format!(
-                                "table.remove({list}, if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1)"
+                                "do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 or __idx > #{list} then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; table.remove({list}, __idx) end"
                             ));
                         }
                     } else {
                         // list.pop() — remove last element.
                         if let Some(ref out_name) = op.out {
                             let out = sanitize_ident(out_name);
-                            self.emit_line(&format!("local {out} = table.remove({list})"));
+                            self.emit_line(&format!(
+                                "local {out}; if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; {out} = table.remove({list})"
+                            ));
                         } else {
-                            self.emit_line(&format!("table.remove({list})"));
+                            self.emit_line(&format!(
+                                "if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; table.remove({list})"
+                            ));
                         }
                     }
                 }
@@ -2286,7 +2290,7 @@ impl LuauBackend {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = -1; for __i, __v in ipairs({list}) do if __v == {val} then {out} = __i - 1; break end end"
+                        "local {out} = -1; do local __found = false; for __i, __v in ipairs({list}) do if __v == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
                     ));
                 }
             }
@@ -9292,6 +9296,57 @@ mod tests {
             output.contains("list assignment index out of range")
                 && output.contains("list deletion index out of range"),
             "list set/delete must guard out-of-range accesses, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_list_pop_and_index_emit_python_error_guards() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "list_method_guards".to_string(),
+                params: vec!["xs".to_string(), "i".to_string(), "needle".to_string()],
+                param_types: Some(vec![
+                    "list[int]".to_string(),
+                    "int".to_string(),
+                    "int".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "list_pop".to_string(),
+                        args: Some(vec!["xs".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "list_pop".to_string(),
+                        args: Some(vec!["xs".to_string(), "i".to_string()]),
+                        out: Some("v1".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "list_index".to_string(),
+                        args: Some(vec!["xs".to_string(), "needle".to_string()]),
+                        out: Some("v2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("pop from empty list")
+                && output.contains("pop index out of range")
+                && output.contains("is not in list"),
+            "list pop/index must emit Python error guards, got:\n{output}"
         );
     }
 
