@@ -36,6 +36,7 @@ strip = "symbols"
 debug = 1
 
 [profile.dev.package.molt-backend]
+opt-level = 1
 debug = 0
 
 [profile.dev.package.cranelift-codegen]
@@ -147,6 +148,7 @@ codegen-units = 256
 lto = "off"
 
 [profile.dev-fast.package.molt-backend]
+opt-level = 1
 debug = 0
 
 [profile.dev-fast.package.cranelift-codegen]
@@ -251,13 +253,14 @@ debug = 0
 [profile.dev-fast.package.zip]
 debug = 0
 
-# Fast iteration profile: O2 with more codegen units for faster linking.
-# The daemon uses this for quick recompilation during development.
+# Fast iteration profile: O2 with single codegen unit for maximum
+# inlining and optimization. The daemon uses this for release builds.
+# panic = "unwind" required — see [profile.release] comment above.
 [profile.release-fast]
 inherits = "release"
 opt-level = 2
 lto = "thin"
-codegen-units = 8
+codegen-units = 1
 strip = "symbols"
 panic = "unwind"
 

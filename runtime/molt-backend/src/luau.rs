@@ -2690,11 +2690,37 @@ impl LuauBackend {
                 let attr = sanitize_ident(raw_attr);
                 if let Some(obj) = args.first() {
                     let obj = sanitize_ident(obj);
+                    let obj_is_str = self
+                        .var_type_hints
+                        .get(args[0].as_str())
+                        .is_some_and(|hint| hint == "str" || hint == "string");
                     // For dunder attrs that might be on functions (stored
                     // in the side-table), look there first.
                     let use_side_table =
                         matches!(raw_attr, "__defaults__" | "__kwdefaults__" | "__closure__");
-                    if use_side_table {
+                    if obj_is_str && raw_attr == "removeprefix" {
+                        self.emit_line(&format!(
+                            "local {out} = function(__args) local __prefix = __args[1]; if __prefix ~= \"\" and string.sub({obj}, 1, #__prefix) == __prefix then return string.sub({obj}, #__prefix + 1) end; return {obj} end"
+                        ));
+                    } else if obj_is_str && raw_attr == "removesuffix" {
+                        self.emit_line(&format!(
+                            "local {out} = function(__args) local __suffix = __args[1]; if __suffix ~= \"\" and string.sub({obj}, -#__suffix) == __suffix then return string.sub({obj}, 1, #{obj} - #__suffix) end; return {obj} end"
+                        ));
+                    } else if obj_is_str
+                        && matches!(
+                            raw_attr,
+                            "isalpha"
+                                | "isdigit"
+                                | "isalnum"
+                                | "isspace"
+                                | "isupper"
+                                | "islower"
+                                | "isidentifier"
+                                | "isprintable"
+                        )
+                    {
+                        self.emit_string_predicate_attr(&out, &obj, raw_attr);
+                    } else if use_side_table {
                         self.emit_line(&format!(
                             "local {out} = if molt_func_attrs[{obj}] then molt_func_attrs[{obj}].{attr} else nil"
                         ));
@@ -4260,6 +4286,34 @@ impl LuauBackend {
                 "if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; table.remove({list})"
             )),
         }
+    }
+
+    fn emit_string_predicate_attr(&mut self, out: &str, obj: &str, method: &str) {
+        let predicate = match method {
+            "isalpha" => "__is_alpha and not __is_digit",
+            "isdigit" => "__is_digit",
+            "isalnum" => "__is_alpha or __is_digit",
+            "isspace" => "__is_space",
+            "isupper" => "not __is_lower",
+            "islower" => "not __is_upper",
+            "isidentifier" => "(__is_alpha or __is_digit or __b == 95)",
+            "isprintable" => "(__b >= 32 and __b <= 126)",
+            _ => "false",
+        };
+        let prefix = match method {
+            "isidentifier" => {
+                "local __first = string.byte(__s, 1); local __first_ok = ((__first >= 65 and __first <= 90) or (__first >= 97 and __first <= 122) or __first == 95);"
+            }
+            _ => "",
+        };
+        let suffix = match method {
+            "isupper" | "islower" => " and __has_cased",
+            "isidentifier" => " and __first_ok",
+            _ => "",
+        };
+        self.emit_line(&format!(
+            "local {out} = function(__args) local __s = {obj}; local __ok = (#__s > 0); local __has_cased = false; {prefix} for __i = 1, #__s do local __b = string.byte(__s, __i); local __is_upper = (__b >= 65 and __b <= 90); local __is_lower = (__b >= 97 and __b <= 122); local __is_alpha = (__is_upper or __is_lower); local __is_digit = (__b >= 48 and __b <= 57); local __is_space = (__b == 32 or __b == 9 or __b == 10 or __b == 11 or __b == 12 or __b == 13); if __is_alpha then __has_cased = true end; if not ({predicate}) then __ok = false; break end end; return __ok{suffix} end"
+        ));
     }
 
     /// Wrap a condition identifier in `molt_bool()` if it's not a known boolean.
@@ -10131,6 +10185,78 @@ mod tests {
                 && !output.contains("s.removeprefix")
                 && !output.contains("s.removesuffix"),
             "string remove-prefix/suffix method attrs must lower to callable closures, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_ascii_predicate_get_attr_indirect_path() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_predicate_attrs".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("Abc123".to_string()),
+                        out: Some("s".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "get_attr_generic_obj".to_string(),
+                        args: Some(vec!["s".to_string()]),
+                        s_value: Some("isalnum".to_string()),
+                        out: Some("m0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_new".to_string(),
+                        out: Some("a0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_indirect".to_string(),
+                        args: Some(vec!["m0".to_string(), "a0".to_string()]),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "get_attr_generic_obj".to_string(),
+                        args: Some(vec!["s".to_string()]),
+                        s_value: Some("isidentifier".to_string()),
+                        out: Some("m1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_new".to_string(),
+                        out: Some("a1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_indirect".to_string(),
+                        args: Some(vec!["m1".to_string(), "a1".to_string()]),
+                        out: Some("v1".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("function(__args)")
+                && output.contains("__has_cased")
+                && output.contains("__first_ok")
+                && output.contains("string.byte(__s, __i)")
+                && !output.contains("s.isalnum"),
+            "string predicate attrs must lower to ASCII-fast closures, got:\n{output}"
         );
     }
 
