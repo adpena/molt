@@ -7448,17 +7448,14 @@ impl SimpleBackend {
                         } else if op.container_type.as_deref() == Some("list")
                             && op_prefers_int_lane(&op)
                         {
-                            // Inline generic list getitem — direct memory access
-                            // into Box<Vec<u64>>.
+                            // Inline list getitem — handles both TYPE_ID_LIST (Vec<u64>)
+                            // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
                             //
-                            // Object layout:
-                            //   obj_ptr[0] = *mut Vec<u64>  (vec_ptr)
-                            //   vec_ptr[VEC_DATA_OFFSET] = data_ptr
-                            //   vec_ptr[VEC_LEN_OFFSET]  = len
-                            //
-                            // Vec offsets are probed at process init time since
-                            // Vec<T> is #[repr(Rust)] and field order varies
-                            // across compiler versions.
+                            // At cache-miss time we load the type_id from the object header
+                            // and select the correct data/len offsets. The is_bool flag is
+                            // cached alongside data_ptr/len so the fast-block element access
+                            // can branch between u64-load (regular list) and u8-load+NaN-box
+                            // (list_bool) without re-loading the header.
                             let raw_idx_lookup = if !loop_stack.is_empty() {
                                 shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
                             } else {
@@ -7471,8 +7468,8 @@ impl SimpleBackend {
                             };
                             if let Some(raw_idx) = raw_idx_lookup {
                                 let vec_layout = vec_u64_layout();
-                                // Extract vec_ptr, data_ptr, len (cached across loop iterations).
-                                let (data_ptr, len_val) = {
+                                // Extract data_ptr, len, and is_bool flag (cached across loop iterations).
+                                let (data_ptr, len_val, is_bool_val) = {
                                     let dp = if let Some(&var) = list_data_cache.get(&args[0]) {
                                         builder.use_var(var)
                                     } else {
@@ -7480,29 +7477,58 @@ impl SimpleBackend {
                                             builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                         let shifted = builder.ins().ishl_imm(masked, 16);
                                         let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                        // obj_ptr[0] = *mut Vec<u64>
-                                        let vec_ptr = builder.ins().load(
+                                        // Load type_id from header (obj_ptr - 24).
+                                        let tid = builder.ins().load(
+                                            types::I32,
+                                            MemFlags::trusted(),
+                                            obj_ptr,
+                                            HEADER_TYPE_ID_OFFSET,
+                                        );
+                                        let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                                        let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                                        // Cache is_bool flag.
+                                        let ibvar = builder.declare_var(types::I8);
+                                        builder.def_var(ibvar, is_bool);
+                                        list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                        // obj_ptr[0] = storage pointer (Vec<u64> or ListBoolStorage)
+                                        let storage_ptr = builder.ins().load(
                                             types::I64,
                                             MemFlags::trusted(),
                                             obj_ptr,
                                             0,
                                         );
-                                        let dp = builder.ins().load(
+                                        // ListBoolStorage (repr(C)): data@0, len@8
+                                        let dp_bool = builder.ins().load(
                                             types::I64,
                                             MemFlags::trusted(),
-                                            vec_ptr,
+                                            storage_ptr,
+                                            0i32,
+                                        );
+                                        let len_bool = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::trusted(),
+                                            storage_ptr,
+                                            8i32,
+                                        );
+                                        // Vec<u64> (repr(Rust), probed offsets)
+                                        let dp_vec = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::trusted(),
+                                            storage_ptr,
                                             vec_layout.data_offset,
                                         );
+                                        let len_vec = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::trusted(),
+                                            storage_ptr,
+                                            vec_layout.len_offset,
+                                        );
+                                        // Select based on type: list_bool uses repr(C) offsets.
+                                        let dp = builder.ins().select(is_bool, dp_bool, dp_vec);
+                                        let len = builder.ins().select(is_bool, len_bool, len_vec);
                                         let var = builder.declare_var(types::I64);
                                         builder.def_var(var, dp);
                                         list_data_cache.insert(args[0].clone(), var);
-                                        // Also cache len
-                                        let len = builder.ins().load(
-                                            types::I64,
-                                            MemFlags::trusted(),
-                                            vec_ptr,
-                                            vec_layout.len_offset,
-                                        );
                                         let lvar = builder.declare_var(types::I64);
                                         builder.def_var(lvar, len);
                                         list_len_cache.insert(args[0].clone(), lvar);
@@ -7516,24 +7542,48 @@ impl SimpleBackend {
                                             builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                         let shifted = builder.ins().ishl_imm(masked, 16);
                                         let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                        let vec_ptr = builder.ins().load(
+                                        let storage_ptr = builder.ins().load(
                                             types::I64,
                                             MemFlags::trusted(),
                                             obj_ptr,
                                             0,
                                         );
-                                        let len = builder.ins().load(
-                                            types::I64,
-                                            MemFlags::trusted(),
-                                            vec_ptr,
-                                            vec_layout.len_offset,
+                                        // Use is_bool_cache if available, otherwise re-probe.
+                                        let is_bool = if let Some(&ibv) = list_is_bool_cache.get(&args[0]) {
+                                            builder.use_var(ibv)
+                                        } else {
+                                            let tid = builder.ins().load(
+                                                types::I32,
+                                                MemFlags::trusted(),
+                                                obj_ptr,
+                                                HEADER_TYPE_ID_OFFSET,
+                                            );
+                                            let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                                            let ib = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                                            let ibvar = builder.declare_var(types::I8);
+                                            builder.def_var(ibvar, ib);
+                                            list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                            ib
+                                        };
+                                        let len_bool = builder.ins().load(
+                                            types::I64, MemFlags::trusted(), storage_ptr, 8i32,
                                         );
+                                        let len_vec = builder.ins().load(
+                                            types::I64, MemFlags::trusted(), storage_ptr, vec_layout.len_offset,
+                                        );
+                                        let len = builder.ins().select(is_bool, len_bool, len_vec);
                                         let lvar = builder.declare_var(types::I64);
                                         builder.def_var(lvar, len);
                                         list_len_cache.insert(args[0].clone(), lvar);
                                         len
                                     };
-                                    (dp, lv)
+                                    let ibv = if let Some(&v) = list_is_bool_cache.get(&args[0]) {
+                                        builder.use_var(v)
+                                    } else {
+                                        // Fallback: assume regular list (is_bool = 0).
+                                        builder.ins().iconst(types::I8, 0)
+                                    };
+                                    (dp, lv, ibv)
                                 };
                                 // Bounds check: 0 <= raw_idx < len.
                                 // On failure, fall through to the safe runtime function.
@@ -7550,9 +7600,35 @@ impl SimpleBackend {
                                     .ins()
                                     .brif(in_bounds, fast_block, &[], slow_block, &[]);
 
-                                // Fast path: direct load + inline inc_ref
+                                // Fast path: branch on is_bool for element access.
                                 switch_to_block_materialized(&mut builder, fast_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                                let zero_i8 = builder.ins().iconst(types::I8, 0);
+                                let is_bool_check = builder.ins().icmp(IntCC::NotEqual, is_bool_val, zero_i8);
+                                let bool_load_block = builder.create_block();
+                                let vec_load_block = builder.create_block();
+                                builder.ins().brif(is_bool_check, bool_load_block, &[], vec_load_block, &[]);
+
+                                // Bool list path: load u8, convert to NaN-boxed bool.
+                                // No inc_ref needed — bools are inline NaN-boxed values.
+                                switch_to_block_materialized(&mut builder, bool_load_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, bool_load_block);
+                                let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
+                                let byte_val = builder.ins().load(
+                                    types::I8,
+                                    MemFlags::trusted(),
+                                    bool_elem_addr,
+                                    0,
+                                );
+                                // NaN-box: result = (QNAN | TAG_BOOL) | (byte_val as u64)
+                                let byte_ext = builder.ins().uextend(types::I64, byte_val);
+                                let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
+                                let bool_elem = builder.ins().bor(bool_tag, byte_ext);
+                                jump_block(&mut builder, merge_block, &[bool_elem]);
+
+                                // Regular list path: load u64, inc_ref.
+                                switch_to_block_materialized(&mut builder, vec_load_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, vec_load_block);
                                 let byte_offset = builder.ins().imul_imm(raw_idx, 8);
                                 let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                                 let elem = builder.ins().load(
@@ -7561,10 +7637,6 @@ impl SimpleBackend {
                                     elem_addr,
                                     0,
                                 );
-                                // Inline inc_ref for the loaded element.
-                                // The element is NaN-boxed — only pointer values
-                                // need refcount bumps (ints/bools/None are tagged
-                                // inline values with no heap allocation).
                                 emit_inc_ref_obj(&mut builder, elem, local_inc_ref_obj, &nbc);
                                 jump_block(&mut builder, merge_block, &[elem]);
 
@@ -7793,8 +7865,8 @@ impl SimpleBackend {
                     } else if op.container_type.as_deref() == Some("list")
                         && op_prefers_int_lane(&op)
                     {
-                        // Inline generic list setitem — direct memory store
-                        // into Box<Vec<u64>>.
+                        // Inline list setitem — handles both TYPE_ID_LIST (Vec<u64>)
+                        // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
                         let raw_idx_opt = if !loop_stack.is_empty() {
                             shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
                         } else {
@@ -7807,34 +7879,50 @@ impl SimpleBackend {
                         };
                         if let Some(raw_idx) = raw_idx_opt {
                             let vec_layout = vec_u64_layout();
-                            let (data_ptr, len_val) = {
+                            let (data_ptr, len_val, is_bool_val) = {
                                 let dp = if let Some(&var) = list_data_cache.get(&args[0]) {
                                     builder.use_var(var)
                                 } else {
                                     let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                     let shifted = builder.ins().ishl_imm(masked, 16);
                                     let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                    let vec_ptr = builder.ins().load(
+                                    // Load type_id from header (obj_ptr - 24).
+                                    let tid = builder.ins().load(
+                                        types::I32,
+                                        MemFlags::trusted(),
+                                        obj_ptr,
+                                        HEADER_TYPE_ID_OFFSET,
+                                    );
+                                    let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                                    let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                                    let ibvar = builder.declare_var(types::I8);
+                                    builder.def_var(ibvar, is_bool);
+                                    list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                    let storage_ptr = builder.ins().load(
                                         types::I64,
                                         MemFlags::trusted(),
                                         obj_ptr,
                                         0,
                                     );
-                                    let dp = builder.ins().load(
-                                        types::I64,
-                                        MemFlags::trusted(),
-                                        vec_ptr,
-                                        vec_layout.data_offset,
+                                    // ListBoolStorage (repr(C)): data@0, len@8
+                                    let dp_bool = builder.ins().load(
+                                        types::I64, MemFlags::trusted(), storage_ptr, 0i32,
                                     );
+                                    let len_bool = builder.ins().load(
+                                        types::I64, MemFlags::trusted(), storage_ptr, 8i32,
+                                    );
+                                    // Vec<u64> (repr(Rust), probed offsets)
+                                    let dp_vec = builder.ins().load(
+                                        types::I64, MemFlags::trusted(), storage_ptr, vec_layout.data_offset,
+                                    );
+                                    let len_vec = builder.ins().load(
+                                        types::I64, MemFlags::trusted(), storage_ptr, vec_layout.len_offset,
+                                    );
+                                    let dp = builder.ins().select(is_bool, dp_bool, dp_vec);
+                                    let len = builder.ins().select(is_bool, len_bool, len_vec);
                                     let var = builder.declare_var(types::I64);
                                     builder.def_var(var, dp);
                                     list_data_cache.insert(args[0].clone(), var);
-                                    let len = builder.ins().load(
-                                        types::I64,
-                                        MemFlags::trusted(),
-                                        vec_ptr,
-                                        vec_layout.len_offset,
-                                    );
                                     let lvar = builder.declare_var(types::I64);
                                     builder.def_var(lvar, len);
                                     list_len_cache.insert(args[0].clone(), lvar);
@@ -7846,24 +7934,40 @@ impl SimpleBackend {
                                     let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                     let shifted = builder.ins().ishl_imm(masked, 16);
                                     let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                    let vec_ptr = builder.ins().load(
-                                        types::I64,
-                                        MemFlags::trusted(),
-                                        obj_ptr,
-                                        0,
+                                    let storage_ptr = builder.ins().load(
+                                        types::I64, MemFlags::trusted(), obj_ptr, 0,
                                     );
-                                    let len = builder.ins().load(
-                                        types::I64,
-                                        MemFlags::trusted(),
-                                        vec_ptr,
-                                        vec_layout.len_offset,
+                                    let is_bool = if let Some(&ibv) = list_is_bool_cache.get(&args[0]) {
+                                        builder.use_var(ibv)
+                                    } else {
+                                        let tid = builder.ins().load(
+                                            types::I32, MemFlags::trusted(), obj_ptr, HEADER_TYPE_ID_OFFSET,
+                                        );
+                                        let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                                        let ib = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                                        let ibvar = builder.declare_var(types::I8);
+                                        builder.def_var(ibvar, ib);
+                                        list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                        ib
+                                    };
+                                    let len_bool = builder.ins().load(
+                                        types::I64, MemFlags::trusted(), storage_ptr, 8i32,
                                     );
+                                    let len_vec = builder.ins().load(
+                                        types::I64, MemFlags::trusted(), storage_ptr, vec_layout.len_offset,
+                                    );
+                                    let len = builder.ins().select(is_bool, len_bool, len_vec);
                                     let lvar = builder.declare_var(types::I64);
                                     builder.def_var(lvar, len);
                                     list_len_cache.insert(args[0].clone(), lvar);
                                     len
                                 };
-                                (dp, lv)
+                                let ibv = if let Some(&v) = list_is_bool_cache.get(&args[0]) {
+                                    builder.use_var(v)
+                                } else {
+                                    builder.ins().iconst(types::I8, 0)
+                                };
+                                (dp, lv, ibv)
                             };
                             // Bounds check
                             let in_bounds =
@@ -7878,34 +7982,44 @@ impl SimpleBackend {
                                 .ins()
                                 .brif(in_bounds, fast_block, &[], slow_block, &[]);
 
-                            // Fast path: dec_ref old element, store new, inc_ref new
+                            // Fast path: branch on is_bool for element store.
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let zero_i8 = builder.ins().iconst(types::I8, 0);
+                            let is_bool_check = builder.ins().icmp(IntCC::NotEqual, is_bool_val, zero_i8);
+
+                            // Only inline list_bool store when the value is a compile-time-proven
+                            // bool. Otherwise fall to the slow path (which handles promotion).
+                            if var_is_bool(&args[2]) {
+                                let bool_store_block = builder.create_block();
+                                let vec_store_block = builder.create_block();
+                                builder.ins().brif(is_bool_check, bool_store_block, &[], vec_store_block, &[]);
+
+                                // Bool list path: extract low bit of NaN-boxed bool, store as u8.
+                                // No dec_ref/inc_ref needed — bools are inline values.
+                                switch_to_block_materialized(&mut builder, bool_store_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, bool_store_block);
+                                let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
+                                let low_bit = builder.ins().band_imm(*val, 1);
+                                let byte_val = builder.ins().ireduce(types::I8, low_bit);
+                                builder.ins().store(MemFlags::trusted(), byte_val, bool_elem_addr, 0);
+                                jump_block(&mut builder, merge_block, &[]);
+
+                                // Regular list path: dec_ref old, store new u64, inc_ref new.
+                                switch_to_block_materialized(&mut builder, vec_store_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, vec_store_block);
+                            }
+                            // Regular list store (also reached when var is not proven bool).
                             let byte_offset = builder.ins().imul_imm(raw_idx, 8);
                             let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
-                            // Dec-ref old element
                             let old_elem =
                                 builder
                                     .ins()
                                     .load(types::I64, MemFlags::trusted(), elem_addr, 0);
-                            // Dec-ref old element — only needed if the old
-                            // value could be a heap pointer.  When the stored
-                            // value is a proven non-heap type (bool/int/float/None)
-                            // AND the list was populated with the same kind of
-                            // non-heap values, the old element is also non-heap.
-                            // We cannot prove element homogeneity statically yet,
-                            // so always emit the dec_ref for now.
                             emit_dec_ref_obj(&mut builder, old_elem, local_dec_ref_obj, &nbc);
-                            // Inc-ref new value — skip entirely when the value
-                            // being stored is a compile-time-proven non-heap type
-                            // (int, bool, float, None).  These NaN-boxed values
-                            // have no heap allocation, so is_ptr() is always false
-                            // and the refcount bump would be a no-op after the
-                            // tag check.  Eliding it saves ~2 cycles per store.
                             if !var_is_known_non_heap(&args[2]) {
                                 emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
                             }
-                            // Store new value
                             builder.ins().store(MemFlags::trusted(), *val, elem_addr, 0);
                             jump_block(&mut builder, merge_block, &[]);
 
