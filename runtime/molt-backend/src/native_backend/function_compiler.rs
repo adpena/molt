@@ -159,6 +159,16 @@ fn infer_scalar_lane(
         "invert" => first_source()
             .filter(|src| name_is_int_like(src, int_like_vars, bool_like_vars))
             .map(|_| ScalarLane::Int),
+        // Container indexing: the INDEX (second arg) determines the lane,
+        // not the container (first arg).  When the index is proven int we
+        // route to molt_list_getitem_int_fast / molt_list_setitem_int_fast
+        // which skip tag-checking the index and avoid the full molt_index
+        // dispatch.
+        "index" | "store_index" | "dict_set" => {
+            args.get(1)
+                .filter(|k| name_is_int_like(k, int_like_vars, bool_like_vars))
+                .map(|_| ScalarLane::Int)
+        }
         _ => None,
     }
 }
@@ -7422,9 +7432,11 @@ impl SimpleBackend {
                     } else {
                         // Dispatch based on container specialization:
                         // - dict: direct hash-table set
+                        // - int fast: list with proven-int index
                         // - default: full type dispatch
                         let fn_name = match op.container_type.as_deref() {
                             Some("dict") => "molt_dict_setitem",
+                            _ if op_prefers_int_lane(&op) => "molt_list_setitem_int_fast",
                             _ => "molt_store_index",
                         };
                         let callee = Self::import_func_id_split(

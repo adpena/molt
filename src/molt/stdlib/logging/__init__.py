@@ -97,6 +97,7 @@ _GETPID = _require_intrinsic("molt_getpid")
 
 __all__ = [
     "BASIC_FORMAT",
+    "BufferingFormatter",
     "CRITICAL",
     "DEBUG",
     "ERROR",
@@ -105,38 +106,58 @@ __all__ = [
     "NOTSET",
     "WARN",
     "WARNING",
+    "addLevelName",
     "basicConfig",
     "captureWarnings",
     "critical",
     "debug",
+    "disable",
     "error",
     "exception",
     "fatal",
     "getLevelName",
+    "getLevelNamesMapping",
+    "getHandlerByName",
+    "getHandlerNames",
+    "getLogRecordFactory",
     "getLogger",
     "getLoggerClass",
     "info",
     "log",
+    "logAsyncioTasks",
+    "logMultiprocessing",
+    "logProcesses",
+    "logThreads",
     "makeLogRecord",
+    "raiseExceptions",
     "setLoggerClass",
+    "setLogRecordFactory",
     "shutdown",
     "warn",
     "warning",
-    "addLevelName",
     "Filter",
+    "Filterer",
     "Formatter",
     "Handler",
     "LogRecord",
     "Logger",
     "LoggerAdapter",
+    "Manager",
     "NullHandler",
+    "PercentStyle",
+    "PlaceHolder",
+    "RootLogger",
+    "StrFormatStyle",
     "StreamHandler",
+    "StringTemplateStyle",
     "FileHandler",
     "BaseRotatingHandler",
     "TimedRotatingFileHandler",
     "QueueHandler",
     "QueueListener",
     "handlers",
+    "lastResort",
+    "root",
 ]
 
 # Allow `import logging.handlers` to treat this module as package-like.
@@ -548,11 +569,24 @@ class Formatter:
 class Handler(Filterer):
     def __init__(self, level: int = NOTSET) -> None:
         super().__init__()
+        self._name: str | None = None
         self.level = _check_level(level)
         self._handle = _HANDLER_NEW(self.level)
         self.formatter: Formatter | None = None
         self.lock = _RLock()
         _handler_list.append(self)
+
+    def get_name(self) -> str | None:
+        return self._name
+
+    def set_name(self, name: str | None) -> None:
+        if self._name in _handlers:
+            del _handlers[self._name]
+        self._name = name
+        if name:
+            _handlers[name] = self
+
+    name = property(get_name, set_name)
 
     def setLevel(self, level: int | str) -> None:
         self.level = _check_level(level)
@@ -607,6 +641,12 @@ class Handler(Filterer):
         try:
             if self in _handler_list:
                 _handler_list.remove(self)
+        except Exception:
+            pass
+        # Remove from the named-handler registry if registered.
+        try:
+            if self._name and self._name in _handlers:
+                del _handlers[self._name]
         except Exception:
             pass
 
@@ -1022,6 +1062,10 @@ class Logger(Filterer):
     def isEnabledFor(self, level: int) -> bool:
         if self.disabled:
             return False
+        # Honour the manager-level disable threshold (set via logging.disable()).
+        mgr = getattr(self, "manager", None)
+        if mgr is not None and getattr(mgr, "disable", NOTSET) >= level:
+            return False
         try:
             return bool(_LOGGER_IS_ENABLED_FOR(self._handle, level))
         except Exception:
@@ -1100,6 +1144,7 @@ class Manager:
     def __init__(self, root: RootLogger) -> None:
         self.root = root
         self.loggerDict: dict[str, Logger] = {}
+        self.disable: int = NOTSET
 
     def getLogger(self, name: str) -> Logger:
         if not name or name == "root":
@@ -1391,6 +1436,130 @@ def captureWarnings(capture: bool) -> None:
                 delattr(cast(Any, _warnings), "_molt_capture_streams")
         except Exception:
             pass
+
+
+# ── Module-level flags (CPython compat) ──────────────────────────────────────
+
+#: If True, exceptions raised during emit() are propagated to the caller.
+raiseExceptions: bool = True
+
+#: Whether thread information should be included in LogRecord.
+logThreads: bool = True
+
+#: Whether multiprocessing information should be included in LogRecord.
+logMultiprocessing: bool = True
+
+#: Whether process information should be included in LogRecord.
+logProcesses: bool = True
+
+#: Whether asyncio task names should be logged (Python 3.12+).
+logAsyncioTasks: bool = True
+
+# ── _manager / disable threshold ─────────────────────────────────────────────
+
+_disable_level: int = NOTSET
+
+
+def disable(level: int = CRITICAL) -> None:
+    """Disable all logging calls of severity *level* and below.
+
+    When a level is set using disable(), all logging calls at that level
+    and below will be discarded. If *level* is NOTSET, the threshold is
+    cleared and all messages are processed.
+    """
+    global _disable_level
+    _disable_level = _check_level(level)
+    # Mirror the value on the manager so Logger.isEnabledFor can check it.
+    _manager.disable = _disable_level
+
+
+# ── Handler registry (name → Handler) ────────────────────────────────────────
+
+_handlers: dict[str, "Handler"] = {}
+
+
+def getHandlerByName(name: str) -> "Handler | None":
+    """Get a handler with the specified *name*, or None if there isn't one."""
+    return _handlers.get(name)
+
+
+def getHandlerNames() -> frozenset[str]:
+    """Return all known handler names as an immutable set."""
+    return frozenset(_handlers.keys())
+
+
+# ── Log-record factory ────────────────────────────────────────────────────────
+
+_log_record_factory = LogRecord
+
+
+def getLogRecordFactory():
+    """Return the factory callable used to create log records."""
+    return _log_record_factory
+
+
+def setLogRecordFactory(factory) -> None:
+    """Set the factory callable used to create log records."""
+    global _log_record_factory
+    _log_record_factory = factory
+
+
+# ── getLevelNamesMapping ──────────────────────────────────────────────────────
+
+def getLevelNamesMapping() -> dict[str, int]:
+    """Return a copy of the mapping of level names to numeric levels."""
+    return dict(_name_to_level)
+
+
+# ── PlaceHolder ───────────────────────────────────────────────────────────────
+
+class PlaceHolder:
+    """PlaceHolder instances are used in the Manager logger hierarchy.
+
+    They take the place of nodes for which no loggers have been defined.
+    Intended for internal use only.
+    """
+
+    def __init__(self, alogger: "Logger") -> None:
+        self.loggerMap: dict["Logger", None] = {alogger: None}
+
+    def append(self, alogger: "Logger") -> None:
+        if alogger not in self.loggerMap:
+            self.loggerMap[alogger] = None
+
+
+# ── BufferingFormatter ────────────────────────────────────────────────────────
+
+class BufferingFormatter:
+    """A formatter suitable for formatting a number of records."""
+
+    def __init__(self, linefmt: "Formatter | None" = None) -> None:
+        if linefmt:
+            self.linefmt: Formatter = linefmt
+        else:
+            self.linefmt = Formatter()
+
+    def formatHeader(self, records: "list[LogRecord]") -> str:
+        return ""
+
+    def formatFooter(self, records: "list[LogRecord]") -> str:
+        return ""
+
+    def format(self, records: "list[LogRecord]") -> str:
+        rv = self.formatHeader(records)
+        for record in records:
+            rv += self.linefmt.format(record)
+        rv += self.formatFooter(records)
+        return rv
+
+
+# ── GenericAlias shim ─────────────────────────────────────────────────────────
+# CPython exposes types.GenericAlias as logging.GenericAlias.
+
+try:
+    from types import GenericAlias  # type: ignore[attr-defined]
+except ImportError:
+    GenericAlias = type(list[int])  # type: ignore[misc,assignment]
 
 
 def _install_handlers_submodule() -> ModuleType:

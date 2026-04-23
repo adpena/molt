@@ -43,7 +43,24 @@ enum ConstVal {
     Bool(bool),
     Str(String),
     None,
+    /// Compile-time constant list (all elements are ConstVal).
+    /// Capped at MAX_COMPOUND_ELEMENTS to avoid embedding huge data at compile time.
+    List(Vec<ConstVal>),
+    /// Compile-time constant dict (all keys and values are ConstVal).
+    /// Capped at MAX_COMPOUND_ELEMENTS entries.
+    Dict(Vec<(ConstVal, ConstVal)>),
+    /// Compile-time range(start, stop, step). Not materialized as a list,
+    /// but supports len() and iteration count propagation.
+    Range {
+        start: i64,
+        stop: i64,
+        step: i64,
+    },
 }
+
+/// Maximum number of elements for compile-time compound value folding.
+/// Prevents embedding excessively large data structures in the binary.
+const MAX_COMPOUND_ELEMENTS: usize = 1000;
 
 /// Returns `true` if the op may throw and thus should not be folded inside
 /// a try region (its execution may transfer to an exception handler).
@@ -324,6 +341,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         op.attrs = AttrDict::new();
                         stats.values_changed += 1;
                     }
+                    // Compound types (List, Dict, Range) stay in the lattice for
+                    // downstream folding (e.g. len([1,2,3]) → 3) but cannot be
+                    // rewritten to a single constant opcode since no ConstList/
+                    // ConstDict/ConstRange opcodes exist in TIR.
+                    ConstVal::List(_) | ConstVal::Dict(_) | ConstVal::Range { .. } => {}
                 }
             }
         }
@@ -429,15 +451,44 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     stats
 }
 
+/// Compute len(range(start, stop, step)) using Python semantics.
+fn range_len(start: i64, stop: i64, step: i64) -> i64 {
+    if step > 0 {
+        if start >= stop {
+            0
+        } else {
+            (stop - start - 1) / step + 1
+        }
+    } else if step < 0 {
+        if start <= stop {
+            0
+        } else {
+            (start - stop - 1) / (-step) + 1
+        }
+    } else {
+        0 // step == 0 is ValueError, but we guard against this at construction
+    }
+}
+
 /// Try to evaluate a binary/unary op on constant operands.
 fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     match opcode {
         // Binary arithmetic
         // Use checked arithmetic to avoid panic on overflow in debug / silent wrap in release.
         // On overflow, return None → value stays as Bottom (unfoldable), matching Python's BigInt.
-        OpCode::Add => eval_binary(operands, |a, b| a.checked_add(b), |a, b| Some(a + b)),
+        OpCode::Add => {
+            // Try string concatenation first, then numeric addition.
+            eval_str_concat(operands)
+                .or_else(|| eval_list_concat(operands))
+                .or_else(|| eval_binary(operands, |a, b| a.checked_add(b), |a, b| Some(a + b)))
+        }
         OpCode::Sub => eval_binary(operands, |a, b| a.checked_sub(b), |a, b| Some(a - b)),
-        OpCode::Mul => eval_binary(operands, |a, b| a.checked_mul(b), |a, b| Some(a * b)),
+        OpCode::Mul => {
+            // Try string/list repeat first, then numeric multiplication.
+            eval_str_repeat(operands)
+                .or_else(|| eval_list_repeat(operands))
+                .or_else(|| eval_binary(operands, |a, b| a.checked_mul(b), |a, b| Some(a * b)))
+        }
         OpCode::Div => eval_binary_div(operands),
         OpCode::FloorDiv => eval_binary_floordiv(operands),
         OpCode::Mod => eval_binary_mod(operands),
@@ -468,8 +519,126 @@ fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVa
             }
         }
 
+        // Container construction with all-constant elements.
+        OpCode::BuildList => eval_build_list(operands),
+        OpCode::BuildDict => eval_build_dict(operands),
+        OpCode::BuildTuple => eval_build_list(operands), // tuples fold to List for SCCP purposes
+
         _ => None,
     }
+}
+
+/// Fold string concatenation: "a" + "b" → "ab".
+fn eval_str_concat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    let a = operands.first().copied().flatten()?;
+    let b = operands.get(1).copied().flatten()?;
+    match (a, b) {
+        (ConstVal::Str(x), ConstVal::Str(y)) => {
+            let result = format!("{}{}", x, y);
+            if result.len() <= MAX_COMPOUND_ELEMENTS {
+                Some(ConstVal::Str(result))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Fold list concatenation: [1,2] + [3,4] → [1,2,3,4].
+fn eval_list_concat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    let a = operands.first().copied().flatten()?;
+    let b = operands.get(1).copied().flatten()?;
+    match (a, b) {
+        (ConstVal::List(x), ConstVal::List(y)) => {
+            let total = x.len() + y.len();
+            if total <= MAX_COMPOUND_ELEMENTS {
+                let mut result = x.clone();
+                result.extend(y.iter().cloned());
+                Some(ConstVal::List(result))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Fold string repeat: "ab" * 3 → "ababab".
+fn eval_str_repeat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    let a = operands.first().copied().flatten()?;
+    let b = operands.get(1).copied().flatten()?;
+    match (a, b) {
+        (ConstVal::Str(s), ConstVal::Int(n)) | (ConstVal::Int(n), ConstVal::Str(s)) => {
+            if *n <= 0 {
+                Some(ConstVal::Str(String::new()))
+            } else {
+                let count = *n as usize;
+                let result_len = s.len().checked_mul(count)?;
+                if result_len <= MAX_COMPOUND_ELEMENTS {
+                    Some(ConstVal::Str(s.repeat(count)))
+                } else {
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Fold list repeat: [1,2] * 3 → [1,2,1,2,1,2].
+fn eval_list_repeat(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    let a = operands.first().copied().flatten()?;
+    let b = operands.get(1).copied().flatten()?;
+    let (list, n) = match (a, b) {
+        (ConstVal::List(l), ConstVal::Int(n)) => (l, *n),
+        (ConstVal::Int(n), ConstVal::List(l)) => (l, *n),
+        _ => return None,
+    };
+    if n <= 0 {
+        return Some(ConstVal::List(Vec::new()));
+    }
+    let count = n as usize;
+    let total = list.len().checked_mul(count)?;
+    if total > MAX_COMPOUND_ELEMENTS {
+        return None;
+    }
+    let mut result = Vec::with_capacity(total);
+    for _ in 0..count {
+        result.extend(list.iter().cloned());
+    }
+    Some(ConstVal::List(result))
+}
+
+/// Fold BuildList with all-constant operands to ConstVal::List.
+fn eval_build_list(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    if operands.len() > MAX_COMPOUND_ELEMENTS {
+        return None;
+    }
+    let elements: Vec<ConstVal> = operands
+        .iter()
+        .map(|o| o.map(|v| (*v).clone()))
+        .collect::<Option<Vec<_>>>()?;
+    Some(ConstVal::List(elements))
+}
+
+/// Fold BuildDict with all-constant operands to ConstVal::Dict.
+/// Dict operands are laid out as [k1, v1, k2, v2, ...].
+fn eval_build_dict(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    if operands.len() % 2 != 0 {
+        return None;
+    }
+    let n_entries = operands.len() / 2;
+    if n_entries > MAX_COMPOUND_ELEMENTS {
+        return None;
+    }
+    let mut entries = Vec::with_capacity(n_entries);
+    for i in 0..n_entries {
+        let k = operands[i * 2]?.clone();
+        let v = operands[i * 2 + 1]?.clone();
+        entries.push((k, v));
+    }
+    Some(ConstVal::Dict(entries))
 }
 
 /// Evaluate a binary arithmetic op on int or float operands.
@@ -620,6 +789,9 @@ fn evaluate_method_call(
         ConstVal::Int(_) => "int",
         ConstVal::Float(_) => "float",
         ConstVal::Bool(_) => "bool",
+        ConstVal::List(_) => "list",
+        ConstVal::Dict(_) => "dict",
+        ConstVal::Range { .. } => return None,
         ConstVal::None => return None,
     };
     let fx = effects::method_effects(receiver_type, method)?;
@@ -636,6 +808,13 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
             let a = operands.first().copied().flatten()?;
             match a {
                 ConstVal::Str(s) => Some(ConstVal::Int(s.len() as i64)),
+                ConstVal::List(elems) => Some(ConstVal::Int(elems.len() as i64)),
+                ConstVal::Dict(entries) => Some(ConstVal::Int(entries.len() as i64)),
+                ConstVal::Range { start, stop, step } => {
+                    // Python: len(range(start, stop, step))
+                    let len = range_len(*start, *stop, *step);
+                    Some(ConstVal::Int(len))
+                }
                 _ => None,
             }
         }
@@ -655,6 +834,11 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                 ConstVal::Bool(v) => Some(ConstVal::Bool(*v)),
                 ConstVal::Str(s) => Some(ConstVal::Bool(!s.is_empty())),
                 ConstVal::None => Some(ConstVal::Bool(false)),
+                ConstVal::List(elems) => Some(ConstVal::Bool(!elems.is_empty())),
+                ConstVal::Dict(entries) => Some(ConstVal::Bool(!entries.is_empty())),
+                ConstVal::Range { start, stop, step } => {
+                    Some(ConstVal::Bool(range_len(*start, *stop, *step) > 0))
+                }
             }
         }
         "int" => {
@@ -693,6 +877,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                 }
                 ConstVal::Str(s) => Some(ConstVal::Str(s.clone())),
                 ConstVal::None => Some(ConstVal::Str("None".to_string())),
+                _ => None, // compound types don't fold to str
             }
         }
         "repr" => {
@@ -712,6 +897,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                 }
                 ConstVal::Str(s) => Some(ConstVal::Str(format!("'{}'", s))),
                 ConstVal::None => Some(ConstVal::Str("None".to_string())),
+                _ => None, // compound types don't fold to repr
             }
         }
         "chr" => {
@@ -777,6 +963,94 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                 Some(ConstVal::Str(s))
             } else {
                 None
+            }
+        }
+        "range" => {
+            // range(stop), range(start, stop), range(start, stop, step)
+            match operands.len() {
+                1 => {
+                    let stop = match operands[0]? {
+                        ConstVal::Int(v) => *v,
+                        _ => return None,
+                    };
+                    Some(ConstVal::Range {
+                        start: 0,
+                        stop,
+                        step: 1,
+                    })
+                }
+                2 => {
+                    let start = match operands[0]? {
+                        ConstVal::Int(v) => *v,
+                        _ => return None,
+                    };
+                    let stop = match operands[1]? {
+                        ConstVal::Int(v) => *v,
+                        _ => return None,
+                    };
+                    Some(ConstVal::Range {
+                        start,
+                        stop,
+                        step: 1,
+                    })
+                }
+                3 => {
+                    let start = match operands[0]? {
+                        ConstVal::Int(v) => *v,
+                        _ => return None,
+                    };
+                    let stop = match operands[1]? {
+                        ConstVal::Int(v) => *v,
+                        _ => return None,
+                    };
+                    let step = match operands[2]? {
+                        ConstVal::Int(v) => *v,
+                        _ => return None,
+                    };
+                    if step == 0 {
+                        return None; // ValueError in Python
+                    }
+                    Some(ConstVal::Range { start, stop, step })
+                }
+                _ => None,
+            }
+        }
+        "sorted" => {
+            let a = operands.first().copied().flatten()?;
+            match a {
+                ConstVal::List(elems) => {
+                    // Only sort homogeneous int lists (Python raises TypeError
+                    // on mixed types like int < str).
+                    let mut ints = Vec::with_capacity(elems.len());
+                    for e in elems {
+                        match e {
+                            ConstVal::Int(v) => ints.push(*v),
+                            _ => return None,
+                        }
+                    }
+                    ints.sort();
+                    Some(ConstVal::List(ints.into_iter().map(ConstVal::Int).collect()))
+                }
+                _ => None,
+            }
+        }
+        "sum" => {
+            let a = operands.first().copied().flatten()?;
+            match a {
+                ConstVal::List(elems) => {
+                    // sum([int, int, ...]) → int
+                    let mut total: i64 = 0;
+                    for elem in elems {
+                        match elem {
+                            ConstVal::Int(v) => {
+                                total = total.checked_add(*v)?;
+                            }
+                            _ => return None,
+                        }
+                    }
+                    Some(ConstVal::Int(total))
+                }
+                _ => None,
             }
         }
         "min" => {
@@ -1754,5 +2028,346 @@ mod tests {
         let (result_ops, _) = run_sccp_on_ops(ops, 3);
         assert_eq!(result_ops[2].opcode, OpCode::ConstInt);
         assert_eq!(result_ops[2].attrs.get("value"), Some(&AttrValue::Int(4)));
+    }
+
+    // --- Compound constant folding tests ---
+
+    fn make_build_list(result: u32, elements: Vec<u32>) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BuildList,
+            operands: elements.into_iter().map(ValueId).collect(),
+            results: vec![ValueId(result)],
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
+    fn make_build_dict(result: u32, kv_pairs: Vec<u32>) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BuildDict,
+            operands: kv_pairs.into_iter().map(ValueId).collect(),
+            results: vec![ValueId(result)],
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
+    #[test]
+    fn fold_len_of_constant_list() {
+        // len([1, 2, 3]) => 3
+        let ops = vec![
+            make_const_int(0, 1),
+            make_const_int(1, 2),
+            make_const_int(2, 3),
+            make_build_list(3, vec![0, 1, 2]),
+            make_call_builtin(4, "len", vec![3]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 5);
+        assert_eq!(result_ops[4].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[4].attrs.get("value"), Some(&AttrValue::Int(3)));
+    }
+
+    #[test]
+    fn fold_len_of_constant_dict() {
+        // len({"a": 1, "b": 2}) => 2
+        let ops = vec![
+            make_const_str(0, "a"),
+            make_const_int(1, 1),
+            make_const_str(2, "b"),
+            make_const_int(3, 2),
+            make_build_dict(4, vec![0, 1, 2, 3]),
+            make_call_builtin(5, "len", vec![4]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 6);
+        assert_eq!(result_ops[5].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[5].attrs.get("value"), Some(&AttrValue::Int(2)));
+    }
+
+    #[test]
+    fn fold_len_of_range() {
+        // len(range(10)) => 10
+        let ops = vec![
+            make_const_int(0, 10),
+            make_call_builtin(1, "range", vec![0]),
+            make_call_builtin(2, "len", vec![1]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 3);
+        assert_eq!(result_ops[2].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[2].attrs.get("value"), Some(&AttrValue::Int(10)));
+    }
+
+    #[test]
+    fn fold_len_of_range_with_start_stop() {
+        // len(range(3, 10)) => 7
+        let ops = vec![
+            make_const_int(0, 3),
+            make_const_int(1, 10),
+            make_call_builtin(2, "range", vec![0, 1]),
+            make_call_builtin(3, "len", vec![2]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 4);
+        assert_eq!(result_ops[3].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[3].attrs.get("value"), Some(&AttrValue::Int(7)));
+    }
+
+    #[test]
+    fn fold_len_of_range_with_step() {
+        // len(range(0, 10, 3)) => 4  (0, 3, 6, 9)
+        let ops = vec![
+            make_const_int(0, 0),
+            make_const_int(1, 10),
+            make_const_int(2, 3),
+            make_call_builtin(3, "range", vec![0, 1, 2]),
+            make_call_builtin(4, "len", vec![3]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 5);
+        assert_eq!(result_ops[4].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[4].attrs.get("value"), Some(&AttrValue::Int(4)));
+    }
+
+    #[test]
+    fn fold_len_of_empty_range() {
+        // len(range(10, 0)) => 0
+        let ops = vec![
+            make_const_int(0, 10),
+            make_const_int(1, 0),
+            make_call_builtin(2, "range", vec![0, 1]),
+            make_call_builtin(3, "len", vec![2]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 4);
+        assert_eq!(result_ops[3].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[3].attrs.get("value"), Some(&AttrValue::Int(0)));
+    }
+
+    #[test]
+    fn fold_len_of_negative_step_range() {
+        // len(range(10, 0, -2)) => 5  (10, 8, 6, 4, 2)
+        let ops = vec![
+            make_const_int(0, 10),
+            make_const_int(1, 0),
+            make_const_int(2, -2),
+            make_call_builtin(3, "range", vec![0, 1, 2]),
+            make_call_builtin(4, "len", vec![3]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 5);
+        assert_eq!(result_ops[4].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[4].attrs.get("value"), Some(&AttrValue::Int(5)));
+    }
+
+    #[test]
+    fn fold_string_concatenation() {
+        // "hello" + " " + "world" => "hello world"
+        let ops = vec![
+            make_const_str(0, "hello"),
+            make_const_str(1, " "),
+            make_binop(OpCode::Add, 2, 0, 1),
+            make_const_str(3, "world"),
+            make_binop(OpCode::Add, 4, 2, 3),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 5);
+        // The intermediate "hello " should fold, then "hello " + "world" => "hello world"
+        assert_eq!(result_ops[2].opcode, OpCode::ConstStr);
+        assert_eq!(
+            result_ops[2].attrs.get("s_value"),
+            Some(&AttrValue::Str("hello ".into()))
+        );
+        assert_eq!(result_ops[4].opcode, OpCode::ConstStr);
+        assert_eq!(
+            result_ops[4].attrs.get("s_value"),
+            Some(&AttrValue::Str("hello world".into()))
+        );
+    }
+
+    #[test]
+    fn fold_string_repeat() {
+        // "ab" * 3 => "ababab"
+        let ops = vec![
+            make_const_str(0, "ab"),
+            make_const_int(1, 3),
+            make_binop(OpCode::Mul, 2, 0, 1),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 3);
+        assert_eq!(result_ops[2].opcode, OpCode::ConstStr);
+        assert_eq!(
+            result_ops[2].attrs.get("s_value"),
+            Some(&AttrValue::Str("ababab".into()))
+        );
+    }
+
+    #[test]
+    fn fold_string_repeat_zero() {
+        // "abc" * 0 => ""
+        let ops = vec![
+            make_const_str(0, "abc"),
+            make_const_int(1, 0),
+            make_binop(OpCode::Mul, 2, 0, 1),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 3);
+        assert_eq!(result_ops[2].opcode, OpCode::ConstStr);
+        assert_eq!(
+            result_ops[2].attrs.get("s_value"),
+            Some(&AttrValue::Str("".into()))
+        );
+    }
+
+    #[test]
+    fn fold_bool_of_constant_list() {
+        // bool([]) => False, bool([1]) => True
+        let ops_empty = vec![
+            make_build_list(0, vec![]),
+            make_call_builtin(1, "bool", vec![0]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops_empty, 2);
+        assert_eq!(result_ops[1].opcode, OpCode::ConstBool);
+        assert_eq!(
+            result_ops[1].attrs.get("value"),
+            Some(&AttrValue::Bool(false))
+        );
+
+        let ops_nonempty = vec![
+            make_const_int(0, 42),
+            make_build_list(1, vec![0]),
+            make_call_builtin(2, "bool", vec![1]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops_nonempty, 3);
+        assert_eq!(result_ops[2].opcode, OpCode::ConstBool);
+        assert_eq!(
+            result_ops[2].attrs.get("value"),
+            Some(&AttrValue::Bool(true))
+        );
+    }
+
+    #[test]
+    fn fold_sum_of_constant_list() {
+        // sum([1, 2, 3, 4]) => 10
+        let ops = vec![
+            make_const_int(0, 1),
+            make_const_int(1, 2),
+            make_const_int(2, 3),
+            make_const_int(3, 4),
+            make_build_list(4, vec![0, 1, 2, 3]),
+            make_call_builtin(5, "sum", vec![4]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 6);
+        assert_eq!(result_ops[5].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[5].attrs.get("value"), Some(&AttrValue::Int(10)));
+    }
+
+    #[test]
+    fn fold_sorted_of_constant_list() {
+        // sorted([3, 1, 2]) => [1, 2, 3]
+        // len(sorted([3, 1, 2])) => 3
+        let ops = vec![
+            make_const_int(0, 3),
+            make_const_int(1, 1),
+            make_const_int(2, 2),
+            make_build_list(3, vec![0, 1, 2]),
+            make_call_builtin(4, "sorted", vec![3]),
+            make_call_builtin(5, "len", vec![4]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 6);
+        // sorted result stays as BuildList (no ConstList opcode), but len propagates
+        assert_eq!(result_ops[5].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[5].attrs.get("value"), Some(&AttrValue::Int(3)));
+    }
+
+    #[test]
+    fn fold_list_concat() {
+        // len([1, 2] + [3, 4]) => 4
+        let ops = vec![
+            make_const_int(0, 1),
+            make_const_int(1, 2),
+            make_build_list(2, vec![0, 1]),
+            make_const_int(3, 3),
+            make_const_int(4, 4),
+            make_build_list(5, vec![3, 4]),
+            make_binop(OpCode::Add, 6, 2, 5),
+            make_call_builtin(7, "len", vec![6]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 8);
+        assert_eq!(result_ops[7].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[7].attrs.get("value"), Some(&AttrValue::Int(4)));
+    }
+
+    #[test]
+    fn fold_list_repeat() {
+        // len([1, 2] * 3) => 6
+        let ops = vec![
+            make_const_int(0, 1),
+            make_const_int(1, 2),
+            make_build_list(2, vec![0, 1]),
+            make_const_int(3, 3),
+            make_binop(OpCode::Mul, 4, 2, 3),
+            make_call_builtin(5, "len", vec![4]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 6);
+        assert_eq!(result_ops[5].opcode, OpCode::ConstInt);
+        assert_eq!(result_ops[5].attrs.get("value"), Some(&AttrValue::Int(6)));
+    }
+
+    #[test]
+    fn fold_bool_of_range() {
+        // bool(range(0)) => False
+        let ops = vec![
+            make_const_int(0, 0),
+            make_call_builtin(1, "range", vec![0]),
+            make_call_builtin(2, "bool", vec![1]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 3);
+        assert_eq!(result_ops[2].opcode, OpCode::ConstBool);
+        assert_eq!(
+            result_ops[2].attrs.get("value"),
+            Some(&AttrValue::Bool(false))
+        );
+
+        // bool(range(5)) => True
+        let ops = vec![
+            make_const_int(0, 5),
+            make_call_builtin(1, "range", vec![0]),
+            make_call_builtin(2, "bool", vec![1]),
+        ];
+        let (result_ops, _) = run_sccp_on_ops(ops, 3);
+        assert_eq!(result_ops[2].opcode, OpCode::ConstBool);
+        assert_eq!(
+            result_ops[2].attrs.get("value"),
+            Some(&AttrValue::Bool(true))
+        );
+    }
+
+    #[test]
+    fn no_fold_oversized_list() {
+        // Building a list with > MAX_COMPOUND_ELEMENTS should not fold.
+        // We test with 1001 elements (above the cap).
+        let mut ops = Vec::new();
+        for i in 0..1001u32 {
+            ops.push(make_const_int(i, i as i64));
+        }
+        let elem_ids: Vec<u32> = (0..1001).collect();
+        ops.push(make_build_list(1001, elem_ids));
+        ops.push(make_call_builtin(1002, "len", vec![1001]));
+        let (result_ops, _) = run_sccp_on_ops(ops, 1003);
+        // The BuildList should NOT fold (too large), so len() can't fold either.
+        let len_op = &result_ops[1002];
+        assert_eq!(len_op.opcode, OpCode::CallBuiltin);
+    }
+
+    #[test]
+    fn range_len_helper_correctness() {
+        // Verify range_len matches Python semantics for edge cases
+        assert_eq!(range_len(0, 10, 1), 10);
+        assert_eq!(range_len(0, 10, 2), 5);
+        assert_eq!(range_len(0, 10, 3), 4);
+        assert_eq!(range_len(0, 0, 1), 0);
+        assert_eq!(range_len(5, 5, 1), 0);
+        assert_eq!(range_len(10, 0, -1), 10);
+        assert_eq!(range_len(10, 0, -2), 5);
+        assert_eq!(range_len(10, 0, -3), 4);
+        assert_eq!(range_len(0, -10, -1), 10);
+        assert_eq!(range_len(0, 10, -1), 0); // empty (step goes wrong way)
+        assert_eq!(range_len(10, 0, 1), 0); // empty (step goes wrong way)
+        assert_eq!(range_len(0, 1, 1), 1);
+        assert_eq!(range_len(-5, 5, 1), 10);
     }
 }

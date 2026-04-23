@@ -2721,6 +2721,9 @@ impl LuauBackend {
                                 | "islower"
                                 | "isidentifier"
                                 | "isprintable"
+                                | "isdecimal"
+                                | "isnumeric"
+                                | "istitle"
                         )
                     {
                         self.emit_string_predicate_attr(&out, &obj, raw_attr);
@@ -4308,21 +4311,30 @@ impl LuauBackend {
             "islower" => "not __is_upper",
             "isidentifier" => "(__is_alpha or __is_digit or __b == 95)",
             "isprintable" => "(__b >= 32 and __b <= 126)",
+            "isdecimal" | "isnumeric" => "__is_digit",
+            "istitle" => "true",
             _ => "false",
         };
         let prefix = match method {
             "isidentifier" => {
                 "local __first = string.byte(__s, 1); local __first_ok = ((__first >= 65 and __first <= 90) or (__first >= 97 and __first <= 122) or __first == 95);"
             }
+            "istitle" => "local __prev_uncased = true;",
             _ => "",
         };
         let suffix = match method {
             "isupper" | "islower" => " and __has_cased",
             "isidentifier" => " and __first_ok",
+            "istitle" => " and __has_cased",
             _ => "",
         };
+        let title_update = if method == "istitle" {
+            " if __is_alpha then if __prev_uncased then if not __is_upper then __ok = false; break end else if not __is_lower then __ok = false; break end end; __prev_uncased = false else __prev_uncased = true end"
+        } else {
+            ""
+        };
         self.emit_line(&format!(
-            "local {out} = function(__args) local __s = {obj}; local __ok = (#__s > 0); local __has_cased = false; {prefix} for __i = 1, #__s do local __b = string.byte(__s, __i); local __is_upper = (__b >= 65 and __b <= 90); local __is_lower = (__b >= 97 and __b <= 122); local __is_alpha = (__is_upper or __is_lower); local __is_digit = (__b >= 48 and __b <= 57); local __is_space = (__b == 32 or __b == 9 or __b == 10 or __b == 11 or __b == 12 or __b == 13); if __is_alpha then __has_cased = true end; if not ({predicate}) then __ok = false; break end end; return __ok{suffix} end"
+            "local {out} = function(__args) local __s = {obj}; local __ok = (#__s > 0); local __has_cased = false; {prefix} for __i = 1, #__s do local __b = string.byte(__s, __i); local __is_upper = (__b >= 65 and __b <= 90); local __is_lower = (__b >= 97 and __b <= 122); local __is_alpha = (__is_upper or __is_lower); local __is_digit = (__b >= 48 and __b <= 57); local __is_space = (__b == 32 or __b == 9 or __b == 10 or __b == 11 or __b == 12 or __b == 13); if __is_alpha then __has_cased = true end; if not ({predicate}) then __ok = false; break end{title_update} end; return __ok{suffix} end"
         ));
     }
 
@@ -10243,6 +10255,24 @@ mod tests {
                         ..OpIR::default()
                     },
                     OpIR {
+                        kind: "get_attr_generic_obj".to_string(),
+                        args: Some(vec!["s".to_string()]),
+                        s_value: Some("istitle".to_string()),
+                        out: Some("m2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_new".to_string(),
+                        out: Some("a2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_indirect".to_string(),
+                        args: Some(vec!["m2".to_string(), "a2".to_string()]),
+                        out: Some("v2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
                         kind: "ret_void".to_string(),
                         ..OpIR::default()
                     },
@@ -10256,6 +10286,7 @@ mod tests {
             output.contains("function(__args)")
                 && output.contains("__has_cased")
                 && output.contains("__first_ok")
+                && output.contains("__prev_uncased")
                 && output.contains("string.byte(__s, __i)")
                 && !output.contains("s.isalnum"),
             "string predicate attrs must lower to ASCII-fast closures, got:\n{output}"
