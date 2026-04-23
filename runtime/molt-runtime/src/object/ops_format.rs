@@ -552,6 +552,12 @@ pub(crate) fn format_obj_str(_py: &PyToken<'_>, obj: MoltObject) -> String {
             if let Some(rendered) = subclass_str_override {
                 return rendered;
             }
+            if matches!(
+                type_id,
+                TYPE_ID_LIST | TYPE_ID_TUPLE | TYPE_ID_DICT | TYPE_ID_SET | TYPE_ID_FROZENSET
+            ) {
+                return format_obj(_py, obj);
+            }
             if type_id == TYPE_ID_EXCEPTION {
                 // Check for a custom __str__ on the exception class before
                 // falling back to the default format_exception_message path.
