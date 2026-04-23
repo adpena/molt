@@ -2534,7 +2534,11 @@ impl LuauBackend {
                                 "local {idx_var} = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
                             ));
                         }
-                        self.emit_index_bounds_guard(&idx_var, &container, "string index out of range");
+                        self.emit_index_bounds_guard(
+                            &idx_var,
+                            &container,
+                            "string index out of range",
+                        );
                         self.emit_line(&format!(
                             "local {out} = string.sub({container}, {idx_var}, {idx_var})"
                         ));
@@ -2603,8 +2607,8 @@ impl LuauBackend {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
-                    let key_is_int = op.fast_int == Some(true)
-                        || matches!(op.type_hint.as_deref(), Some("int"));
+                    let key_is_int =
+                        op.fast_int == Some(true) || matches!(op.type_hint.as_deref(), Some("int"));
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
                         || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
                     let known_list_like = self
@@ -2644,8 +2648,8 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
-                    let key_is_int = op.fast_int == Some(true)
-                        || matches!(op.type_hint.as_deref(), Some("int"));
+                    let key_is_int =
+                        op.fast_int == Some(true) || matches!(op.type_hint.as_deref(), Some("int"));
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
                         || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
                     let known_list_like = self
@@ -3823,7 +3827,9 @@ impl LuauBackend {
                     let sub = sanitize_ident(&args[1]);
                     let needs_error = op.kind.contains("index");
                     let error_guard = if needs_error {
-                        format!("; if {out} == -1 then error({{__type=\"ValueError\", __msg=\"substring not found\"}}) end")
+                        format!(
+                            "; if {out} == -1 then error({{__type=\"ValueError\", __msg=\"substring not found\"}}) end"
+                        )
                     } else {
                         String::new()
                     };
@@ -3848,7 +3854,9 @@ impl LuauBackend {
                     let sub = sanitize_ident(&args[1]);
                     let needs_error = op.kind.contains("rindex");
                     let error_guard = if needs_error {
-                        format!("; if {out} == -1 then error({{__type=\"ValueError\", __msg=\"substring not found\"}}) end")
+                        format!(
+                            "; if {out} == -1 then error({{__type=\"ValueError\", __msg=\"substring not found\"}}) end"
+                        )
                     } else {
                         String::new()
                     };
@@ -3859,7 +3867,9 @@ impl LuauBackend {
                             "local __n = #{s}; local __start_raw = if {start} < 0 then __n + {start} else {start}; local __start = __start_raw; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __end = if {end} < 0 then __n + {end} else {end}; if __end < __start then __end = __start end; if __end > __n then __end = __n end;"
                         )
                     } else {
-                        format!("local __n = #{s}; local __start_raw = 0; local __start = 0; local __end = __n;")
+                        format!(
+                            "local __n = #{s}; local __start_raw = 0; local __start = 0; local __end = __n;"
+                        )
                     };
                     self.emit_line(&format!(
                         "local {out}; do {bounds} if {sub} == \"\" then {out} = if __start_raw <= __n and __start <= __end then __end else -1 else local __last = -1; local __pos = __start + 1; while true do local __found = string.find({s}, {sub}, __pos, true); if not __found or __found > __end then break end; __last = __found - 1; __pos = __found + 1 end; {out} = __last end{error_guard} end"
@@ -9195,8 +9205,8 @@ mod tests {
         ];
         for marker in markers {
             let source = format!("--!strict\nfunction molt_main()\n\t{marker}\nend\n");
-            let err = validate_luau_source(&source)
-                .expect_err("semantic stub marker should be rejected");
+            let err =
+                validate_luau_source(&source).expect_err("semantic stub marker should be rejected");
             assert!(err.contains("semantic stub marker"));
             assert!(err.contains(marker));
         }
@@ -9442,11 +9452,7 @@ mod tests {
                 ops: vec![
                     OpIR {
                         kind: "set_item".to_string(),
-                        args: Some(vec![
-                            "xs".to_string(),
-                            "i".to_string(),
-                            "v".to_string(),
-                        ]),
+                        args: Some(vec!["xs".to_string(), "i".to_string(), "v".to_string()]),
                         type_hint: Some("list".to_string()),
                         fast_int: Some(true),
                         ..OpIR::default()
@@ -9667,11 +9673,7 @@ mod tests {
                 ops: vec![
                     OpIR {
                         kind: "list_insert".to_string(),
-                        args: Some(vec![
-                            "xs".to_string(),
-                            "i".to_string(),
-                            "v".to_string(),
-                        ]),
+                        args: Some(vec!["xs".to_string(), "i".to_string(), "v".to_string()]),
                         fast_int: Some(true),
                         ..OpIR::default()
                     },
@@ -10394,8 +10396,7 @@ mod tests {
         let mut backend = LuauBackend::new();
         let output = backend.compile(&ir);
         assert!(
-            output.contains("__type=\"ValueError\"")
-                && output.contains("empty separator"),
+            output.contains("__type=\"ValueError\"") && output.contains("empty separator"),
             "str.split must reject empty separator instead of looping, got:\n{output}"
         );
     }
