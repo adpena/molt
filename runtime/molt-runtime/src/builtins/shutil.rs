@@ -120,7 +120,7 @@ fn copy_permissions_with_follow(
         } else {
             fs::symlink_metadata(src)?
         };
-        let mode = meta.permissions().mode();
+        let mode = meta.permissions().mode() as libc::mode_t;
         use std::os::unix::ffi::OsStrExt;
         let c_dst = std::ffi::CString::new(dst.as_os_str().as_bytes())
             .map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "invalid path"))?;
@@ -133,7 +133,7 @@ fn copy_permissions_with_follow(
         if rc != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {
