@@ -107,6 +107,93 @@ impl std::ops::Index<usize> for ListIntSliceRef {
     }
 }
 
+/// Layout-stable storage for `TYPE_ID_LIST_BOOL` objects.
+///
+/// `#[repr(C)]` guarantees field order: `[data, len, cap]` at offsets `[0, 8, 16]`.
+/// Each element is a single `u8` (0 = False, 1 = True), giving 8x memory savings
+/// over storing NaN-boxed bools in a `Vec<u64>`.
+///
+/// No refcounting needed — bools are inline NaN-boxed values with no heap allocation.
+#[repr(C)]
+pub struct ListBoolStorage {
+    pub data: *mut u8,
+    pub len: usize,
+    pub cap: usize,
+}
+
+impl ListBoolStorage {
+    /// Convert a `Vec<u8>` into a heap-allocated `ListBoolStorage`.
+    /// The Vec's buffer is taken over; the Vec itself is NOT dropped.
+    pub fn from_vec(mut vec: Vec<u8>) -> *mut ListBoolStorage {
+        let storage = ListBoolStorage {
+            data: vec.as_mut_ptr(),
+            len: vec.len(),
+            cap: vec.capacity(),
+        };
+        std::mem::forget(vec);
+        Box::into_raw(Box::new(storage))
+    }
+
+    /// Reconstruct a `Vec<u8>` that owns the buffer.
+    ///
+    /// # Safety
+    /// Must only be called once (e.g. during dealloc).  After this call
+    /// the `ListBoolStorage`'s `data` pointer is invalid.
+    pub unsafe fn into_vec(self) -> Vec<u8> {
+        unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) }
+    }
+}
+
+/// Read the `ListBoolStorage` pointer from a `TYPE_ID_LIST_BOOL` object's data area.
+#[inline]
+pub(crate) unsafe fn list_bool_storage_ptr(ptr: *mut u8) -> *mut ListBoolStorage {
+    unsafe { *(ptr as *mut *mut ListBoolStorage) }
+}
+
+/// Read the backing data from a `TYPE_ID_LIST_BOOL` object as a slice.
+/// The layout stores raw u8 values (0 = False, 1 = True).
+pub(crate) unsafe fn list_bool_vec_ref(ptr: *mut u8) -> ListBoolSliceRef {
+    unsafe {
+        let storage = &*list_bool_storage_ptr(ptr);
+        ListBoolSliceRef {
+            data: storage.data,
+            len: storage.len,
+        }
+    }
+}
+
+/// Thin wrapper providing slice-like interface for `ListBoolStorage`.
+pub(crate) struct ListBoolSliceRef {
+    data: *const u8,
+    len: usize,
+}
+
+impl ListBoolSliceRef {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+
+    #[inline]
+    pub fn iter(&self) -> std::slice::Iter<'_, u8> {
+        self.as_slice().iter()
+    }
+}
+
+impl std::ops::Index<usize> for ListBoolSliceRef {
+    type Output = u8;
+    #[inline]
+    fn index(&self, index: usize) -> &u8 {
+        assert!(index < self.len, "ListBoolSliceRef index out of bounds");
+        unsafe { &*self.data.add(index) }
+    }
+}
+
 pub(crate) unsafe fn bytearray_vec_ptr(ptr: *mut u8) -> *mut Vec<u8> {
     unsafe { *(ptr as *mut *mut Vec<u8>) }
 }

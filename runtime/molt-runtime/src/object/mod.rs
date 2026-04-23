@@ -1813,6 +1813,16 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         drop(storage.into_vec());
                     }
                 }
+                TYPE_ID_LIST_BOOL => {
+                    // list_bool stores a *mut ListBoolStorage (#[repr(C)]).
+                    // Reconstruct the Vec<u8> to free the backing buffer.
+                    // No inner refs to dec-ref — bools are inline values.
+                    let storage_ptr = layout::list_bool_storage_ptr(ptr);
+                    if !storage_ptr.is_null() {
+                        let storage = *Box::from_raw(storage_ptr);
+                        drop(storage.into_vec());
+                    }
+                }
                 TYPE_ID_LIST => {
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {

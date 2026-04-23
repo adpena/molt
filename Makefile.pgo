@@ -1,0 +1,21 @@
+.PHONY: pgo-build pgo-train pgo-optimize pgo-full
+
+# Step 1: Build with PGO instrumentation
+pgo-build:
+	RUSTFLAGS="-Cprofile-generate=/tmp/molt-pgo-data" \
+	cargo build --profile release-fast -p molt-backend --features native-backend
+
+# Step 2: Train on representative workloads
+pgo-train: pgo-build
+	/tmp/molt-pgo-data/molt-backend < tests/harness/corpus/sieve.py || true
+	/tmp/molt-pgo-data/molt-backend < tests/harness/corpus/fib.py || true
+	llvm-profdata merge -o /tmp/molt-pgo-data/merged.profdata /tmp/molt-pgo-data/
+
+# Step 3: Rebuild with PGO data
+pgo-optimize: pgo-train
+	RUSTFLAGS="-Cprofile-use=/tmp/molt-pgo-data/merged.profdata" \
+	cargo build --profile release-fast -p molt-backend --features native-backend
+
+# All-in-one
+pgo-full: pgo-optimize
+	@echo "PGO build complete"
