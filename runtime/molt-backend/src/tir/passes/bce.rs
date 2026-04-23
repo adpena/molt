@@ -250,15 +250,20 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     // Verify N > 0 if it's a constant (range(0) produces no iterations,
                     // range(-5) produces no iterations — both are safe vacuously).
                     // If N is non-constant, we still know i is in [0, N) within the loop.
-                    if let Some(&n_const) = const_int_value.get(&bound_val) {
-                        if n_const <= 0 {
-                            // range(0) or range(negative) → loop never executes, no
-                            // bounds checks to eliminate.
-                            continue;
-                        }
+                    if let Some(&n_const) = const_int_value.get(&bound_val)
+                        && n_const <= 0
+                    {
+                        // range(0) or range(negative) → loop never executes, no
+                        // bounds checks to eliminate.
+                        continue;
                     }
 
-                    range_facts.insert(elem_val, RangeFact { upper_bound: bound_val });
+                    range_facts.insert(
+                        elem_val,
+                        RangeFact {
+                            upper_bound: bound_val,
+                        },
+                    );
                 }
             }
         }
@@ -378,11 +383,7 @@ fn collect_loop_body(func: &TirFunction, header: BlockId) -> Vec<BlockId> {
             continue;
         }
 
-        let role = func
-            .loop_roles
-            .get(&bid)
-            .cloned()
-            .unwrap_or(LoopRole::None);
+        let role = func.loop_roles.get(&bid).cloned().unwrap_or(LoopRole::None);
         if role == LoopRole::LoopHeader {
             break;
         }
@@ -449,11 +450,7 @@ mod tests {
         }
     }
 
-    fn make_call_builtin(
-        name: &str,
-        operands: Vec<ValueId>,
-        results: Vec<ValueId>,
-    ) -> TirOp {
+    fn make_call_builtin(name: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         let mut attrs = AttrDict::new();
         attrs.insert("name".into(), AttrValue::Str(name.into()));
         TirOp {
@@ -726,22 +723,10 @@ mod tests {
         for &elem in &list_elems {
             entry_ops.push(make_const_int(elem, 0));
         }
-        entry_ops.push(make_op(
-            OpCode::BuildList,
-            list_elems,
-            vec![container],
-        ));
+        entry_ops.push(make_op(OpCode::BuildList, list_elems, vec![container]));
         entry_ops.push(make_const_int(bound_val, range_bound));
-        entry_ops.push(make_call_builtin(
-            "range",
-            vec![bound_val],
-            vec![range_obj],
-        ));
-        entry_ops.push(make_op(
-            OpCode::GetIter,
-            vec![range_obj],
-            vec![iter_val],
-        ));
+        entry_ops.push(make_call_builtin("range", vec![bound_val], vec![range_obj]));
+        entry_ops.push(make_op(OpCode::GetIter, vec![range_obj], vec![iter_val]));
 
         let entry_block = func.entry_block;
         let header_id = func.fresh_block();
@@ -783,7 +768,11 @@ mod tests {
             let neg_idx = func.fresh_value();
             let body_ops = vec![
                 make_const_int(neg_idx, -1),
-                make_op(OpCode::Index, vec![container, neg_idx], vec![func.fresh_value()]),
+                make_op(
+                    OpCode::Index,
+                    vec![container, neg_idx],
+                    vec![func.fresh_value()],
+                ),
             ];
             let body_block = TirBlock {
                 id: body_id,
@@ -913,11 +902,7 @@ mod tests {
         for &elem in &list_elems {
             entry_ops.push(make_const_int(elem, 0));
         }
-        entry_ops.push(make_op(
-            OpCode::BuildList,
-            list_elems,
-            vec![container],
-        ));
+        entry_ops.push(make_op(OpCode::BuildList, list_elems, vec![container]));
 
         let entry = func.blocks.get_mut(&entry_block).unwrap();
         entry.ops = entry_ops;

@@ -815,23 +815,6 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> V
     builder.ins().sshr(shifted, shift)
 }
 
-/// Check if a NaN-boxed value is an inline integer (TAG_INT).
-/// Returns a Cranelift boolean value: true if the value has TAG_INT,
-/// false for TAG_BOOL, TAG_NONE, TAG_PTR, floats, or anything else.
-/// Used by fast_int paths to guard against heap bigint pointers that
-/// would be corrupted by unbox_int.
-#[cfg(feature = "native-backend")]
-pub(crate) fn is_inline_int_value(
-    builder: &mut FunctionBuilder,
-    val: Value,
-    nbc: &NanBoxConsts,
-) -> Value {
-    let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-    let expected = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
-    let masked = builder.ins().band(val, mask);
-    builder.ins().icmp(IntCC::Equal, masked, expected)
-}
-
 /// Unbox a NaN-boxed value that is either TAG_INT or TAG_BOOL to an i64.
 ///
 /// Booleans are coerced to 0/1 (matching Python's `bool` subclass of `int`).
@@ -878,21 +861,6 @@ fn is_int_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> 
     let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
     let masked = builder.ins().band(val, mask);
     builder.ins().icmp(IntCC::Equal, masked, tag)
-}
-
-/// Returns true (i8 boolean) when the NaN-boxed value carries either the
-/// inline-int tag or the bool tag.  Used to guard fast_int arithmetic paths
-/// so that bigint pointers (which have the pointer tag) fall through to the
-/// slow `molt_add` / `molt_sub` / etc. call.
-#[cfg(feature = "native-backend")]
-fn is_int_or_bool_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-    let masked = builder.ins().band(val, mask);
-    let int_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
-    let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
-    let is_int = builder.ins().icmp(IntCC::Equal, masked, int_tag);
-    let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
-    builder.ins().bor(is_int, is_bool)
 }
 
 /// Fused tag-check-and-unbox for a single NaN-boxed value.
