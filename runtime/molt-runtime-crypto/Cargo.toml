@@ -32,9 +32,13 @@ subtle = { version = "2.6", optional = true }
 
 [features]
 default = ["full"]
+# Core crypto: sha3, blake2, hmac, pbkdf2, scrypt — safe for all deployment tiers
+# including stdlib_server. Does NOT include legacy/deprecated digest algorithms.
 full = [
     "dep:sha3",
     "dep:blake2", "dep:blake2b_simd", "dep:blake2s_simd",
-    "dep:md4", "dep:ripemd",
     "dep:hmac", "dep:pbkdf2", "dep:scrypt", "dep:subtle",
 ]
+# Legacy crypto: deprecated or weak algorithms (MD4, RIPEMD-160).
+# Only enabled for stdlib_full builds. Not suitable for edge or server tiers.
+legacy = ["dep:md4", "dep:ripemd"]
