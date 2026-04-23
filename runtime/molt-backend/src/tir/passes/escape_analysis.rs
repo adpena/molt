@@ -8,9 +8,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::ops::{AttrDict, AttrValue, OpCode};
 use crate::tir::values::ValueId;
 
+use super::effects;
 use super::PassStats;
 
 /// Escape lattice for allocated values.
@@ -33,6 +34,67 @@ struct UseInfo {
     operands: Vec<ValueId>,
     /// Index of our value within the operands list.
     operand_index: usize,
+    /// Attribute dictionary from the using op (for callee name lookup).
+    attrs: AttrDict,
+}
+
+/// Extract a string attribute value from an `AttrDict`.
+fn attr_str<'a>(attrs: &'a AttrDict, key: &str) -> Option<&'a str> {
+    match attrs.get(key) {
+        Some(AttrValue::Str(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// Returns `true` if the named builtin only borrows (reads) its arguments and
+/// never stores them into heap-reachable locations.
+///
+/// We use the effects system as the source of truth: any builtin that is
+/// `effect_free` cannot store its arguments (storing is a side effect).
+/// Additionally, builtins like `print`, `isinstance`, `type`, etc. that have
+/// I/O or introspection effects but still never *capture* their arguments are
+/// included explicitly.
+fn is_borrowing_builtin(name: &str) -> bool {
+    // If the effects system classifies it as effect_free, it borrows.
+    if effects::builtin_effects(name).map_or(false, |fx| fx.effect_free) {
+        return true;
+    }
+    // Builtins that have side effects (I/O) but never store their arguments.
+    matches!(
+        name,
+        "print"
+            | "type"
+            | "isinstance"
+            | "issubclass"
+            | "hasattr"
+            | "getattr"
+            | "id"
+            | "iter"
+            | "next"
+            | "any"
+            | "all"
+            | "vars"
+            | "dir"
+            | "format"
+    )
+}
+
+/// Returns `true` if a `CallMethod` op only borrows its operands (receiver and
+/// arguments) without storing them.
+///
+/// Uses the effects system: a method that is `effect_free` on an immutable
+/// receiver type cannot capture its arguments. Falls back to `false` for
+/// unknown receiver types or methods (conservative).
+fn is_borrowing_method_call(attrs: &AttrDict) -> bool {
+    let method = match attr_str(attrs, "method") {
+        Some(m) => m,
+        None => return false,
+    };
+    let receiver_type = match attr_str(attrs, "receiver_type") {
+        Some(rt) => rt,
+        None => return false,
+    };
+    effects::method_effects(receiver_type, method).map_or(false, |fx| fx.effect_free)
 }
 
 /// Analyze escape state of all `Alloc` operations in `func`.
@@ -72,6 +134,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                         opcode: op.opcode,
                         operands: op.operands.clone(),
                         operand_index: idx,
+                        attrs: op.attrs.clone(),
                     });
                 }
             }
@@ -129,9 +192,28 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
     for (&val, uses) in &use_map {
         for use_info in uses {
             match use_info.opcode {
-                // Calls: conservative — value escapes.
-                OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin => {
+                // Generic Call: conservative — value escapes.
+                OpCode::Call => {
                     escapes.insert(val, EscapeState::GlobalEscape);
+                }
+                // CallBuiltin: check if the builtin only borrows its arguments.
+                // A builtin with known effect_free semantics never stores its
+                // arguments, so the alloc'd value doesn't escape through the call.
+                OpCode::CallBuiltin => {
+                    let borrows = attr_str(&use_info.attrs, "name")
+                        .map_or(false, |name| is_borrowing_builtin(name));
+                    if !borrows {
+                        escapes.insert(val, EscapeState::GlobalEscape);
+                    }
+                }
+                // CallMethod: check if the method is known non-storing.
+                // Pure methods on immutable types (str, tuple, int, float,
+                // frozenset) never capture their receiver or arguments.
+                OpCode::CallMethod => {
+                    let borrows = is_borrowing_method_call(&use_info.attrs);
+                    if !borrows {
+                        escapes.insert(val, EscapeState::GlobalEscape);
+                    }
                 }
                 // Generator yields: value escapes.
                 OpCode::Yield | OpCode::YieldFrom => {
@@ -347,7 +429,7 @@ mod tests {
     use super::*;
     use crate::tir::blocks::Terminator;
     use crate::tir::function::TirFunction;
-    use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::ValueId;
 
@@ -434,6 +516,137 @@ mod tests {
 
         let escapes = analyze(&func);
         assert_eq!(escapes[&alloc_val], EscapeState::GlobalEscape);
+    }
+
+    /// Helper to make a TirOp with attributes.
+    fn make_op_with_attrs(
+        opcode: OpCode,
+        operands: Vec<ValueId>,
+        results: Vec<ValueId>,
+        attrs: AttrDict,
+    ) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results,
+            attrs,
+            source_span: None,
+        }
+    }
+
+    /// Test: len() (borrowing builtin) does not cause GlobalEscape.
+    #[test]
+    fn borrowing_builtin_len_does_not_escape() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let alloc_val = func.fresh_value();
+        let call_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("name".into(), AttrValue::Str("len".into()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry.ops.push(make_op_with_attrs(
+            OpCode::CallBuiltin,
+            vec![alloc_val],
+            vec![call_result],
+            attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&alloc_val],
+            EscapeState::NoEscape,
+            "len() only borrows — alloc should not escape"
+        );
+    }
+
+    /// Test: list.append() (mutating method) DOES cause GlobalEscape.
+    #[test]
+    fn mutating_method_append_causes_escape() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let alloc_val = func.fresh_value();
+        let list_val = func.fresh_value();
+        let call_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("method".into(), AttrValue::Str("append".into()));
+        attrs.insert("receiver_type".into(), AttrValue::Str("list".into()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![list_val]));
+        // list_val.append(alloc_val) — alloc_val is stored into the list
+        entry.ops.push(make_op_with_attrs(
+            OpCode::CallMethod,
+            vec![list_val, alloc_val],
+            vec![call_result],
+            attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&alloc_val],
+            EscapeState::GlobalEscape,
+            "list.append() stores its argument — alloc must escape"
+        );
+    }
+
+    /// Test: print() (I/O but borrowing) does not cause GlobalEscape.
+    #[test]
+    fn borrowing_builtin_print_does_not_escape() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let alloc_val = func.fresh_value();
+        let call_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("name".into(), AttrValue::Str("print".into()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry.ops.push(make_op_with_attrs(
+            OpCode::CallBuiltin,
+            vec![alloc_val],
+            vec![call_result],
+            attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&alloc_val],
+            EscapeState::NoEscape,
+            "print() borrows its argument for I/O — alloc should not escape"
+        );
     }
 
     /// Test 4: Alloc passed to Call → GlobalEscape (conservative).

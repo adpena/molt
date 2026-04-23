@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+import re as _re
 import sys
 import warnings
+
+from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -20,6 +22,11 @@ _MOLT_GLOB_IGLOB = _require_intrinsic("molt_glob_iglob")
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir")
 if sys.version_info >= (3, 13):
     _MOLT_GLOB_TRANSLATE = _require_intrinsic("molt_glob_translate")
+
+# Module-level regex objects that CPython exposes (used by external code for
+# detection of magic characters).
+magic_check = _re.compile(r"([*?[])")
+magic_check_bytes = _re.compile(rb"([*?[])")
 
 _DEPRECATED_FUNCTION_MESSAGE = (
     "{name} is deprecated and will be removed in Python {remove}. Use "
