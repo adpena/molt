@@ -630,7 +630,7 @@ unsafe fn try_subclass_repr_override(
         let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, repr_name_bits)?;
         if call_bits_is_default_object_repr(call_bits) {
             dec_ref_bits(_py, call_bits);
-            return Some(format_default_object_repr(_py, ptr));
+            return None;
         }
         let res_bits = call_callable0(_py, call_bits);
         dec_ref_bits(_py, call_bits);
