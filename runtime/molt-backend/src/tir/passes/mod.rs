@@ -14,6 +14,7 @@ pub mod interprocedural;
 pub mod loop_narrow;
 pub mod monomorphize;
 pub mod polyhedral;
+pub mod range_devirt;
 mod reachability;
 pub mod refcount_elim;
 pub mod sccp;
@@ -133,6 +134,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         };
     }
 
+    run_pass!("range_devirt", range_devirt::run(func));
     run_pass!("loop_narrow", loop_narrow::run(func));
     run_pass!("unboxing", unboxing::run(func));
     run_pass!("block_versioning", block_versioning::run(func));
