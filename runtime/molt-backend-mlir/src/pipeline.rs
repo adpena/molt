@@ -205,7 +205,7 @@ mod tests {
     use molt_backend::tir::{
         blocks::Terminator,
         function::TirFunction,
-        ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp},
+        ops::{AttrDict, Dialect, OpCode, TirOp},
         types::TirType,
         values::ValueId,
     };

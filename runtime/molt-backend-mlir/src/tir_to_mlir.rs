@@ -110,11 +110,6 @@ fn mlir_type_for_tir<'c>(ctx: &'c MlirContext, ty: &TirType) -> Type<'c> {
     }
 }
 
-/// Determine if a TIR type uses floating-point representation in MLIR.
-fn is_float_type(ty: &TirType) -> bool {
-    matches!(ty, TirType::F64)
-}
-
 /// Build a `func.func` operation from a TIR function.
 fn build_func_op<'c>(
     tir_func: &TirFunction,
