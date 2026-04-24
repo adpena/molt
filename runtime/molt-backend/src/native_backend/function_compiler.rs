@@ -14505,14 +14505,37 @@ impl SimpleBackend {
                     let src_name = args_names
                         .first()
                         .expect("identity_alias requires one source arg");
-                    let src = *var_get_boxed(&mut builder, &vars, src_name, &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var)
-                        .expect("identity_alias source not found");
                     if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
-                        // Same aliasing hazard as box/unbox/cast/widen above.
-                        emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj, &nbc);
-                        def_var_named(&mut builder, &vars, out_name.clone(), src);
+                        if float_primary_vars.contains(out_name) {
+                            // Float-primary: transfer raw f64 directly.
+                            let raw_f64 = float_value_for(
+                                &mut builder, &vars, &raw_primary_float,
+                                &raw_float_shadow, &raw_float_shadow_vals,
+                                src_name,
+                            )
+                            .unwrap_or_else(|| {
+                                let boxed = var_get_boxed(
+                                    &mut builder, &vars, src_name,
+                                    &raw_primary_int, &raw_primary_float,
+                                    box_int_mask_var, box_int_tag_var,
+                                ).expect("identity_alias source not found");
+                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                            });
+                            def_var_named(&mut builder, &vars, out_name.clone(), raw_f64);
+                            raw_primary_float.insert(out_name.clone());
+                            if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str()) {
+                                builder.def_var(dst_var, raw_f64);
+                            }
+                            raw_float_shadow_vals.insert(out_name.clone(), raw_f64);
+                        } else {
+                            let src = *var_get_boxed(&mut builder, &vars, src_name, &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var)
+                                .expect("identity_alias source not found");
+                            // Same aliasing hazard as box/unbox/cast/widen above.
+                            emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj, &nbc);
+                            def_var_named(&mut builder, &vars, out_name.clone(), src);
+                        }
                     }
                 }
                 "call_guarded" => {
@@ -21623,7 +21646,7 @@ impl SimpleBackend {
                         }
                         // --- Raw-primary int fast path ---
                         // When source is raw-primary and output is proven-int,
-                        // transfer raw i64 directly — no boxing, no refcount.
+                        // transfer raw i64 directly -- no boxing, no refcount.
                         if raw_primary_int.contains(var_name.as_str())
                             && scalar_fast_paths_enabled
                             && op.out.as_ref().map_or(false, |o| int_like_vars.contains(o))
@@ -21654,6 +21677,36 @@ impl SimpleBackend {
                                 builder.def_var(dst_var, raw_val);
                             }
                             raw_int_shadow_vals.insert(out_name.clone(), raw_val);
+                            continue;
+                        }
+                        // --- Raw-primary float fast path ---
+                        // When output is float-primary, transfer raw f64 directly.
+                        if op.out.as_ref().map_or(false, |o| float_primary_vars.contains(o))
+                            && scalar_fast_paths_enabled
+                        {
+                            let raw_f64 = float_value_for(
+                                &mut builder,
+                                &vars,
+                                &raw_primary_float,
+                                &raw_float_shadow,
+                                &raw_float_shadow_vals,
+                                var_name,
+                            )
+                            .unwrap_or_else(|| {
+                                let boxed = var_get_boxed(
+                                    &mut builder, &vars, var_name,
+                                    &raw_primary_int, &raw_primary_float,
+                                    box_int_mask_var, box_int_tag_var,
+                                ).expect("load_var: float src not found");
+                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                            });
+                            let out_name = op.out.as_ref().unwrap();
+                            def_var_named(&mut builder, &vars, out_name, raw_f64);
+                            raw_primary_float.insert(out_name.clone());
+                            if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str()) {
+                                builder.def_var(dst_var, raw_f64);
+                            }
+                            raw_float_shadow_vals.insert(out_name.clone(), raw_f64);
                             continue;
                         }
                         let val = var_get_boxed(&mut builder, &vars, var_name, &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var)
