@@ -2360,9 +2360,13 @@ impl SimpleBackend {
         flag_builder
             .set("enable_table_access_spectre_mitigation", "false")
             .unwrap();
-        // Stack probing strategy: use outline (call-based) probes on aarch64
-        // to avoid a Cranelift 0.128 bug where inline probe loops generate
-        // incorrect touch sequences for frames >16KB, causing SIGTRAP.
+        // Stack probing: guard pages detect stack overflow in large/recursive
+        // frames instead of silently segfaulting.  Without enable_probestack,
+        // the probestack_strategy setting is inert.
+        flag_builder.set("enable_probestack", "true").unwrap();
+        // Strategy: use outline (call-based) probes on aarch64 to avoid a
+        // Cranelift bug (tracked in 0.128-0.130) where inline probe loops
+        // generate incorrect touch sequences for frames >16KB, causing SIGTRAP.
         // On x86_64, inline probes are safe and faster for deep recursion.
         flag_builder
             .set(

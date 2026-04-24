@@ -263,6 +263,44 @@ fn shadow_pair_available(
         && (raw_int_shadow_vals.contains_key(rhs) || raw_int_shadow.contains_key(rhs))
 }
 
+// --- Raw f64 shadow lookup functions (mirrors raw_int_shadow) ---
+
+#[cfg(feature = "native-backend")]
+#[inline]
+fn shadow_float_for(
+    builder: &mut FunctionBuilder<'_>,
+    raw_float_shadow: &BTreeMap<String, Variable>,
+    raw_float_shadow_vals: &BTreeMap<String, Value>,
+    name: &str,
+) -> Option<Value> {
+    raw_float_shadow_vals
+        .get(name)
+        .copied()
+        .or_else(|| raw_float_shadow.get(name).map(|&var| builder.use_var(var)))
+}
+
+#[cfg(feature = "native-backend")]
+#[inline]
+fn shadow_float_var_only(
+    builder: &mut FunctionBuilder<'_>,
+    raw_float_shadow: &BTreeMap<String, Variable>,
+    name: &str,
+) -> Option<Value> {
+    raw_float_shadow.get(name).map(|&var| builder.use_var(var))
+}
+
+#[cfg(feature = "native-backend")]
+#[inline]
+fn shadow_float_pair_available(
+    raw_float_shadow: &BTreeMap<String, Variable>,
+    raw_float_shadow_vals: &BTreeMap<String, Value>,
+    lhs: &str,
+    rhs: &str,
+) -> bool {
+    (raw_float_shadow_vals.contains_key(lhs) || raw_float_shadow.contains_key(lhs))
+        && (raw_float_shadow_vals.contains_key(rhs) || raw_float_shadow.contains_key(rhs))
+}
+
 #[cfg(feature = "native-backend")]
 fn collect_slot_backed_join_names(
     ops: &[OpIR],
@@ -1476,6 +1514,23 @@ impl SimpleBackend {
             std::collections::BTreeMap::new();
         let mut raw_int_shadow_vals: std::collections::BTreeMap<String, Value> =
             std::collections::BTreeMap::new();
+
+        // Raw float shadow: two-tier unboxed f64 tracking (mirrors raw_int_shadow).
+        //
+        // Tier 1 (Variable-backed): named variables that cross block boundaries
+        // (loop induction variables via store_var/load_var).  Pre-declared at
+        // entry; Cranelift inserts phis at loop headers automatically.
+        //
+        // Tier 2 (Value-based): SSA intermediates within a single basic block
+        // (const_float → fadd → fcmp chains).  Cheap, no pre-declaration needed.
+        // Cleared at block boundaries (label, if, else, end_if).
+        //
+        // Read order: try Tier 2 first (no function call), fall back to Tier 1
+        // (use_var).  Write order: write to both tiers on every def.
+        let mut raw_float_shadow: std::collections::BTreeMap<String, Variable> =
+            std::collections::BTreeMap::new();
+        let mut raw_float_shadow_vals: std::collections::BTreeMap<String, Value> =
+            std::collections::BTreeMap::new();
         // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
         // Valid only while the list is not resized (no append/insert inside the loop).
@@ -1526,7 +1581,7 @@ impl SimpleBackend {
         // Variable-tier raw bool shadows for loop-carried phi correctness.
         // Parallels raw_int_shadow: declared once, def'd at each definition
         // site, use_var'd at each consumer.  Survives loop back-edges.
-        let raw_bool_shadow_vars: std::collections::BTreeMap<String, Variable> =
+        let mut raw_bool_shadow_vars: std::collections::BTreeMap<String, Variable> =
             std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
         let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
@@ -1684,10 +1739,132 @@ impl SimpleBackend {
             {
                 eprintln!("INT_STORE_TARGETS {} {:?}", func_ir.name, int_store_targets);
             }
+            // Float store targets: pre-declare shadow F64 Variables for store_var
+            // targets whose source is proven float.  Same pattern as int shadows.
+            let mut float_valued_outputs: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            let mut flt_changed = true;
+            while flt_changed {
+                flt_changed = false;
+                for op in &func_ir.ops {
+                    let Some(ref out) = op.out else { continue };
+                    let is_seed_float = matches!(
+                        infer_scalar_lane(
+                            op,
+                            &int_like_vars,
+                            &bool_like_vars,
+                            &float_valued_outputs,
+                            &str_like_vars,
+                        ),
+                        Some(ScalarLane::Float)
+                    );
+                    let is_alias_of_float = matches!(
+                        op.kind.as_str(),
+                        "copy_var" | "copy" | "load_var" | "identity_alias"
+                    ) && op
+                        .args
+                        .as_ref()
+                        .and_then(|args| args.first())
+                        .is_some_and(|src| float_valued_outputs.contains(src))
+                        || matches!(op.kind.as_str(), "copy_var" | "load_var")
+                            && op
+                                .var
+                                .as_ref()
+                                .is_some_and(|src| float_valued_outputs.contains(src));
+                    if (is_seed_float || is_alias_of_float)
+                        && float_valued_outputs.insert(out.clone())
+                    {
+                        flt_changed = true;
+                    }
+                }
+            }
+            let mut float_store_targets: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            for op in &func_ir.ops {
+                if op.kind == "store_var"
+                    && let Some(ref name) = op.var.as_ref().or(op.out.as_ref())
+                    && let Some(ref args) = op.args
+                    && let Some(src) = args.first()
+                    && float_valued_outputs.contains(src)
+                {
+                    float_store_targets.insert(name.to_string());
+                }
+            }
+            let zero_f = builder.ins().f64const(0.0);
+            for name in &float_store_targets {
+                let v = builder.declare_var(types::F64);
+                builder.def_var(v, zero_f);
+                raw_float_shadow.insert(name.clone(), v);
+            }
+
+            // Bool store targets: pre-declare shadow I64 Variables for store_var
+            // targets whose source is proven bool.  Same two-tier pattern as int
+            // shadows — Variable tier survives loop back-edges via phi nodes,
+            // Value tier (raw_bool_values) is cleared at loop_start.
+            let mut bool_valued_outputs: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            let mut bool_changed = true;
+            while bool_changed {
+                bool_changed = false;
+                for op in &func_ir.ops {
+                    let Some(ref out) = op.out else { continue };
+                    let is_seed_bool = matches!(
+                        infer_scalar_lane(
+                            op,
+                            &int_like_vars,
+                            &bool_valued_outputs,
+                            &float_like_vars,
+                            &str_like_vars,
+                        ),
+                        Some(ScalarLane::Bool)
+                    );
+                    let is_alias_of_bool = matches!(
+                        op.kind.as_str(),
+                        "copy_var" | "copy" | "load_var" | "identity_alias"
+                    ) && op
+                        .args
+                        .as_ref()
+                        .and_then(|args| args.first())
+                        .is_some_and(|src| bool_valued_outputs.contains(src))
+                        || matches!(op.kind.as_str(), "copy_var" | "load_var")
+                            && op
+                                .var
+                                .as_ref()
+                                .is_some_and(|src| bool_valued_outputs.contains(src));
+                    if (is_seed_bool || is_alias_of_bool)
+                        && bool_valued_outputs.insert(out.clone())
+                    {
+                        bool_changed = true;
+                    }
+                }
+            }
+            let mut bool_store_targets: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            for op in &func_ir.ops {
+                if op.kind == "store_var"
+                    && let Some(ref name) = op.var.as_ref().or(op.out.as_ref())
+                    && let Some(ref args) = op.args
+                    && let Some(src) = args.first()
+                    && bool_valued_outputs.contains(src)
+                {
+                    bool_store_targets.insert(name.to_string());
+                }
+            }
+            let zero_b = builder.ins().iconst(types::I64, 0);
+            for name in &bool_store_targets {
+                let v = builder.declare_var(types::I64);
+                builder.def_var(v, zero_b);
+                raw_bool_shadow_vars.insert(name.clone(), v);
+            }
+
             int_store_targets
         } else {
             BTreeSet::new()
         };
+        // Float store target names for retain-at-loop-start filtering.
+        let float_store_target_names: BTreeSet<String> = raw_float_shadow.keys().cloned().collect();
+        // Bool store target names for retain-at-loop-start filtering.
+        let bool_store_target_names: BTreeSet<String> = raw_bool_shadow_vars.keys().cloned().collect();
         // Only explicit store-backed join carriers and exception-fragile names
         // use stack slots. Structured phi joins must stay on the SSA path.
         let slot_backed_join_names =
@@ -2547,8 +2724,15 @@ impl SimpleBackend {
                     let val = op.f_value.expect("Float value not found");
                     let boxed = box_float(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, iconst);
+                        // Seed raw f64 shadow so downstream float ops chain
+                        // without NaN-box round-trips.
+                        let raw_f64 = builder.ins().f64const(val);
+                        if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                            builder.def_var(shadow_var, raw_f64);
+                        }
+                        raw_float_shadow_vals.insert(out__.clone(), raw_f64);
                     }
                 }
                 "const_str" => {
@@ -2674,9 +2858,29 @@ impl SimpleBackend {
                         builder.inst_results(call)[0]
                     } else if op_prefers_float_lane(&op) {
                         // Both operands known to be f64 — direct float arithmetic.
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        // Use raw f64 shadows when available to skip bitcast unbox.
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, result_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                        }
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
@@ -2896,9 +3100,28 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     } else if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, result_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                        }
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if (raw_int_shadow_vals.contains_key(&args[0])
                         || raw_int_shadow.contains_key(&args[0]))
@@ -3557,9 +3780,28 @@ impl SimpleBackend {
                         panic!("RHS not found in {} op {}", func_ir.name, op_idx)
                     });
                     let res = if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, result_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                        }
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if shadow_pair_available(
                         &raw_int_shadow,
@@ -3767,9 +4009,28 @@ impl SimpleBackend {
                         panic!("RHS not found in {} op {}", func_ir.name, op_idx)
                     });
                     let res = if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, result_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                        }
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if shadow_pair_available(
                         &raw_int_shadow,
@@ -3973,9 +4234,28 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, result_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                        }
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if shadow_pair_available(
                         &raw_int_shadow,
@@ -4174,9 +4454,28 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
+                        } else {
+                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, result_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                        }
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if shadow_pair_available(
                         &raw_int_shadow,
@@ -15937,7 +16236,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     // Inline truthiness for bool/int types to avoid function call overhead.
-                    let cond_bool = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                    let cond_bool = if let Some(raw_val) = shadow_value_for(
+                        &mut builder,
+                        &raw_bool_shadow_vars,
+                        &raw_bool_values,
+                        &args[0],
+                    ) {
                         // Raw bool from proven list_bool getitem or const_bool.
                         // Branch directly on raw 0/1 — ZERO NaN-box overhead.
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
@@ -17735,7 +18039,12 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if let Some(&raw_val) = raw_bool_values.get(cond_name) {
+                        let cond_bool = if let Some(raw_val) = shadow_value_for(
+                            &mut builder,
+                            &raw_bool_shadow_vars,
+                            &raw_bool_values,
+                            cond_name,
+                        ) {
                             // Raw bool from proven list_bool getitem or const_bool.
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else if cond_is_bool_typed {
@@ -17908,7 +18217,12 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if let Some(&raw_val) = raw_bool_values.get(cond_name) {
+                        let cond_bool = if let Some(raw_val) = shadow_value_for(
+                            &mut builder,
+                            &raw_bool_shadow_vars,
+                            &raw_bool_values,
+                            cond_name,
+                        ) {
                             // Raw bool from proven list_bool getitem or const_bool.
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else if cond_is_bool_typed {
@@ -19684,7 +19998,12 @@ impl SimpleBackend {
                     // cond is NaN-boxed — dispatch based on type hint to avoid
                     // unnecessary GIL-wrapped molt_is_truthy calls.
                     let cond_name = &args[0];
-                    let cond_bool = if let Some(&raw_val) = raw_bool_values.get(cond_name) {
+                    let cond_bool = if let Some(raw_val) = shadow_value_for(
+                        &mut builder,
+                        &raw_bool_shadow_vars,
+                        &raw_bool_values,
+                        cond_name,
+                    ) {
                         // Raw bool from proven list_bool getitem or const_bool.
                         // Branch directly on raw 0/1 — ZERO NaN-box overhead.
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)

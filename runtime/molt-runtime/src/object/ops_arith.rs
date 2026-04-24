@@ -483,7 +483,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
         let type_id = object_type_id(ptr);
         if count <= 0 {
             let out_ptr = match type_id {
-                TYPE_ID_LIST | TYPE_ID_LIST_BOOL => alloc_list(_py, &[]),
+                TYPE_ID_LIST | TYPE_ID_LIST_BOOL | TYPE_ID_LIST_INT => alloc_list(_py, &[]),
                 TYPE_ID_TUPLE => alloc_tuple(_py, &[]),
                 TYPE_ID_STRING => alloc_string(_py, &[]),
                 TYPE_ID_BYTES => alloc_bytes(_py, &[]),
@@ -531,6 +531,27 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                             return raise_exception::<_>(_py, "MemoryError", "out of memory");
                         }
                         *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) =
+                            storage_ptr;
+                        return Some(MoltObject::from_ptr(out_ptr).bits());
+                    }
+
+                    // Int fast path: [0] * N, [42] * N, [-1] * N → ListIntStorage.
+                    // Uses flat i64 backing store (no NaN-boxing per element),
+                    // enabling direct memory loads in the native backend's inline
+                    // getitem/setitem paths.
+                    if let Some(int_val) = val_obj.as_int() {
+                        let vec = vec![int_val; total];
+                        let storage_ptr = crate::object::layout::ListIntStorage::from_vec(vec);
+                        let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
+                            + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
+                            + std::mem::size_of::<u64>(); // padding
+                        let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_INT);
+                        if out_ptr.is_null() {
+                            // Reconstruct and drop the vec to free the buffer.
+                            drop((*Box::from_raw(storage_ptr)).into_vec());
+                            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        }
+                        *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) =
                             storage_ptr;
                         return Some(MoltObject::from_ptr(out_ptr).bits());
                     }
@@ -591,6 +612,34 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
                 *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) = storage_ptr;
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_LIST_INT => {
+                let elems = crate::object::layout::list_int_vec_ref(ptr);
+                let total = match elems.len().checked_mul(times) {
+                    Some(total) => total,
+                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                };
+                // ListIntSliceRef stores raw (data, len) — reconstruct a
+                // slice for bulk copy without depending on Vec layout.
+                let src = std::slice::from_raw_parts(
+                    elems.iter().as_slice().as_ptr(),
+                    elems.len(),
+                );
+                let mut combined = Vec::with_capacity(total);
+                for _ in 0..times {
+                    combined.extend_from_slice(src);
+                }
+                let storage_ptr = crate::object::layout::ListIntStorage::from_vec(combined);
+                let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
+                    + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
+                    + std::mem::size_of::<u64>();
+                let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_INT);
+                if out_ptr.is_null() {
+                    drop((*Box::from_raw(storage_ptr)).into_vec());
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
                 Some(MoltObject::from_ptr(out_ptr).bits())
             }
             TYPE_ID_TUPLE => {
