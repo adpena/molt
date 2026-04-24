@@ -3253,7 +3253,16 @@ impl SimpleBackend {
             let tir_funcs: Vec<_> = ir
                 .functions
                 .iter()
-                .map(|func| (func.is_extern, lower_to_tir(func)))
+                .map(|func| {
+                    let mut tir_func = lower_to_tir(func);
+                    // Run the full TIR optimization pipeline — same as Cranelift/WASM.
+                    // Without this, all values stay DynBox and every operation
+                    // dispatches through the runtime instead of emitting native ops.
+                    crate::tir::type_refine::refine_types(&mut tir_func);
+                    let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                    crate::tir::type_refine::refine_types(&mut tir_func);
+                    (func.is_extern, tir_func)
+                })
                 .collect();
             llvm.function_param_types = tir_funcs
                 .iter()
