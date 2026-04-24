@@ -460,6 +460,18 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
 
         if let Some(block) = func.blocks.get_mut(&back_bid) {
             // Insert Add(ind_var, step_val) -> next_val at end of block (before terminator).
+            //
+            // When |step| == 1, the addition provably cannot overflow a
+            // signed i64:
+            //   - For step=+1: the loop guard `i < stop` ensures
+            //     `i <= stop - 1`, so `i + 1 <= stop` which is valid i64.
+            //   - For step=-1: the loop guard `i > stop` ensures
+            //     `i >= stop + 1`, so `i - 1 >= stop` which is valid i64.
+            //
+            // This `no_signed_wrap` attribute tells the LLVM lowering to
+            // emit `add nsw` which enables SCEV, induction variable
+            // strength reduction, and loop vectorization.
+            let nsw_safe = matches!(c.step_const, Some(1) | Some(-1));
             let add_op = TirOp {
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
@@ -468,6 +480,9 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
                 attrs: {
                     let mut a = AttrDict::new();
                     a.insert("_fast_int".to_string(), AttrValue::Bool(true));
+                    if nsw_safe {
+                        a.insert("no_signed_wrap".to_string(), AttrValue::Bool(true));
+                    }
                     a
                 },
                 source_span: None,
