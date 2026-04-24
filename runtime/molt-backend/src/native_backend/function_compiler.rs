@@ -1224,6 +1224,34 @@ fn preanalyze_function_ir(
     while changed_types {
         changed_types = false;
         for op in &func_ir.ops {
+            // Propagate type info through store_var: when a value is
+            // stored into a variable, the variable inherits the scalar
+            // lane of the stored value.  This is critical for loop phi
+            // variables (e.g. _bb1_arg0) that are only written via
+            // store_var and read via load_var.
+            if op.kind == "store_var" {
+                if let Some(target) = op.var.as_ref().or(op.out.as_ref()) {
+                    if let Some(src) = op.args.as_ref().and_then(|a| a.first()) {
+                        let inserted = if int_like_vars.contains(src) {
+                            int_like_vars.insert(target.clone())
+                        } else if bool_like_vars.contains(src) {
+                            bool_like_vars.insert(target.clone())
+                        } else if float_like_vars.contains(src) {
+                            float_like_vars.insert(target.clone())
+                        } else if str_like_vars.contains(src) {
+                            str_like_vars.insert(target.clone())
+                        } else if none_like_vars.contains(src) {
+                            none_like_vars.insert(target.clone())
+                        } else {
+                            false
+                        };
+                        if inserted {
+                            changed_types = true;
+                        }
+                    }
+                }
+                continue;
+            }
             let Some(out) = op.out.as_ref() else {
                 continue;
             };
@@ -1686,14 +1714,23 @@ impl SimpleBackend {
             }
             unsafe_set
         };
-        let float_primary_vars: BTreeSet<String> = float_like_vars
-            .iter()
-            .filter(|name| {
-                !param_name_set.contains(name.as_str())
-                    && !float_unsafe_outputs.contains(*name)
-            })
-            .cloned()
-            .collect();
+        let float_primary_vars: BTreeSet<String> = if is_cold_module_chunk_function(&func_ir.name) {
+            // Cold module-chunk functions have scalar_fast_paths disabled,
+            // so store_var / copy_var / load_var skip the float-primary
+            // fast paths and fall through to the generic I64 codegen.
+            // Declaring Variables as F64 while codegen emits I64 values
+            // causes a Cranelift type-mismatch panic.  Disable entirely.
+            BTreeSet::new()
+        } else {
+            float_like_vars
+                .iter()
+                .filter(|name| {
+                    !param_name_set.contains(name.as_str())
+                        && !float_unsafe_outputs.contains(*name)
+                })
+                .cloned()
+                .collect()
+        };
         for name in var_names.iter() {
             let var_type = if float_primary_vars.contains(name) {
                 types::F64
