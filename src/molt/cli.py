@@ -16521,8 +16521,11 @@ def _build_native_link_command(
         link_cmd.append("-Wl,-dead_strip")
         # Intrinsic resolution uses a static function-pointer table
         # (resolve_symbol in generated.rs), NOT dlsym. Restrict exports
-        # to _main so the linker can aggressively strip unreachable code.
-        link_cmd.append("-Wl,-exported_symbol,_main")
+        # via an exported_symbols_list so the linker treats every other
+        # symbol as local, maximizing dead-strip and ICF scope.
+        _exp_path = output_binary.parent / ".molt_exports.exp"
+        _exp_path.write_text("_main\n")
+        link_cmd.append(f"-Wl,-exported_symbols_list,{_exp_path}")
         link_cmd.extend(["-Wl,-x", "-Wl,-S"])
         if suppress_linker_warnings:
             link_cmd.append("-Wl,-w")
@@ -16538,6 +16541,12 @@ def _build_native_link_command(
         link_cmd.append("-Wl,--icf=safe")
         # Linker optimization level for layout and relaxation.
         link_cmd.append("-Wl,-O2")
+        # Version script: restrict all symbols to local scope except main.
+        # This mirrors macOS -exported_symbols_list and gives GNU ld the
+        # same dead-code-elimination scope as ld64's -dead_strip.
+        _ver_path = output_binary.parent / ".molt_version.ver"
+        _ver_path.write_text("{ global: main; local: *; };\n")
+        link_cmd.append(f"-Wl,--version-script={_ver_path}")
         link_cmd.append("-lstdc++")
         link_cmd.append("-lm")
     elif _is_windows:
