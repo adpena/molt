@@ -85,23 +85,31 @@ unsafe fn exp2_v128(x: v128) -> v128 {
     f32x4_mul(p, exp_bits) // reinterpret i32x4 bits as f32x4 (same v128 type)
 }
 
-/// Horizontal sum of 4 f32 lanes.
+/// Horizontal sum of 4 f32 lanes using pairwise shuffle reduction.
+///
+/// Stays in v128 for 2 rounds of shuffle+add before a single lane extract,
+/// reducing 4 lane extractions to 1 and exploiting SIMD pipeline throughput.
+///   Round 1: [a,b,c,d] + [c,d,a,b] = [a+c, b+d, c+a, d+b]
+///   Round 2: [a+c, b+d, ...] + [b+d, a+c, ...] = [a+b+c+d, ...]
 #[inline(always)]
 unsafe fn hsum_f32x4(v: v128) -> f32 {
-    f32x4_extract_lane::<0>(v)
-        + f32x4_extract_lane::<1>(v)
-        + f32x4_extract_lane::<2>(v)
-        + f32x4_extract_lane::<3>(v)
+    // Shuffle high pair to low: [c, d, a, b]
+    let hi = i32x4_shuffle::<2, 3, 0, 1>(v, v);
+    let sum1 = f32x4_add(v, hi); // [a+c, b+d, ...]
+    // Shuffle odd to even: [b+d, a+c, ...]
+    let odd = i32x4_shuffle::<1, 0, 3, 2>(sum1, sum1);
+    let sum2 = f32x4_add(sum1, odd); // [a+b+c+d, ...]
+    f32x4_extract_lane::<0>(sum2)
 }
 
-/// Horizontal max of 4 f32 lanes.
+/// Horizontal max of 4 f32 lanes using pairwise shuffle reduction.
 #[inline(always)]
 unsafe fn hmax_f32x4(v: v128) -> f32 {
-    let a = f32x4_extract_lane::<0>(v);
-    let b = f32x4_extract_lane::<1>(v);
-    let c = f32x4_extract_lane::<2>(v);
-    let d = f32x4_extract_lane::<3>(v);
-    a.max(b).max(c.max(d))
+    let hi = i32x4_shuffle::<2, 3, 0, 1>(v, v);
+    let max1 = f32x4_max(v, hi);
+    let odd = i32x4_shuffle::<1, 0, 3, 2>(max1, max1);
+    let max2 = f32x4_max(max1, odd);
+    f32x4_extract_lane::<0>(max2)
 }
 
 // ---------------------------------------------------------------------------

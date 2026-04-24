@@ -218,8 +218,10 @@ impl Renderer for MslRenderer {
     fn render(&self, kernel: &FusedKernel) -> String {
         let mut out = String::with_capacity(4096);
 
-        // Include headers
+        // Include headers. Enable fast math for transcendentals (exp2, log2, sin, sqrt)
+        // which allows the compiler to use approximate SIMD instructions.
         writeln!(out, "#include <metal_stdlib>").unwrap();
+        writeln!(out, "#include <metal_math>").unwrap();
         writeln!(out, "using namespace metal;").unwrap();
         writeln!(out).unwrap();
 

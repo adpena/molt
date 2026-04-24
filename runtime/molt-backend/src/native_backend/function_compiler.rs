@@ -2861,11 +2861,17 @@ impl SimpleBackend {
                 }
                 "add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
-                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                    // Defer var_get: NaN-boxed operands are only read on paths
+                    // that actually need them.  On the both-shadow fast path the
+                    // raw i64 values are used directly, so never calling use_var
+                    // on the NaN-boxed Variable allows Cranelift DCE to eliminate
+                    // the upstream boxing (band+bor) when all consumers also use
+                    // the shadow path.
                     let res = if op_prefers_str_lane(&op) {
                         // Both operands known to be strings — direct concat,
                         // skips the 8-branch dispatch in molt_add.
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -2879,6 +2885,8 @@ impl SimpleBackend {
                     } else if op_prefers_float_lane(&op) {
                         // Both operands known to be f64 — direct float arithmetic.
                         // Use raw f64 shadows when available to skip bitcast unbox.
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
@@ -2966,9 +2974,15 @@ impl SimpleBackend {
                             let fast_res = box_int_value_hoisted(&mut builder, sum, box_int_mask_var, box_int_tag_var);
                             jump_block(&mut builder, merge_block, &[fast_res, sum]);
 
+                            // Slow path: BigInt overflow.  Defer var_get to here
+                            // so the NaN-boxed use_var only occurs on this cold
+                            // path, allowing Cranelift DCE to eliminate upstream
+                            // boxing when all hot-path consumers use shadows.
                             switch_to_block_materialized(&mut builder, slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let lhs_boxed = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                            let rhs_boxed = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                            let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                             let slow_res = builder.inst_results(call)[0];
                             let zero = builder.ins().iconst(types::I64, 0);
                             jump_block(&mut builder, merge_block, &[slow_res, zero]);
@@ -2989,6 +3003,8 @@ impl SimpleBackend {
                             // operands are int-like. Skip tag check, unbox directly.
                             // Overflow guard retained for BigInt fallback.
                             // Propagate raw shadow so downstream ops skip unbox.
+                            let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                            let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             let fast_block = builder.create_block();
                             let slow_block = builder.create_block();
                             builder.set_cold_block(slow_block);
@@ -3028,6 +3044,8 @@ impl SimpleBackend {
                             merged_boxed
                         }
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3105,10 +3123,11 @@ impl SimpleBackend {
                 }
                 "inplace_add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
-                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                    // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_str_lane(&op) {
                         // Both operands known to be strings — direct concat.
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3120,6 +3139,8 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     } else if op_prefers_float_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
@@ -3200,9 +3221,12 @@ impl SimpleBackend {
                         let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
+                        // Slow path: defer var_get to cold BigInt overflow path.
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let lhs_boxed = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs_boxed = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                        let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
@@ -3221,6 +3245,8 @@ impl SimpleBackend {
                         continue;
                     } else if op_prefers_int_lane(&op) {
                         // Propagate raw shadow so downstream ops skip unbox.
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3267,6 +3293,8 @@ impl SimpleBackend {
                         }
                         merge_res
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3793,13 +3821,14 @@ impl SimpleBackend {
                 }
                 "sub" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
-                        panic!("LHS not found in {} op {}", func_ir.name, op_idx)
-                    });
-                    let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
-                        panic!("RHS not found in {} op {}", func_ir.name, op_idx)
-                    });
+                    // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                            panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                        });
+                        let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                            panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                        });
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
@@ -3881,9 +3910,16 @@ impl SimpleBackend {
                         let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
+                        // Slow path: defer var_get to cold BigInt overflow path.
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let lhs_boxed = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                            panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                        });
+                        let rhs_boxed = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                            panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                        });
+                        let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
@@ -3904,6 +3940,12 @@ impl SimpleBackend {
                         // Proven-int path: skip tag check, unbox directly.
                         // Overflow guard retained for BigInt fallback.
                         // Propagate raw shadow so downstream ops skip unbox.
+                        let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                            panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                        });
+                        let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                            panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                        });
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4024,13 +4066,14 @@ impl SimpleBackend {
                 }
                 "inplace_sub" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
-                        panic!("LHS not found in {} op {}", func_ir.name, op_idx)
-                    });
-                    let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
-                        panic!("RHS not found in {} op {}", func_ir.name, op_idx)
-                    });
+                    // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                            panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                        });
+                        let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                            panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                        });
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
@@ -4112,9 +4155,16 @@ impl SimpleBackend {
                         let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
+                        // Slow path: defer var_get to cold BigInt overflow path.
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let lhs_boxed = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                            panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                        });
+                        let rhs_boxed = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                            panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                        });
+                        let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
@@ -4135,6 +4185,12 @@ impl SimpleBackend {
                         // Proven-int path: skip tag check, unbox directly.
                         // Overflow guard retained for BigInt fallback.
                         // Propagate raw shadow so downstream ops skip unbox.
+                        let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                            panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                        });
+                        let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                            panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                        });
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4255,9 +4311,10 @@ impl SimpleBackend {
                 }
                 "mul" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
-                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                    // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
@@ -4341,9 +4398,12 @@ impl SimpleBackend {
                         let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
+                        // Slow path: defer var_get to cold BigInt overflow path.
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let lhs_boxed = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs_boxed = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                        let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
@@ -4362,6 +4422,8 @@ impl SimpleBackend {
                         continue;
                     } else if op_prefers_int_lane(&op) {
                         // Propagate raw shadow so downstream ops skip unbox.
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4406,6 +4468,8 @@ impl SimpleBackend {
                         }
                         merge_res
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4479,9 +4543,10 @@ impl SimpleBackend {
                 }
                 "inplace_mul" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
-                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                    // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
@@ -4559,9 +4624,12 @@ impl SimpleBackend {
                         let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed]);
 
+                        // Slow path: defer var_get to cold BigInt overflow path.
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let lhs_boxed = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs_boxed = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                        let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
@@ -4574,6 +4642,8 @@ impl SimpleBackend {
                         continue;
                     } else if op_prefers_int_lane(&op) {
                         // Propagate raw shadow so downstream ops skip unbox.
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4618,6 +4688,8 @@ impl SimpleBackend {
                         }
                         merge_res
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,

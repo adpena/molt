@@ -784,17 +784,42 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
             ArithOp::Div | ArithOp::FloorDiv => Instruction::I64DivS,
             ArithOp::Mod => Instruction::I64RemS,
         }),
-        (LirRepr::F64, LirRepr::F64) => ctx.instructions.push(match arith {
-            ArithOp::Add => Instruction::F64Add,
-            ArithOp::Sub => Instruction::F64Sub,
-            ArithOp::Mul => Instruction::F64Mul,
-            ArithOp::Div | ArithOp::FloorDiv => Instruction::F64Div,
-            ArithOp::Mod => {
-                ctx.instructions.push(Instruction::Call(0));
-                ctx.emit_set(dst);
-                return;
+        (LirRepr::F64, LirRepr::F64) => match arith {
+            ArithOp::Add => ctx.instructions.push(Instruction::F64Add),
+            ArithOp::Sub => ctx.instructions.push(Instruction::F64Sub),
+            ArithOp::Mul => ctx.instructions.push(Instruction::F64Mul),
+            ArithOp::Div => ctx.instructions.push(Instruction::F64Div),
+            ArithOp::FloorDiv => {
+                // Python // on floats: floor(a / b)
+                ctx.instructions.push(Instruction::F64Div);
+                ctx.instructions.push(Instruction::F64Floor);
+                // Result already on stack, fall through to emit_set.
             }
-        }),
+            ArithOp::Mod => {
+                // Python fmod: a - floor(a / b) * b
+                // Stack: [lhs, rhs]. We need both values twice.
+                // Allocate scratch locals for the operands.
+                let scratch_a = ctx.next_local;
+                ctx.next_local += 1;
+                ctx.local_types.insert(scratch_a, ValType::F64);
+                let scratch_b = ctx.next_local;
+                ctx.next_local += 1;
+                ctx.local_types.insert(scratch_b, ValType::F64);
+                // Pop rhs, pop lhs into scratches.
+                ctx.instructions.push(Instruction::LocalSet(scratch_b));
+                ctx.instructions.push(Instruction::LocalSet(scratch_a));
+                // Compute: a - floor(a / b) * b
+                ctx.instructions.push(Instruction::LocalGet(scratch_a));
+                ctx.instructions.push(Instruction::LocalGet(scratch_a));
+                ctx.instructions.push(Instruction::LocalGet(scratch_b));
+                ctx.instructions.push(Instruction::F64Div);
+                ctx.instructions.push(Instruction::F64Floor);
+                ctx.instructions.push(Instruction::LocalGet(scratch_b));
+                ctx.instructions.push(Instruction::F64Mul);
+                ctx.instructions.push(Instruction::F64Sub);
+                // Result on stack, fall through to emit_set.
+            }
+        },
         _ => {
             ctx.instructions.push(Instruction::Call(0));
             ctx.emit_set(dst);
@@ -1086,13 +1111,86 @@ fn peephole_set_get_to_tee(instructions: Vec<Instruction<'static>>) -> Vec<Instr
     let mut out = Vec::with_capacity(instructions.len());
     let mut i = 0;
     while i < instructions.len() {
+        // Pattern 1: local.set X; local.get X -> local.tee X
         if i + 1 < instructions.len() {
             if let (Instruction::LocalSet(set_idx), Instruction::LocalGet(get_idx)) =
                 (&instructions[i], &instructions[i + 1])
             {
                 if set_idx == get_idx {
-                    // Replace set+get with tee: stores to local AND keeps value on stack.
                     out.push(Instruction::LocalTee(*set_idx));
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        // Pattern 2: i64.const 0; i64.eq -> i64.eqz (test for zero)
+        if i + 1 < instructions.len() {
+            if let (Instruction::I64Const(0), Instruction::I64Eq) =
+                (&instructions[i], &instructions[i + 1])
+            {
+                out.push(Instruction::I64Eqz);
+                i += 2;
+                continue;
+            }
+        }
+        // Pattern 3: i32.const 0; i32.eq -> i32.eqz
+        if i + 1 < instructions.len() {
+            if let (Instruction::I32Const(0), Instruction::I32Eq) =
+                (&instructions[i], &instructions[i + 1])
+            {
+                out.push(Instruction::I32Eqz);
+                i += 2;
+                continue;
+            }
+        }
+        // Pattern 4: i64.const 1; i64.mul -> (eliminated, multiply by 1 is identity)
+        if i + 1 < instructions.len() {
+            if let (Instruction::I64Const(1), Instruction::I64Mul) =
+                (&instructions[i], &instructions[i + 1])
+            {
+                // Value already on stack; skip the const+mul.
+                i += 2;
+                continue;
+            }
+        }
+        // Pattern 5: i64.const 0; i64.add -> (eliminated, add 0 is identity)
+        if i + 1 < instructions.len() {
+            if let (Instruction::I64Const(0), Instruction::I64Add) =
+                (&instructions[i], &instructions[i + 1])
+            {
+                i += 2;
+                continue;
+            }
+        }
+        // Pattern 6: i64.const 0; i64.sub -> (eliminated, sub 0 is identity)
+        if i + 1 < instructions.len() {
+            if let (Instruction::I64Const(0), Instruction::I64Sub) =
+                (&instructions[i], &instructions[i + 1])
+            {
+                i += 2;
+                continue;
+            }
+        }
+        // Pattern 7: i64.const -1; i64.xor -> (equivalent to bit_not, but keep xor)
+        // Not folded: -1 xor is the canonical bit_not, no simpler form exists.
+
+        // Pattern 8: f64.const 0.0; f64.add -> (eliminated, add 0 is identity)
+        if i + 1 < instructions.len() {
+            if let (Instruction::F64Const(z), Instruction::F64Add) =
+                (&instructions[i], &instructions[i + 1])
+            {
+                if f64::from(*z) == 0.0 {
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        // Pattern 9: f64.const 1.0; f64.mul -> (eliminated, multiply by 1 is identity)
+        if i + 1 < instructions.len() {
+            if let (Instruction::F64Const(one), Instruction::F64Mul) =
+                (&instructions[i], &instructions[i + 1])
+            {
+                if f64::from(*one) == 1.0 {
                     i += 2;
                     continue;
                 }

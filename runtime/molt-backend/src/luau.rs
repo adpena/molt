@@ -1082,15 +1082,15 @@ impl LuauBackend {
                     if let Some(ref n) = op.out {
                         self.var_type_hints.insert(n.clone(), "int".to_string());
                     }
-                    self.emit_line(&format!("local {out} = {v}"));
+                    self.emit_line(&format!("local {out}: number = {v}"));
                 } else if let Some(f) = op.f_value {
                     if let Some(ref n) = op.out {
                         self.var_type_hints.insert(n.clone(), "float".to_string());
                     }
-                    self.emit_line(&format!("local {out} = {f}"));
+                    self.emit_line(&format!("local {out}: number = {f}"));
                 } else if let Some(ref s) = op.s_value {
                     let escaped = escape_luau_string(s);
-                    self.emit_line(&format!("local {out} = \"{escaped}\""));
+                    self.emit_line(&format!("local {out}: string = \"{escaped}\""));
                 } else {
                     self.emit_line(&format!("local {out} = nil"));
                 }
@@ -1098,13 +1098,13 @@ impl LuauBackend {
             "const_float" => {
                 let out = self.out_var(op);
                 let val = op.f_value.unwrap_or(0.0);
-                self.emit_line(&format!("local {out} = {val}"));
+                self.emit_line(&format!("local {out}: number = {val}"));
             }
             "const_str" => {
                 let out = self.out_var(op);
                 let s = op.s_value.as_deref().unwrap_or("");
                 let escaped = escape_luau_string(s);
-                self.emit_line(&format!("local {out} = \"{escaped}\""));
+                self.emit_line(&format!("local {out}: string = \"{escaped}\""));
                 // Track string type for downstream string indexing.
                 if let Some(ref out_name) = op.out {
                     self.var_type_hints
@@ -1115,11 +1115,11 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 if let Some(ref bytes) = op.bytes {
                     let escaped: String = bytes.iter().map(|b| format!("\\x{b:02x}")).collect();
-                    self.emit_line(&format!("local {out} = \"{escaped}\""));
+                    self.emit_line(&format!("local {out}: string = \"{escaped}\""));
                 } else {
                     let s = op.s_value.as_deref().unwrap_or("");
                     let escaped = escape_luau_string(s);
-                    self.emit_line(&format!("local {out} = \"{escaped}\""));
+                    self.emit_line(&format!("local {out}: string = \"{escaped}\""));
                 }
             }
             "const_bool" | "bool_const" => {
@@ -1132,7 +1132,7 @@ impl LuauBackend {
                 if let Some(ref n) = op.out {
                     self.var_type_hints.insert(n.clone(), "bool".to_string());
                 }
-                self.emit_line(&format!("local {out} = {val}"));
+                self.emit_line(&format!("local {out}: boolean = {val}"));
             }
             "const_none" | "none_const" => {
                 let out = self.out_var(op);
@@ -1142,7 +1142,7 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let s = op.s_value.as_deref().unwrap_or("");
                 let escaped = escape_luau_string(s);
-                self.emit_line(&format!("local {out} = \"{escaped}\""));
+                self.emit_line(&format!("local {out}: string = \"{escaped}\""));
                 // Track string type for downstream string indexing.
                 if let Some(ref out_name) = op.out {
                     self.var_type_hints
@@ -1281,7 +1281,7 @@ impl LuauBackend {
                         if let Some(ref n) = op.out {
                             self.var_type_hints.insert(n.clone(), "int".to_string());
                         }
-                        self.emit_line(&format!("local {out} = {lhs_num} + {rhs_num}"));
+                        self.emit_line(&format!("local {out}: number = {lhs_num} + {rhs_num}"));
                     } else {
                         self.emit_line(&format!(
                             "local {out} = if type({lhs}) == \"string\" or type({rhs}) == \"string\" then tostring({lhs}) .. tostring({rhs}) else {lhs_num} + {rhs_num}"
@@ -1302,7 +1302,7 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"division by zero\"}}) end"
                     ));
-                    self.emit_line(&format!("local {out} = {lhs} / {rhs_num}"));
+                    self.emit_line(&format!("local {out}: number = {lhs} / {rhs_num}"));
                 }
             }
             "mod" => {
@@ -1315,7 +1315,7 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"integer modulo by zero\"}}) end"
                     ));
-                    self.emit_line(&format!("local {out} = {lhs} % {rhs_num}"));
+                    self.emit_line(&format!("local {out}: number = {lhs} % {rhs_num}"));
                 }
             }
             "floordiv" => {
@@ -1328,7 +1328,7 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"integer division or modulo by zero\"}}) end"
                     ));
-                    self.emit_line(&format!("local {out} = {lhs} // {rhs_num}"));
+                    self.emit_line(&format!("local {out}: number = {lhs} // {rhs_num}"));
                 }
             }
             "pow" => {
@@ -1338,7 +1338,7 @@ impl LuauBackend {
                     let lhs = self.numeric_operand_expr(&args[0]);
                     let rhs = self.numeric_operand_expr(&args[1]);
                     // Direct ^ operator — no helper call overhead.
-                    self.emit_line(&format!("local {out} = {lhs} ^ {rhs}"));
+                    self.emit_line(&format!("local {out}: number = {lhs} ^ {rhs}"));
                 }
             }
             "pow_mod" => {
@@ -1411,9 +1411,9 @@ impl LuauBackend {
                     let is_bool = matches!(op.type_hint.as_deref(), Some("bool"))
                         || self.var_type_hints.get(val).is_some_and(|t| t == "bool");
                     if is_bool {
-                        self.emit_line(&format!("local {out} = not {v}"));
+                        self.emit_line(&format!("local {out}: boolean = not {v}"));
                     } else {
-                        self.emit_line(&format!("local {out} = not molt_bool({v})"));
+                        self.emit_line(&format!("local {out}: boolean = not molt_bool({v})"));
                     }
                     if let Some(ref out_name) = op.out {
                         self.var_type_hints
@@ -1470,7 +1470,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out} = ({lhs} == {rhs})"));
+                    self.emit_line(&format!("local {out}: boolean = ({lhs} == {rhs})"));
                     if let Some(ref out_name) = op.out {
                         self.var_type_hints
                             .insert(out_name.clone(), "bool".to_string());
@@ -2068,7 +2068,7 @@ impl LuauBackend {
                     .map(|a| sanitize_ident(a))
                     .collect::<Vec<_>>()
                     .join(", ");
-                self.emit_line(&format!("local {out} = {{{items}}}"));
+                self.emit_line(&format!("local {out}: {{any}} = {{{items}}}"));
             }
             "tuple_new" | "tuple_from_list" => {
                 let out = self.out_var(op);
@@ -2102,7 +2102,7 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.is_empty() {
-                    self.emit_line(&format!("local {out} = {{}}"));
+                    self.emit_line(&format!("local {out}: {{[any]: any}} = {{}}"));
                 } else {
                     // args are key-value pairs: [k1, v1, k2, v2, ...]
                     let mut entries = Vec::new();
@@ -2114,7 +2114,7 @@ impl LuauBackend {
                         }
                     }
                     let body = entries.join(", ");
-                    self.emit_line(&format!("local {out} = {{{body}}}"));
+                    self.emit_line(&format!("local {out}: {{[any]: any}} = {{{body}}}"));
                 }
             }
             "set_new" | "frozenset_new" => {
@@ -2164,7 +2164,9 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("{list}[#{list} + 1] = {val}"));
+                    // rawset bypasses metamethods — safe for plain list tables
+                    // and avoids __newindex overhead in Luau's native codegen.
+                    self.emit_line(&format!("rawset({list}, #{list} + 1, {val})"));
                 }
             }
             "list_pop" => {
@@ -2573,10 +2575,10 @@ impl LuauBackend {
                         if known_list_like {
                             let idx_var = format!("__idx_{out}");
                             if key_known_nonneg {
-                                self.emit_line(&format!("local {idx_var} = {key} + 1"));
+                                self.emit_line(&format!("local {idx_var}: number = {key} + 1"));
                             } else {
                                 self.emit_line(&format!(
-                                    "local {idx_var} = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
+                                    "local {idx_var}: number = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
                                 ));
                             }
                             self.emit_index_bounds_guard(
@@ -2584,7 +2586,9 @@ impl LuauBackend {
                                 &container,
                                 "list index out of range",
                             );
-                            self.emit_line(&format!("local {out} = {container}[{idx_var}]"));
+                            // rawget bypasses metamethods — safe for plain list
+                            // tables and faster in Luau's native codegen path.
+                            self.emit_line(&format!("local {out} = rawget({container}, {idx_var})"));
                         } else if key_known_nonneg {
                             // Known non-negative: skip negative index ternary.
                             self.emit_line(&format!("local {out} = {container}[{key} + 1]"));
@@ -2623,8 +2627,9 @@ impl LuauBackend {
                         } else {
                             format!("if {key} >= 0 then {key} + 1 else #{container} + {key} + 1")
                         };
+                        // rawset bypasses metamethods — safe for plain list tables.
                         self.emit_line(&format!(
-                            "do local __idx = {idx_expr}; if __idx < 1 or __idx > #{container} then error({{__type=\"IndexError\", __msg=\"list assignment index out of range\"}}) end; {container}[__idx] = {value} end"
+                            "do local __idx: number = {idx_expr}; if __idx < 1 or __idx > #{container} then error({{__type=\"IndexError\", __msg=\"list assignment index out of range\"}}) end; rawset({container}, __idx, {value}) end"
                         ));
                     } else if key_known_nonneg {
                         self.emit_line(&format!("{container}[{key} + 1] = {value}"));
@@ -4242,14 +4247,23 @@ impl LuauBackend {
             // issues when the sink pass inlines into `not` expressions.
             // Without parens: `not a == b` → `(not a) == b` (wrong).
             // With parens: `not (a == b)` (correct).
-            let needs_parens = matches!(
+            let is_cmp = matches!(
                 operator,
-                "==" | "~=" | "<" | "<=" | ">" | ">=" | "and" | "or"
+                "==" | "~=" | "<" | "<=" | ">" | ">="
             );
-            if needs_parens {
-                self.emit_line(&format!("local {out} = ({lhs} {operator} {rhs})"));
+            let is_logical = matches!(operator, "and" | "or");
+            // Type annotation: arithmetic → number, comparisons → boolean.
+            let ty_ann = if arithmetic {
+                ": number"
+            } else if is_cmp {
+                ": boolean"
             } else {
-                self.emit_line(&format!("local {out} = {lhs} {operator} {rhs}"));
+                ""
+            };
+            if is_cmp || is_logical {
+                self.emit_line(&format!("local {out}{ty_ann} = ({lhs} {operator} {rhs})"));
+            } else {
+                self.emit_line(&format!("local {out}{ty_ann} = {lhs} {operator} {rhs}"));
             }
         }
     }
@@ -4261,7 +4275,7 @@ impl LuauBackend {
         if args.len() >= 2 {
             let lhs = sanitize_ident(&args[0]);
             let rhs = sanitize_ident(&args[1]);
-            self.emit_line(&format!("local {out} = bit32.{func}({lhs}, {rhs})"));
+            self.emit_line(&format!("local {out}: number = bit32.{func}({lhs}, {rhs})"));
         }
     }
 
@@ -5563,11 +5577,17 @@ fn inline_single_use_constants(source: &mut String) {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
-        // Match "local vNNN = <literal>"
+        // Match "local vNNN = <literal>" or "local vNNN: type = <literal>"
         if let Some(rest) = trimmed.strip_prefix("local v")
             && let Some(eq_pos) = rest.find(" = ")
         {
-            let var_suffix = &rest[..eq_pos];
+            let before_eq = &rest[..eq_pos];
+            // Strip optional type annotation (": number", ": string", etc.)
+            let var_suffix = if let Some(colon) = before_eq.find(':') {
+                &before_eq[..colon]
+            } else {
+                before_eq
+            };
             if var_suffix.chars().all(|c| c.is_ascii_digit()) {
                 let var_name = format!("v{var_suffix}");
                 let rhs = rest[eq_pos + 3..].to_string();
@@ -5869,7 +5889,7 @@ fn strip_unbound_local_checks(source: &mut String) {
 fn strip_dead_locals_dict_stores(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
 
-    // Phase 1: Find candidates — `local vN = {}`
+    // Phase 1: Find candidates — `local vN = {}` or `local vN: type = {}`
     let mut candidates: BTreeMap<String, usize> = BTreeMap::new();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -5877,7 +5897,12 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
             && rest.ends_with(" = {}")
             && let Some(eq_pos) = rest.find(" = {}")
         {
-            let suffix = &rest[..eq_pos];
+            let before_eq = &rest[..eq_pos];
+            let suffix = if let Some(colon) = before_eq.find(':') {
+                &before_eq[..colon]
+            } else {
+                before_eq
+            };
             if suffix.chars().all(|c| c.is_ascii_digit()) {
                 let var = format!("v{suffix}");
                 candidates.insert(var, i);
@@ -5912,7 +5937,9 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
                     if before_ok && after_ok {
                         // Check context: is this a declaration, store, guarded store,
                         // or type-check guard part of a guarded store line?
-                        let is_decl = trimmed.starts_with(&format!("local {var} = {{}}"));
+                        let is_decl = trimmed.starts_with(&format!("local {var} = {{}}"))
+                            || trimmed.starts_with(&format!("local {var}: "))
+                                && trimmed.ends_with(" = {}");
                         let is_store = {
                             let after = &trimmed[pos + var_bytes.len()..];
                             after.starts_with("[\"")
@@ -6258,7 +6285,8 @@ fn propagate_single_use_copies(source: &mut String) {
 fn propagate_single_use_copies_once(source: &mut String) -> usize {
     let lines: Vec<&str> = source.lines().collect();
 
-    // Phase 1: Find `local vN = vM` copy declarations and count all var uses.
+    // Phase 1: Find `local vN = vM` (or `local vN: type = vM`) copy
+    // declarations and count all var uses.
     let mut copy_decls: BTreeMap<String, (usize, String)> = BTreeMap::new();
     let mut var_use_count: BTreeMap<String, usize> = BTreeMap::new();
 
@@ -6268,7 +6296,13 @@ fn propagate_single_use_copies_once(source: &mut String) -> usize {
         if let Some(rest) = trimmed.strip_prefix("local v")
             && let Some(eq_pos) = rest.find(" = ")
         {
-            let var_suffix = &rest[..eq_pos];
+            let before_eq = &rest[..eq_pos];
+            // Strip optional type annotation (": number", etc.)
+            let var_suffix = if let Some(colon) = before_eq.find(':') {
+                &before_eq[..colon]
+            } else {
+                before_eq
+            };
             if var_suffix.chars().all(|c| c.is_ascii_digit()) {
                 let var_name = format!("v{var_suffix}");
                 let rhs = rest[eq_pos + 3..].trim();
@@ -6636,7 +6670,13 @@ fn eliminate_common_subexpressions(source: &mut String) {
         if let Some(rest) = trimmed.strip_prefix("local v")
             && let Some(eq_pos) = rest.find(" = ")
         {
-            let suffix = &rest[..eq_pos];
+            let before_eq = &rest[..eq_pos];
+            // Strip optional type annotation (": number", etc.)
+            let suffix = if let Some(colon) = before_eq.find(':') {
+                &before_eq[..colon]
+            } else {
+                before_eq
+            };
             if suffix.chars().all(|c| c.is_ascii_digit()) {
                 let var = format!("v{suffix}");
                 let rhs = rest[eq_pos + 3..].trim();
@@ -6825,11 +6865,16 @@ fn hoist_loop_invariants(source: &mut String) {
                     modified_in_loop.insert(lhs.to_string());
                 }
             }
-            // `local vN = ...` also defines vN inside the loop.
+            // `local vN = ...` or `local vN: type = ...` also defines vN.
             if let Some(rest) = t.strip_prefix("local v")
                 && let Some(eq) = rest.find(" = ")
             {
-                let suffix = &rest[..eq];
+                let before_eq = &rest[..eq];
+                let suffix = if let Some(colon) = before_eq.find(':') {
+                    &before_eq[..colon]
+                } else {
+                    before_eq
+                };
                 if suffix.chars().all(|c| c.is_ascii_digit()) {
                     modified_in_loop.insert(format!("v{suffix}"));
                 }
@@ -6865,7 +6910,12 @@ fn hoist_loop_invariants(source: &mut String) {
             if let Some(rest) = t.strip_prefix("local v")
                 && let Some(eq) = rest.find(" = ")
             {
-                let suffix = &rest[..eq];
+                let before_eq = &rest[..eq];
+                let suffix = if let Some(colon) = before_eq.find(':') {
+                    &before_eq[..colon]
+                } else {
+                    before_eq
+                };
                 if !suffix.chars().all(|c| c.is_ascii_digit()) {
                     continue;
                 }
@@ -6972,7 +7022,8 @@ fn sink_single_use_locals(source: &mut String) {
 fn sink_single_use_locals_once(source: &mut String) -> usize {
     let lines: Vec<&str> = source.lines().collect();
 
-    // Phase 1: Find all `local vN = <expr>` and count uses.
+    // Phase 1: Find all `local vN = <expr>` (or typed `local vN: type = <expr>`)
+    // and count uses.
     let mut local_decls: BTreeMap<String, (usize, String)> = BTreeMap::new();
     let mut var_use_count: BTreeMap<String, usize> = BTreeMap::new();
 
@@ -6982,7 +7033,13 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
         if let Some(rest) = trimmed.strip_prefix("local v")
             && let Some(eq_pos) = rest.find(" = ")
         {
-            let var_suffix = &rest[..eq_pos];
+            let before_eq = &rest[..eq_pos];
+            // Strip optional type annotation (": number", etc.)
+            let var_suffix = if let Some(colon) = before_eq.find(':') {
+                &before_eq[..colon]
+            } else {
+                before_eq
+            };
             if var_suffix.chars().all(|c| c.is_ascii_digit()) {
                 let var_name = format!("v{var_suffix}");
                 let rhs = rest[eq_pos + 3..].trim().to_string();
@@ -7303,15 +7360,23 @@ fn optimize_luau_perf(source: &mut String) {
         }
 
         // Pass 4: Track numeric variables and optimize type-checked add.
-        // Handles both `local vN = expr` and bare `vN = expr` assignments.
+        // Handles both `local vN = expr` (with optional type annotation) and
+        // bare `vN = expr` assignments.
         // When both operands of a type-checked add are known-numeric, simplify.
         {
             let (is_local, var_name_opt, rhs_opt) =
                 if let Some(rest) = trimmed.strip_prefix("local ") {
                     if let Some(eq_pos) = rest.find(" = ") {
+                        // Strip optional type annotation from var name
+                        let raw_var = &rest[..eq_pos];
+                        let var_name = if let Some(colon) = raw_var.find(':') {
+                            raw_var[..colon].to_string()
+                        } else {
+                            raw_var.to_string()
+                        };
                         (
                             true,
-                            Some(rest[..eq_pos].to_string()),
+                            Some(var_name),
                             Some(&rest[eq_pos + 3..]),
                         )
                     } else {
