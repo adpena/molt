@@ -92,6 +92,47 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     stats
 }
 
+/// Infer the container_type for a value known to be a list.
+///
+/// Returns `Some("list")` for BuildList, Mul(BuildList, count), or ops with
+/// an explicit container_type starting with "list".  Returns `None` when
+/// the type cannot be determined (conservative: the backend will use the
+/// generic dispatch path).
+fn infer_container_type(func: &TirFunction, source_val: ValueId, block_ids: &[BlockId]) -> Option<String> {
+    for &bid in block_ids {
+        let Some(block) = func.blocks.get(&bid) else {
+            continue;
+        };
+        for op in &block.ops {
+            if !op.results.contains(&source_val) {
+                continue;
+            }
+            // BuildList always produces a generic list.
+            if op.opcode == OpCode::BuildList {
+                return Some("list".to_string());
+            }
+            // Mul(BuildList, count) is a list repeat — inherits from operand.
+            if op.opcode == OpCode::Mul && op.operands.len() == 2 {
+                let (a, b) = (op.operands[0], op.operands[1]);
+                if let Some(ct) = infer_container_type(func, a, block_ids) {
+                    return Some(ct);
+                }
+                if let Some(ct) = infer_container_type(func, b, block_ids) {
+                    return Some(ct);
+                }
+            }
+            // Explicit container_type attr.
+            if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type") {
+                if ct.starts_with("list") {
+                    return Some(ct.clone());
+                }
+            }
+            return None;
+        }
+    }
+    None
+}
+
 /// Determine if a value is known to be a list from the defining op.
 fn is_list_source(func: &TirFunction, source_val: ValueId, block_ids: &[BlockId]) -> bool {
     for &bid in block_ids {
@@ -384,12 +425,18 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
 
     // 4. Insert Index(list_val, idx_var) -> elem_val at the start of the body
     //    block, so all uses of elem_val in the body see the correct element.
+    //    Propagate container_type so the backend emits inline list access
+    //    instead of a generic runtime call.
+    let mut index_attrs = AttrDict::new();
+    if let Some(ref ct) = c.container_type {
+        index_attrs.insert("container_type".to_string(), AttrValue::Str(ct.clone()));
+    }
     let index_op = TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![c.list_val, idx_var],
         results: vec![c.elem_val],
-        attrs: AttrDict::new(),
+        attrs: index_attrs,
         source_span: None,
     };
 
