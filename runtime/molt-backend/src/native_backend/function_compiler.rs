@@ -4215,16 +4215,22 @@ impl SimpleBackend {
                         let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
-                        // Slow path: defer var_get to cold BigInt overflow path.
+                        // Slow path: overflow-safe boxing for raw-primary operands.
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let lhs_boxed = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
-                            panic!("LHS not found in {} op {}", func_ir.name, op_idx)
-                        });
-                        let rhs_boxed = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
-                            panic!("RHS not found in {} op {}", func_ir.name, op_idx)
-                        });
-                        let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
+                        let lhs_boxed = ensure_boxed_overflow_safe(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, &mut sealed_blocks,
+                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
+                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[0],
+                        );
+                        let rhs_boxed = ensure_boxed_overflow_safe(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, &mut sealed_blocks,
+                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
+                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[1],
+                        );
+                        let call = builder.ins().call(local_callee, &[lhs_boxed, rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
@@ -4450,12 +4456,22 @@ impl SimpleBackend {
                         let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
-                        // Slow path: defer var_get to cold BigInt overflow path.
+                        // Slow path: overflow-safe boxing for raw-primary operands.
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let lhs_boxed = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                        let rhs_boxed = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
-                        let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
+                        let lhs_boxed = ensure_boxed_overflow_safe(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, &mut sealed_blocks,
+                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
+                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[0],
+                        );
+                        let rhs_boxed = ensure_boxed_overflow_safe(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, &mut sealed_blocks,
+                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
+                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[1],
+                        );
+                        let call = builder.ins().call(local_callee, &[lhs_boxed, rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
@@ -4672,12 +4688,22 @@ impl SimpleBackend {
                         let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed]);
 
-                        // Slow path: defer var_get to cold BigInt overflow path.
+                        // Slow path: overflow-safe boxing for raw-primary operands.
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let lhs_boxed = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                        let rhs_boxed = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
-                        let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
+                        let lhs_boxed = ensure_boxed_overflow_safe(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, &mut sealed_blocks,
+                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
+                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[0],
+                        );
+                        let rhs_boxed = ensure_boxed_overflow_safe(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, &mut sealed_blocks,
+                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
+                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[1],
+                        );
+                        let call = builder.ins().call(local_callee, &[lhs_boxed, rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
@@ -6131,10 +6157,10 @@ impl SimpleBackend {
                         let raw_len = builder
                             .ins()
                             .iconst(types::I64, elems.len() as i64);
-                        if let Some(out__) = op.out {
+                        if let Some(ref out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, raw_len);
                             raw_primary_int.insert(out__.clone());
-                            if let Some(&shadow_var) = raw_int_shadow.get(&out__) {
+                            if let Some(&shadow_var) = raw_int_shadow.get(out__.as_str()) {
                                 builder.def_var(shadow_var, raw_len);
                             }
                             raw_int_shadow_vals.insert(out__.clone(), raw_len);
@@ -6167,10 +6193,10 @@ impl SimpleBackend {
                         // as PRIMARY.  len() always returns a non-negative
                         // integer that fits in 47-bit inline range.
                         let raw_res = unbox_int(&mut builder, boxed_res, &nbc);
-                        if let Some(out__) = op.out {
+                        if let Some(ref out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, raw_res);
                             raw_primary_int.insert(out__.clone());
-                            if let Some(&shadow_var) = raw_int_shadow.get(&out__) {
+                            if let Some(&shadow_var) = raw_int_shadow.get(out__.as_str()) {
                                 builder.def_var(shadow_var, raw_res);
                             }
                             raw_int_shadow_vals.insert(out__.clone(), raw_res);
