@@ -403,7 +403,7 @@ pub fn declare_tir_function<'ctx>(
     // If not, create a new function.  This avoids LLVM appending `.1` to
     // the name when a declaration already exists.
 
-    if let Some(existing) = backend.module.get_function(&func.name) {
+    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
         // Verify it's just a declaration (no basic blocks yet).
         if existing.count_basic_blocks() == 0 {
             existing
@@ -413,7 +413,21 @@ pub fn declare_tir_function<'ctx>(
         }
     } else {
         backend.module.add_function(&func.name, fn_ty, None)
-    }
+    };
+    // All molt-compiled functions use NaN-boxed error returns (never C++
+    // exceptions) and always terminate. Mark them nounwind + willreturn
+    // so LLVM can omit landing pads and perform aggressive code motion.
+    let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
+    llvm_fn.add_attribute(
+        AttributeLoc::Function,
+        backend.context.create_enum_attribute(nounwind_kind, 0),
+    );
+    let willreturn_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn");
+    llvm_fn.add_attribute(
+        AttributeLoc::Function,
+        backend.context.create_enum_attribute(willreturn_kind, 0),
+    );
+    llvm_fn
 }
 
 #[cfg(feature = "llvm")]
@@ -1000,25 +1014,41 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         })
                         .unwrap_or(0);
                     let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
-                    let get_fn = self.ensure_runtime_i64_fn("molt_object_field_load", 2);
+                    // Inline the field load: convert ptr to pointer type,
+                    // GEP by byte offset, load i64, then inc_ref.
+                    // This eliminates the runtime call (GIL + debug checks).
+                    let i64_ty = self.backend.context.i64_type();
+                    let i8_ty = self.backend.context.i8_type();
+                    let ptr_ty = self.backend.context.ptr_type(
+                        inkwell::AddressSpace::default(),
+                    );
+                    let raw_ptr = self
+                        .backend
+                        .builder
+                        .build_int_to_ptr(obj_ptr_bits, ptr_ty, "obj_ptr")
+                        .unwrap();
+                    let offset_val = i64_ty.const_int(offset as u64, true);
+                    let field_ptr = unsafe {
+                        self.backend
+                            .builder
+                            .build_in_bounds_gep(i8_ty, raw_ptr, &[offset_val], "field_ptr")
+                            .unwrap()
+                    };
                     let val = self
                         .backend
                         .builder
-                        .build_call(
-                            get_fn,
-                            &[
-                                obj_ptr_bits.into(),
-                                self.backend
-                                    .context
-                                    .i64_type()
-                                    .const_int(offset as u64, true)
-                                    .into(),
-                            ],
-                            "field_load",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic();
+                        .build_load(i64_ty, field_ptr, "field_val")
+                        .unwrap();
+                    // inc_ref the loaded value (may be a heap pointer).
+                    let inc_fn = self
+                        .backend
+                        .module
+                        .get_function("molt_inc_ref_obj")
+                        .unwrap();
+                    self.backend
+                        .builder
+                        .build_call(inc_fn, &[val.into()], "field_load_inc_ref")
+                        .unwrap();
                     self.values.insert(result_id, val);
                     self.value_types.insert(result_id, TirType::DynBox);
                     return;
@@ -1166,7 +1196,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                     return;
                 }
-                if matches!(original_kind, Some("store") | Some("store_init"))
+                if matches!(original_kind, Some("store_init"))
                     && op.operands.len() >= 2
                 {
                     let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
@@ -1180,12 +1210,124 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         })
                         .unwrap_or(0);
                     let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
-                    let rt_name = if matches!(original_kind, Some("store_init")) {
-                        "molt_object_field_init_ptr"
-                    } else {
-                        "molt_object_field_set_ptr"
+                    // Inline store_init: direct store for immediate values,
+                    // runtime call only for heap pointers (need inc_ref + mark_has_ptrs).
+                    let i64_ty = self.backend.context.i64_type();
+                    let i8_ty = self.backend.context.i8_type();
+                    let ptr_ty = self.backend.context.ptr_type(
+                        inkwell::AddressSpace::default(),
+                    );
+                    // Check if val is a heap pointer: (val & TAG_MASK) == TAG_PTR
+                    let tag_mask = i64_ty.const_int(
+                        nanbox::QNAN | 0x0007_0000_0000_0000,
+                        false,
+                    );
+                    let tag_bits = self
+                        .backend
+                        .builder
+                        .build_and(val_bits, tag_mask, "init_tag")
+                        .unwrap();
+                    let ptr_tag = i64_ty.const_int(
+                        nanbox::QNAN | 0x0004_0000_0000_0000,
+                        false,
+                    );
+                    let is_ptr = self
+                        .backend
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            tag_bits,
+                            ptr_tag,
+                            "is_ptr",
+                        )
+                        .unwrap();
+                    let current_fn = self.llvm_fn;
+                    let fast_bb = self
+                        .backend
+                        .context
+                        .append_basic_block(current_fn, "init_fast");
+                    let slow_bb = self
+                        .backend
+                        .context
+                        .append_basic_block(current_fn, "init_slow");
+                    let merge_bb = self
+                        .backend
+                        .context
+                        .append_basic_block(current_fn, "init_merge");
+                    self.all_llvm_blocks.push(fast_bb);
+                    self.all_llvm_blocks.push(slow_bb);
+                    self.all_llvm_blocks.push(merge_bb);
+                    self.backend
+                        .builder
+                        .build_conditional_branch(is_ptr, slow_bb, fast_bb)
+                        .unwrap();
+                    // Fast path: immediate value — direct store.
+                    self.backend.builder.position_at_end(fast_bb);
+                    let raw_ptr = self
+                        .backend
+                        .builder
+                        .build_int_to_ptr(obj_ptr_bits, ptr_ty, "obj_ptr")
+                        .unwrap();
+                    let offset_val = i64_ty.const_int(offset as u64, true);
+                    let field_ptr = unsafe {
+                        self.backend
+                            .builder
+                            .build_in_bounds_gep(i8_ty, raw_ptr, &[offset_val], "field_ptr")
+                            .unwrap()
                     };
-                    let set_fn = self.ensure_runtime_i64_fn(rt_name, 3);
+                    self.backend
+                        .builder
+                        .build_store(field_ptr, val_bits)
+                        .unwrap();
+                    self.backend
+                        .builder
+                        .build_unconditional_branch(merge_bb)
+                        .unwrap();
+                    // Slow path: pointer value — runtime call.
+                    self.backend.builder.position_at_end(slow_bb);
+                    let set_fn = self.ensure_runtime_i64_fn("molt_object_field_init_ptr", 3);
+                    self.backend
+                        .builder
+                        .build_call(
+                            set_fn,
+                            &[
+                                obj_ptr_bits.into(),
+                                i64_ty.const_int(offset as u64, true).into(),
+                                val_bits.into(),
+                            ],
+                            "field_init_slow",
+                        )
+                        .unwrap();
+                    self.backend
+                        .builder
+                        .build_unconditional_branch(merge_bb)
+                        .unwrap();
+                    // Merge.
+                    self.backend.builder.position_at_end(merge_bb);
+                    if !op.results.is_empty() {
+                        let none_val: BasicValueEnum<'ctx> = i64_ty
+                            .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                            .into();
+                        self.values.insert(op.results[0], none_val);
+                        self.value_types.insert(op.results[0], TirType::DynBox);
+                    }
+                    return;
+                }
+                if matches!(original_kind, Some("store"))
+                    && op.operands.len() >= 2
+                {
+                    let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                    let val_bits = self.materialize_dynbox_operand(op.operands[1]);
+                    let offset = op
+                        .attrs
+                        .get("value")
+                        .and_then(|v| match v {
+                            AttrValue::Int(v) => Some(*v),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
+                    let set_fn = self.ensure_runtime_i64_fn("molt_object_field_set_ptr", 3);
                     let result = self
                         .backend
                         .builder
@@ -1866,11 +2008,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         } else {
                             let void_ty = self.backend.context.void_type();
                             let fn_ty = void_ty.fn_type(&[i64_ty.into()], false);
-                            self.backend.module.add_function(
+                            let f = self.backend.module.add_function(
                                 "molt_print_obj",
                                 fn_ty,
                                 Some(inkwell::module::Linkage::External),
-                            )
+                            );
+                            let nounwind_kind =
+                                inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
+                            f.add_attribute(
+                                AttributeLoc::Function,
+                                self.backend.context.create_enum_attribute(nounwind_kind, 0),
+                            );
+                            f
                         };
                     for &arg_id in op.operands.get(args_start..).unwrap_or(&[]) {
                         let arg_i64 = self.materialize_dynbox_operand(arg_id);
@@ -4947,9 +5096,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
             (0..param_count).map(|_| i64_ty.into()).collect();
         let fn_ty = i64_ty.fn_type(&params, false);
-        self.backend
+        let func = self
+            .backend
             .module
-            .add_function(name, fn_ty, Some(inkwell::module::Linkage::External))
+            .add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
+        // All molt runtime functions use explicit error returns (NaN-boxed
+        // sentinels) and catch_unwind at FFI boundaries — no C++ exceptions
+        // escape.  Adding nounwind + willreturn lets LLVM omit landing pads,
+        // perform aggressive code motion, and inline/CSE through call sites.
+        let nounwind_kind =
+            inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
+        func.add_attribute(
+            AttributeLoc::Function,
+            self.backend
+                .context
+                .create_enum_attribute(nounwind_kind, 0),
+        );
+        let willreturn_kind =
+            inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn");
+        func.add_attribute(
+            AttributeLoc::Function,
+            self.backend
+                .context
+                .create_enum_attribute(willreturn_kind, 0),
+        );
+        func
     }
 
     fn unbox_ptr_bits(

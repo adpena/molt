@@ -972,11 +972,9 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             .as_deref()
             .map(str::trim)
             .unwrap_or("");
-        eprintln!("DEBUG_CACHE: cache_key={:?} function_cache_key={:?} output={:?}", cache_key, function_cache_key, &job.output);
         if !cache_key.is_empty()
             && let Some(bytes) = _cache.get_bytes(cache_key)
         {
-            eprintln!("DEBUG_CACHE: HIT module cache for key={:?}", cache_key);
             match write_cached_output(&job.output, bytes, job.skip_module_output_if_synced) {
                 Ok(output_written) => {
                     return DaemonJobResponse {
@@ -1006,7 +1004,6 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             && function_cache_key != cache_key
             && let Some(bytes) = _cache.get_bytes(function_cache_key)
         {
-            eprintln!("DEBUG_CACHE: HIT function cache for key={:?}", function_cache_key);
             match write_cached_output(&job.output, bytes, job.skip_function_output_if_synced) {
                 Ok(output_written) => {
                     return DaemonJobResponse {
@@ -1264,7 +1261,6 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             && !function_cache_key.is_empty()
             && function_cache_key != cache_key
         {
-            eprintln!("DEBUG_CACHE: INSERT cache_key={:?} function_cache_key={:?}", cache_key, function_cache_key);
             _cache.insert(cache_key.to_string(), Arc::clone(&output_bytes));
             _cache.insert(function_cache_key.to_string(), output_bytes);
         } else if !cache_key.is_empty() {
