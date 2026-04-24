@@ -1494,6 +1494,25 @@ impl SimpleBackend {
         // Used by the fast-path element access to pick u8-load+NaN-box vs u64-load.
         let mut list_is_bool_cache: std::collections::BTreeMap<String, Variable> =
             std::collections::BTreeMap::new();
+        // Raw-bool shadow for inline list getitem with unknown element type.
+        // When the list has a cached is_bool flag (list_is_bool_cache), the
+        // getitem merge block carries a second parameter: the raw bool value
+        // (byte_ext 0/1) when the list IS list_bool, or the NaN-boxed element
+        // when it is a regular list.  This map stores (source_list_name, shadow_Value)
+        // keyed by the getitem output variable name.
+        //
+        // At the `if`/`br_if` consumer, we check the list's is_bool flag at
+        // runtime.  When true, the shadow IS the raw boolean (0 or 1) and we
+        // branch directly with `icmp_imm(NotEqual, shadow, 0)`, skipping the
+        // speculative NaN-box tag-check entirely.  When false, the shadow equals
+        // the NaN-boxed element, and we fall through to the standard tag-check.
+        //
+        // This map is NOT cleared at `if` boundaries (unlike raw_int_shadow_vals)
+        // because the shadow Value from the getitem merge dominates the `if` op.
+        let mut list_bool_raw_shadow: std::collections::BTreeMap<
+            String,
+            (String, Value),
+        > = std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
         let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
         let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
@@ -7523,6 +7542,14 @@ impl SimpleBackend {
                             };
                             if let Some(raw_idx) = raw_idx_lookup {
                                 let vec_layout = vec_u64_layout();
+                                // Determine output element type for specialization.
+                                // When known, the cache-miss path skips the type_id
+                                // check + dual-layout loads, and the fast path skips
+                                // the per-access is_bool branch entirely.
+                                let getitem_out_is_bool = op.out.as_ref().map_or(false, |o| var_is_bool(o));
+                                let getitem_out_is_non_bool = op.out.as_ref().map_or(false, |o| {
+                                    var_is_int(o) || var_is_str(o) || float_like_vars.contains(o.as_str())
+                                });
                                 // Extract data_ptr, len, and is_bool flag (cached across loop iterations).
                                 let (data_ptr, len_val, is_bool_val) = {
                                     let dp = if let Some(&var) = list_data_cache.get(&args[0]) {
@@ -7532,19 +7559,6 @@ impl SimpleBackend {
                                             builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                         let shifted = builder.ins().ishl_imm(masked, 16);
                                         let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                        // Load type_id from header (obj_ptr - 24).
-                                        let tid = builder.ins().load(
-                                            types::I32,
-                                            MemFlags::trusted(),
-                                            obj_ptr,
-                                            HEADER_TYPE_ID_OFFSET,
-                                        );
-                                        let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
-                                        let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
-                                        // Cache is_bool flag.
-                                        let ibvar = builder.declare_var(types::I8);
-                                        builder.def_var(ibvar, is_bool);
-                                        list_is_bool_cache.insert(args[0].clone(), ibvar);
                                         // obj_ptr[0] = storage pointer (Vec<u64> or ListBoolStorage)
                                         let storage_ptr = builder.ins().load(
                                             types::I64,
@@ -7552,42 +7566,81 @@ impl SimpleBackend {
                                             obj_ptr,
                                             0,
                                         );
-                                        // ListBoolStorage (repr(C)): data@0, len@8
-                                        let dp_bool = builder.ins().load(
-                                            types::I64,
-                                            MemFlags::trusted(),
-                                            storage_ptr,
-                                            0i32,
-                                        );
-                                        let len_bool = builder.ins().load(
-                                            types::I64,
-                                            MemFlags::trusted(),
-                                            storage_ptr,
-                                            8i32,
-                                        );
-                                        // Vec<u64> (repr(Rust), probed offsets)
-                                        let dp_vec = builder.ins().load(
-                                            types::I64,
-                                            MemFlags::trusted(),
-                                            storage_ptr,
-                                            vec_layout.data_offset,
-                                        );
-                                        let len_vec = builder.ins().load(
-                                            types::I64,
-                                            MemFlags::trusted(),
-                                            storage_ptr,
-                                            vec_layout.len_offset,
-                                        );
-                                        // Select based on type: list_bool uses repr(C) offsets.
-                                        let dp = builder.ins().select(is_bool, dp_bool, dp_vec);
-                                        let len = builder.ins().select(is_bool, len_bool, len_vec);
-                                        let var = builder.declare_var(types::I64);
-                                        builder.def_var(var, dp);
-                                        list_data_cache.insert(args[0].clone(), var);
-                                        let lvar = builder.declare_var(types::I64);
-                                        builder.def_var(lvar, len);
-                                        list_len_cache.insert(args[0].clone(), lvar);
-                                        dp
+                                        if getitem_out_is_bool {
+                                            // Proven bool list -- skip type_id check, use
+                                            // ListBoolStorage layout (repr(C): data@0, len@8).
+                                            let ibvar = builder.declare_var(types::I8);
+                                            let const_true = builder.ins().iconst(types::I8, 1);
+                                            builder.def_var(ibvar, const_true);
+                                            list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                            let dp = builder.ins().load(
+                                                types::I64, MemFlags::trusted(), storage_ptr, 0i32,
+                                            );
+                                            let len = builder.ins().load(
+                                                types::I64, MemFlags::trusted(), storage_ptr, 8i32,
+                                            );
+                                            let var = builder.declare_var(types::I64);
+                                            builder.def_var(var, dp);
+                                            list_data_cache.insert(args[0].clone(), var);
+                                            let lvar = builder.declare_var(types::I64);
+                                            builder.def_var(lvar, len);
+                                            list_len_cache.insert(args[0].clone(), lvar);
+                                            dp
+                                        } else if getitem_out_is_non_bool {
+                                            // Proven non-bool list -- skip type_id check, use
+                                            // Vec<u64> layout (repr(Rust), probed offsets).
+                                            let ibvar = builder.declare_var(types::I8);
+                                            let const_false = builder.ins().iconst(types::I8, 0);
+                                            builder.def_var(ibvar, const_false);
+                                            list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                            let dp = builder.ins().load(
+                                                types::I64, MemFlags::trusted(), storage_ptr, vec_layout.data_offset,
+                                            );
+                                            let len = builder.ins().load(
+                                                types::I64, MemFlags::trusted(), storage_ptr, vec_layout.len_offset,
+                                            );
+                                            let var = builder.declare_var(types::I64);
+                                            builder.def_var(var, dp);
+                                            list_data_cache.insert(args[0].clone(), var);
+                                            let lvar = builder.declare_var(types::I64);
+                                            builder.def_var(lvar, len);
+                                            list_len_cache.insert(args[0].clone(), lvar);
+                                            dp
+                                        } else {
+                                            // Unknown element type -- load type_id and both layouts.
+                                            let tid = builder.ins().load(
+                                                types::I32,
+                                                MemFlags::trusted(),
+                                                obj_ptr,
+                                                HEADER_TYPE_ID_OFFSET,
+                                            );
+                                            let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                                            let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                                            let ibvar = builder.declare_var(types::I8);
+                                            builder.def_var(ibvar, is_bool);
+                                            list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                            let dp_bool = builder.ins().load(
+                                                types::I64, MemFlags::trusted(), storage_ptr, 0i32,
+                                            );
+                                            let len_bool = builder.ins().load(
+                                                types::I64, MemFlags::trusted(), storage_ptr, 8i32,
+                                            );
+                                            let dp_vec = builder.ins().load(
+                                                types::I64, MemFlags::trusted(), storage_ptr, vec_layout.data_offset,
+                                            );
+                                            let len_vec = builder.ins().load(
+                                                types::I64, MemFlags::trusted(), storage_ptr, vec_layout.len_offset,
+                                            );
+                                            let dp = builder.ins().select(is_bool, dp_bool, dp_vec);
+                                            let len = builder.ins().select(is_bool, len_bool, len_vec);
+                                            let var = builder.declare_var(types::I64);
+                                            builder.def_var(var, dp);
+                                            list_data_cache.insert(args[0].clone(), var);
+                                            let lvar = builder.declare_var(types::I64);
+                                            builder.def_var(lvar, len);
+                                            list_len_cache.insert(args[0].clone(), lvar);
+                                            dp
+                                        }
                                     };
                                     let lv = if let Some(&var) = list_len_cache.get(&args[0]) {
                                         builder.use_var(var)
@@ -7655,45 +7708,99 @@ impl SimpleBackend {
                                     .ins()
                                     .brif(in_bounds, fast_block, &[], slow_block, &[]);
 
-                                // Fast path: branch on is_bool for element access.
+                                // Fast path: element access.
+                                // When the output type is statically known we can
+                                // skip the per-access is_bool branch entirely:
+                                //   - bool output → always u8-load + NaN-box
+                                //   - proven non-bool output → always u64-load + inc_ref
+                                //   - unknown → branch on cached is_bool flag
                                 switch_to_block_materialized(&mut builder, fast_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                                let zero_i8 = builder.ins().iconst(types::I8, 0);
-                                let is_bool_check = builder.ins().icmp(IntCC::NotEqual, is_bool_val, zero_i8);
-                                let bool_load_block = builder.create_block();
-                                let vec_load_block = builder.create_block();
-                                builder.ins().brif(is_bool_check, bool_load_block, &[], vec_load_block, &[]);
+                                let out_is_bool = getitem_out_is_bool;
+                                let out_is_non_bool = getitem_out_is_non_bool;
+                                // For the "unknown" path, carry a raw-bool shadow through
+                                // the merge block.  When the list IS list_bool, this shadow
+                                // holds the raw byte (0 or 1) which lets downstream
+                                // `if`/`br_if` consumers skip NaN-box tag extraction.
+                                let has_raw_bool_shadow = !out_is_bool && !out_is_non_bool
+                                    && list_is_bool_cache.contains_key(&args[0]);
+                                if has_raw_bool_shadow {
+                                    builder.append_block_param(merge_block, types::I64); // raw bool shadow
+                                }
+                                if out_is_bool {
+                                    // Proven bool list — emit u8-load directly, no branch.
+                                    let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
+                                    let byte_val = builder.ins().load(
+                                        types::I8,
+                                        MemFlags::trusted(),
+                                        bool_elem_addr,
+                                        0,
+                                    );
+                                    let byte_ext = builder.ins().uextend(types::I64, byte_val);
+                                    let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
+                                    let bool_elem = builder.ins().bor(bool_tag, byte_ext);
+                                    jump_block(&mut builder, merge_block, &[bool_elem]);
+                                } else if out_is_non_bool {
+                                    // Proven non-bool list — emit u64-load directly, no branch.
+                                    let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                                    let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                                    let elem = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::trusted(),
+                                        elem_addr,
+                                        0,
+                                    );
+                                    emit_inc_ref_obj(&mut builder, elem, local_inc_ref_obj, &nbc);
+                                    jump_block(&mut builder, merge_block, &[elem]);
+                                } else {
+                                    // Unknown element type — branch on cached is_bool flag.
+                                    let zero_i8 = builder.ins().iconst(types::I8, 0);
+                                    let is_bool_check = builder.ins().icmp(IntCC::NotEqual, is_bool_val, zero_i8);
+                                    let bool_load_block = builder.create_block();
+                                    let vec_load_block = builder.create_block();
+                                    builder.ins().brif(is_bool_check, bool_load_block, &[], vec_load_block, &[]);
 
-                                // Bool list path: load u8, convert to NaN-boxed bool.
-                                // No inc_ref needed — bools are inline NaN-boxed values.
-                                switch_to_block_materialized(&mut builder, bool_load_block);
-                                seal_block_once(&mut builder, &mut sealed_blocks, bool_load_block);
-                                let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
-                                let byte_val = builder.ins().load(
-                                    types::I8,
-                                    MemFlags::trusted(),
-                                    bool_elem_addr,
-                                    0,
-                                );
-                                // NaN-box: result = (QNAN | TAG_BOOL) | (byte_val as u64)
-                                let byte_ext = builder.ins().uextend(types::I64, byte_val);
-                                let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
-                                let bool_elem = builder.ins().bor(bool_tag, byte_ext);
-                                jump_block(&mut builder, merge_block, &[bool_elem]);
+                                    // Bool list path: load u8, convert to NaN-boxed bool.
+                                    // No inc_ref needed — bools are inline NaN-boxed values.
+                                    switch_to_block_materialized(&mut builder, bool_load_block);
+                                    seal_block_once(&mut builder, &mut sealed_blocks, bool_load_block);
+                                    let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
+                                    let byte_val = builder.ins().load(
+                                        types::I8,
+                                        MemFlags::trusted(),
+                                        bool_elem_addr,
+                                        0,
+                                    );
+                                    // NaN-box: result = (QNAN | TAG_BOOL) | (byte_val as u64)
+                                    let byte_ext = builder.ins().uextend(types::I64, byte_val);
+                                    let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
+                                    let bool_elem = builder.ins().bor(bool_tag, byte_ext);
+                                    if has_raw_bool_shadow {
+                                        // Shadow carries raw 0/1 for downstream truthiness.
+                                        jump_block(&mut builder, merge_block, &[bool_elem, byte_ext]);
+                                    } else {
+                                        jump_block(&mut builder, merge_block, &[bool_elem]);
+                                    }
 
-                                // Regular list path: load u64, inc_ref.
-                                switch_to_block_materialized(&mut builder, vec_load_block);
-                                seal_block_once(&mut builder, &mut sealed_blocks, vec_load_block);
-                                let byte_offset = builder.ins().imul_imm(raw_idx, 8);
-                                let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
-                                let elem = builder.ins().load(
-                                    types::I64,
-                                    MemFlags::trusted(),
-                                    elem_addr,
-                                    0,
-                                );
-                                emit_inc_ref_obj(&mut builder, elem, local_inc_ref_obj, &nbc);
-                                jump_block(&mut builder, merge_block, &[elem]);
+                                    // Regular list path: load u64, inc_ref.
+                                    switch_to_block_materialized(&mut builder, vec_load_block);
+                                    seal_block_once(&mut builder, &mut sealed_blocks, vec_load_block);
+                                    let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                                    let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                                    let elem = builder.ins().load(
+                                        types::I64,
+                                        MemFlags::trusted(),
+                                        elem_addr,
+                                        0,
+                                    );
+                                    emit_inc_ref_obj(&mut builder, elem, local_inc_ref_obj, &nbc);
+                                    if has_raw_bool_shadow {
+                                        // Non-bool path: shadow = NaN-boxed element (not a raw bool).
+                                        jump_block(&mut builder, merge_block, &[elem, elem]);
+                                    } else {
+                                        jump_block(&mut builder, merge_block, &[elem]);
+                                    }
+                                }
 
                                 // Slow path: safe runtime call (handles negative index, IndexError)
                                 switch_to_block_materialized(&mut builder, slow_block);
@@ -7709,7 +7816,11 @@ impl SimpleBackend {
                                     self.module.declare_func_in_func(callee, builder.func);
                                 let call = builder.ins().call(local_callee, &[*obj, *idx]);
                                 let slow_res = builder.inst_results(call)[0];
-                                jump_block(&mut builder, merge_block, &[slow_res]);
+                                if has_raw_bool_shadow {
+                                    jump_block(&mut builder, merge_block, &[slow_res, slow_res]);
+                                } else {
+                                    jump_block(&mut builder, merge_block, &[slow_res]);
+                                }
 
                                 // Merge
                                 switch_to_block_materialized(&mut builder, merge_block);
@@ -7717,6 +7828,15 @@ impl SimpleBackend {
                                 let merged = builder.block_params(merge_block)[0];
                                 if let Some(ref out__) = op.out {
                                     def_var_named(&mut builder, &vars, out__, merged);
+                                    // Store raw-bool shadow so downstream `if`/`br_if`
+                                    // can skip NaN-box tag extraction for list_bool elements.
+                                    if has_raw_bool_shadow {
+                                        let raw_shadow = builder.block_params(merge_block)[1];
+                                        list_bool_raw_shadow.insert(
+                                            out__.to_string(),
+                                            (args[0].clone(), raw_shadow),
+                                        );
+                                    }
                                 }
                             } else {
                                 // No raw_int_shadow — fall back to runtime call.
@@ -15757,6 +15877,63 @@ impl SimpleBackend {
                         // TAG_BOOL (0x7ffa...): bit 0 is the boolean value.
                         // TAG_INT  (0x7ff9...): unbox and check payload != 0.
                         // Other tags: fall through to molt_is_truthy call.
+                        let truthy_merge = builder.create_block();
+                        builder.append_block_param(truthy_merge, types::I8);
+
+                        // Peephole: if the condition came from a list getitem with
+                        // a raw-bool shadow, check the list's is_bool flag first.
+                        // When the list IS list_bool the shadow is the raw boolean
+                        // (0 or 1) and we skip the NaN-box tag extraction entirely.
+                        let raw_shadow_info = list_bool_raw_shadow.get(&args[0]).cloned();
+                        if let Some((ref list_var, raw_shadow)) = raw_shadow_info {
+                            if let Some(&ibvar) = list_is_bool_cache.get(list_var) {
+                                let ib = builder.use_var(ibvar);
+                                let zero_i8 = builder.ins().iconst(types::I8, 0);
+                                let is_bool_check =
+                                    builder.ins().icmp(IntCC::NotEqual, ib, zero_i8);
+                                let raw_bool_block = builder.create_block();
+                                let speculative_block = builder.create_block();
+                                builder.ins().brif(
+                                    is_bool_check,
+                                    raw_bool_block,
+                                    &[],
+                                    speculative_block,
+                                    &[],
+                                );
+
+                                // Fast path: list IS list_bool — shadow is raw 0/1.
+                                switch_to_block_materialized(
+                                    &mut builder,
+                                    raw_bool_block,
+                                );
+                                seal_block_once(
+                                    &mut builder,
+                                    &mut sealed_blocks,
+                                    raw_bool_block,
+                                );
+                                let raw_truthy = builder
+                                    .ins()
+                                    .icmp_imm(IntCC::NotEqual, raw_shadow, 0);
+                                jump_block(
+                                    &mut builder,
+                                    truthy_merge,
+                                    &[raw_truthy],
+                                );
+
+                                // Continue with speculative tag check in the
+                                // fallback block (not list_bool).
+                                switch_to_block_materialized(
+                                    &mut builder,
+                                    speculative_block,
+                                );
+                                seal_block_once(
+                                    &mut builder,
+                                    &mut sealed_blocks,
+                                    speculative_block,
+                                );
+                            }
+                        }
+
                         let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
                         let masked = builder.ins().band(*cond, mask);
 
@@ -15765,8 +15942,6 @@ impl SimpleBackend {
                         let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
                         let bool_block = builder.create_block();
                         let not_bool_block = builder.create_block();
-                        let truthy_merge = builder.create_block();
-                        builder.append_block_param(truthy_merge, types::I8);
                         builder
                             .ins()
                             .brif(is_bool, bool_block, &[], not_bool_block, &[]);
@@ -19435,6 +19610,57 @@ impl SimpleBackend {
                         // NaN-boxed False is 0x7ffa000000000000 (nonzero),
                         // so a raw icmp_imm(!=0) always evaluates true — we need
                         // the runtime to decode the type tag.
+                        let brif_truthy_merge = builder.create_block();
+                        builder.append_block_param(brif_truthy_merge, types::I8);
+
+                        // Peephole: raw-bool shadow from list getitem.
+                        let raw_shadow_info = list_bool_raw_shadow.get(cond_name).cloned();
+                        if let Some((ref list_var, raw_shadow)) = raw_shadow_info {
+                            if let Some(&ibvar) = list_is_bool_cache.get(list_var) {
+                                let ib = builder.use_var(ibvar);
+                                let zero_i8 = builder.ins().iconst(types::I8, 0);
+                                let is_bool_check =
+                                    builder.ins().icmp(IntCC::NotEqual, ib, zero_i8);
+                                let raw_bool_block = builder.create_block();
+                                let speculative_block = builder.create_block();
+                                builder.ins().brif(
+                                    is_bool_check,
+                                    raw_bool_block,
+                                    &[],
+                                    speculative_block,
+                                    &[],
+                                );
+
+                                switch_to_block_materialized(
+                                    &mut builder,
+                                    raw_bool_block,
+                                );
+                                seal_block_once(
+                                    &mut builder,
+                                    &mut sealed_blocks,
+                                    raw_bool_block,
+                                );
+                                let raw_truthy = builder
+                                    .ins()
+                                    .icmp_imm(IntCC::NotEqual, raw_shadow, 0);
+                                jump_block(
+                                    &mut builder,
+                                    brif_truthy_merge,
+                                    &[raw_truthy],
+                                );
+
+                                switch_to_block_materialized(
+                                    &mut builder,
+                                    speculative_block,
+                                );
+                                seal_block_once(
+                                    &mut builder,
+                                    &mut sealed_blocks,
+                                    speculative_block,
+                                );
+                            }
+                        }
+
                         let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
                         let masked = builder.ins().band(*cond, mask);
 
@@ -19442,8 +19668,6 @@ impl SimpleBackend {
                         let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
                         let brif_bool_block = builder.create_block();
                         let brif_not_bool_block = builder.create_block();
-                        let brif_truthy_merge = builder.create_block();
-                        builder.append_block_param(brif_truthy_merge, types::I8);
                         builder
                             .ins()
                             .brif(is_bool, brif_bool_block, &[], brif_not_bool_block, &[]);
