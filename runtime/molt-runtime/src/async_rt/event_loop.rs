@@ -181,7 +181,7 @@ where
 /// Create a new event loop. Returns a handle (u64).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = alloc_loop();
         MoltObject::from_int(handle as i64).bits()
     })
@@ -192,7 +192,7 @@ pub extern "C" fn molt_event_loop_new() -> u64 {
 /// just a direct VecDeque push.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_call_soon(loop_handle: u64, callback_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = loop_handle;
         let Some(()) = with_loop(handle, |state| {
             if state.is_closed() {
@@ -215,7 +215,7 @@ pub extern "C" fn molt_event_loop_call_later(
     delay_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let delay_obj = crate::obj_from_bits(delay_bits);
         let delay_secs = delay_obj
             .as_float()
@@ -253,7 +253,7 @@ pub extern "C" fn molt_event_loop_call_at(
     when_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let when_obj = crate::obj_from_bits(when_bits);
         let when_secs = when_obj
             .as_float()
@@ -287,7 +287,7 @@ pub extern "C" fn molt_event_loop_call_at(
 /// Uses an O(1) HashSet lookup during timer drain to skip cancelled entries.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_cancel_timer(loop_handle: u64, timer_id_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let timer_id = crate::to_i64(crate::obj_from_bits(timer_id_bits)).unwrap_or(-1) as u64;
         let Some(cancelled) =
             with_loop(loop_handle, |state| state.cancelled_timers.insert(timer_id))
@@ -308,7 +308,7 @@ pub extern "C" fn molt_event_loop_add_reader(
     fd_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
             return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
@@ -337,7 +337,7 @@ pub extern "C" fn molt_event_loop_add_reader(
     _fd_bits: u64,
     _callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "RuntimeError", "add_reader not supported on WASM")
     })
 }
@@ -348,7 +348,7 @@ pub extern "C" fn molt_event_loop_add_reader(
 #[unsafe(no_mangle)]
 #[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_remove_reader(loop_handle: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         let Some(removed) = with_loop(loop_handle, |state| {
             if let Some(old) = state.readers.remove(&fd) {
@@ -367,7 +367,7 @@ pub extern "C" fn molt_event_loop_remove_reader(loop_handle: u64, fd_bits: u64) 
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_event_loop_remove_reader(_loop_handle: u64, _fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "RuntimeError", "remove_reader not supported on WASM")
     })
 }
@@ -382,7 +382,7 @@ pub extern "C" fn molt_event_loop_add_writer(
     fd_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
             return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
@@ -410,7 +410,7 @@ pub extern "C" fn molt_event_loop_add_writer(
     _fd_bits: u64,
     _callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "RuntimeError", "add_writer not supported on WASM")
     })
 }
@@ -421,7 +421,7 @@ pub extern "C" fn molt_event_loop_add_writer(
 #[unsafe(no_mangle)]
 #[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_remove_writer(loop_handle: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         let Some(removed) = with_loop(loop_handle, |state| {
             if let Some(old) = state.writers.remove(&fd) {
@@ -440,7 +440,7 @@ pub extern "C" fn molt_event_loop_remove_writer(loop_handle: u64, fd_bits: u64) 
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_event_loop_remove_writer(_loop_handle: u64, _fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "RuntimeError", "remove_writer not supported on WASM")
     })
 }
@@ -453,7 +453,7 @@ pub extern "C" fn molt_event_loop_remove_writer(_loop_handle: u64, _fd_bits: u64
 /// Returns the number of callbacks executed.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut callbacks_run: i64 = 0;
 
         // Phase 1: Drain ready queue.
@@ -544,7 +544,7 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
 /// Get the current monotonic time of the event loop (seconds, float).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_time(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(time) = with_loop(loop_handle, |state| state.monotonic_secs()) else {
             return MoltObject::from_float(monotonic_now_secs(_py)).bits();
         };
@@ -556,7 +556,7 @@ pub extern "C" fn molt_event_loop_time(loop_handle: u64) -> u64 {
 /// Used by the scheduler to determine how long to sleep.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_next_deadline_delay(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(delay) = with_loop(loop_handle, |state| {
             let Some(top) = state.timers.peek() else {
                 return -1.0f64;
@@ -577,7 +577,7 @@ pub extern "C" fn molt_event_loop_next_deadline_delay(loop_handle: u64) -> u64 {
 /// Check if the ready queue or timer heap has pending work.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_has_pending(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(has) = with_loop(loop_handle, |state| {
             !state.ready.is_empty()
                 || state
@@ -594,7 +594,7 @@ pub extern "C" fn molt_event_loop_has_pending(loop_handle: u64) -> u64 {
 /// Get the number of pending callbacks in the ready queue.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_ready_count(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(count) = with_loop(loop_handle, |state| state.ready.len() as i64) else {
             return MoltObject::from_int(0).bits();
         };
@@ -605,7 +605,7 @@ pub extern "C" fn molt_event_loop_ready_count(loop_handle: u64) -> u64 {
 /// Start the event loop (set state to running).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_start(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(()) = with_loop(loop_handle, |state| {
             state.state.store(STATE_RUNNING, Ordering::Relaxed);
         }) else {
@@ -618,7 +618,7 @@ pub extern "C" fn molt_event_loop_start(loop_handle: u64) -> u64 {
 /// Stop the event loop (set state to idle).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_stop(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(()) = with_loop(loop_handle, |state| {
             let current = state.state.load(Ordering::Relaxed);
             if current == STATE_RUNNING {
@@ -634,7 +634,7 @@ pub extern "C" fn molt_event_loop_stop(loop_handle: u64) -> u64 {
 /// Check if the event loop is currently running.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_is_running(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(running) = with_loop(loop_handle, |state| state.is_running()) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -645,7 +645,7 @@ pub extern "C" fn molt_event_loop_is_running(loop_handle: u64) -> u64 {
 /// Check if the event loop is closed.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_is_closed(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(closed) = with_loop(loop_handle, |state| state.is_closed()) else {
             return MoltObject::from_bool(true).bits();
         };
@@ -656,7 +656,7 @@ pub extern "C" fn molt_event_loop_is_closed(loop_handle: u64) -> u64 {
 /// Close the event loop. Cleans up all pending callbacks and I/O registrations.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_close(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let loop_key = unbox_loop_handle(loop_handle);
         let callbacks_to_free: Vec<u64> = {
             let mut map = LOOPS.lock().unwrap();
@@ -700,7 +700,7 @@ pub extern "C" fn molt_event_loop_drop(loop_handle: u64) -> u64 {
     // Close first to ensure proper cleanup.
     molt_event_loop_close(loop_handle);
     let loop_key = unbox_loop_handle(loop_handle);
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut map = LOOPS.lock().unwrap();
         map.remove(&loop_key);
         MoltObject::none().bits()
@@ -710,7 +710,7 @@ pub extern "C" fn molt_event_loop_drop(loop_handle: u64) -> u64 {
 /// Set the event loop's debug mode.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_set_debug(loop_handle: u64, enabled_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let enabled = crate::is_truthy(_py, crate::obj_from_bits(enabled_bits));
         let Some(()) = with_loop(loop_handle, |state| {
             state.debug = enabled;
@@ -724,7 +724,7 @@ pub extern "C" fn molt_event_loop_set_debug(loop_handle: u64, enabled_bits: u64)
 /// Get the event loop's debug mode.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_get_debug(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(debug) = with_loop(loop_handle, |state| state.debug) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -738,7 +738,7 @@ pub extern "C" fn molt_event_loop_set_exception_handler(
     loop_handle: u64,
     handler_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(old) = with_loop(loop_handle, |state| {
             let old = state.exception_handler_bits;
             inc_ref_bits(_py, handler_bits);
@@ -755,7 +755,7 @@ pub extern "C" fn molt_event_loop_set_exception_handler(
 /// Get the event loop's exception handler callback.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_get_exception_handler(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(bits) = with_loop(loop_handle, |state| state.exception_handler_bits) else {
             return MoltObject::none().bits();
         };
@@ -766,7 +766,7 @@ pub extern "C" fn molt_event_loop_get_exception_handler(loop_handle: u64) -> u64
 /// Set the event loop's task factory callback.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_set_task_factory(loop_handle: u64, factory_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(old) = with_loop(loop_handle, |state| {
             let old = state.task_factory_bits;
             inc_ref_bits(_py, factory_bits);
@@ -783,7 +783,7 @@ pub extern "C" fn molt_event_loop_set_task_factory(loop_handle: u64, factory_bit
 /// Get the event loop's task factory callback.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_get_task_factory(loop_handle: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(bits) = with_loop(loop_handle, |state| state.task_factory_bits) else {
             return MoltObject::none().bits();
         };
@@ -799,7 +799,7 @@ pub extern "C" fn molt_event_loop_get_task_factory(loop_handle: u64) -> u64 {
 #[unsafe(no_mangle)]
 #[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_notify_reader_ready(loop_handle: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         let Some(cb_opt) = with_loop(loop_handle, |state| {
             state.readers.get(&fd).map(|e| e.callback_bits)
@@ -819,7 +819,7 @@ pub extern "C" fn molt_event_loop_notify_reader_ready(loop_handle: u64, fd_bits:
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_event_loop_notify_reader_ready(_loop_handle: u64, _fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
@@ -834,7 +834,7 @@ pub extern "C" fn molt_event_loop_notify_reader_ready(_loop_handle: u64, _fd_bit
 #[unsafe(no_mangle)]
 #[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_notify_writer_ready(loop_handle: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         let Some(cb_opt) = with_loop(loop_handle, |state| {
             state.writers.get(&fd).map(|e| e.callback_bits)
@@ -854,7 +854,7 @@ pub extern "C" fn molt_event_loop_notify_writer_ready(loop_handle: u64, fd_bits:
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_event_loop_notify_writer_ready(_loop_handle: u64, _fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
@@ -963,7 +963,7 @@ fn pipe_require_bytes_slice(_py: &crate::PyToken<'_>, bits: u64) -> Result<&'sta
 #[unsafe(no_mangle)]
 #[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_pipe_transport_new(fd_bits: u64, is_read_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
             return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
@@ -977,7 +977,7 @@ pub extern "C" fn molt_pipe_transport_new(fd_bits: u64, is_read_bits: u64) -> u6
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_pipe_transport_new(_fd_bits: u64, _is_read_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
@@ -991,7 +991,7 @@ pub extern "C" fn molt_pipe_transport_new(_fd_bits: u64, _is_read_bits: u64) -> 
 /// Returns a NaN-boxed integer fd, or -1 if the handle is invalid.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pipe_transport_get_fd(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(fd) = with_pipe(handle, |state| state.fd as i64) else {
             return MoltObject::from_int(-1).bits();
@@ -1005,7 +1005,7 @@ pub extern "C" fn molt_pipe_transport_get_fd(handle_bits: u64) -> u64 {
 /// Returns a NaN-boxed bool.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pipe_transport_is_closing(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(closing) = with_pipe(handle, |state| state.closing) else {
             return MoltObject::from_bool(true).bits();
@@ -1022,7 +1022,7 @@ pub extern "C" fn molt_pipe_transport_is_closing(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 #[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_pipe_transport_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let fd_to_close: Option<i32> = {
             let mut map = PIPE_TRANSPORTS.lock().unwrap();
@@ -1069,7 +1069,7 @@ pub extern "C" fn molt_pipe_transport_close(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_pipe_transport_close(_handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
@@ -1083,7 +1083,7 @@ pub extern "C" fn molt_pipe_transport_close(_handle_bits: u64) -> u64 {
 /// Returns None. Raises RuntimeError if the transport is a write pipe.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pipe_transport_pause_reading(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(result) = with_pipe(handle, |state| {
             if !state.is_read {
@@ -1109,7 +1109,7 @@ pub extern "C" fn molt_pipe_transport_pause_reading(handle_bits: u64) -> u64 {
 /// Returns None. Raises RuntimeError if the transport is a write pipe.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pipe_transport_resume_reading(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(result) = with_pipe(handle, |state| {
             if !state.is_read {
@@ -1139,7 +1139,7 @@ pub extern "C" fn molt_pipe_transport_resume_reading(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 #[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_pipe_transport_write(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         // Extract bytes from the data object.
         let data = match pipe_require_bytes_slice(_py, data_bits) {
@@ -1196,7 +1196,7 @@ pub extern "C" fn molt_pipe_transport_write(handle_bits: u64, data_bits: u64) ->
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
 pub extern "C" fn molt_pipe_transport_write(_handle_bits: u64, _data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
@@ -1210,7 +1210,7 @@ pub extern "C" fn molt_pipe_transport_write(_handle_bits: u64, _data_bits: u64) 
 /// Returns a NaN-boxed integer (total bytes buffered).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pipe_transport_get_write_buffer_size(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(size) = with_pipe(handle, |state| {
             state
@@ -1256,7 +1256,7 @@ pub extern "C" fn molt_event_loop_connect_read_pipe(
     fd_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
             return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
@@ -1288,7 +1288,7 @@ pub extern "C" fn molt_event_loop_connect_read_pipe(
     _fd_bits: u64,
     _callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
@@ -1312,7 +1312,7 @@ pub extern "C" fn molt_event_loop_connect_write_pipe(
     fd_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
             return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
@@ -1344,7 +1344,7 @@ pub extern "C" fn molt_event_loop_connect_write_pipe(
     _fd_bits: u64,
     _callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "RuntimeError",

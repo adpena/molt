@@ -504,7 +504,7 @@ fn alloc_list_bits(_py: &PyToken<'_>, elems: &[u64]) -> Result<u64, u64> {
 /// Create a new MT RNG seeded from OS randomness. Returns integer handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = match seed_from_os(_py) {
             Some(k) => k,
             None => {
@@ -527,7 +527,7 @@ pub extern "C" fn molt_random_new() -> u64 {
 ///                  None → re-seed from OS.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_seed(handle_bits: u64, seed_bits: u64, _version_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -563,7 +563,7 @@ pub extern "C" fn molt_random_seed(handle_bits: u64, seed_bits: u64, _version_bi
 /// Return a random float in [0.0, 1.0).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_random(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -578,7 +578,7 @@ pub extern "C" fn molt_random_random(handle_bits: u64) -> u64 {
 /// Return a Python int with k random bits.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -621,7 +621,7 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
 /// `n_bits` must be a Python int.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_randbelow(handle_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -660,7 +660,7 @@ pub extern "C" fn molt_random_randbelow(handle_bits: u64, n_bits: u64) -> u64 {
 /// where internalstate_tuple is a 625-element tuple of u32 words (624 MT state + index).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_getstate(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -708,7 +708,7 @@ pub extern "C" fn molt_random_getstate(handle_bits: u64) -> u64 {
 /// Expected format: (version, internalstate_tuple, gauss_next_or_None)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -789,7 +789,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
 /// `list_bits` must be a mutable list object.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -847,7 +847,7 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
 /// `mu_bits`, `sigma_bits` — floats or ints.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_gauss(handle_bits: u64, mu_bits: u64, sigma_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -868,7 +868,7 @@ pub extern "C" fn molt_random_gauss(handle_bits: u64, mu_bits: u64, sigma_bits: 
 /// Uniform distribution: a + (b - a) * random().
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_uniform(handle_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -897,7 +897,7 @@ pub extern "C" fn molt_random_triangular(
     high_bits: u64,
     mode_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -939,7 +939,7 @@ pub extern "C" fn molt_random_triangular(
 /// Exponential distribution: -log(random()) / lambd.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_expovariate(handle_bits: u64, lambd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -971,7 +971,7 @@ pub extern "C" fn molt_random_normalvariate(
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -996,7 +996,7 @@ pub extern "C" fn molt_random_lognormvariate(
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1022,7 +1022,7 @@ pub extern "C" fn molt_random_vonmisesvariate(
     mu_bits: u64,
     kappa_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1072,7 +1072,7 @@ pub extern "C" fn molt_random_vonmisesvariate(
 /// Pareto distribution: 1.0 / pow(random(), 1.0 / alpha).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_paretovariate(handle_bits: u64, alpha_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1100,7 +1100,7 @@ pub extern "C" fn molt_random_weibullvariate(
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1132,7 +1132,7 @@ pub extern "C" fn molt_random_gammavariate(
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1206,7 +1206,7 @@ pub extern "C" fn molt_random_betavariate(
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1261,7 +1261,7 @@ pub extern "C" fn molt_random_choices(
     cum_weights_bits: u64,
     k_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1373,7 +1373,7 @@ pub extern "C" fn molt_random_choices(
 /// Returns a new list of k distinct elements (by position).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1464,7 +1464,7 @@ fn rng_lgamma(x: f64) -> f64 {
 /// Parameters: handle, n (int), p (float).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_binomialvariate(handle_bits: u64, n_bits: u64, p_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
         };
@@ -1580,7 +1580,7 @@ pub extern "C" fn molt_random_randrange(
     stop_bits: u64,
     step_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
         };
@@ -1654,7 +1654,7 @@ pub extern "C" fn molt_random_randrange(
 /// randbytes(n) -> generates n random bytes
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
         };

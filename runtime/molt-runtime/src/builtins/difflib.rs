@@ -608,7 +608,7 @@ fn str_vec_to_list(_py: &PyToken<'_>, items: &[String]) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_difflib_ratio(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(a) = string_obj_to_owned(obj_from_bits(a_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "difflib.ratio: a must be str");
         };
@@ -625,7 +625,7 @@ pub extern "C" fn molt_difflib_ratio(a_bits: u64, b_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_difflib_quick_ratio(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(a) = string_obj_to_owned(obj_from_bits(a_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "difflib.quick_ratio: a must be str");
         };
@@ -646,7 +646,7 @@ pub extern "C" fn molt_difflib_quick_ratio(a_bits: u64, b_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_difflib_get_matching_blocks(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(a) = string_obj_to_owned(obj_from_bits(a_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "a must be str");
         };
@@ -688,7 +688,7 @@ pub extern "C" fn molt_difflib_get_matching_blocks(a_bits: u64, b_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_difflib_get_opcodes(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(a) = string_obj_to_owned(obj_from_bits(a_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "a must be str");
         };
@@ -751,7 +751,7 @@ pub extern "C" fn molt_difflib_unified_diff(
     tofile_bits: u64,
     n_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a = match list_to_str_vec(_py, a_bits) {
             Ok(v) => v,
             Err(b) => return b,
@@ -778,7 +778,7 @@ pub extern "C" fn molt_difflib_context_diff(
     tofile_bits: u64,
     n_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a = match list_to_str_vec(_py, a_bits) {
             Ok(v) => v,
             Err(b) => return b,
@@ -799,7 +799,7 @@ pub extern "C" fn molt_difflib_context_diff(
 /// `molt_difflib_ndiff(a_bits, b_bits) -> list[str]`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_difflib_ndiff(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a = match list_to_str_vec(_py, a_bits) {
             Ok(v) => v,
             Err(b) => return b,
@@ -825,7 +825,7 @@ pub extern "C" fn molt_difflib_get_close_matches(
     n_bits: u64,
     cutoff_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(word) = string_obj_to_owned(obj_from_bits(word_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "word must be str");
         };
@@ -858,7 +858,7 @@ pub extern "C" fn molt_difflib_get_close_matches(
 /// Default junk heuristic: a line is junk if it is blank or consists solely of whitespace.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_difflib_is_junk(ch_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(ch_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "is_junk: argument must be str");
         };

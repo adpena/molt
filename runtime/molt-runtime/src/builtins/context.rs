@@ -108,19 +108,19 @@ fn alloc_context_manager(
 }
 
 extern "C" fn context_null_enter(payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, payload_bits);
         payload_bits
     })
 }
 
 extern "C" fn context_null_exit(_payload_bits: u64, _exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(false).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(false).bits() })
 }
 
 #[allow(dead_code)]
 extern "C" fn context_closing_enter(payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, payload_bits);
         payload_bits
     })
@@ -128,7 +128,7 @@ extern "C" fn context_closing_enter(payload_bits: u64) -> u64 {
 
 #[allow(dead_code)]
 extern "C" fn context_closing_exit(payload_bits: u64, _exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         close_payload(_py, payload_bits);
         MoltObject::from_bool(false).bits()
     })
@@ -266,7 +266,7 @@ pub extern "C" fn molt_context_new(
     exit_fn: *const (),
     payload_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if enter_fn.is_null() || exit_fn.is_null() {
             return raise_exception::<_>(
                 _py,
@@ -285,7 +285,7 @@ pub extern "C" fn molt_context_new(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ctx_obj = obj_from_bits(ctx_bits);
         let Some(ptr) = ctx_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "context manager must be an object");
@@ -352,7 +352,7 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ctx_obj = obj_from_bits(ctx_bits);
         let Some(ptr) = ctx_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "context manager must be an object");
@@ -422,7 +422,7 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_context_unwind(exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         context_stack_unwind(_py, exc_bits);
         MoltObject::none().bits()
     })
@@ -430,14 +430,14 @@ pub extern "C" fn molt_context_unwind(exc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_context_depth() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_int(context_stack_depth() as i64).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let depth = match to_i64(obj_from_bits(depth_bits)) {
             Some(val) if val >= 0 => val as usize,
             _ => {
@@ -455,7 +455,7 @@ pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let enter_fn = context_null_enter as *const ();
         let exit_fn = context_null_exit as *const ();
         let ptr = alloc_context_manager(_py, enter_fn, exit_fn, payload_bits);

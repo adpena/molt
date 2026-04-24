@@ -925,7 +925,7 @@ fn b85_decode(input: &[u8]) -> Result<Vec<u8>, String> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "b64encode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -964,7 +964,7 @@ pub extern "C" fn molt_base64_b64decode(
     altchars_bits: u64,
     validate_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut raw = match bytes_like_arg(_py, data_bits, "b64decode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1006,7 +1006,7 @@ pub extern "C" fn molt_base64_b64decode(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_standard_b64encode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "standard_b64encode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1018,7 +1018,7 @@ pub extern "C" fn molt_base64_standard_b64encode(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_standard_b64decode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "standard_b64decode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1033,7 +1033,7 @@ pub extern "C" fn molt_base64_standard_b64decode(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_urlsafe_b64encode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "urlsafe_b64encode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1045,7 +1045,7 @@ pub extern "C" fn molt_base64_urlsafe_b64encode(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_urlsafe_b64decode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut raw = match bytes_like_arg(_py, data_bits, "urlsafe_b64decode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1068,7 +1068,7 @@ pub extern "C" fn molt_base64_urlsafe_b64decode(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b32encode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "b32encode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1084,7 +1084,7 @@ pub extern "C" fn molt_base64_b32decode(
     casefold_bits: u64,
     map01_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "b32decode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1114,7 +1114,7 @@ pub extern "C" fn molt_base64_b32decode(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b32hexencode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "b32hexencode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1126,7 +1126,7 @@ pub extern "C" fn molt_base64_b32hexencode(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b32hexdecode(data_bits: u64, casefold_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "b32hexdecode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1142,7 +1142,7 @@ pub extern "C" fn molt_base64_b32hexdecode(data_bits: u64, casefold_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b16encode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "b16encode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1154,7 +1154,7 @@ pub extern "C" fn molt_base64_b16encode(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b16decode(data_bits: u64, casefold_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "b16decode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1176,7 +1176,7 @@ pub extern "C" fn molt_base64_a85encode(
     pad_bits: u64,
     adobe_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "a85encode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1196,7 +1196,7 @@ pub extern "C" fn molt_base64_a85decode(
     foldspaces_bits: u64,
     adobe_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "a85decode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1213,7 +1213,7 @@ pub extern "C" fn molt_base64_a85decode(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b85encode(data_bits: u64, pad_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "b85encode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1226,7 +1226,7 @@ pub extern "C" fn molt_base64_b85encode(data_bits: u64, pad_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_b85decode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "b85decode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1241,7 +1241,7 @@ pub extern "C" fn molt_base64_b85decode(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_encodebytes(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, "encodebytes") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1263,7 +1263,7 @@ pub extern "C" fn molt_base64_encodebytes(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_base64_decodebytes(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "decodebytes") {
             Ok(v) => v,
             Err(bits) => return bits,

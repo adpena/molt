@@ -47,7 +47,7 @@ fn scan_identifier(text: &[u8], start: usize) -> Option<(usize, usize)> {
 /// `template_bits` must be a str, `delimiter_bits` must be a str (usually "$").
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_template_scan(template_bits: u64, delimiter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "template must be str");
         };
@@ -190,7 +190,7 @@ pub extern "C" fn molt_string_template_scan(template_bits: u64, delimiter_bits: 
 /// Check whether a template string is valid (all $-placeholders are well-formed).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_template_is_valid(template_bits: u64, delimiter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "template must be str");
         };
@@ -252,7 +252,7 @@ pub extern "C" fn molt_string_template_get_identifiers(
     template_bits: u64,
     delimiter_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "template must be str");
         };
@@ -330,7 +330,7 @@ pub extern "C" fn molt_string_template_get_identifiers(
 /// This is equivalent to Python's `string.Formatter.parse()` / `_formatter_parser()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_formatter_parse(format_string_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(format_string) = string_obj_to_owned(obj_from_bits(format_string_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "format_string must be str");
         };
@@ -520,7 +520,7 @@ pub extern "C" fn molt_string_formatter_parse(format_string_bits: u64) -> u64 {
 /// Example: "0.name[2]" → (0, [(True, "name"), (False, 2)])
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_formatter_field_name_split(field_name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(field_name) = string_obj_to_owned(obj_from_bits(field_name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "field_name must be str");
         };

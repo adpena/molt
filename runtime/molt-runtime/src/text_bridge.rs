@@ -19,7 +19,7 @@ pub extern "C" fn __molt_text_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -31,7 +31,7 @@ pub extern "C" fn __molt_text_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ pub extern "C" fn __molt_text_exception_pending() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
     })
@@ -48,7 +48,7 @@ pub extern "C" fn __molt_text_alloc_tuple(elems_ptr: *const u64, elems_len: usiz
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
     })
@@ -56,7 +56,7 @@ pub extern "C" fn __molt_text_alloc_list(elems_ptr: *const u64, elems_len: usize
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -67,7 +67,7 @@ pub extern "C" fn __molt_text_alloc_dict_with_pairs(
     pairs_ptr: *const u64,
     pairs_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
     })
@@ -101,7 +101,7 @@ pub extern "C" fn __molt_text_string_obj_to_owned(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
     })
@@ -113,7 +113,7 @@ pub extern "C" fn __molt_text_type_name(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let name = _type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
@@ -133,14 +133,14 @@ pub extern "C" fn __molt_text_type_name(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, bits);
     })
 }
@@ -165,5 +165,5 @@ pub extern "C" fn __molt_text_to_i64(bits: u64, out: *mut i64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, val) })
 }

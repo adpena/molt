@@ -39,7 +39,7 @@ fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
         std::env::set_var("MOLT_TRUSTED", "1");
     }
     // Tear down any existing runtime.
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         crate::state::runtime_state::molt_runtime_ensure_gil();
         let _ = crate::state::runtime_state::molt_runtime_shutdown();
     });
@@ -49,7 +49,7 @@ fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
     // for all subsequent tests in this process.
     crate::state::runtime_state::molt_runtime_reset_for_testing();
     let out = f();
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         crate::state::runtime_state::molt_runtime_ensure_gil();
         let _ = crate::state::runtime_state::molt_runtime_shutdown();
     });
@@ -713,7 +713,7 @@ fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
             .expect("write extension placeholder");
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let out =
                 importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
             assert!(
@@ -750,7 +750,7 @@ fn extension_spec_boundary_rejects_invalid_manifest_payload() {
             .expect("write invalid metadata manifest");
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let out =
                 importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
             assert!(
@@ -791,7 +791,7 @@ fn extension_spec_boundary_accepts_valid_manifest() {
         );
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let payload =
                 importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false)
                     .expect("spec boundary should pass")
@@ -836,7 +836,7 @@ fn extension_spec_boundary_rejects_manifest_module_mismatch() {
         );
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let out =
                 importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
             assert!(
@@ -877,7 +877,7 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
         );
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let payload =
                 importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false)
                     .expect("first spec boundary pass should succeed")
@@ -892,7 +892,7 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
         std::fs::write(&extension_path, b"spec-boundary-extension-v2-changed")
             .expect("mutate extension artifact");
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let out =
                 importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
             assert!(
@@ -921,7 +921,7 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
                 .expect("write extension placeholder");
             let extension_path_text = extension_path.to_string_lossy().into_owned();
 
-            crate::with_gil_entry!(_py, {
+            crate::with_gil_entry_nopanic!(_py, {
                 let spec_bits =
                     extension_spec_bits_for_tests(_py, &module_name, &extension_path_text);
                 let out =
@@ -964,7 +964,7 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
                 &extension_sha256,
             );
 
-            crate::with_gil_entry!(_py, {
+            crate::with_gil_entry_nopanic!(_py, {
                 let spec_bits =
                     extension_spec_bits_for_tests(_py, &module_name, &extension_path_text);
                 let out =
@@ -1000,7 +1000,7 @@ fn extension_loader_boundary_rejects_missing_manifest_sidecar() {
         let module_name = "demo.extension.loader.missing";
         let extension_path_text = extension_path.to_string_lossy().into_owned();
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
@@ -1031,7 +1031,7 @@ fn extension_loader_boundary_rejects_invalid_manifest_payload() {
         let module_name = "demo.extension.loader.invalid";
         let extension_path_text = extension_path.to_string_lossy().into_owned();
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
@@ -1057,7 +1057,7 @@ fn extension_exec_boundary_rejects_missing_manifest_sidecar() {
         let module_name = "demo.extension.exec.missing";
         let extension_path_text = extension_path.to_string_lossy().into_owned();
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
             assert!(!namespace_ptr.is_null(), "alloc namespace dict");
             let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
@@ -1097,7 +1097,7 @@ fn extension_exec_boundary_rejects_invalid_manifest_metadata() {
         let module_name = "demo.extension.exec.invalid";
         let extension_path_text = extension_path.to_string_lossy().into_owned();
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
             assert!(!namespace_ptr.is_null(), "alloc namespace dict");
             let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
@@ -1141,7 +1141,7 @@ fn extension_loader_boundary_rejects_manifest_module_mismatch() {
             &extension_sha256,
         );
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
@@ -1176,7 +1176,7 @@ fn extension_exec_boundary_rejects_manifest_module_mismatch() {
             &extension_sha256,
         );
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
             assert!(!namespace_ptr.is_null(), "alloc namespace dict");
             let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
@@ -1219,7 +1219,7 @@ fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
             &extension_sha256,
         );
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let payload_bits =
                 call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert!(
@@ -1237,7 +1237,7 @@ fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
         std::fs::write(&extension_path, b"extension-v2-with-different-size")
             .expect("mutate extension artifact");
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(_py, "ImportError", &["extension checksum mismatch"]);
         });
@@ -1267,7 +1267,7 @@ fn extension_loader_boundary_records_cache_hits_and_misses() {
             &extension_sha256,
         );
 
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let payload_bits =
                 call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert!(
@@ -1313,7 +1313,7 @@ fn extension_loader_boundary_records_cache_hits_and_misses() {
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and can abort under the threaded harness; run in isolation with `cargo test -- importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module --ignored`"]
 fn importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module() {
     with_trusted_runtime(|| {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let name_bits = alloc_test_string_bits(_py, "math");
             let module_bits = crate::molt_module_new(name_bits);
             assert!(
@@ -1361,7 +1361,7 @@ fn importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module(
 #[ignore = "calls molt_runtime_shutdown() which sets RUNTIME_SHUTDOWN_COMPLETE and can abort under the threaded harness; run in isolation with `cargo test -- importlib_stabilize_module_state_clears_internal_dunder_path_placeholder --ignored`"]
 fn importlib_stabilize_module_state_clears_internal_dunder_path_placeholder() {
     with_trusted_runtime(|| {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let name_bits = alloc_test_string_bits(_py, "math");
             let module_bits = crate::molt_module_new(name_bits);
             assert!(
@@ -1453,7 +1453,7 @@ fn importlib_sha256_path_supports_zip_archive_members() {
     writer.finish().expect("finish archive");
 
     let archive_member_path = format!("{}/demo/native.so", archive.to_string_lossy());
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let digest = importlib_sha256_path(_py, &archive_member_path).expect("hash archive member");
         assert_eq!(digest, importlib_sha256_hex(b"zip-extension-bytes"));
     });

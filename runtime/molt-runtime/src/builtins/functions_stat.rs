@@ -4,7 +4,7 @@ use crate::{alloc_string, alloc_tuple, obj_from_bits, raise_exception, to_i64};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_constants() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         fn stat_target_minor() -> i64 {
             // Check explicit env-var overrides first.  Do NOT read from
             // state.sys_version_info — that field is set by
@@ -207,7 +207,7 @@ fn parse_stat_mode(_py: &crate::PyToken<'_>, mode_bits: u64) -> Result<i64, u64>
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_ifmt(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         const S_IFMT_MASK: i64 = 0o170000;
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
@@ -219,7 +219,7 @@ pub extern "C" fn molt_stat_ifmt(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_imode(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         const S_IMODE_MASK: i64 = 0o7777;
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
@@ -231,7 +231,7 @@ pub extern "C" fn molt_stat_imode(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_isdir(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
             Err(bits) => return bits,
@@ -242,7 +242,7 @@ pub extern "C" fn molt_stat_isdir(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_isreg(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
             Err(bits) => return bits,
@@ -253,7 +253,7 @@ pub extern "C" fn molt_stat_isreg(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_ischr(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
             Err(bits) => return bits,
@@ -264,7 +264,7 @@ pub extern "C" fn molt_stat_ischr(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_isblk(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
             Err(bits) => return bits,
@@ -275,7 +275,7 @@ pub extern "C" fn molt_stat_isblk(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_isfifo(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
             Err(bits) => return bits,
@@ -286,7 +286,7 @@ pub extern "C" fn molt_stat_isfifo(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_islnk(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
             Err(bits) => return bits,
@@ -297,7 +297,7 @@ pub extern "C" fn molt_stat_islnk(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_issock(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode = match parse_stat_mode(_py, mode_bits) {
             Ok(mode) => mode,
             Err(bits) => return bits,
@@ -308,7 +308,7 @@ pub extern "C" fn molt_stat_issock(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_isdoor(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         const S_IFDOOR: i64 = 0;
         if S_IFDOOR == 0 {
             return MoltObject::from_bool(false).bits();
@@ -323,7 +323,7 @@ pub extern "C" fn molt_stat_isdoor(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_isport(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         const S_IFPORT: i64 = 0;
         if S_IFPORT == 0 {
             return MoltObject::from_bool(false).bits();
@@ -338,7 +338,7 @@ pub extern "C" fn molt_stat_isport(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_iswht(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(any(
             target_os = "macos",
             target_os = "freebsd",
@@ -366,7 +366,7 @@ pub extern "C" fn molt_stat_iswht(mode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_filemode(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         const S_IFMT_MASK: i64 = 0o170000;
         const S_IFSOCK: i64 = 0o140000;
         const S_IFLNK: i64 = 0o120000;

@@ -2004,7 +2004,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
     out: *mut u64,
 ) -> i32 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             // Host-fed string objects can cross arbitrary compiled call boundaries
             // and may be stored in persistent module/class/function structures.
             // They must not be tied to a nursery frame.
@@ -2103,7 +2103,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
     out: *mut u64,
 ) -> i32 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             // Host-fed bytes objects are entry-boundary values: they can be passed
             // through nested compiled calls and must not depend on nursery lifetime.
             let _nursery_guard = crate::object::NurserySuspendGuard::new();

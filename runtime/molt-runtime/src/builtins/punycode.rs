@@ -242,7 +242,7 @@ fn punycode_decode_impl(input: &[u8], errors: &str) -> Result<String, String> {
 /// `molt_punycode_encode(text) -> bytes`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_punycode_encode(text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "punycode_encode: expected str");
         };
@@ -258,7 +258,7 @@ pub extern "C" fn molt_punycode_encode(text_bits: u64) -> u64 {
 /// `molt_punycode_decode(data, errors) -> str`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_punycode_decode(data_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Accept str or bytes input.
         let raw: Vec<u8> = if let Some(s) = string_obj_to_owned(obj_from_bits(data_bits)) {
             s.into_bytes()

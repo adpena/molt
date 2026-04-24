@@ -3825,7 +3825,7 @@ pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let debug = std::env::var("MOLT_DEBUG_LOCALS").as_deref() == Ok("1");
         if debug {
             let (depth, top_locals, top_code) = FRAME_STACK.with(|stack| {
@@ -3857,7 +3857,7 @@ struct FrameField {
 /// module chunk functions at entry to populate traceback file/line info.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_push(code_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         frame_stack_push(_py, code_bits);
         MoltObject::none().bits()
     })
@@ -3868,7 +3868,7 @@ pub extern "C" fn molt_frame_push(code_bits: u64) -> u64 {
 /// chunks where no pre-built code object exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_push_info(filename_bits: u64, name_bits: u64, lineno: i64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         use crate::object::builders::alloc_code_obj;
         let code_ptr = alloc_code_obj(
             _py,
@@ -3924,7 +3924,7 @@ pub extern "C" fn molt_frame_set_col(col_offset: i64, end_col_offset: i64) -> u6
 /// Pop a frame entry from the frame stack.  Called at module chunk exit.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_pop() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         frame_stack_pop(_py);
         MoltObject::none().bits()
     })
@@ -4330,7 +4330,7 @@ pub(crate) fn frame_stack_trace_bits(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let depth_val = obj_from_bits(depth_bits);
         let Some(depth) = to_i64(depth_val) else {
             return raise_exception::<u64>(_py, "TypeError", "depth must be an integer");
@@ -4410,7 +4410,7 @@ fn top_user_frame_entry() -> Option<FrameEntry> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_locals_builtin() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let debug = std::env::var("MOLT_DEBUG_LOCALS").as_deref() == Ok("1");
         let entry = top_user_frame_entry();
         if let Some(entry) = entry {
@@ -4472,7 +4472,7 @@ pub extern "C" fn molt_locals_builtin() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_globals_builtin() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let entry = top_user_frame_entry();
         let Some(entry) = entry else {
             return empty_dict_bits(_py);
@@ -4502,7 +4502,7 @@ pub extern "C" fn molt_globals_builtin() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let kind_obj = obj_from_bits(kind_bits);
         if let Some(ptr) = kind_obj.as_ptr() {
             unsafe {
@@ -4546,7 +4546,7 @@ pub extern "C" fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_new_from_class(class_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "exception class must be a type");
@@ -4576,7 +4576,7 @@ pub extern "C" fn molt_exception_new_from_class(class_bits: u64, args_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_new_bound(class_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let out = molt_exception_new_from_class(class_bits, args_bits);
         if !obj_from_bits(args_bits).is_none() {
             dec_ref_bits(_py, args_bits);
@@ -4587,7 +4587,7 @@ pub extern "C" fn molt_exception_new_bound(class_bits: u64, args_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_obj = obj_from_bits(self_bits);
         let Some(self_ptr) = self_obj.as_ptr() else {
             return raise_exception::<u64>(
@@ -4776,7 +4776,7 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_obj = obj_from_bits(self_bits);
         let Some(self_ptr) = self_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "add_note expects exception instance");
@@ -4867,7 +4867,7 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_with_traceback(self_bits: u64, traceback_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_obj = obj_from_bits(self_bits);
         let Some(self_ptr) = self_obj.as_ptr() else {
             return raise_exception::<u64>(
@@ -4919,7 +4919,7 @@ pub extern "C" fn molt_exception_with_traceback(self_bits: u64, traceback_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_obj = obj_from_bits(self_bits);
         let Some(self_ptr) = self_obj.as_ptr() else {
             return raise_exception::<u64>(
@@ -4963,7 +4963,7 @@ pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_subgroup(self_bits: u64, matcher_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_obj = obj_from_bits(self_bits);
         let Some(self_ptr) = self_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
@@ -5012,7 +5012,7 @@ pub extern "C" fn molt_exceptiongroup_subgroup(self_bits: u64, matcher_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_split(self_bits: u64, matcher_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_obj = obj_from_bits(self_bits);
         let Some(self_ptr) = self_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
@@ -5061,7 +5061,7 @@ pub extern "C" fn molt_exceptiongroup_split(self_bits: u64, matcher_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_derive(self_bits: u64, exceptions_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_obj = obj_from_bits(self_bits);
         let Some(self_ptr) = self_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
@@ -5106,7 +5106,7 @@ pub extern "C" fn molt_exceptiongroup_derive(self_bits: u64, exceptions_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         if obj_from_bits(exc_bits).is_none() {
             return exception_group_make_pair_tuple(_py, None, None);
@@ -5198,7 +5198,7 @@ pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
@@ -5253,7 +5253,7 @@ pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
         let Some(ptr) = exc_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
@@ -5271,7 +5271,7 @@ pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_class(kind_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let kind_obj = obj_from_bits(kind_bits);
         let Some(ptr) = kind_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "exception kind must be a str");
@@ -5289,7 +5289,7 @@ pub extern "C" fn molt_exception_class(kind_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
         let Some(ptr) = exc_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
@@ -5307,7 +5307,7 @@ pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_set_cause(exc_bits: u64, cause_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
         let Some(ptr) = exc_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
@@ -5357,7 +5357,7 @@ pub extern "C" fn molt_exception_set_cause(exc_bits: u64, cause_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_set_value(exc_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
         let Some(ptr) = exc_obj.as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
@@ -5379,7 +5379,7 @@ pub extern "C" fn molt_exception_set_value(exc_bits: u64, value_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_context_set(exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
         if !exc_obj.is_none() {
             let Some(ptr) = exc_obj.as_ptr() else {
@@ -5400,7 +5400,7 @@ pub extern "C" fn molt_exception_context_set(exc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
         if exc_obj.is_none() || exc_bits == 0 {
             clear_exception(_py);
@@ -5588,12 +5588,12 @@ fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_last() -> u64 {
-    crate::with_gil_entry!(_py, { exception_last_public_bits(_py) })
+    crate::with_gil_entry_nopanic!(_py, { exception_last_public_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_active() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(bits) = exception_context_active_bits() {
             if debug_exception_flow() {
                 let kind = obj_from_bits(bits)
@@ -5618,7 +5618,7 @@ pub extern "C" fn molt_exception_active() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_current() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(bits) = exception_context_active_bits() {
             if debug_exception_flow() {
                 let kind = obj_from_bits(bits)
@@ -5652,7 +5652,7 @@ pub extern "C" fn molt_exception_current() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_resolve_captured(captured_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let captured = obj_from_bits(captured_bits);
         if let Some(ptr) = captured.as_ptr()
             && unsafe { object_type_id(ptr) == TYPE_ID_EXCEPTION }
@@ -5702,7 +5702,7 @@ pub extern "C" fn molt_exception_resolve_captured(captured_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_enter_handler(captured_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bits = {
             let captured = obj_from_bits(captured_bits);
             if let Some(ptr) = captured.as_ptr()
@@ -5725,7 +5725,7 @@ pub extern "C" fn molt_exception_enter_handler(captured_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_clear() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let debug_clear = debug_exception_clear();
         let reason = exception_clear_reason_take();
         let cleared_bits = if debug_clear && exception_pending(_py) {
@@ -5798,12 +5798,12 @@ pub extern "C" fn molt_exception_clear() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending() -> u64 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending_fast() -> u64 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 /// Returns a pointer to the `last_exception_pending` AtomicBool byte.
@@ -5835,7 +5835,7 @@ pub extern "C" fn molt_task_exception_pending_flag_ptr() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_enter() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let prev = exception_stack_baseline_get();
         let depth = exception_stack_depth();
         exception_stack_baseline_set(depth);
@@ -5845,7 +5845,7 @@ pub extern "C" fn molt_exception_stack_enter() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // The prev_bits value comes from exception_stack_enter and should
         // be a NaN-boxed non-negative int.  However, when the exception
         // handler is reached through SSA paths where the variable was
@@ -5865,14 +5865,14 @@ pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_depth() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         int_bits_from_i64(_py, exception_stack_depth() as i64)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_set_depth(depth_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Same as exception_stack_exit: SSA paths through exception
         // handlers may pass None for undefined variables. Default to 0.
         let depth = match to_i64(obj_from_bits(depth_bits)) {
@@ -5886,7 +5886,7 @@ pub extern "C" fn molt_exception_stack_set_depth(depth_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_push() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         exception_stack_push();
         MoltObject::none().bits()
     })
@@ -5894,7 +5894,7 @@ pub extern "C" fn molt_exception_push() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pop() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         exception_stack_pop(_py);
         MoltObject::none().bits()
     })
@@ -5902,7 +5902,7 @@ pub extern "C" fn molt_exception_pop() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_clear() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         exception_stack_set_depth(_py, 0);
         MoltObject::none().bits()
     })
@@ -5910,7 +5910,7 @@ pub extern "C" fn molt_exception_stack_clear() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let exc_obj = obj_from_bits(exc_bits);
         if exc_obj.is_none() || exc_bits == 0 {
             if exception_pending(_py) {
@@ -6028,7 +6028,7 @@ mod tests {
     #[test]
     fn generator_exception_stack_drop_clears_entries() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let boxed = Box::new(0_u8);
             let ptr = Box::into_raw(boxed);
             let bits = vec![MoltObject::none().bits(), MoltObject::none().bits()];
@@ -6048,7 +6048,7 @@ mod tests {
     #[test]
     fn task_exception_stack_drop_clears_entries() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let boxed = Box::new(0_u8);
             let ptr = Box::into_raw(boxed);
             let bits = vec![MoltObject::none().bits()];

@@ -19,7 +19,7 @@ pub extern "C" fn __molt_difflib_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -35,7 +35,7 @@ pub extern "C" fn __molt_difflib_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_difflib_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
     })
@@ -43,7 +43,7 @@ pub extern "C" fn __molt_difflib_alloc_tuple(elems_ptr: *const u64, elems_len: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_difflib_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
     })
@@ -51,7 +51,7 @@ pub extern "C" fn __molt_difflib_alloc_list(elems_ptr: *const u64, elems_len: us
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_difflib_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -89,7 +89,7 @@ pub extern "C" fn __molt_difflib_type_name(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let name = _type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
@@ -109,7 +109,7 @@ pub extern "C" fn __molt_difflib_type_name(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_difflib_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }

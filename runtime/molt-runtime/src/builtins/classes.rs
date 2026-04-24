@@ -1042,7 +1042,7 @@ pub(crate) fn class_name_for_error(class_bits: u64) -> String {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "builtin class name must be str");
         };

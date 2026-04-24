@@ -75,7 +75,7 @@ fn str_bits(_py: &PyToken<'_>, s: &str) -> u64 {
 /// the canonical `molt_os_listdir` name so os.py can use either.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.listdir", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -127,7 +127,7 @@ pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
 /// Each tuple: (name, path, is_dir, is_file, is_symlink)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.scandir", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -216,7 +216,7 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
 /// We collect the full walk eagerly (no generator semantics in the intrinsic layer).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_walk(top_bits: u64, topdown_bits: u64, followlinks_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.walk", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -362,7 +362,7 @@ fn walk_dir_collect(
 /// This provides the canonical os-namespaced variant.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getcwd() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.getcwd", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -381,7 +381,7 @@ pub extern "C" fn molt_os_getcwd() -> u64 {
 /// `os.chdir(path)` → None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_chdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.chdir", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -401,7 +401,7 @@ pub extern "C" fn molt_os_chdir(path_bits: u64) -> u64 {
 /// `os.mkdir(path, mode=0o777)` → None  (single directory only)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.mkdir", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -434,7 +434,7 @@ pub extern "C" fn molt_os_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
 /// `os.rmdir(path)` → None  (remove empty directory)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_rmdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.rmdir", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -454,7 +454,7 @@ pub extern "C" fn molt_os_rmdir(path_bits: u64) -> u64 {
 /// `os.removedirs(path)` → None  (remove leaf then successive empty parents)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_removedirs(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.removedirs", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -489,7 +489,7 @@ pub extern "C" fn molt_os_removedirs(path_bits: u64) -> u64 {
 /// mode: F_OK=0, X_OK=1, W_OK=2, R_OK=4  (POSIX standard values)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_access(path_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.access", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -542,7 +542,7 @@ pub extern "C" fn molt_os_access(path_bits: u64, mode_bits: u64) -> u64 {
 /// `os.chmod(path, mode)` → None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_chmod(path_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.chmod", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -584,7 +584,7 @@ pub extern "C" fn molt_os_chmod(path_bits: u64, mode_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_link(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.link", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -608,7 +608,7 @@ pub extern "C" fn molt_os_link(src_bits: u64, dst_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_link(_src_bits: u64, _dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "link")
     })
 }
@@ -618,7 +618,7 @@ pub extern "C" fn molt_os_link(_src_bits: u64, _dst_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_symlink(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.symlink", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -664,7 +664,7 @@ pub extern "C" fn molt_os_symlink(src_bits: u64, dst_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_symlink(_src_bits: u64, _dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink")
     })
 }
@@ -672,7 +672,7 @@ pub extern "C" fn molt_os_symlink(_src_bits: u64, _dst_bits: u64) -> u64 {
 /// `os.readlink(path)` → str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_readlink(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.readlink", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -693,7 +693,7 @@ pub extern "C" fn molt_os_readlink(path_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_truncate(path_bits: u64, length_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.truncate", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -726,7 +726,7 @@ pub extern "C" fn molt_os_truncate(path_bits: u64, length_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_truncate(_path_bits: u64, _length_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "truncate")
     })
 }
@@ -738,7 +738,7 @@ pub extern "C" fn molt_os_truncate(_path_bits: u64, _length_bits: u64) -> u64 {
 /// `os.getpid()` → int  (already exists as molt_getpid in platform.rs; alias here)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getpid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.getpid", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -759,7 +759,7 @@ pub extern "C" fn molt_os_getpid() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getppid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.getppid", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -780,7 +780,7 @@ pub extern "C" fn molt_os_getppid() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getppid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "OSError",
@@ -793,7 +793,7 @@ pub extern "C" fn molt_os_getppid() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getuid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.getuid", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -813,7 +813,7 @@ pub extern "C" fn molt_os_getuid() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getuid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getuid")
     })
 }
@@ -822,7 +822,7 @@ pub extern "C" fn molt_os_getuid() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getgid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.getgid", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -842,7 +842,7 @@ pub extern "C" fn molt_os_getgid() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getgid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getgid")
     })
 }
@@ -851,7 +851,7 @@ pub extern "C" fn molt_os_getgid() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_geteuid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.geteuid", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -871,7 +871,7 @@ pub extern "C" fn molt_os_geteuid() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_geteuid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "geteuid")
     })
 }
@@ -880,7 +880,7 @@ pub extern "C" fn molt_os_geteuid() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getegid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.getegid", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -900,7 +900,7 @@ pub extern "C" fn molt_os_getegid() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getegid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getegid")
     })
 }
@@ -909,7 +909,7 @@ pub extern "C" fn molt_os_getegid() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getlogin() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "env.read");
         audit_capability_decision("os.getlogin", "env.read", AuditArgs::None, allowed);
         if !allowed {
@@ -956,7 +956,7 @@ pub extern "C" fn molt_os_getlogin() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getlogin() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getlogin")
     })
 }
@@ -964,7 +964,7 @@ pub extern "C" fn molt_os_getlogin() -> u64 {
 /// `os.cpu_count()` → int | None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_cpu_count() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.cpu_count", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -979,7 +979,7 @@ pub extern "C" fn molt_os_cpu_count() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_get_terminal_size(fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(1) as libc::c_int;
         #[cfg(unix)]
         {
@@ -1009,7 +1009,7 @@ pub extern "C" fn molt_os_get_terminal_size(fd_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_get_terminal_size(_fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "get_terminal_size")
     })
 }
@@ -1018,7 +1018,7 @@ pub extern "C" fn molt_os_get_terminal_size(_fd_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getloadavg() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.getloadavg", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -1052,7 +1052,7 @@ pub extern "C" fn molt_os_getloadavg() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getloadavg() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getloadavg")
     })
 }
@@ -1062,7 +1062,7 @@ pub extern "C" fn molt_os_getloadavg() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_uname() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.uname", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -1120,7 +1120,7 @@ pub extern "C" fn molt_os_uname() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_uname() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "uname")
     })
 }
@@ -1129,7 +1129,7 @@ pub extern "C" fn molt_os_uname() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_umask(mask_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.umask", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -1152,7 +1152,7 @@ pub extern "C" fn molt_os_umask(mask_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_umask(_mask_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "umask")
     })
 }
@@ -1165,7 +1165,7 @@ pub extern "C" fn molt_os_umask(_mask_bits: u64) -> u64 {
 /// All paths must share a common root; raises ValueError if they do not.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_commonpath(paths_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let paths_obj = obj_from_bits(paths_bits);
         if paths_obj.is_none() {
             return raise_exception::<_>(
@@ -1239,7 +1239,7 @@ fn common_path_impl(paths: &[PathBuf]) -> Option<PathBuf> {
 /// Character-level common prefix of the string representations.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let paths_obj = obj_from_bits(paths_bits);
         if paths_obj.is_none() {
             let ptr = alloc_string(_py, b"");
@@ -1294,7 +1294,7 @@ pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
 /// `os.path.getsize(path)` → int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.path.getsize", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -1314,7 +1314,7 @@ pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
 /// `os.path.getmtime(path)` → float  (modification time, seconds since epoch)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.path.getmtime", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -1337,7 +1337,7 @@ pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
 /// `os.path.getatime(path)` → float  (access time)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.path.getatime", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -1360,7 +1360,7 @@ pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
 /// `os.path.getctime(path)` → float  (creation/metadata-change time)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getctime(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.path.getctime", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -1393,7 +1393,7 @@ pub extern "C" fn molt_os_path_getctime(path_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_samefile(path1_bits: u64, path2_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.path.samefile", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -1436,7 +1436,7 @@ pub extern "C" fn molt_os_path_samefile(path1_bits: u64, path2_bits: u64) -> u64
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_samefile(_path1_bits: u64, _path2_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "samefile")
     })
 }
@@ -1448,7 +1448,7 @@ pub extern "C" fn molt_os_path_samefile(_path1_bits: u64, _path2_bits: u64) -> u
 /// `os.sep` → str  ("/" on POSIX, "\\" on Windows)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_sep() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let sep = std::path::MAIN_SEPARATOR_STR;
         str_bits(_py, sep)
     })
@@ -1457,7 +1457,7 @@ pub extern "C" fn molt_os_sep() -> u64 {
 /// `os.linesep` → str  ("\n" on POSIX, "\r\n" on Windows)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_linesep() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(windows)]
         {
             str_bits(_py, "\r\n")
@@ -1472,7 +1472,7 @@ pub extern "C" fn molt_os_linesep() -> u64 {
 /// `os.devnull` → str  ("/dev/null" on POSIX, "nul" on Windows)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_devnull() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(windows)]
         {
             str_bits(_py, "nul")
@@ -1487,25 +1487,25 @@ pub extern "C" fn molt_os_devnull() -> u64 {
 /// `os.curdir` → str  (".")
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_curdir() -> u64 {
-    crate::with_gil_entry!(_py, { str_bits(_py, ".") })
+    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, ".") })
 }
 
 /// `os.pardir` → str  ("..")
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_pardir() -> u64 {
-    crate::with_gil_entry!(_py, { str_bits(_py, "..") })
+    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, "..") })
 }
 
 /// `os.extsep` → str  (".")
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_extsep() -> u64 {
-    crate::with_gil_entry!(_py, { str_bits(_py, ".") })
+    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, ".") })
 }
 
 /// `os.altsep` → str | None  (None on POSIX, "/" on Windows)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_altsep() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(windows)]
         {
             str_bits(_py, "/")
@@ -1520,7 +1520,7 @@ pub extern "C" fn molt_os_altsep() -> u64 {
 /// `os.pathsep` → str  (":" on POSIX, ";" on Windows)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_pathsep() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(windows)]
         {
             str_bits(_py, ";")
@@ -1539,7 +1539,7 @@ pub extern "C" fn molt_os_pathsep() -> u64 {
 /// `os.dup2(fd, fd2)` → int — duplicate fd onto fd2
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.dup2", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -1576,7 +1576,7 @@ pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
 /// `os.lseek(fd, pos, how)` → int — seek within file descriptor
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.lseek", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -1617,7 +1617,7 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
 /// `os.ftruncate(fd, length)` → None — truncate fd to length
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.ftruncate", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -1661,7 +1661,7 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
 /// `os.isatty(fd)` → bool — return True if fd is a tty
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_isatty(fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
         };
@@ -1683,7 +1683,7 @@ pub extern "C" fn molt_os_isatty(fd_bits: u64) -> u64 {
 /// `os.fdopen(fd, mode, closefd)` — stub: raises NotImplementedError
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_fdopen(_fd_bits: u64, _mode_bits: u64, _closefd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "NotImplementedError",
@@ -1699,7 +1699,7 @@ pub extern "C" fn molt_os_fdopen(_fd_bits: u64, _mode_bits: u64, _closefd_bits: 
 /// `os.kill(pid, sig)` → None — send signal to process
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.kill", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -1734,7 +1734,7 @@ pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
 /// `os.waitpid(pid, options)` → (pid, status) — wait for process
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.waitpid", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -1779,7 +1779,7 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
 /// `os.getpgrp()` → int — get process group
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getpgrp() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.getpgrp", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -1800,7 +1800,7 @@ pub extern "C" fn molt_os_getpgrp() -> u64 {
 /// `os.setpgrp()` → None — set process group
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_setpgrp() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.setpgrp", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -1829,7 +1829,7 @@ pub extern "C" fn molt_os_setpgrp() -> u64 {
 /// `os.setsid()` → int — create new session
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_setsid() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("os.setsid", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -1882,7 +1882,7 @@ const WASM_SYSCONF_ENTRIES: &[(&str, i64, i64)] = &[
 /// `os.sysconf(name)` → int — get system configuration value
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(name) = to_i64(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "sysconf name must be an integer");
         };
@@ -1917,7 +1917,7 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
 /// `os.sysconf_names` — returns flat list [name_str, value_int, ...] of common POSIX sysconf names
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_sysconf_names() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(target_arch = "wasm32")]
         {
             let mut entries: Vec<u64> = Vec::with_capacity(WASM_SYSCONF_ENTRIES.len() * 2);
@@ -2006,7 +2006,7 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
 /// `os.path.realpath(path)` → str — resolve path following symlinks
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_realpath(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.path.realpath", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -2029,7 +2029,7 @@ pub extern "C" fn molt_os_path_realpath(path_bits: u64) -> u64 {
 /// The Python wrapper decomposes the `times` tuple before calling this.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.utime", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -2119,7 +2119,7 @@ pub extern "C" fn molt_os_sendfile(
     offset_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("os.sendfile", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -2270,7 +2270,7 @@ pub extern "C" fn molt_os_wstopsig(status_bits: u64) -> u64 {
 /// Otherwise attempts __fspath__ protocol via path_from_bits.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(path_bits);
         // Fast path: already str
         if string_obj_to_owned(obj).is_some() {
@@ -2310,7 +2310,7 @@ pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
 /// and keeps it synchronised via `os.putenv` / `os.unsetenv`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_environ() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "env.read");
         audit_capability_decision("os.environ", "env.read", AuditArgs::None, allowed);
         if !allowed {
@@ -2357,7 +2357,7 @@ pub extern "C" fn molt_os_environ() -> u64 {
 /// Recursive directory creation (like `mkdir -p`).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.makedirs", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -2411,7 +2411,7 @@ pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits
 /// level; the Python wrapper folds over `*p` by repeated calls.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_join(base_bits: u64, part_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let base_str = match string_obj_to_owned(obj_from_bits(base_bits)) {
             Some(s) => s,
             None => {
@@ -2440,7 +2440,7 @@ pub extern "C" fn molt_os_path_join(base_bits: u64, part_bits: u64) -> u64 {
 /// `os.path.exists(path)` → bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_exists(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path = match require_path(_py, path_bits, "path") {
             Ok(p) => p,
             Err(_) => return MoltObject::from_bool(false).bits(),
@@ -2452,7 +2452,7 @@ pub extern "C" fn molt_os_path_exists(path_bits: u64) -> u64 {
 /// `os.path.isfile(path)` → bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_isfile(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path = match require_path(_py, path_bits, "path") {
             Ok(p) => p,
             Err(_) => return MoltObject::from_bool(false).bits(),
@@ -2464,7 +2464,7 @@ pub extern "C" fn molt_os_path_isfile(path_bits: u64) -> u64 {
 /// `os.path.isdir(path)` → bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_isdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path = match require_path(_py, path_bits, "path") {
             Ok(p) => p,
             Err(_) => return MoltObject::from_bool(false).bits(),

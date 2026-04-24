@@ -6,12 +6,12 @@ use crate::{
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_trusted() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(is_trusted(_py)).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(is_trusted(_py)).bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_has(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(crate::obj_from_bits(name_bits)) {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "capability name must be str"),
@@ -39,7 +39,7 @@ pub extern "C" fn molt_capabilities_has(name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(crate::obj_from_bits(name_bits)) {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "capability name must be str"),

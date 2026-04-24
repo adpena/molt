@@ -238,7 +238,7 @@ fn is_typing_param(_py: &PyToken<'_>, bits: u64) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let code_obj = obj_from_bits(code_bits);
         let Some(code_ptr) = code_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "code.co_positions() requires code");
@@ -2881,7 +2881,7 @@ pub unsafe extern "C" fn molt_get_attr_generic(
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             if obj_ptr.is_null() {
                 return raise_exception::<_>(_py, "AttributeError", "object has no attribute");
@@ -2980,7 +2980,7 @@ pub unsafe extern "C" fn molt_get_attr_ptr(
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits)
         })
     }
@@ -2996,7 +2996,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
     val_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             if obj_ptr.is_null() {
                 return raise_exception::<_>(_py, "AttributeError", "object has no attribute");
@@ -4793,7 +4793,7 @@ pub unsafe extern "C" fn molt_set_attr_ptr(
     val_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             molt_set_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits)
         })
     }
@@ -4808,7 +4808,7 @@ pub unsafe extern "C" fn molt_del_attr_generic(
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             if obj_ptr.is_null() {
                 return raise_exception::<_>(_py, "AttributeError", "object has no attribute");
@@ -4834,7 +4834,7 @@ pub unsafe extern "C" fn molt_del_attr_ptr(
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             molt_del_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits)
         })
     }
@@ -4849,7 +4849,7 @@ pub unsafe extern "C" fn molt_get_attr_object(
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
@@ -4926,7 +4926,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
     site_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(site_id) = ic_site_from_bits(site_bits) else {
                 return molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits);
             };
@@ -5058,7 +5058,7 @@ pub unsafe extern "C" fn molt_get_attr_special(
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
@@ -5101,7 +5101,7 @@ pub unsafe extern "C" fn molt_set_attr_object(
     val_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
                 return molt_set_attr_generic(ptr, attr_name_ptr, attr_name_len_bits, val_bits);
@@ -5123,7 +5123,7 @@ pub unsafe extern "C" fn molt_del_attr_object(
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
                 return molt_del_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
@@ -5148,7 +5148,7 @@ pub extern "C" fn molt_function_descriptor_get(
     instance_bits: u64,
     _owner_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let instance_obj = obj_from_bits(instance_bits);
         if instance_obj.is_none() {
             // Unbound access: return the function itself.
@@ -5162,7 +5162,7 @@ pub extern "C" fn molt_function_descriptor_get(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);
@@ -5273,7 +5273,7 @@ pub extern "C" fn molt_get_attr_name_default(
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if is_missing_bits(_py, default_bits) {
             return molt_get_attr_name(obj_bits, name_bits);
         }
@@ -5376,7 +5376,7 @@ pub extern "C" fn molt_get_attr_name_default(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);
@@ -5422,7 +5422,7 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_attr_name(obj_bits: u64, name_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);
@@ -5446,7 +5446,7 @@ pub extern "C" fn molt_set_attr_name(obj_bits: u64, name_bits: u64, val_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_del_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);

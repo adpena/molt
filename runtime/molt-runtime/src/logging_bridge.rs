@@ -19,7 +19,7 @@ pub extern "C" fn __molt_logging_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -31,12 +31,12 @@ pub extern "C" fn __molt_logging_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_clear_exception() {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         clear_exception(_py);
     })
 }
@@ -47,7 +47,7 @@ pub extern "C" fn __molt_logging_clear_exception() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -85,7 +85,7 @@ pub extern "C" fn __molt_logging_string_obj_to_owned(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
@@ -114,7 +114,7 @@ pub extern "C" fn __molt_logging_to_i64(bits: u64, out: *mut i64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_call_callable1(call_bits: u64, arg0: u64) -> u64 {
-    crate::with_gil_entry!(_py, { unsafe { call_callable1(_py, call_bits, arg0) } })
+    crate::with_gil_entry_nopanic!(_py, { unsafe { call_callable1(_py, call_bits, arg0) } })
 }
 
 #[unsafe(no_mangle)]
@@ -122,7 +122,7 @@ pub extern "C" fn __molt_logging_attr_lookup_ptr_allow_missing(
     ptr: *mut u8,
     name_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bits: u64 =
             unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) }.unwrap_or_default();
         bits
@@ -135,7 +135,7 @@ static INTERN_WRITE: AtomicU64 = AtomicU64::new(0);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         let slot = &INTERN_WRITE;
         // Fast path: already interned.

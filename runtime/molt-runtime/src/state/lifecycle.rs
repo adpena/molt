@@ -59,7 +59,7 @@ impl Drop for ThreadLocalGuard {
             drain_heap_tls();
             return;
         }
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             clear_thread_local_state(_py);
         });
         clear_object_pool_tls();
@@ -808,7 +808,7 @@ mod tests {
     #[test]
     fn clear_worker_thread_state_keeps_gil_for_tls_cleanup() {
         let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             clear_worker_thread_state(_py);
         });
     }

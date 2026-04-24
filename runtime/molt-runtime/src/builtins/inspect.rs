@@ -950,7 +950,7 @@ fn inspect_cleandoc_impl(_py: &crate::PyToken<'_>, doc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let builtins = crate::builtins::classes::builtin_classes(_py);
         let is_builtin_fn = type_of_bits(_py, obj_bits) == builtins.builtin_function_or_method;
 
@@ -1016,12 +1016,12 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_cleandoc(doc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { inspect_cleandoc_impl(_py, doc_bits) })
+    crate::with_gil_entry_nopanic!(_py, { inspect_cleandoc_impl(_py, doc_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_currentframe() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Skip intrinsic + inspect.currentframe wrapper frames to match CPython.
         let depth_bits = int_bits_from_i64(_py, 2);
         if obj_from_bits(depth_bits).is_none() {
@@ -1039,7 +1039,7 @@ pub extern "C" fn molt_inspect_currentframe() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_getdoc(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(doc_bits) = (match get_attr_optional(_py, obj_bits, b"__doc__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1057,7 +1057,7 @@ pub extern "C" fn molt_inspect_getdoc(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isfunction(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let has_code = match has_attr(_py, obj_bits, b"__code__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1075,7 +1075,7 @@ pub extern "C" fn molt_inspect_isfunction(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isclass(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let has_mro = match has_attr(_py, obj_bits, b"__mro__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1086,7 +1086,7 @@ pub extern "C" fn molt_inspect_isclass(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_ismodule(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let has_dict = match has_attr(_py, obj_bits, b"__dict__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1104,7 +1104,7 @@ pub extern "C" fn molt_inspect_ismodule(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_iscoroutine(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let marker = match attr_truthy(_py, obj_bits, b"__molt_is_coroutine__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1141,7 +1141,7 @@ pub extern "C" fn molt_inspect_iscoroutine(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let marker = match attr_truthy(_py, obj_bits, b"__molt_is_coroutine__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1159,7 +1159,7 @@ pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let marker = match attr_truthy(_py, obj_bits, b"__molt_is_async_generator__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1177,7 +1177,7 @@ pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let marker = match attr_truthy(_py, obj_bits, b"__molt_is_generator__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1195,7 +1195,7 @@ pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isawaitable(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let marker = match attr_truthy(_py, obj_bits, b"__molt_is_coroutine__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1220,7 +1220,7 @@ pub extern "C" fn molt_inspect_isawaitable(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_getgeneratorstate(gen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let running = match attr_truthy(_py, gen_bits, b"gi_running") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1250,7 +1250,7 @@ pub extern "C" fn molt_inspect_getgeneratorstate(gen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_getasyncgenstate(agen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let running = match attr_truthy(_py, agen_bits, b"ag_running") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1280,7 +1280,7 @@ pub extern "C" fn molt_inspect_getasyncgenstate(agen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_getcoroutinestate(coro_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let running = match attr_truthy(_py, coro_bits, b"cr_running") {
             Ok(value) => value,
             Err(err) => return err,

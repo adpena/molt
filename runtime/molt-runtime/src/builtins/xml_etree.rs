@@ -386,7 +386,7 @@ fn indent_element(handle: i64, space: &str, level: usize) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_new(tag_bits: u64, _attrib_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let tag = match string_obj_to_owned(obj_from_bits(tag_bits)) {
             Some(s) => s,
             None => return MoltObject::none().bits(),
@@ -399,7 +399,7 @@ pub extern "C" fn molt_xml_element_new(tag_bits: u64, _attrib_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_tag(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.tag.clone()) {
             Some(tag) => mk_str(_py, &tag),
@@ -410,7 +410,7 @@ pub extern "C" fn molt_xml_element_tag(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_set_tag(handle_bits: u64, tag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let tag = match string_obj_to_owned(obj_from_bits(tag_bits)) {
             Some(s) => s,
@@ -423,7 +423,7 @@ pub extern "C" fn molt_xml_element_set_tag(handle_bits: u64, tag_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_text(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.text.clone()) {
             Some(Some(t)) => mk_str(_py, &t),
@@ -434,7 +434,7 @@ pub extern "C" fn molt_xml_element_text(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_set_text(handle_bits: u64, text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let text_obj = obj_from_bits(text_bits);
         let text = if text_obj.is_none() {
@@ -449,7 +449,7 @@ pub extern "C" fn molt_xml_element_set_text(handle_bits: u64, text_bits: u64) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_tail(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.tail.clone()) {
             Some(Some(t)) => mk_str(_py, &t),
@@ -460,7 +460,7 @@ pub extern "C" fn molt_xml_element_tail(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_set_tail(handle_bits: u64, tail_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let tail_obj = obj_from_bits(tail_bits);
         let tail = if tail_obj.is_none() {
@@ -479,7 +479,7 @@ pub extern "C" fn molt_xml_element_get_attrib(
     key_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(s) => s,
@@ -504,7 +504,7 @@ pub extern "C" fn molt_xml_element_set_attrib(
     key_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(s) => s,
@@ -523,7 +523,7 @@ pub extern "C" fn molt_xml_element_set_attrib(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_attrib_items(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| {
             let mut items: Vec<(String, String)> = e
@@ -550,7 +550,7 @@ pub extern "C" fn molt_xml_element_attrib_items(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_append(parent_bits: u64, child_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let parent = to_i64(obj_from_bits(parent_bits)).unwrap_or(0);
         let child = to_i64(obj_from_bits(child_bits)).unwrap_or(0);
         with_element_mut(parent, |e| e.children.push(child));
@@ -560,7 +560,7 @@ pub extern "C" fn molt_xml_element_append(parent_bits: u64, child_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_remove(parent_bits: u64, child_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let parent = to_i64(obj_from_bits(parent_bits)).unwrap_or(0);
         let child = to_i64(obj_from_bits(child_bits)).unwrap_or(0);
         with_element_mut(parent, |e| {
@@ -572,7 +572,7 @@ pub extern "C" fn molt_xml_element_remove(parent_bits: u64, child_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_children(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.children.clone()) {
             Some(children) => {
@@ -589,7 +589,7 @@ pub extern "C" fn molt_xml_element_children(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.children.len() as i64) {
             Some(n) => int_bits_from_i64(_py, n),
@@ -600,7 +600,7 @@ pub extern "C" fn molt_xml_element_len(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_find(handle_bits: u64, path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
             Some(s) => s,
@@ -623,7 +623,7 @@ pub extern "C" fn molt_xml_element_find(handle_bits: u64, path_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_findall(handle_bits: u64, path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
             Some(s) => s,
@@ -655,7 +655,7 @@ pub extern "C" fn molt_xml_element_findtext(
     path_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
             Some(s) => s,
@@ -684,7 +684,7 @@ pub extern "C" fn molt_xml_element_findtext(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_iter(handle_bits: u64, tag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let tag_filter = if obj_from_bits(tag_bits).is_none() {
             None
@@ -723,7 +723,7 @@ pub extern "C" fn molt_xml_element_drop(handle_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_fromstring(xml_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let xml = match string_obj_to_owned(obj_from_bits(xml_bits)) {
             Some(s) => s,
             None => {
@@ -743,7 +743,7 @@ pub extern "C" fn molt_xml_tostring(
     encoding_bits: u64,
     short_empty_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let short_empty = is_truthy(_py, obj_from_bits(short_empty_bits));
         let encoding = string_obj_to_owned(obj_from_bits(encoding_bits));
@@ -762,7 +762,7 @@ pub extern "C" fn molt_xml_tostring(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_indent(handle_bits: u64, space_bits: u64, level_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let space =
             string_obj_to_owned(obj_from_bits(space_bits)).unwrap_or_else(|| "  ".to_string());
@@ -774,7 +774,7 @@ pub extern "C" fn molt_xml_indent(handle_bits: u64, space_bits: u64, level_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_register_namespace(prefix_bits: u64, uri_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let prefix = match string_obj_to_owned(obj_from_bits(prefix_bits)) {
             Some(s) => s,
             None => return MoltObject::none().bits(),
@@ -790,7 +790,7 @@ pub extern "C" fn molt_xml_register_namespace(prefix_bits: u64, uri_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_clear(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         with_element_mut(handle, |e| {
             e.text = None;

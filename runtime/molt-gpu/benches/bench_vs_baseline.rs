@@ -214,17 +214,19 @@ fn main() {
     // --- Softmax ---
     let softmax_n = 1024;
     let x_soft: Vec<f32> = (0..softmax_n).map(|i| (i as f32) * 0.01 - 5.0).collect();
+    // Pre-allocate output buffers outside measurement loop to isolate
+    // compute cost from allocation overhead.
+    let mut raw_soft_out = vec![0.0f32; softmax_n];
+    let mut gpu_soft_out = vec![0.0f32; softmax_n];
 
     let raw_dur = bench(|| {
-        let mut out = vec![0.0f32; softmax_n];
-        raw_softmax(&x_soft, &mut out);
-        std::hint::black_box(&out);
+        raw_softmax(&x_soft, &mut raw_soft_out);
+        std::hint::black_box(&raw_soft_out);
     });
 
     let gpu_dur = bench(|| {
-        let mut out = vec![0.0f32; softmax_n];
-        gpu_softmax(&x_soft, &mut out);
-        std::hint::black_box(&out);
+        interpret::fused_softmax_f32(&x_soft, &mut gpu_soft_out, 1, softmax_n);
+        std::hint::black_box(&gpu_soft_out);
     });
 
     results.push(BenchResult {
@@ -239,16 +241,18 @@ fn main() {
     let x_norm: Vec<f32> = (0..norm_n).map(|i| (i as f32) * 0.01 - 5.0).collect();
     let eps = 1e-6f32;
 
+    // Pre-allocate output buffers outside measurement loop.
+    let mut raw_norm_out = vec![0.0f32; norm_n];
+    let mut gpu_norm_out = vec![0.0f32; norm_n];
+
     let raw_dur = bench(|| {
-        let mut out = vec![0.0f32; norm_n];
-        raw_rms_norm(&x_norm, &mut out, eps);
-        std::hint::black_box(&out);
+        raw_rms_norm(&x_norm, &mut raw_norm_out, eps);
+        std::hint::black_box(&raw_norm_out);
     });
 
     let gpu_dur = bench(|| {
-        let mut out = vec![0.0f32; norm_n];
-        gpu_rms_norm(&x_norm, &mut out, eps);
-        std::hint::black_box(&out);
+        interpret::fused_rms_norm_f32(&x_norm, &mut gpu_norm_out, 1, norm_n, eps);
+        std::hint::black_box(&gpu_norm_out);
     });
 
     results.push(BenchResult {

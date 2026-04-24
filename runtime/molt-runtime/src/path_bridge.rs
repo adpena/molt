@@ -19,7 +19,7 @@ pub extern "C" fn __molt_path_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -31,7 +31,7 @@ pub extern "C" fn __molt_path_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
@@ -42,7 +42,7 @@ pub extern "C" fn __molt_path_raise_os_error(
     ctx_ptr: *const u8,
     ctx_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let err_msg = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_msg_ptr, err_msg_len))
         };
@@ -81,7 +81,7 @@ pub extern "C" fn __molt_path_raise_os_error_errno(
     ctx_ptr: *const u8,
     ctx_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ctx =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ctx_ptr, ctx_len)) };
         raise_os_error_errno::<u64>(_py, errno, ctx)
@@ -94,7 +94,7 @@ pub extern "C" fn __molt_path_raise_os_error_errno(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
     })
@@ -102,7 +102,7 @@ pub extern "C" fn __molt_path_alloc_tuple(elems_ptr: *const u64, elems_len: usiz
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
     })
@@ -110,7 +110,7 @@ pub extern "C" fn __molt_path_alloc_list(elems_ptr: *const u64, elems_len: usize
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -118,7 +118,7 @@ pub extern "C" fn __molt_path_alloc_string(data_ptr: *const u8, data_len: usize)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
     })
@@ -129,7 +129,7 @@ pub extern "C" fn __molt_path_alloc_dict_with_pairs(
     pairs_ptr: *const u64,
     pairs_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
     })
@@ -168,7 +168,7 @@ pub extern "C" fn __molt_path_string_obj_to_owned(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
     })
@@ -198,14 +198,14 @@ pub extern "C" fn __molt_path_bytes_like_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, bits);
     })
 }
@@ -266,7 +266,7 @@ pub extern "C" fn __molt_path_molt_iter_next(iter_bits: u64, out: *mut u64) -> i
     let result = crate::object::ops_iter::molt_iter_next(iter_bits);
     let none_bits = MoltObject::none().bits();
     if result == none_bits {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if exception_pending(_py) {
                 0 // StopIteration or error
             } else {
@@ -290,7 +290,7 @@ pub extern "C" fn __molt_path_molt_iter_next(iter_bits: u64, out: *mut u64) -> i
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_has_capability(name_ptr: *const u8, name_len: usize) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
@@ -334,7 +334,7 @@ pub extern "C" fn __molt_path_path_from_bits(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match path_from_bits(_py, bits) {
             Ok(path) => {
                 let s = path.to_string_lossy().into_owned();
@@ -367,7 +367,7 @@ pub extern "C" fn __molt_path_type_name(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let name = crate::object::ops::type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();

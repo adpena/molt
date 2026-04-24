@@ -193,7 +193,7 @@ fn decode_error_range(label: &str, start: usize, end: usize, message: &str) -> S
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_encodings_aliases_map() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut pairs = Vec::with_capacity(ENCODINGS_ALIASES.len() * 2);
         for &(alias, canonical) in ENCODINGS_ALIASES {
             let alias_ptr = alloc_string(_py, alias.as_bytes());
@@ -217,7 +217,7 @@ pub extern "C" fn molt_encodings_aliases_map() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_codecs_decode(obj_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let encoding = match codec_arg_to_str(_py, encoding_bits, "decode", "encoding") {
             Some(val) => val,
             None => return MoltObject::none().bits(),
@@ -299,7 +299,7 @@ pub extern "C" fn molt_codecs_decode(obj_bits: u64, encoding_bits: u64, errors_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_codecs_encode(obj_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let encoding = match codec_arg_to_str(_py, encoding_bits, "encode", "encoding") {
             Some(val) => val,
             None => return MoltObject::none().bits(),
@@ -375,7 +375,7 @@ pub extern "C" fn molt_codecs_encode(obj_bits: u64, encoding_bits: u64, errors_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_codecs_lookup_name(encoding_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let encoding = match lookup_arg_to_str(_py, encoding_bits) {
             Some(val) => val,
             None => return MoltObject::none().bits(),

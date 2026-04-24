@@ -11,7 +11,7 @@ use crate::*;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_alloc_instance_for_class(class_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -21,7 +21,7 @@ pub extern "C" fn molt_itertools_alloc_instance_for_class(class_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_call_callable1(call_bits: u64, arg0_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { call_callable1(_py, call_bits, arg0_bits) }
     })
 }
@@ -32,14 +32,14 @@ pub extern "C" fn molt_itertools_call_callable2_bridge(
     arg0_bits: u64,
     arg1_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { call_callable2(_py, call_bits, arg0_bits, arg1_bits) }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_tuple_from_iter(iter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bits: u64 = unsafe { tuple_from_iter_bits(_py, iter_bits) }.unwrap_or_default();
         bits // signal failure (not None — caller checks for 0)
     })
@@ -51,7 +51,7 @@ pub extern "C" fn molt_itertools_alloc_class(
     name_len: usize,
     layout_size: i64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
@@ -97,7 +97,7 @@ pub extern "C" fn molt_itertools_class_set_iter_next(
     iter_fn_bits: u64,
     next_fn_bits: u64,
 ) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return;
         };
@@ -123,7 +123,7 @@ pub extern "C" fn molt_itertools_class_set_iter_next(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -145,7 +145,7 @@ pub extern "C" fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_alloc_kwd_mark() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>();
         let ptr = alloc_object(_py, total, TYPE_ID_OBJECT);
         if ptr.is_null() {
@@ -186,7 +186,7 @@ pub extern "C" fn molt_index_i64_from_obj(
     err_ptr: *const u8,
     err_len: usize,
 ) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         builtins::numbers::index_i64_from_obj(_py, obj_bits, err)
@@ -196,7 +196,7 @@ pub extern "C" fn molt_index_i64_from_obj(
 /// intern_static_name — exposed for the itertools crate.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         let ptr = alloc_string(_py, key);
         if ptr.is_null() {
@@ -210,5 +210,5 @@ pub extern "C" fn molt_intern_static_name(key_ptr: *const u8, key_len: usize) ->
 /// raise_not_iterable — exposed for the itertools crate.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_raise_not_iterable(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { raise_not_iterable::<u64>(_py, bits) })
+    crate::with_gil_entry_nopanic!(_py, { raise_not_iterable::<u64>(_py, bits) })
 }

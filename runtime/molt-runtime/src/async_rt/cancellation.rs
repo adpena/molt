@@ -364,7 +364,7 @@ pub(crate) fn token_is_cancelled(_py: &PyToken<'_>, id: u64) -> bool {
 /// `parent_bits` must be either `None` or an integer token id.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         cancel_tokens(_py);
         let parent_id = {
             let parent_obj = obj_from_bits(parent_bits);
@@ -411,7 +411,7 @@ pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
 /// `token_bits` must be an integer token id.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
             None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
@@ -425,7 +425,7 @@ pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
 /// `token_bits` must be an integer token id.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
             None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
@@ -439,7 +439,7 @@ pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
 /// `token_bits` must be an integer token id.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
             None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
@@ -458,7 +458,7 @@ pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
 /// `token_bits` must be an integer token id.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
             None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
@@ -471,7 +471,7 @@ pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 
 /// `token_bits` must be an integer token id or `None`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(0) => 1,
             Some(id) => id,
@@ -486,7 +486,7 @@ pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
 /// Requires the cancel token tables to be initialized by the runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_token_get_current() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         cancel_tokens(_py);
         MoltObject::from_int(current_token_id() as i64).bits()
     })
@@ -496,7 +496,7 @@ pub unsafe extern "C" fn molt_cancel_token_get_current() -> u64 {
 /// Requires the cancel token tables to be initialized by the runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancelled() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         cancel_tokens(_py);
         MoltObject::from_bool(token_is_cancelled(_py, current_token_id())).bits()
     })
@@ -506,7 +506,7 @@ pub unsafe extern "C" fn molt_cancelled() -> u64 {
 /// Requires the cancel token tables to be initialized by the runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cancel_current() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         cancel_tokens(_py);
         let id = current_token_id();
         let mut map = cancel_tokens(_py).lock().unwrap();

@@ -18,7 +18,7 @@ pub extern "C" fn __molt_collections_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -30,12 +30,12 @@ pub extern "C" fn __molt_collections_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_raise_key_error_with_key(key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { raise_key_error_with_key::<u64>(_py, key_bits) })
+    crate::with_gil_entry_nopanic!(_py, { raise_key_error_with_key::<u64>(_py, key_bits) })
 }
 
 // ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ pub extern "C" fn __molt_collections_alloc_tuple(
     elems_ptr: *const u64,
     elems_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
     })
@@ -58,7 +58,7 @@ pub extern "C" fn __molt_collections_alloc_list(
     elems_ptr: *const u64,
     elems_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
     })
@@ -66,7 +66,7 @@ pub extern "C" fn __molt_collections_alloc_list(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -77,7 +77,7 @@ pub extern "C" fn __molt_collections_alloc_dict_with_pairs(
     pairs_ptr: *const u64,
     pairs_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
     })
@@ -116,7 +116,7 @@ pub extern "C" fn __molt_collections_string_obj_to_owned(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
     })
@@ -128,7 +128,7 @@ pub extern "C" fn __molt_collections_type_name(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let name = type_name(_py, obj);
         let owned: String = name.into_owned();
@@ -149,14 +149,14 @@ pub extern "C" fn __molt_collections_type_name(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, bits);
     })
 }
@@ -186,7 +186,7 @@ pub extern "C" fn __molt_collections_index_i64_with_overflow(
     type_err_len: usize,
     out: *mut i64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_err = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_err_ptr, type_err_len))
         };
@@ -212,7 +212,7 @@ pub extern "C" fn __molt_collections_dict_get_in_place(
     key_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
                 unsafe {
@@ -231,7 +231,7 @@ pub extern "C" fn __molt_collections_dict_set_in_place(
     key_bits: u64,
     val_bits: u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) };
         1
     })
@@ -239,7 +239,7 @@ pub extern "C" fn __molt_collections_dict_set_in_place(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_dict_del_in_place(dict_ptr: *mut u8, key_bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if unsafe { dict_del_in_place(_py, dict_ptr, key_bits) } {
             1
         } else {
@@ -260,7 +260,7 @@ pub extern "C" fn __molt_collections_dict_order_clone(
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let order = unsafe { dict_order(ptr) }.clone();
         if order.is_empty() {
             return 0;
@@ -282,7 +282,7 @@ pub extern "C" fn __molt_collections_dict_order_clone(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_obj_eq(lhs_bits: u64, rhs_bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(lhs_bits);
         let rhs = obj_from_bits(rhs_bits);
         if obj_eq(_py, lhs, rhs) { 1 } else { 0 }
@@ -295,7 +295,7 @@ pub extern "C" fn __molt_collections_obj_eq(lhs_bits: u64, rhs_bits: u64) -> i32
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_call_callable0(call_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { crate::call::dispatch::call_callable0(_py, call_bits) }
     })
 }

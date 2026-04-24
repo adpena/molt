@@ -34,7 +34,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let total_size = std::mem::size_of::<MoltHeader>() + 8;
-        let (ptr, bits) = crate::with_gil_entry!(_py, {
+        let (ptr, bits) = crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
             assert!(!ptr.is_null());
             let bits = MoltObject::from_ptr(ptr).bits();
@@ -50,7 +50,7 @@ mod tests {
             let resolved = molt_handle_resolve(bits);
             assert_eq!(resolved, ptr as u64);
         }
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             unsafe { dec_ref_ptr(_py, ptr) };
         });
     }

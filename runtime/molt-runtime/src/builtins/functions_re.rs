@@ -69,7 +69,7 @@ pub extern "C" fn molt_re_literal_matches(
     literal_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(segment) = string_obj_to_owned(obj_from_bits(segment_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "segment must be str");
         };
@@ -92,7 +92,7 @@ pub extern "C" fn molt_re_literal_advance(
     literal_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };
@@ -120,7 +120,7 @@ pub extern "C" fn molt_re_any_advance(
     end_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };

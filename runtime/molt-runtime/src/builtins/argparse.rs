@@ -688,7 +688,7 @@ pub extern "C" fn molt_argparse_parser_new(
     description_bits: u64,
     epilog_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let prog = opt_str(prog_bits);
         let description = opt_str(description_bits);
         let epilog = opt_str(epilog_bits);
@@ -720,7 +720,7 @@ pub extern "C" fn molt_argparse_add_argument(
     dest_bits: u64,
     choices_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid argparse handle");
         };
@@ -809,7 +809,7 @@ pub extern "C" fn molt_argparse_add_argument(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_argparse_parse_args(handle_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid argparse handle");
         };
@@ -837,7 +837,7 @@ pub extern "C" fn molt_argparse_parse_args(handle_bits: u64, args_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_argparse_format_help(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid argparse handle");
         };
@@ -854,7 +854,7 @@ pub extern "C" fn molt_argparse_format_help(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_argparse_format_usage(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid argparse handle");
         };
@@ -871,7 +871,7 @@ pub extern "C" fn molt_argparse_format_usage(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_argparse_error(handle_bits: u64, message_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _id = to_i64(obj_from_bits(handle_bits));
         let msg = string_obj_to_owned(obj_from_bits(message_bits))
             .unwrap_or_else(|| "argument error".to_string());
@@ -885,7 +885,7 @@ pub extern "C" fn molt_argparse_add_subparsers(
     title_bits: u64,
     dest_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid argparse handle");
         };
@@ -925,7 +925,7 @@ pub extern "C" fn molt_argparse_add_parser(
     name_bits: u64,
     help_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(group_id) = to_i64(obj_from_bits(group_handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid subparser group handle");
         };
@@ -972,7 +972,7 @@ pub extern "C" fn molt_argparse_add_mutually_exclusive(
     handle_bits: u64,
     required_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid argparse handle");
         };
@@ -1011,7 +1011,7 @@ pub extern "C" fn molt_argparse_group_add_argument(
     help_bits: u64,
     action_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(group_id) = to_i64(obj_from_bits(group_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid group handle");
         };
@@ -1099,7 +1099,7 @@ pub extern "C" fn molt_argparse_group_add_argument(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_argparse_parser_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             PARSER_HANDLES.with(|map| {
                 map.borrow_mut().remove(&id);

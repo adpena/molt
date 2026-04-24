@@ -188,7 +188,7 @@ fn sync_state(state: &mut DumbState) -> Result<(), String> {
 /// flag: 'r' (read), 'w' (write), 'c' (create), 'n' (new/truncate)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
             Some(s) => s,
             None => return raise_exception::<u64>(_py, "TypeError", "expected str for path"),
@@ -288,7 +288,7 @@ pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits:
 /// Get a value by key. Returns bytes.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dbm_dumb_getitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
@@ -322,7 +322,7 @@ pub extern "C" fn molt_dbm_dumb_getitem(handle_bits: u64, key_bits: u64) -> u64 
 /// Set a key-value pair.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dbm_dumb_setitem(handle_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
@@ -366,7 +366,7 @@ pub extern "C" fn molt_dbm_dumb_setitem(handle_bits: u64, key_bits: u64, value_b
 /// Delete a key.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dbm_dumb_delitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
@@ -404,7 +404,7 @@ pub extern "C" fn molt_dbm_dumb_delitem(handle_bits: u64, key_bits: u64) -> u64 
 /// Check if a key exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dbm_dumb_contains(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
@@ -433,7 +433,7 @@ pub extern "C" fn molt_dbm_dumb_contains(handle_bits: u64, key_bits: u64) -> u64
 /// Return a list of all keys (as bytes).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dbm_dumb_keys(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
@@ -467,7 +467,7 @@ pub extern "C" fn molt_dbm_dumb_keys(handle_bits: u64) -> u64 {
 /// Sync the database to disk.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dbm_dumb_sync(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
@@ -495,7 +495,7 @@ pub extern "C" fn molt_dbm_dumb_sync(handle_bits: u64) -> u64 {
 /// Close the database (sync + release handle).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dbm_dumb_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
