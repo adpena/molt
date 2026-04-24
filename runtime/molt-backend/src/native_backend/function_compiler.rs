@@ -1627,8 +1627,23 @@ impl SimpleBackend {
                 rebind_var_names.insert(name.clone());
             }
         }
+        // Variables proven to be always float AND not function parameters
+        // are declared as F64 so the primary Cranelift Variable carries the raw
+        // f64 value.  This eliminates bitcast(f64→i64) on every store and
+        // bitcast(i64→f64) on every load in hot float loops (e.g. mandelbrot).
+        // Boxing is deferred to escape points via var_get_boxed / raw_primary_float.
+        let float_primary_vars: BTreeSet<String> = float_like_vars
+            .iter()
+            .filter(|name| !param_name_set.contains(name.as_str()))
+            .cloned()
+            .collect();
         for name in var_names.iter() {
-            let var = builder.declare_var(types::I64);
+            let var_type = if float_primary_vars.contains(name) {
+                types::F64
+            } else {
+                types::I64
+            };
+            let var = builder.declare_var(var_type);
             vars.insert(name.clone(), var);
         }
         let rebind_vars: BTreeMap<String, Variable> = rebind_var_names
@@ -3031,13 +3046,21 @@ impl SimpleBackend {
                 }
                 "const_float" => {
                     let val = op.f_value.expect("Float value not found");
-                    let boxed = box_float(val);
-                    let iconst = builder.ins().iconst(types::I64, boxed);
+                    let raw_f64 = builder.ins().f64const(val);
                     if let Some(ref out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, iconst);
+                        if float_primary_vars.contains(out__) {
+                            // Float-primary: store raw f64 directly in the F64
+                            // Variable.  Boxing deferred to escape points via
+                            // var_get_boxed.
+                            def_var_named(&mut builder, &vars, out__, raw_f64);
+                            raw_primary_float.insert(out__.clone());
+                        } else {
+                            let boxed = box_float(val);
+                            let iconst = builder.ins().iconst(types::I64, boxed);
+                            def_var_named(&mut builder, &vars, out__, iconst);
+                        }
                         // Seed raw f64 shadow so downstream float ops chain
                         // without NaN-box round-trips.
-                        let raw_f64 = builder.ins().f64const(val);
                         if let Some(&shadow_var) = raw_float_shadow.get(out__) {
                             builder.def_var(shadow_var, raw_f64);
                         }
@@ -21282,24 +21305,72 @@ impl SimpleBackend {
                 "store_var" => {
                     // Store a value into a named variable.
                     //
-                    // For variables inside back-edge loops (TIR-generated
-                    // label/jump/br_if control flow), we emit:
-                    //   old = use_var(name)
-                    //   inc_ref_obj(new)
-                    //   dec_ref_obj(old)
-                    //   def_var(name, new)
+                    // Fast path: when the source is raw-primary int and the
+                    // destination is proven-int, copy the raw i64 directly
+                    // with NO boxing and NO refcount ops.  Raw i64 values
+                    // are stack values, not heap pointers — refcounting them
+                    // is both incorrect and wasteful.  Overflow is handled
+                    // at escape points (function return, call args, heap
+                    // stores) via ensure_boxed_overflow_safe.
                     //
-                    // This mirrors molt_store_index's refcount management
-                    // and prevents bigint use-after-free when values are
-                    // reassigned across loop iterations.
+                    // Generic path: for variables inside back-edge loops
+                    // (TIR-generated label/jump/br_if control flow), we emit:
+                    //   inc_ref_obj(new)
+                    //   def_var(name, new)
                     //
                     // For non-loop store_var, drain_cleanup_tracked handles
                     // the final dec_ref at the ret point.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val =
-                        var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("store_var: src not found");
                     let var_name = op.var.as_deref().or(op.out.as_deref());
                     if let Some(name) = var_name {
+                        // --- Raw-primary int fast path ---
+                        // When source is raw-primary (its Variable holds unboxed i64)
+                        // AND destination is proven-int, transfer the raw i64 directly.
+                        // This eliminates box+unbox round-trips in tight loops like
+                        // `total += i; i += 1` where both sides are proven-int.
+                        if raw_primary_int.contains(&args[0])
+                            && scalar_fast_paths_enabled
+                            && int_like_vars.contains(name)
+                            && !slot_backed_join_slots.contains_key(name)
+                        {
+                            // Read raw i64 from source Variable (no boxing).
+                            let raw_val = {
+                                let in_loop = !loop_stack.is_empty();
+                                if in_loop {
+                                    shadow_value_var_only(
+                                        &mut builder,
+                                        &raw_int_shadow,
+                                        &args[0],
+                                    )
+                                } else {
+                                    shadow_value_for(
+                                        &mut builder,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
+                                        &args[0],
+                                    )
+                                }
+                            }
+                            .unwrap_or_else(|| {
+                                // Source is raw-primary but has no shadow entry yet.
+                                // Read directly from the main Variable (which holds raw i64).
+                                let var = *vars.get(&args[0]).expect("store_var: raw src var not found");
+                                builder.use_var(var)
+                            });
+                            // Store raw i64 directly into destination Variable.
+                            def_var_named(&mut builder, &vars, name, raw_val);
+                            raw_primary_int.insert(name.to_string());
+                            // Propagate shadow to destination (both tiers).
+                            if let Some(&dst_var) = raw_int_shadow.get(name) {
+                                builder.def_var(dst_var, raw_val);
+                            }
+                            raw_int_shadow_vals.insert(name.to_string(), raw_val);
+                            // No refcount ops needed — raw i64 is not a heap pointer.
+                            continue;
+                        }
+                        // --- Slot-backed join slots ---
+                        let val =
+                            var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("store_var: src not found");
                         if let Some(&slot) = slot_backed_join_slots.get(name) {
                             let old = builder.ins().stack_load(types::I64, slot, 0);
                             emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
@@ -21310,8 +21381,8 @@ impl SimpleBackend {
                             continue;
                         }
                         // Check if this store_var is inside a back-edge loop.
-                        // If so, emit inc_ref(new) + dec_ref(old) for correct
-                        // refcount management of heap-allocated values (bigints).
+                        // If so, emit inc_ref(new) for correct refcount
+                        // management of heap-allocated values (bigints).
                         // Detect if this store_var is inside a back-edge loop
                         // by checking if any jump/br_if in the function targets
                         // a label at a position before the jump.
@@ -21398,6 +21469,12 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(name.to_string(), raw_val);
                         }
+                    } else {
+                        // No destination variable name — still need to evaluate
+                        // the source for side effects (should not happen in
+                        // well-formed TIR, but defensive).
+                        let _val =
+                            var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var);
                     }
                 }
                 "load_var" | "copy_var" => {
@@ -21413,6 +21490,41 @@ impl SimpleBackend {
                                 raw_int_shadow_vals.remove(out_name);
                                 raw_float_shadow_vals.remove(out_name);
                             }
+                            continue;
+                        }
+                        // --- Raw-primary int fast path ---
+                        // When source is raw-primary and output is proven-int,
+                        // transfer raw i64 directly — no boxing, no refcount.
+                        if raw_primary_int.contains(var_name.as_str())
+                            && scalar_fast_paths_enabled
+                            && op.out.as_ref().map_or(false, |o| int_like_vars.contains(o))
+                        {
+                            let in_loop = !loop_stack.is_empty();
+                            let raw_val = if in_loop {
+                                shadow_value_var_only(
+                                    &mut builder,
+                                    &raw_int_shadow,
+                                    var_name,
+                                )
+                            } else {
+                                shadow_value_for(
+                                    &mut builder,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
+                                    var_name,
+                                )
+                            }
+                            .unwrap_or_else(|| {
+                                let var = *vars.get(var_name.as_str()).expect("load_var: raw src var not found");
+                                builder.use_var(var)
+                            });
+                            let out_name = op.out.as_ref().unwrap();
+                            def_var_named(&mut builder, &vars, out_name, raw_val);
+                            raw_primary_int.insert(out_name.clone());
+                            if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
+                                builder.def_var(dst_var, raw_val);
+                            }
+                            raw_int_shadow_vals.insert(out_name.clone(), raw_val);
                             continue;
                         }
                         let val = var_get_boxed(&mut builder, &vars, var_name, &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var)
