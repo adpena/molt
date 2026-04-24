@@ -1844,6 +1844,8 @@ impl WasmBackend {
             crate::rewrite_stateful_loops(func_ir);
         }
         for func_ir in &mut ir.functions {
+            crate::eliminate_unbound_local_checks(func_ir);
+            crate::eliminate_redundant_guard_tags(func_ir);
             crate::elide_dead_struct_allocs(func_ir);
         }
         for func_ir in &mut ir.functions {

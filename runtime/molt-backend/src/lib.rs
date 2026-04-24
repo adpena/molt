@@ -51,9 +51,10 @@ pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir
 use crate::native_backend::TrampolineKey;
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
-    elide_safe_exception_checks, eliminate_dead_functions, escape_analysis, fold_constants,
-    fold_constants_cross_block, hoist_loop_invariants, inline_functions, rc_coalescing,
-    rewrite_stateful_loops, split_megafunctions,
+    elide_safe_exception_checks, eliminate_dead_functions, eliminate_redundant_guard_tags,
+    eliminate_unbound_local_checks, escape_analysis, fold_constants, fold_constants_cross_block,
+    hoist_loop_invariants, inline_functions, rc_coalescing, rewrite_stateful_loops,
+    split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -2974,6 +2975,12 @@ impl SimpleBackend {
             let disable_rc = std::env::var("MOLT_DISABLE_RC_COALESCING").as_deref() == Ok("1");
             ir.functions.par_iter_mut().for_each(|func_ir| {
                 rewrite_stateful_loops(func_ir);
+                // Eliminate UnboundLocalError checks early — they are dead
+                // code in type-annotated functions and removing them before
+                // other passes prevents the ~11 ops per variable-access
+                // pattern from polluting escape analysis and constant folding.
+                eliminate_unbound_local_checks(func_ir);
+                eliminate_redundant_guard_tags(func_ir);
                 elide_dead_struct_allocs(func_ir);
                 escape_analysis(func_ir);
                 if !disable_rc {
