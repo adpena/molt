@@ -362,7 +362,8 @@ fn infer_scalar_lane(
         }
         "sub" | "mul" | "inplace_sub" | "inplace_mul" | "floordiv" | "mod" | "mod_"
         | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor" | "bitand"
-        | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" => {
+        | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor"
+        | "pow" => {
             if args_all(&is_float)
                 || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
             {
@@ -387,7 +388,13 @@ fn infer_scalar_lane(
                 None
             }
         }
-        "lshift" | "rshift" | "shl" | "shr" => None,
+        "lshift" | "rshift" | "shl" | "shr" => {
+            if args_all(&is_int) {
+                Some(ScalarLane::Int)
+            } else {
+                None
+            }
+        }
         "neg" | "pos" | "abs" | "builtin_abs" => first_source().and_then(|src| {
             if float_like_vars.contains(src) {
                 Some(ScalarLane::Float)
@@ -1262,7 +1269,7 @@ fn preanalyze_function_ir(
                 | "floordiv" | "mod" | "inplace_floordiv" | "inplace_mod" | "bit_and"
                 | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
                 | "inplace_bit_xor" | "lshift" | "rshift" | "shl" | "shr" | "neg" | "abs"
-                | "invert" | "builtin_abs" => {
+                | "invert" | "builtin_abs" | "pow" => {
                     match infer_scalar_lane(
                         op,
                         &int_like_vars,
@@ -4955,46 +4962,77 @@ impl SimpleBackend {
                 }
                 "bit_or" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                    let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_bit_or",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
+                        };
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let raw = builder.ins().bor(lhs_val, rhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, raw);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Bitwise OR on raw i64: branchless, no overflow
+                            // possible (|a|b| <= max(|a|,|b|)).
+                            let raw = builder.ins().bor(lhs_raw, rhs_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, raw);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, raw);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), raw);
+                            }
+                            continue;
+                        } else {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_bit_or",
+                                &[types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
 
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
+                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                            let raw = builder.ins().bor(lhs_val, rhs_val);
+                            let fits_inline = int_value_fits_inline(&mut builder, raw);
+                            builder
+                                .ins()
+                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
+                            jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        }
                     } else {
+                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -5141,46 +5179,76 @@ impl SimpleBackend {
                 }
                 "bit_and" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                    let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_bit_and",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
+                        };
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let raw = builder.ins().band(lhs_val, rhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, raw);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Bitwise AND on raw i64: branchless, no overflow.
+                            let raw = builder.ins().band(lhs_raw, rhs_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, raw);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, raw);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), raw);
+                            }
+                            continue;
+                        } else {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_bit_and",
+                                &[types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
 
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
+                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                            let raw = builder.ins().band(lhs_val, rhs_val);
+                            let fits_inline = int_value_fits_inline(&mut builder, raw);
+                            builder
+                                .ins()
+                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
+                            jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        }
                     } else {
+                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -5327,46 +5395,76 @@ impl SimpleBackend {
                 }
                 "bit_xor" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                    let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_bit_xor",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
+                        };
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let raw = builder.ins().bxor(lhs_val, rhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, raw);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Bitwise XOR on raw i64: branchless, no overflow.
+                            let raw = builder.ins().bxor(lhs_raw, rhs_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, raw);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, raw);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), raw);
+                            }
+                            continue;
+                        } else {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_bit_xor",
+                                &[types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
 
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
+                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                            let raw = builder.ins().bxor(lhs_val, rhs_val);
+                            let fits_inline = int_value_fits_inline(&mut builder, raw);
+                            builder
+                                .ins()
+                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
+                            jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        }
                     } else {
+                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -5513,6 +5611,37 @@ impl SimpleBackend {
                 }
                 "lshift" | "shl" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if op_prefers_int_lane(&op) {
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
+                        };
+
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Raw i64 primary: left shift.  Overflow is deferred to
+                            // boxing escape points via ensure_boxed_overflow_safe.
+                            let raw = builder.ins().ishl(lhs_raw, rhs_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, raw);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, raw);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), raw);
+                            }
+                            continue;
+                        }
+                    }
+                    // Fallback: runtime call.
                     let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                     let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                     let callee = Self::import_func_id_split(
@@ -5531,6 +5660,37 @@ impl SimpleBackend {
                 }
                 "rshift" | "shr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if op_prefers_int_lane(&op) {
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
+                        };
+
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Raw i64 primary: arithmetic right shift.  Result
+                            // magnitude <= input, so no overflow possible.
+                            let raw = builder.ins().sshr(lhs_raw, rhs_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, raw);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, raw);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), raw);
+                            }
+                            continue;
+                        }
+                    }
+                    // Fallback: runtime call.
                     let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                     let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                     let callee = Self::import_func_id_split(
@@ -5847,9 +6007,23 @@ impl SimpleBackend {
                 }
                 "floordiv" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                    let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
+                        // Both-shadow raw-primary path: compute floordiv on raw
+                        // i64 values directly, store raw as primary.
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
+                        };
+
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -5858,57 +6032,108 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let one = builder.ins().iconst(types::I64, 1);
-                        let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
-                        builder
-                            .ins()
-                            .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Raw i64 primary: compute floordiv directly.
+                            // Division by zero falls to runtime.
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_raw, zero);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64); // raw result
+                            builder.ins().brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        // SAFETY: Cranelift sdiv traps on INT_MIN/-1 (unlike x86 SIGFPE).
-                        // NaN-boxed ints are 47-bit (range [-(2^46), 2^46-1]), so INT64_MIN
-                        // cannot occur from unbox_int. If this invariant changes, add a guard:
-                        // rhs != -1 || lhs != INT64_MIN.
-                        let quot = builder.ins().sdiv(lhs_val, rhs_val);
-                        let rem = builder.ins().srem(lhs_val, rhs_val);
-                        let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
-                        let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, zero);
-                        let rhs_neg = builder.ins().icmp(IntCC::SignedLessThan, rhs_val, zero);
-                        let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
-                        let adjust = builder.ins().band(rem_nonzero, sign_diff);
-                        let quot_minus_one = builder.ins().isub(quot, one);
-                        let floor_quot = builder.ins().select(adjust, quot_minus_one, quot);
-                        let fast_res = box_int_value_hoisted(&mut builder, floor_quot, box_int_mask_var, box_int_tag_var);
-                        let fits_inline = int_value_fits_inline(&mut builder, floor_quot);
-                        brif_block(
-                            &mut builder,
-                            fits_inline,
-                            merge_block,
-                            &[fast_res],
-                            slow_block,
-                            &[],
-                        );
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let one = builder.ins().iconst(types::I64, 1);
+                            let quot = builder.ins().sdiv(lhs_raw, rhs_raw);
+                            let rem = builder.ins().srem(lhs_raw, rhs_raw);
+                            let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
+                            let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_raw, zero);
+                            let rhs_neg = builder.ins().icmp(IntCC::SignedLessThan, rhs_raw, zero);
+                            let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
+                            let adjust = builder.ins().band(rem_nonzero, sign_diff);
+                            let quot_minus_one = builder.ins().isub(quot, one);
+                            let floor_quot = builder.ins().select(adjust, quot_minus_one, quot);
+                            jump_block(&mut builder, merge_block, &[floor_quot]);
 
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let lhs_boxed = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs_boxed = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
+                            let slow_res = builder.inst_results(call)[0];
+                            // Runtime returns boxed — unbox for raw-primary storage.
+                            let slow_raw = unbox_int(&mut builder, slow_res, &nbc);
+                            jump_block(&mut builder, merge_block, &[slow_raw]);
 
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            let result = builder.block_params(merge_block)[0];
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, result);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, result);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), result);
+                            }
+                            continue;
+                        } else {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
+
+                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
+                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let one = builder.ins().iconst(types::I64, 1);
+                            let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
+                            builder
+                                .ins()
+                                .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let quot = builder.ins().sdiv(lhs_val, rhs_val);
+                            let rem = builder.ins().srem(lhs_val, rhs_val);
+                            let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
+                            let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, zero);
+                            let rhs_neg = builder.ins().icmp(IntCC::SignedLessThan, rhs_val, zero);
+                            let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
+                            let adjust = builder.ins().band(rem_nonzero, sign_diff);
+                            let quot_minus_one = builder.ins().isub(quot, one);
+                            let floor_quot = builder.ins().select(adjust, quot_minus_one, quot);
+                            let fast_res = box_int_value_hoisted(&mut builder, floor_quot, box_int_mask_var, box_int_tag_var);
+                            let fits_inline = int_value_fits_inline(&mut builder, floor_quot);
+                            brif_block(
+                                &mut builder,
+                                fits_inline,
+                                merge_block,
+                                &[fast_res],
+                                slow_block,
+                                &[],
+                            );
+
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        }
                     } else {
+                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -5984,9 +6209,22 @@ impl SimpleBackend {
                 }
                 "mod" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                    let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
+                        // Both-shadow raw-primary path.
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
+                        };
+
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -5995,51 +6233,102 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
-                        builder
-                            .ins()
-                            .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Raw i64 primary: compute Python mod directly.
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_raw, zero);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
+                            builder.ins().brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let rem = builder.ins().srem(lhs_val, rhs_val);
-                        let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
-                        let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, zero);
-                        let rhs_neg = builder.ins().icmp(IntCC::SignedLessThan, rhs_val, zero);
-                        let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
-                        let adjust = builder.ins().band(rem_nonzero, sign_diff);
-                        let rem_adjusted = builder.ins().iadd(rem, rhs_val);
-                        let mod_val = builder.ins().select(adjust, rem_adjusted, rem);
-                        let fast_res = box_int_value_hoisted(&mut builder, mod_val, box_int_mask_var, box_int_tag_var);
-                        let fits_inline = int_value_fits_inline(&mut builder, mod_val);
-                        brif_block(
-                            &mut builder,
-                            fits_inline,
-                            merge_block,
-                            &[fast_res],
-                            slow_block,
-                            &[],
-                        );
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let rem = builder.ins().srem(lhs_raw, rhs_raw);
+                            let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
+                            let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_raw, zero);
+                            let rhs_neg = builder.ins().icmp(IntCC::SignedLessThan, rhs_raw, zero);
+                            let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
+                            let adjust = builder.ins().band(rem_nonzero, sign_diff);
+                            let rem_adjusted = builder.ins().iadd(rem, rhs_raw);
+                            let mod_val = builder.ins().select(adjust, rem_adjusted, rem);
+                            jump_block(&mut builder, merge_block, &[mod_val]);
 
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let lhs_boxed = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs_boxed = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
+                            let slow_res = builder.inst_results(call)[0];
+                            let slow_raw = unbox_int(&mut builder, slow_res, &nbc);
+                            jump_block(&mut builder, merge_block, &[slow_raw]);
 
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            let result = builder.block_params(merge_block)[0];
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, result);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, result);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), result);
+                            }
+                            continue;
+                        } else {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
+
+                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
+                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
+                            builder
+                                .ins()
+                                .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let rem = builder.ins().srem(lhs_val, rhs_val);
+                            let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
+                            let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, zero);
+                            let rhs_neg = builder.ins().icmp(IntCC::SignedLessThan, rhs_val, zero);
+                            let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
+                            let adjust = builder.ins().band(rem_nonzero, sign_diff);
+                            let rem_adjusted = builder.ins().iadd(rem, rhs_val);
+                            let mod_val = builder.ins().select(adjust, rem_adjusted, rem);
+                            let fast_res = box_int_value_hoisted(&mut builder, mod_val, box_int_mask_var, box_int_tag_var);
+                            let fits_inline = int_value_fits_inline(&mut builder, mod_val);
+                            brif_block(
+                                &mut builder,
+                                fits_inline,
+                                merge_block,
+                                &[fast_res],
+                                slow_block,
+                                &[],
+                            );
+
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        }
                     } else {
+                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -6188,9 +6477,94 @@ impl SimpleBackend {
                 }
                 "pow" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                    let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
+                        };
+
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_pow",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+
+                        if let (Some(base_raw), Some(exp_raw)) = (lhs_raw, rhs_raw) {
+                            // Raw i64 primary pow: inline for exp 0, 1, 2.
+                            let exp0_block = builder.create_block();
+                            let exp1_block = builder.create_block();
+                            let exp2_block = builder.create_block();
+                            let exp2_fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
+
+                            let is_zero = builder.ins().icmp_imm(IntCC::Equal, exp_raw, 0);
+                            builder.ins().brif(is_zero, exp0_block, &[], exp1_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, exp0_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, exp0_block);
+                            let one = builder.ins().iconst(types::I64, 1);
+                            jump_block(&mut builder, merge_block, &[one]);
+
+                            switch_to_block_materialized(&mut builder, exp1_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, exp1_block);
+                            let is_one = builder.ins().icmp_imm(IntCC::Equal, exp_raw, 1);
+                            let exp1_ret_block = builder.create_block();
+                            builder.ins().brif(is_one, exp1_ret_block, &[], exp2_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, exp1_ret_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, exp1_ret_block);
+                            jump_block(&mut builder, merge_block, &[base_raw]);
+
+                            switch_to_block_materialized(&mut builder, exp2_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, exp2_block);
+                            let is_two = builder.ins().icmp_imm(IntCC::Equal, exp_raw, 2);
+                            builder.ins().brif(is_two, exp2_fast_block, &[], slow_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, exp2_fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, exp2_fast_block);
+                            let sq = builder.ins().imul(base_raw, base_raw);
+                            jump_block(&mut builder, merge_block, &[sq]);
+
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let lhs_boxed = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs_boxed = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
+                            let slow_res = builder.inst_results(call)[0];
+                            let slow_raw = unbox_int(&mut builder, slow_res, &nbc);
+                            jump_block(&mut builder, merge_block, &[slow_raw]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            let result = builder.block_params(merge_block)[0];
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, result);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, result);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), result);
+                            }
+                            continue;
+                        }
+                        // No both-shadow: proven-int path with boxing.
+                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         // Inline pow for small non-negative exponents (0, 1, 2).
                         // Exponent >= 3 or negative falls back to runtime.
                         let callee = Self::import_func_id_split(
@@ -6265,6 +6639,8 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
+                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -11833,45 +12209,67 @@ impl SimpleBackend {
                             box_float_value_unchecked(&mut builder, neg_f)
                         }
                     } else if op_prefers_int_lane(&op) {
-                        // -x == 0 - x; overflow only when x == INT_MIN of the
-                        // inline payload range.
-                        let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_neg",
-                            &[types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        // -x == 0 - x; overflow deferred to boxing escape.
+                        let src_name = &args[0];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let src_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, src_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, src_name)
+                        };
 
-                        let int_val = unbox_int(&mut builder, *val, &nbc);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let negated = builder.ins().isub(zero, int_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, negated);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                        if let Some(src_raw) = src_raw {
+                            // Raw i64 primary negation: branchless.
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let negated = builder.ins().isub(zero, src_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, negated);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, negated);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), negated);
+                            }
+                            continue;
+                        } else {
+                            let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_neg",
+                                &[types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
 
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value_hoisted(&mut builder, negated, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                            let int_val = unbox_int(&mut builder, *val, &nbc);
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let negated = builder.ins().isub(zero, int_val);
+                            let fits_inline = int_value_fits_inline(&mut builder, negated);
+                            builder
+                                .ins()
+                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*val]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let fast_res = box_int_value_hoisted(&mut builder, negated, box_int_mask_var, box_int_tag_var);
+                            jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*val]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        }
                     } else {
                         let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                         let callee = Self::import_func_id_split(
@@ -11891,48 +12289,74 @@ impl SimpleBackend {
                 }
                 "abs" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                     let res = if op_prefers_int_lane(&op) {
-                        // abs(x): select(x < 0, -x, x) with overflow check for INT_MIN.
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_abs_builtin",
-                            &[types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        // abs(x): select(x < 0, -x, x). Overflow deferred.
+                        let src_name = &args[0];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let src_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, src_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, src_name)
+                        };
 
-                        let int_val = unbox_int(&mut builder, *val, &nbc);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let is_neg = builder.ins().icmp(IntCC::SignedLessThan, int_val, zero);
-                        let negated = builder.ins().isub(zero, int_val);
-                        let abs_val = builder.ins().select(is_neg, negated, int_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, abs_val);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                        if let Some(src_raw) = src_raw {
+                            // Raw i64 primary abs: branchless select.
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let is_neg = builder.ins().icmp(IntCC::SignedLessThan, src_raw, zero);
+                            let negated = builder.ins().isub(zero, src_raw);
+                            let abs_val = builder.ins().select(is_neg, negated, src_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, abs_val);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, abs_val);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), abs_val);
+                            }
+                            continue;
+                        } else {
+                            let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_abs_builtin",
+                                &[types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
 
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value_hoisted(&mut builder, abs_val, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                            let int_val = unbox_int(&mut builder, *val, &nbc);
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let is_neg = builder.ins().icmp(IntCC::SignedLessThan, int_val, zero);
+                            let negated = builder.ins().isub(zero, int_val);
+                            let abs_val = builder.ins().select(is_neg, negated, int_val);
+                            let fits_inline = int_value_fits_inline(&mut builder, abs_val);
+                            builder
+                                .ins()
+                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*val]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let fast_res = box_int_value_hoisted(&mut builder, abs_val, box_int_mask_var, box_int_tag_var);
+                            jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*val]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        }
                     } else {
+                        let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -11950,15 +12374,38 @@ impl SimpleBackend {
                 }
                 "invert" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                     let res = if op_prefers_int_lane(&op) {
-                        // ~x == x ^ -1 for integers; result always fits if input fits
-                        // (magnitude changes by at most 1).
-                        let int_val = unbox_int(&mut builder, *val, &nbc);
-                        let minus_one = builder.ins().iconst(types::I64, -1i64);
-                        let inverted = builder.ins().bxor(int_val, minus_one);
-                        box_int_value_hoisted(&mut builder, inverted, box_int_mask_var, box_int_tag_var)
+                        // ~x == x ^ -1 for integers; magnitude changes by at most 1.
+                        let src_name = &args[0];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let src_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, src_name)
+                        } else {
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, src_name)
+                        };
+
+                        if let Some(src_raw) = src_raw {
+                            // Raw i64 primary invert: branchless, no overflow.
+                            let minus_one = builder.ins().iconst(types::I64, -1i64);
+                            let inverted = builder.ins().bxor(src_raw, minus_one);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, inverted);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, inverted);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), inverted);
+                            }
+                            continue;
+                        } else {
+                            let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
+                            let int_val = unbox_int(&mut builder, *val, &nbc);
+                            let minus_one = builder.ins().iconst(types::I64, -1i64);
+                            let inverted = builder.ins().bxor(int_val, minus_one);
+                            box_int_value_hoisted(&mut builder, inverted, box_int_mask_var, box_int_tag_var)
+                        }
                     } else {
+                        let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
