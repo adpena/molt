@@ -134,6 +134,9 @@ fn build_engine() -> Result<Engine> {
         .and_then(|val| val.parse::<usize>().ok())
         .filter(|val| *val > 0)
         .unwrap_or(8 * 1024 * 1024);
+    // Wasmtime 43+ requires async_stack_size >= max_wasm_stack unconditionally.
+    // Bump async_stack_size to accommodate, adding headroom for host-side frames.
+    config.async_stack_size(max_stack + (128 * 1024));
     config.max_wasm_stack(max_stack);
     debug_log(|| format!("wasmtime max_wasm_stack set to {max_stack}"));
     if cache_toggle.as_deref() != Some("0") {
@@ -4757,6 +4760,29 @@ fn main() -> Result<()> {
     define_resource_host(&mut linker, &mut store)?;
     let getpid = Func::wrap(&mut store, || -> i64 { std::process::id() as i64 });
     linker.define(&mut store, "env", "molt_getpid_host", getpid)?;
+
+    // GPU dispatch stub -- returns -ENOSYS when no WebGPU host is available.
+    let gpu_dispatch = Func::wrap(
+        &mut store,
+        |_source_ptr: u32,
+         _source_len: u32,
+         _entry_ptr: u32,
+         _entry_len: u32,
+         _bindings_ptr: u32,
+         _bindings_len: u32,
+         _grid: u32,
+         _workgroup_size: u32,
+         _err_ptr: u32,
+         _err_cap: u32,
+         _out_err_len_ptr: u32|
+         -> i32 { -38 },
+    );
+    linker.define(
+        &mut store,
+        "env",
+        "molt_gpu_webgpu_dispatch_host",
+        gpu_dispatch,
+    )?;
 
     let registry = store.data().call_indirect.clone();
     let call_imports = if let Some(runtime_module) = runtime_module.as_ref() {
