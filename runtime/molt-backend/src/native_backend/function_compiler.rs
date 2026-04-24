@@ -5371,6 +5371,7 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::F64); // raw f64 shadow
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -5389,25 +5390,24 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().fcvt_from_sint(types::F64, rhs_val);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
                         let fast_res = box_float_value(&mut builder, result_f, &nbc);
-                        // Float result always valid — use iconst 1 for fits_inline.
-                        let fits_inline = builder.ins().iconst(types::I8, 1);
-                        brif_block(
-                            &mut builder,
-                            fits_inline,
-                            merge_block,
-                            &[fast_res],
-                            slow_block,
-                            &[],
-                        );
+                        jump_block(&mut builder, merge_block, &[fast_res, result_f]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let slow_f = builder.ins().bitcast(types::F64, MemFlags::new(), slow_res);
+                        jump_block(&mut builder, merge_block, &[slow_res, slow_f]);
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        let merged_raw_f = builder.block_params(merge_block)[1];
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, merged_raw_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                        }
                         builder.block_params(merge_block)[0]
                     } else {
                         let callee = Self::import_func_id_split(
@@ -5429,6 +5429,7 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::F64); // raw f64 shadow
                         builder
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
@@ -5449,7 +5450,7 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().fcvt_from_sint(types::F64, rhs_val);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
                         let fast_res = box_float_value(&mut builder, result_f, &nbc);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        jump_block(&mut builder, merge_block, &[fast_res, result_f]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
@@ -5468,16 +5469,24 @@ impl SimpleBackend {
                         let rhs_ff = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let flt_quot = builder.ins().fdiv(lhs_ff, rhs_ff);
                         let flt_res = box_float_value(&mut builder, flt_quot, &nbc);
-                        jump_block(&mut builder, merge_block, &[flt_res]);
+                        jump_block(&mut builder, merge_block, &[flt_res, flt_quot]);
 
                         switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let slow_f = builder.ins().bitcast(types::F64, MemFlags::new(), slow_res);
+                        jump_block(&mut builder, merge_block, &[slow_res, slow_f]);
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        let merged_raw_f = builder.block_params(merge_block)[1];
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, merged_raw_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                        }
                         builder.block_params(merge_block)[0]
                     };
                     if let Some(out__) = op.out {
@@ -7476,8 +7485,83 @@ impl SimpleBackend {
                     }
 
                     if let (Some(di), Some(vi)) = (done_idx, val_idx) {
-                        // === Unboxed fast path ===
-                        // Allocate a stack slot for the yielded value.
+                        // Check if the value from iter_next feeds directly into
+                        // an unpack_sequence with count=2.  When it does, we can
+                        // use molt_iter_next_dict_items to write key and value
+                        // directly to stack slots — zero tuple allocation.
+                        let val_out_name = ops[vi].out.clone().unwrap();
+                        let mut unpack_idx = None;
+                        let unpack_limit = (vi + 24).min(ops.len());
+                        for peek in (vi + 1)..unpack_limit {
+                            if skip_ops.contains(&peek) {
+                                continue;
+                            }
+                            let peek_op = &ops[peek];
+                            if peek_op.kind == "unpack_sequence"
+                                && peek_op.value == Some(2)
+                                && let Some(ref pargs) = peek_op.args
+                                && !pargs.is_empty()
+                                && pargs[0] == val_out_name
+                            {
+                                unpack_idx = Some(peek);
+                                break;
+                            }
+                        }
+
+                        if let Some(ui) = unpack_idx {
+                            // === Dict items zero-alloc fast path ===
+                            let key_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                8,
+                                3,
+                            ));
+                            let value_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                8,
+                                3,
+                            ));
+                            let key_ptr = builder.ins().stack_addr(types::I64, key_slot, 0);
+                            let value_ptr = builder.ins().stack_addr(types::I64, value_slot, 0);
+
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_iter_next_dict_items",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder.ins().call(local_callee, &[*iter, key_ptr, value_ptr]);
+                            let done_bits = builder.inst_results(call)[0];
+
+                            let loaded_key =
+                                builder.ins().load(types::I64, MemFlags::trusted(), key_ptr, 0);
+                            let loaded_value =
+                                builder.ins().load(types::I64, MemFlags::trusted(), value_ptr, 0);
+
+                            // Define done flag.
+                            let done_out = ops[di].out.clone().unwrap();
+                            def_var_named(&mut builder, &vars, done_out, done_bits);
+
+                            // Define pair variable for exception checks.
+                            def_var_named(&mut builder, &vars, pair_name.clone(), done_bits);
+
+                            // Define the value from index(pair,0) for SSA completeness.
+                            def_var_named(&mut builder, &vars, val_out_name, loaded_key);
+
+                            // Define the unpack outputs directly from stack slots.
+                            let unpack_args = ops[ui].args.as_ref().unwrap();
+                            // unpack_args: [source, out1, out2]
+                            if unpack_args.len() >= 3 {
+                                def_var_named(&mut builder, &vars, &unpack_args[1], loaded_key);
+                                def_var_named(&mut builder, &vars, &unpack_args[2], loaded_value);
+                            }
+
+                            skip_ops.insert(di);
+                            skip_ops.insert(vi);
+                            skip_ops.insert(ui);
+                        } else {
+                        // === Unboxed fast path (no unpack detected) ===
                         let val_slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             8,
@@ -7485,7 +7569,6 @@ impl SimpleBackend {
                         ));
                         let val_ptr = builder.ins().stack_addr(types::I64, val_slot, 0);
 
-                        // Call molt_iter_next_unboxed(iter, &value_out) → done_flag (MoltObject bool)
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -7497,27 +7580,22 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*iter, val_ptr]);
                         let done_bits = builder.inst_results(call)[0];
 
-                        // Load the value from the stack slot.
                         let loaded_val =
                             builder
                                 .ins()
                                 .load(types::I64, MemFlags::trusted(), val_ptr, 0);
 
-                        // The done_bits is the MoltObject bool that index(pair,1) would return.
                         let done_out = ops[di].out.clone().unwrap();
                         def_var_named(&mut builder, &vars, done_out, done_bits);
 
-                        // The loaded_val is the value that index(pair,0) would return.
                         let val_out = ops[vi].out.clone().unwrap();
                         def_var_named(&mut builder, &vars, val_out, loaded_val);
 
-                        // Also define the pair variable (as the done flag) so that any
-                        // exception-check referencing pair still works.
                         def_var_named(&mut builder, &vars, pair_name, done_bits);
 
-                        // Mark the two INDEX ops as skipped.
                         skip_ops.insert(di);
                         skip_ops.insert(vi);
+                        }
                     } else {
                         // === Fallback: original boxed path ===
                         let callee = Self::import_func_id_split(
@@ -10472,7 +10550,7 @@ impl SimpleBackend {
                         let rv = rr.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op_prefers_float_lane(&op) {
+                    } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
                         let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
@@ -10579,7 +10657,7 @@ impl SimpleBackend {
                         let rv = rr.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op_prefers_float_lane(&op) {
+                    } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
                         let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
@@ -10687,7 +10765,7 @@ impl SimpleBackend {
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op_prefers_float_lane(&op) {
+                    } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
                         let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
@@ -10793,7 +10871,7 @@ impl SimpleBackend {
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op_prefers_float_lane(&op) {
+                    } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
                         let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
@@ -10881,7 +10959,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op_prefers_float_lane(&op) {
+                    let res = if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Both operands known to be f64 -- direct float equality.
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
@@ -10943,7 +11021,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op_prefers_float_lane(&op) {
+                    let res = if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Both operands known to be f64 -- direct float inequality.
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
