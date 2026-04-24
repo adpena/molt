@@ -2779,7 +2779,12 @@ impl SimpleBackend {
                             }
                         }
                         Err(_panic) => {
-                            eprintln!("  -> retry panicked for {}", name);
+                            let msg = format!("  -> retry panicked for {}", name);
+                            eprintln!("{msg}");
+                            let _ = crate::debug_artifacts::append_debug_artifact(
+                                "native/cranelift_errors.txt",
+                                format!("{msg}\n"),
+                            );
                             let sig = self
                                 .module
                                 .declarations()
@@ -2787,6 +2792,10 @@ impl SimpleBackend {
                                 .signature
                                 .clone();
                             eprintln!("  -> emitting trap stub for {} (Cranelift panic)", name);
+                            let _ = crate::debug_artifacts::append_debug_artifact(
+                                "native/cranelift_errors.txt",
+                                format!("  -> emitting trap stub for {} (Cranelift panic)\n", name),
+                            );
                             match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
                                 Ok(()) => {
                                     self.defined_func_names.insert(name);

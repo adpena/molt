@@ -3087,13 +3087,6 @@ impl SimpleBackend {
                 continue;
             }
             let op = ops[op_idx].clone();
-            // Trace every op for targeted function when MOLT_DEBUG_OP_TRACE is set.
-            if std::env::var("MOLT_DEBUG_OP_TRACE").as_deref() == Ok(func_ir.name.as_str()) {
-                eprintln!(
-                    "[OP_TRACE] func={} op_idx={} kind={} is_block_filled={} current_block={:?}",
-                    func_ir.name, op_idx, op.kind, is_block_filled, builder.current_block()
-                );
-            }
             // Reconcile the logical block-filled flag with Cranelift's actual
             // block state before emitting any per-op instrumentation. Some
             // control-flow paths terminate the current block indirectly; if we
@@ -22508,6 +22501,16 @@ impl SimpleBackend {
                             builder.ins().call(inc_local, &[*val]);
                         }
                         def_var_named(&mut builder, &vars, name, *val);
+                        // If the source is NOT raw-primary, the destination
+                        // must no longer be treated as raw-primary either.
+                        // This prevents the load_var fast path from reading
+                        // a NaN-boxed value as if it were a raw i64.
+                        if !raw_primary_int.contains(&args[0]) {
+                            raw_primary_int.remove(name);
+                        }
+                        if !raw_primary_float.contains(&args[0]) {
+                            raw_primary_float.remove(name);
+                        }
                         // Propagate raw_int_shadow through store_var:
                         // Value-level (within this block) + Variable-level (across back-edges).
                         if let Some(raw_val) = shadow_value_for(
