@@ -295,9 +295,6 @@ pub mod interpret {
         let input = as_f32_slice(input_buf);
         let output = as_f32_slice_mut(output_buf);
 
-        // Pre-allocate exp buffer once, reuse across rows.
-        let mut exp_vals = vec![0.0f64; reduce_size];
-
         for row in 0..n {
             let row_start = row * reduce_size;
             let row_end = row_start + reduce_size;
@@ -307,30 +304,29 @@ pub mod interpret {
             }
 
             let row_slice = &input[row_start..row_end];
+            let out_len = output.len();
+            let out_row = &mut output[row_start..row_end.min(out_len)];
 
-            // Pass 1: find max for numerical stability
-            let mut max_val = f64::NEG_INFINITY;
+            // Pass 1: find max for numerical stability (f32)
+            let mut max_val = f32::NEG_INFINITY;
             for &v in row_slice {
-                let val = v as f64;
-                if val > max_val {
-                    max_val = val;
+                if v > max_val {
+                    max_val = v;
                 }
             }
 
-            // Pass 2: compute exp2(x - max) and sum
-            let mut sum = 0.0f64;
+            // Pass 2: compute exp(x - max) and sum, write directly to output
+            let mut sum = 0.0f32;
             for (j, &v) in row_slice.iter().enumerate() {
-                let e = (v as f64 - max_val).exp2();
-                exp_vals[j] = e;
+                let e = (v - max_val).exp();
+                out_row[j] = e;
                 sum += e;
             }
 
-            // Pass 3: normalize
-            let inv_sum = 1.0 / sum;
-            let out_len = output.len();
-            let out_row = &mut output[row_start..row_end.min(out_len)];
-            for (j, out_v) in out_row.iter_mut().enumerate() {
-                *out_v = (exp_vals[j] * inv_sum) as f32;
+            // Pass 3: normalize in-place
+            let inv_sum = 1.0f32 / sum;
+            for out_v in out_row.iter_mut() {
+                *out_v *= inv_sum;
             }
         }
     }
@@ -351,6 +347,7 @@ pub mod interpret {
     pub fn fused_rms_norm(input_buf: &[u8], output_buf: &mut [u8], n: usize, dim: usize, eps: f64) {
         let input = as_f32_slice(input_buf);
         let output = as_f32_slice_mut(output_buf);
+        let eps_f32 = eps as f32;
 
         for row in 0..n {
             let row_start = row * dim;
@@ -362,22 +359,21 @@ pub mod interpret {
 
             let row_slice = &input[row_start..row_end];
 
-            // Pass 1: compute sum of squares
-            let mut sum_sq = 0.0f64;
+            // Pass 1: compute sum of squares (f32)
+            let mut sum_sq = 0.0f32;
             for &v in row_slice {
-                let val = v as f64;
-                sum_sq += val * val;
+                sum_sq += v * v;
             }
 
-            // Compute 1/sqrt(mean(x^2) + eps)
-            let mean_sq = sum_sq / dim as f64;
-            let inv_rms = 1.0 / (mean_sq + eps).sqrt();
+            // Compute 1/sqrt(mean(x^2) + eps) in f32
+            let mean_sq = sum_sq / dim as f32;
+            let inv_rms = 1.0f32 / (mean_sq + eps_f32).sqrt();
 
             // Pass 2: scale each element
             let out_len = output.len();
             let out_row = &mut output[row_start..row_end.min(out_len)];
             for (j, out_v) in out_row.iter_mut().enumerate() {
-                *out_v = (row_slice[j] as f64 * inv_rms) as f32;
+                *out_v = row_slice[j] * inv_rms;
             }
         }
     }

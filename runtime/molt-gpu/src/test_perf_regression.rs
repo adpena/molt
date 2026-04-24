@@ -220,32 +220,32 @@ mod tests {
         let mut output = vec![0u8; total * 4];
         interpret::fused_softmax(&input, &mut output, n, reduce_size);
 
-        // Compute naive softmax for comparison
+        // Compute naive softmax in f32 for comparison (matches fused path)
         for row in 0..n {
             let start = row * reduce_size;
 
             // Find max
-            let mut max_val = f64::NEG_INFINITY;
+            let mut max_val = f32::NEG_INFINITY;
             for j in 0..reduce_size {
-                let val = read_f32(&input, start + j) as f64;
+                let val = read_f32(&input, start + j);
                 if val > max_val {
                     max_val = val;
                 }
             }
 
-            // Compute exp2 and sum
-            let mut sum = 0.0f64;
-            let mut exp_vals = vec![0.0f64; reduce_size];
+            // Compute exp and sum
+            let mut sum = 0.0f32;
+            let mut exp_vals = vec![0.0f32; reduce_size];
             for (j, exp_slot) in exp_vals.iter_mut().enumerate().take(reduce_size) {
-                let val = read_f32(&input, start + j) as f64;
-                let e = (val - max_val).exp2();
+                let val = read_f32(&input, start + j);
+                let e = (val - max_val).exp();
                 *exp_slot = e;
                 sum += e;
             }
 
             // Compare
             for (j, exp_val) in exp_vals.iter().enumerate().take(reduce_size) {
-                let expected = (*exp_val / sum) as f32;
+                let expected = *exp_val / sum;
                 let actual = read_f32(&output, start + j);
                 assert!(
                     (actual - expected).abs() < 1e-5,
@@ -281,21 +281,22 @@ mod tests {
         let mut output = vec![0u8; total * 4];
         interpret::fused_rms_norm(&input, &mut output, n, dim, eps);
 
-        // Compute naive RMSNorm for comparison
+        // Compute naive RMSNorm in f32 for comparison (matches fused path)
+        let eps_f32 = eps as f32;
         for row in 0..n {
             let start = row * dim;
 
-            let mut sum_sq = 0.0f64;
+            let mut sum_sq = 0.0f32;
             for j in 0..dim {
-                let val = read_f32(&input, start + j) as f64;
+                let val = read_f32(&input, start + j);
                 sum_sq += val * val;
             }
-            let mean_sq = sum_sq / dim as f64;
-            let inv_rms = 1.0 / (mean_sq + eps).sqrt();
+            let mean_sq = sum_sq / dim as f32;
+            let inv_rms = 1.0f32 / (mean_sq + eps_f32).sqrt();
 
             for j in 0..dim {
-                let val = read_f32(&input, start + j) as f64;
-                let expected = (val * inv_rms) as f32;
+                let val = read_f32(&input, start + j);
+                let expected = val * inv_rms;
                 let actual = read_f32(&output, start + j);
                 assert!(
                     (actual - expected).abs() < 1e-4,

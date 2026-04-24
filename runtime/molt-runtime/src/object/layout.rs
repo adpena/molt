@@ -178,6 +178,38 @@ impl ListBoolStorage {
     pub unsafe fn into_vec(self) -> Vec<u8> {
         unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) }
     }
+
+    /// Append a u8 value (0 = False, 1 = True) to the storage, growing
+    /// the buffer if needed.
+    ///
+    /// Uses the same growth strategy as `Vec<u8>::push`: doubles capacity
+    /// when full, amortizing allocation cost to O(1) per element.
+    ///
+    /// This keeps the list in its compact `TYPE_ID_LIST_BOOL` representation
+    /// when building bool lists via repeated append (comprehension pattern),
+    /// avoiding the promote-to-generic-list path.
+    ///
+    /// # Safety
+    /// `self` must be a valid, heap-allocated `ListBoolStorage` whose `data`
+    /// pointer owns its buffer (as established by `from_vec`).
+    pub unsafe fn push(&mut self, value: u8) {
+        if self.len == self.cap {
+            // Grow: reconstruct as Vec to use its reallocation logic,
+            // then steal the buffer back. This is zero-copy when the
+            // allocator can extend in-place.
+            let mut vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
+            vec.push(value);
+            self.data = vec.as_mut_ptr();
+            self.len = vec.len();
+            self.cap = vec.capacity();
+            std::mem::forget(vec);
+        } else {
+            unsafe {
+                std::ptr::write(self.data.add(self.len), value);
+            }
+            self.len += 1;
+        }
+    }
 }
 
 /// Read the `ListBoolStorage` pointer from a `TYPE_ID_LIST_BOOL` object's data area.

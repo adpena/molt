@@ -41,6 +41,7 @@ default = ["native-backend"]
 jemalloc = ["dep:tikv-jemallocator"]
 egraphs = ["egg"]
 llvm = ["dep:inkwell"]
+polly = ["llvm"]
 luau-backend = []
 native-backend = [
     "dep:cranelift-codegen",

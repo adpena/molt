@@ -81,6 +81,52 @@ pub enum LtoMode {
 
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
+    /// Initialize Polly polyhedral optimization via LLVM command-line flags.
+    ///
+    /// Polly is an LLVM plugin that performs polyhedral loop optimization:
+    /// dependence analysis, tiling, interchange, vectorization via strip-mining.
+    /// When the host LLVM is built with Polly support (`-DLLVM_ENABLE_PROJECTS=polly`),
+    /// these flags activate it for all subsequent `run_passes` invocations.
+    ///
+    /// Called once before any compilation via `std::sync::Once`. If Polly is not
+    /// available in the LLVM build, the flags are silently ignored — LLVM does not
+    /// error on unknown `-mllvm` flags passed through `LLVMParseCommandLineOptions`.
+    ///
+    /// Flags:
+    /// - `-polly`: enable polyhedral optimizer
+    /// - `-polly-vectorizer=stripmine`: use strip-mining vectorization (better for
+    ///   deep loop nests than the default polly vectorizer)
+    /// - `-polly-parallel`: emit parallel code for independent loop iterations
+    /// - `-polly-position=early`: run Polly early in the pipeline before LLVM's
+    ///   own loop transforms can obscure polyhedral structure
+    #[cfg(feature = "polly")]
+    fn init_polly_once() {
+        use std::sync::Once;
+        static POLLY_INIT: Once = Once::new();
+        POLLY_INIT.call_once(|| {
+            use std::ffi::CString;
+            let args: Vec<CString> = [
+                "molt-backend",
+                "-polly",
+                "-polly-vectorizer=stripmine",
+                "-polly-parallel",
+                "-polly-position=early",
+            ]
+            .iter()
+            .map(|s| CString::new(*s).unwrap())
+            .collect();
+            let ptrs: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+            let overview = CString::new("Molt LLVM backend with Polly").unwrap();
+            unsafe {
+                llvm_sys::support::LLVMParseCommandLineOptions(
+                    ptrs.len() as libc::c_int,
+                    ptrs.as_ptr(),
+                    overview.as_ptr(),
+                );
+            }
+        });
+    }
+
     /// Run the FULL LLVM O2/O3 optimization pipeline on the module.
     ///
     /// Before running the pipeline, all user-defined functions are marked
@@ -89,9 +135,18 @@ impl<'ctx> LlvmBackend<'ctx> {
     /// This gives us 100% of LLVM's optimization power (interprocedural
     /// inlining, GlobalDCE of unused helpers, SCCP, loop vectorization)
     /// while preserving all entry points the linker needs.
+    ///
+    /// When the `polly` feature is enabled and the host LLVM includes Polly,
+    /// polyhedral loop optimizations (tiling, interchange, strip-mine
+    /// vectorization) are applied automatically after the standard O2/O3
+    /// pipeline, giving additional gains on loop-heavy numeric code.
     pub fn optimize(&self, opt_level: MoltOptLevel) {
         use inkwell::module::Linkage;
         use inkwell::passes::PassBuilderOptions;
+
+        // Activate Polly polyhedral optimizer (no-op if already initialized).
+        #[cfg(feature = "polly")]
+        Self::init_polly_once();
 
         let target_machine = self.create_target_machine(&opt_level);
 
@@ -108,6 +163,10 @@ impl<'ctx> LlvmBackend<'ctx> {
             func = f.get_next_function();
         }
 
+        // With Polly enabled, the standard pipeline picks up polyhedral
+        // passes automatically via the command-line flags set in
+        // `init_polly_once`. Polly hooks into LLVM's pass manager
+        // infrastructure — no explicit pass names needed in the string.
         let passes = match opt_level {
             MoltOptLevel::None => "default<O0>",
             MoltOptLevel::Speed => "default<O2>",
@@ -115,6 +174,11 @@ impl<'ctx> LlvmBackend<'ctx> {
         };
 
         let options = PassBuilderOptions::create();
+        options.set_loop_vectorization(true);
+        options.set_loop_slp_vectorization(true);
+        options.set_loop_unrolling(true);
+        options.set_loop_interleaving(true);
+        options.set_merge_functions(true);
         if let Err(e) = self.module.run_passes(passes, &target_machine, options) {
             eprintln!("WARNING: LLVM optimization pipeline failed: {e}; continuing unoptimized");
         }
