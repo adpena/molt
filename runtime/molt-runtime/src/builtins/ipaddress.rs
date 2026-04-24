@@ -253,7 +253,7 @@ fn parse_ipv6_from_bits(_py: &PyToken<'_>, addr_bits: u64) -> Result<Ipv6Addr, u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_new(addr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match parse_ipv4_from_bits(_py, addr_bits) {
             Ok(addr) => ipv4_bits(Ipv4Handle { addr }),
             Err(exc) => exc,
@@ -263,7 +263,7 @@ pub extern "C" fn molt_ipaddress_v4_new(addr_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_packed(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -278,7 +278,7 @@ pub extern "C" fn molt_ipaddress_v4_packed(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_int(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -288,7 +288,7 @@ pub extern "C" fn molt_ipaddress_v4_int(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_str(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -303,7 +303,7 @@ pub extern "C" fn molt_ipaddress_v4_str(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_is_private(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -313,7 +313,7 @@ pub extern "C" fn molt_ipaddress_v4_is_private(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_is_loopback(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -323,7 +323,7 @@ pub extern "C" fn molt_ipaddress_v4_is_loopback(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_is_multicast(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -333,7 +333,7 @@ pub extern "C" fn molt_ipaddress_v4_is_multicast(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_is_reserved(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -343,7 +343,7 @@ pub extern "C" fn molt_ipaddress_v4_is_reserved(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_is_link_local(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -353,7 +353,7 @@ pub extern "C" fn molt_ipaddress_v4_is_link_local(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_is_global(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -363,7 +363,7 @@ pub extern "C" fn molt_ipaddress_v4_is_global(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_version(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(_h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -373,7 +373,7 @@ pub extern "C" fn molt_ipaddress_v4_version(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_max_prefixlen(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(_h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
         };
@@ -387,7 +387,7 @@ pub extern "C" fn molt_ipaddress_v4_max_prefixlen(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_new(addr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match parse_ipv6_from_bits(_py, addr_bits) {
             Ok(addr) => ipv6_bits(Ipv6Handle { addr }),
             Err(exc) => exc,
@@ -397,7 +397,7 @@ pub extern "C" fn molt_ipaddress_v6_new(addr_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_packed(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -412,7 +412,7 @@ pub extern "C" fn molt_ipaddress_v6_packed(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_int(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -424,7 +424,7 @@ pub extern "C" fn molt_ipaddress_v6_int(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_str(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -439,7 +439,7 @@ pub extern "C" fn molt_ipaddress_v6_str(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_is_private(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -449,7 +449,7 @@ pub extern "C" fn molt_ipaddress_v6_is_private(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_is_loopback(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -459,7 +459,7 @@ pub extern "C" fn molt_ipaddress_v6_is_loopback(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_is_multicast(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -469,7 +469,7 @@ pub extern "C" fn molt_ipaddress_v6_is_multicast(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_is_link_local(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -479,7 +479,7 @@ pub extern "C" fn molt_ipaddress_v6_is_link_local(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_is_global(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -489,7 +489,7 @@ pub extern "C" fn molt_ipaddress_v6_is_global(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_version(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(_h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
         };
@@ -503,7 +503,7 @@ pub extern "C" fn molt_ipaddress_v6_version(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_network_new(addr_bits: u64, strict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(addr_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "expected str for network address");
         };
@@ -532,7 +532,7 @@ pub extern "C" fn molt_ipaddress_v4_network_new(addr_bits: u64, strict_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_network_hosts(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
         };
@@ -572,7 +572,7 @@ pub extern "C" fn molt_ipaddress_v4_network_hosts(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_network_contains(net_bits: u64, addr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(net) = ipv4_network_handle_from_bits(net_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
         };
@@ -595,7 +595,7 @@ pub extern "C" fn molt_ipaddress_v4_network_contains(net_bits: u64, addr_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_network_prefixlen(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
         };
@@ -605,7 +605,7 @@ pub extern "C" fn molt_ipaddress_v4_network_prefixlen(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_network_str(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
         };
@@ -620,7 +620,7 @@ pub extern "C" fn molt_ipaddress_v4_network_str(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_network_broadcast(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
         };
@@ -636,7 +636,7 @@ pub extern "C" fn molt_ipaddress_v4_network_broadcast(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = ptr_from_bits(handle_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -661,7 +661,7 @@ pub extern "C" fn molt_ipaddress_drop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = ptr_from_bits(handle_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -677,7 +677,7 @@ pub extern "C" fn molt_ipaddress_v6_drop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_network_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = ptr_from_bits(handle_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();

@@ -10,7 +10,7 @@ use crate::{
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_crc32(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "zipfile crc32 expects bytes-like");
         };
@@ -93,7 +93,7 @@ fn imghdr_detect_kind(header: &[u8]) -> Option<&'static str> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_imghdr_detect(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
         };
@@ -596,7 +596,7 @@ fn zipfile_normalize_member_path_impl(member: &str) -> Option<String> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_parse_central_directory(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
@@ -677,7 +677,7 @@ pub extern "C" fn molt_zipfile_build_zip64_extra(
     comp_size_bits: u64,
     offset_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(size) = to_i64(obj_from_bits(size_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "zipfile zip64 size must be int");
         };
@@ -718,7 +718,7 @@ pub extern "C" fn molt_zipfile_build_zip64_extra(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_path_implied_dirs(names_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let names = match iterable_to_string_vec(_py, names_bits) {
             Ok(items) => items,
             Err(err) => return err,
@@ -745,7 +745,7 @@ pub extern "C" fn molt_zipfile_path_implied_dirs(names_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_path_resolve_dir(name_bits: u64, names_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "zipfile path name must be str");
         };
@@ -770,7 +770,7 @@ pub extern "C" fn molt_zipfile_path_resolve_dir(name_bits: u64, names_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_path_is_child(path_at_bits: u64, parent_at_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(path_at) = string_obj_to_owned(obj_from_bits(path_at_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "zipfile path candidate must be str");
         };
@@ -794,7 +794,7 @@ pub extern "C" fn molt_zipfile_path_translate_glob(
     seps_bits: u64,
     py313_plus_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "zipfile glob pattern must be str");
         };
@@ -819,7 +819,7 @@ pub extern "C" fn molt_zipfile_path_translate_glob(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_normalize_member_path(member_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(member) = string_obj_to_owned(obj_from_bits(member_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "zipfile member path must be str");
         };
@@ -966,7 +966,7 @@ mod zipfile_path_lowering_tests {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
         };
@@ -987,7 +987,7 @@ pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_imghdr_test(kind_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "imghdr kind must be str");
         };

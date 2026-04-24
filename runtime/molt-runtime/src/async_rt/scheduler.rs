@@ -1242,113 +1242,113 @@ fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_running_loop_get() -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_running_loop_get_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_running_loop_get_impl(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_running_loop_set(loop_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_running_loop_set_impl(_py, loop_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_running_loop_set_impl(_py, loop_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_loop_get() -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_event_loop_get_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_get_impl(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_loop_get_current() -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_event_loop_get_current_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_get_current_impl(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_loop_set(loop_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_event_loop_set_impl(_py, loop_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_set_impl(_py, loop_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_loop_policy_get() -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_event_loop_policy_get_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_policy_get_impl(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_loop_policy_set(policy_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_event_loop_policy_set_impl(_py, policy_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_set(token_bits: u64, task_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_task_registry_set_impl(_py, token_bits, task_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_get(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_task_registry_get_impl(_py, token_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_get_impl(_py, token_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_contains(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_task_registry_contains_impl(_py, token_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_current() -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_task_registry_current_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_current_impl(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_current_for_loop(loop_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_task_registry_current_for_loop_impl(_py, loop_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_pop(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_task_registry_pop_impl(_py, token_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_pop_impl(_py, token_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_last_exception_clear(task_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_task_last_exception_clear_impl(_py, task_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_move(old_token_bits: u64, new_token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_task_registry_move_impl(_py, old_token_bits, new_token_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_values() -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_task_registry_values_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_values_impl(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_waiters_register(token_bits: u64, waiter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_event_waiters_register_impl(_py, token_bits, waiter_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_waiters_unregister(token_bits: u64, waiter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_event_waiters_unregister_impl(_py, token_bits, waiter_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_waiters_cleanup_token(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_event_waiters_cleanup_token_impl(_py, token_bits)
     })
 }
@@ -1360,28 +1360,28 @@ pub extern "C" fn molt_asyncio_child_watcher_add(
     callback_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_child_watcher_add_impl(_py, callbacks_bits, pid_bits, callback_bits, args_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_child_watcher_remove(callbacks_bits: u64, pid_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_child_watcher_remove_impl(_py, callbacks_bits, pid_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_child_watcher_clear(callbacks_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_child_watcher_clear_impl(_py, callbacks_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_child_watcher_pop(callbacks_bits: u64, pid_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         asyncio_child_watcher_pop_impl(_py, callbacks_bits, pid_bits)
     })
 }
@@ -1403,7 +1403,7 @@ fn asyncio_has_any_process_capability(_py: &PyToken<'_>) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_require_ssl_transport_support() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !asyncio_has_any_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
@@ -1422,7 +1422,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
     server_hostname_bits: u64,
     server_side_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(operation) = string_obj_to_owned(obj_from_bits(operation_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1598,7 +1598,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !asyncio_has_any_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
@@ -1636,7 +1636,7 @@ pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !asyncio_has_any_process_capability(_py) {
             return raise_exception::<u64>(
                 _py,
@@ -1658,12 +1658,12 @@ pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_live(loop_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_task_registry_live_impl(_py, loop_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_live_impl(_py, loop_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_live_set(loop_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let tasks = match asyncio_task_registry_live_values_impl(_py, loop_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
@@ -1796,22 +1796,22 @@ fn asyncio_unregister_task_impl(_py: &PyToken<'_>, task_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_enter_task(loop_bits: u64, task_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_enter_task_impl(_py, loop_bits, task_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_enter_task_impl(_py, loop_bits, task_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_leave_task(loop_bits: u64, task_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_leave_task_impl(_py, loop_bits, task_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_leave_task_impl(_py, loop_bits, task_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_register_task(task_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_register_task_impl(_py, task_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_register_task_impl(_py, task_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_unregister_task(task_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { asyncio_unregister_task_impl(_py, task_bits) })
+    crate::with_gil_entry_nopanic!(_py, { asyncio_unregister_task_impl(_py, task_bits) })
 }
 
 pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
@@ -1841,7 +1841,7 @@ pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fn_ptr_code_set(fn_ptr: u64, code_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         fn_ptr_code_set(_py, fn_ptr, code_bits);
         MoltObject::none().bits()
     })
@@ -3432,7 +3432,7 @@ pub(crate) fn is_block_on_task(task_ptr: *mut u8) -> bool {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(task_ptr) = resolve_task_ptr(task_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
             };

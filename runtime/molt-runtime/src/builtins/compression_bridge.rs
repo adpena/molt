@@ -14,7 +14,7 @@ use crate::*;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         crate::builtins::numbers::int_bits_from_i64(_py, val)
     })
 }
@@ -44,7 +44,7 @@ pub extern "C" fn molt_bridge_index_i64_from_obj(
     err_ptr: *const u8,
     err_len: usize,
 ) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         crate::builtins::numbers::index_i64_from_obj(_py, obj_bits, err)
@@ -60,7 +60,7 @@ pub extern "C" fn molt_bridge_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let kind = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(kind_ptr, kind_len))
         };
@@ -72,14 +72,14 @@ pub extern "C" fn molt_bridge_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_exception_pending() -> bool {
-    crate::with_gil_entry!(_py, { exception_pending(_py) })
+    crate::with_gil_entry_nopanic!(_py, { exception_pending(_py) })
 }
 
 // -- Bytes / memory -----------------------------------------------------------
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
     })
@@ -153,7 +153,7 @@ pub extern "C" fn molt_bridge_type_name(obj_bits: u64, out_len: *mut usize) -> *
     thread_local! {
         static BUF: RefCell<String> = const { RefCell::new(String::new()) };
     }
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let name = type_name(_py, obj);
         BUF.with(|buf| {
@@ -170,7 +170,7 @@ pub extern "C" fn molt_bridge_type_name(obj_bits: u64, out_len: *mut usize) -> *
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -180,7 +180,7 @@ pub extern "C" fn molt_bridge_alloc_string(data_ptr: *const u8, data_len: usize)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_alloc_list(items_ptr: *const u64, items_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let items = unsafe { std::slice::from_raw_parts(items_ptr, items_len) };
         alloc_list(_py, items)
     })
@@ -188,7 +188,7 @@ pub extern "C" fn molt_bridge_alloc_list(items_ptr: *const u64, items_len: usize
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_alloc_tuple(items_ptr: *const u64, items_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let items = unsafe { std::slice::from_raw_parts(items_ptr, items_len) };
         alloc_tuple(_py, items)
     })

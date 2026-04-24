@@ -635,14 +635,14 @@ fn asyncgen_state_closed(_py: &PyToken<'_>, agen_bits: u64) -> Result<bool, u64>
 }
 
 extern "C" fn contextlib_closing_enter(payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, payload_bits);
         payload_bits
     })
 }
 
 extern "C" fn contextlib_closing_exit(payload_bits: u64, _exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(close_name_bits) = attr_name_bits_from_bytes(_py, b"close") else {
             return MoltObject::none().bits();
         };
@@ -673,7 +673,7 @@ pub extern "C" fn molt_contextlib_closing(payload_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_aclosing_enter(payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, payload_bits);
         payload_bits
     })
@@ -681,12 +681,12 @@ pub extern "C" fn molt_contextlib_aclosing_enter(payload_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_aclosing_exit(payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { call_method0(_py, payload_bits, b"aclose") })
+    crate::with_gil_entry_nopanic!(_py, { call_method0(_py, payload_bits, b"aclose") })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_enter(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, self_bits);
         self_bits
     })
@@ -694,7 +694,7 @@ pub extern "C" fn molt_contextlib_abstract_enter(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_aenter(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, self_bits);
         self_bits
     })
@@ -702,7 +702,7 @@ pub extern "C" fn molt_contextlib_abstract_aenter(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_subclasshook(candidate_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match contextlib_check_methods(_py, candidate_bits, &[b"__enter__", b"__exit__"]) {
             Ok(true) => MoltObject::from_bool(true).bits(),
             Ok(false) => crate::molt_not_implemented(),
@@ -713,7 +713,7 @@ pub extern "C" fn molt_contextlib_abstract_subclasshook(candidate_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_async_subclasshook(candidate_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match contextlib_check_methods(_py, candidate_bits, &[b"__aenter__", b"__aexit__"]) {
             Ok(true) => MoltObject::from_bool(true).bits(),
             Ok(false) => crate::molt_not_implemented(),
@@ -729,7 +729,7 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         contextlib_clear_pending_exception_state(_py);
         let none_bits = MoltObject::none().bits();
         let entered_bits = call_method0(_py, cm_bits, b"__enter__");
@@ -801,7 +801,7 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_read = has_capability(_py, "fs.read");
         audit_capability_decision(
             "contextlib.chdir_enter",
@@ -843,7 +843,7 @@ pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_read = has_capability(_py, "fs.read");
         audit_capability_decision(
             "contextlib.chdir_exit",
@@ -881,7 +881,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_new(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !obj_from_bits(func_bits).is_none() {
             inc_ref_bits(_py, func_bits);
         }
@@ -902,7 +902,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_new(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_cm_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = ptr_from_bits(handle_bits);
         if !ptr_live(ptr) {
             return MoltObject::none().bits();
@@ -916,7 +916,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_drop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_cm_aenter(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match asyncgen_cm_from_bits_mut(_py, handle_bits) {
             Ok(handle) => handle,
             Err(bits) => return bits,
@@ -943,7 +943,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_aexit(
     exc_bits: u64,
     tb_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match asyncgen_cm_from_bits_mut(_py, handle_bits) {
             Ok(handle) => handle,
             Err(bits) => return bits,
@@ -957,7 +957,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_aexit(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_generator_enter(gen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let out = call_next_method(_py, gen_bits);
         if !exception_pending(_py) {
             return out;
@@ -979,7 +979,7 @@ pub extern "C" fn molt_contextlib_generator_exit(
     exc_bits: u64,
     tb_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(exc_type_bits).is_none() {
             let out = call_next_method(_py, gen_bits);
             if !exception_pending(_py) {
@@ -1070,7 +1070,7 @@ fn contextlib_asyncgen_enter_impl(_py: &PyToken<'_>, agen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_asyncgen_enter(agen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { contextlib_asyncgen_enter_impl(_py, agen_bits) })
+    crate::with_gil_entry_nopanic!(_py, { contextlib_asyncgen_enter_impl(_py, agen_bits) })
 }
 
 fn contextlib_asyncgen_exit_impl(
@@ -1110,14 +1110,14 @@ pub extern "C" fn molt_contextlib_asyncgen_exit(
     exc_bits: u64,
     tb_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         contextlib_asyncgen_exit_impl(_py, agen_bits, exc_type_bits, exc_bits, tb_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_suppress_match(exc_type_bits: u64, exceptions_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(exc_type_bits).is_none() {
             return MoltObject::from_bool(false).bits();
         }
@@ -1131,7 +1131,7 @@ pub extern "C" fn molt_contextlib_redirect_enter(
     stream_name_bits: u64,
     new_target_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(stream_name) = string_obj_to_owned(obj_from_bits(stream_name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "stream name must be str");
         };
@@ -1162,7 +1162,7 @@ pub extern "C" fn molt_contextlib_redirect_exit(
     stream_name_bits: u64,
     old_target_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(stream_name) = string_obj_to_owned(obj_from_bits(stream_name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "stream name must be str");
         };
@@ -1180,7 +1180,7 @@ pub extern "C" fn molt_contextlib_redirect_exit(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = Box::into_raw(Box::new(ExitStackHandle {
             callbacks: Vec::new(),
         })) as *mut u8;
@@ -1190,7 +1190,7 @@ pub extern "C" fn molt_contextlib_exitstack_new() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = ptr_from_bits(handle_bits);
         if !ptr_live(ptr) {
             return MoltObject::none().bits();
@@ -1206,7 +1206,7 @@ pub extern "C" fn molt_contextlib_exitstack_drop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_push(handle_bits: u64, callback_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
             Ok(handle) => handle,
             Err(bits) => return bits,
@@ -1222,7 +1222,7 @@ pub extern "C" fn molt_contextlib_exitstack_push_callback(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
             Ok(handle) => handle,
             Err(bits) => return bits,
@@ -1238,7 +1238,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_push_callback(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
             Ok(handle) => handle,
             Err(bits) => return bits,
@@ -1252,7 +1252,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_push_exit(
     handle_bits: u64,
     exit_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
             Ok(handle) => handle,
             Err(bits) => return bits,
@@ -1301,7 +1301,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_push_exit(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let entered_bits = call_method0(_py, cm_bits, b"__enter__");
         if exception_pending(_py) {
             let raised_bits = molt_exception_last();
@@ -1372,7 +1372,7 @@ pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_pop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
             Ok(handle) => handle,
             Err(bits) => return bits,
@@ -1394,7 +1394,7 @@ pub extern "C" fn molt_contextlib_exitstack_pop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_pop_all(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match exitstack_from_bits_mut(_py, handle_bits) {
             Ok(handle) => handle,
             Err(bits) => return bits,
@@ -1415,7 +1415,7 @@ pub extern "C" fn molt_contextlib_exitstack_exit(
     exc_bits: u64,
     tb_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let received_exc = !obj_from_bits(exc_type_bits).is_none();
         let mut current_type = exc_type_bits;
@@ -1518,7 +1518,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_enter_context(
     handle_bits: u64,
     cm_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let payload = (3 * std::mem::size_of::<u64>()) as u64;
         let future_bits = molt_future_new(
             contextlib_async_exitstack_enter_context_poll_fn_addr(),
@@ -1549,7 +1549,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_exit(
     exc_bits: u64,
     tb_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let payload = (9 * std::mem::size_of::<u64>()) as u64;
         let future_bits = molt_future_new(contextlib_async_exitstack_exit_poll_fn_addr(), payload);
         if obj_from_bits(future_bits).is_none() {
@@ -1595,7 +1595,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_exit(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -1669,7 +1669,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -1796,7 +1796,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -1904,7 +1904,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;

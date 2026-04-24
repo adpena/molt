@@ -282,7 +282,7 @@ thread_local! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_sax_parsestring(xml_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let xml = match string_obj_to_owned(obj_from_bits(xml_bits)) {
             Some(s) => s,
             None => {
@@ -305,7 +305,7 @@ pub extern "C" fn molt_xml_sax_parsestring(xml_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_sax_next_event(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
 
         SAX_PARSERS.with(|m| {
@@ -359,7 +359,7 @@ pub extern "C" fn molt_xml_sax_drop(handle_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_sax_escape(text_bits: u64, _entities_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text = match string_obj_to_owned(obj_from_bits(text_bits)) {
             Some(s) => s,
             None => return MoltObject::none().bits(),
@@ -374,7 +374,7 @@ pub extern "C" fn molt_xml_sax_escape(text_bits: u64, _entities_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_sax_unescape(text_bits: u64, _entities_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text = match string_obj_to_owned(obj_from_bits(text_bits)) {
             Some(s) => s,
             None => return MoltObject::none().bits(),
@@ -386,7 +386,7 @@ pub extern "C" fn molt_xml_sax_unescape(text_bits: u64, _entities_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_sax_quoteattr(text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text = match string_obj_to_owned(obj_from_bits(text_bits)) {
             Some(s) => s,
             None => return MoltObject::none().bits(),

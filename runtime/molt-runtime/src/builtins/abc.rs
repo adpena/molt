@@ -559,7 +559,7 @@ fn abc_subclasscheck_impl(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let debug = std::env::var("MOLT_DEBUG_COLLECTIONS_ABC_TYPES").as_deref() == Ok("1");
         let trace_stage = |stage: &str| {
             if debug {
@@ -803,12 +803,12 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_get_cache_token() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, abc_counter_get(_py) as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, abc_counter_get(_py) as i64) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_init(cls_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(bits) = abc_init_impl(_py, cls_bits) {
             return bits;
         }
@@ -818,7 +818,7 @@ pub extern "C" fn molt_abc_init(cls_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !is_type_object(subclass_bits) {
             return raise_exception::<_>(_py, "TypeError", "Can only register classes");
         }
@@ -849,7 +849,7 @@ pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_instancecheck(cls_bits: u64, instance_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let class_attr_bits =
             get_attr_default(_py, instance_bits, b"__class__", MoltObject::none().bits());
         if exception_pending(_py) {
@@ -880,7 +880,7 @@ pub extern "C" fn molt_abc_instancecheck(cls_bits: u64, instance_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_subclasscheck(cls_bits: u64, subclass_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match abc_subclasscheck_impl(_py, cls_bits, subclass_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
@@ -890,7 +890,7 @@ pub extern "C" fn molt_abc_subclasscheck(cls_bits: u64, subclass_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_get_dump(cls_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
@@ -911,7 +911,7 @@ pub extern "C" fn molt_abc_get_dump(cls_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_reset_registry(cls_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
@@ -929,7 +929,7 @@ pub extern "C" fn molt_abc_reset_registry(cls_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
@@ -953,7 +953,7 @@ pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_update_abstractmethods(cls_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match abc_update_abstractmethods_impl(_py, cls_bits) {
             Ok(bits) => bits,
             Err(bits) => bits,
@@ -963,7 +963,7 @@ pub extern "C" fn molt_abc_update_abstractmethods(cls_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_bootstrap() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
             return MoltObject::none().bits();
@@ -1231,7 +1231,7 @@ fn protocol_collect_structural_members(
 /// a Protocol class.  Used by the typing shim to populate `__protocol_attrs__`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_protocol_get_structural_members(proto_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match protocol_collect_structural_members(_py, proto_bits) {
             Ok(bits) => bits,
             Err(bits) => bits,
@@ -1327,7 +1327,7 @@ fn protocol_check_impl(
 /// `@runtime_checkable`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_protocol_check(proto_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match protocol_check_impl(_py, proto_bits, obj_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
@@ -1342,7 +1342,7 @@ pub extern "C" fn molt_protocol_check(proto_bits: u64, obj_bits: u64) -> u64 {
 /// negative checks are flushed.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_protocol_register(proto_bits: u64, subclass_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !is_type_object(subclass_bits) {
             return raise_exception::<_>(_py, "TypeError", "Can only register classes");
         }
@@ -1359,7 +1359,7 @@ pub extern "C" fn molt_protocol_register(proto_bits: u64, subclass_bits: u64) ->
 /// time to determine if instantiation should be blocked.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_abstractmethod_check(cls_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let abs_bits = get_attr_default(
             _py,
             cls_bits,
@@ -1396,7 +1396,7 @@ pub extern "C" fn molt_typing_cast(_typ_bits: u64, val_bits: u64) -> u64 {
 /// `typing.get_origin(tp)` → `tp.__origin__` or None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_typing_get_origin(tp_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         get_attr_default(_py, tp_bits, b"__origin__", MoltObject::none().bits())
     })
 }
@@ -1404,7 +1404,7 @@ pub extern "C" fn molt_typing_get_origin(tp_bits: u64) -> u64 {
 /// `typing.get_args(tp)` → `tp.__args__` or `()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_typing_get_args(tp_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let empty_tuple = alloc_tuple(_py, &[]) as u64;
         get_attr_default(_py, tp_bits, b"__args__", empty_tuple)
     })
@@ -1429,7 +1429,7 @@ mod tests {
         init_runtime();
 
         let (set_base_ok, set_base_pending, set_attr_ok, set_attr_pending, inherited) =
-            crate::with_gil_entry!(_py, {
+            crate::with_gil_entry_nopanic!(_py, {
                 let builtins = builtin_classes(_py);
                 let none_bits = MoltObject::none().bits();
 

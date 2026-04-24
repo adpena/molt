@@ -16,7 +16,7 @@ use crate::{
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
 }
 
 fn logging_percent_lookup_mapping_value(
@@ -336,7 +336,7 @@ fn logging_config_resolve_ext_stream(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let version_bits = match logging_config_dict_lookup(_py, config_bits, "version") {
             Ok(Some(bits)) => bits,
             Ok(None) => {
@@ -874,7 +874,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_valid_ident(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -906,7 +906,7 @@ pub extern "C" fn molt_logging_config_file_config(
     disable_existing_loggers_bits: u64,
     encoding_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = (
             config_file_bits,
             defaults_bits,
@@ -923,7 +923,7 @@ pub extern "C" fn molt_logging_config_file_config(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = (port_bits, verify_bits);
         raise_exception::<_>(
             _py,
@@ -935,12 +935,12 @@ pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_stop_listening() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_percent_style_format(fmt_bits: u64, mapping_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(fmt) = string_obj_to_owned(obj_from_bits(fmt_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "logging format string must be str");
         };

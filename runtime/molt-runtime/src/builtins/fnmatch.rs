@@ -55,7 +55,7 @@ fn fnmatch_case_insensitive(name: &str, pattern: &str) -> bool {
 /// on Windows but not on Linux.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fnmatch_fnmatch(filename_bits: u64, pattern_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let filename = match require_str(_py, filename_bits, "filename") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -78,7 +78,7 @@ pub extern "C" fn molt_fnmatch_fnmatch(filename_bits: u64, pattern_bits: u64) ->
 /// Always case-sensitive matching.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fnmatch_fnmatchcase(filename_bits: u64, pattern_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let filename = match require_str(_py, filename_bits, "filename") {
             Ok(s) => s,
             Err(bits) => return bits,

@@ -40,7 +40,7 @@ pub(crate) const SOCK_CLOEXEC_FLAG: i32 = 0;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let msg = format_obj_str(_py, obj_from_bits(msg_bits));
         eprintln!("Molt bridge unavailable: {msg}");
         std::process::exit(1);

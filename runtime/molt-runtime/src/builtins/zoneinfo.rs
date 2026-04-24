@@ -413,7 +413,7 @@ fn extract_dt_components(_py: &PyToken<'_>, bits: u64) -> Option<Vec<i64>> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zoneinfo_new(key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(k) => k,
             None => return raise_exception::<u64>(_py, "TypeError", "timezone key must be a str"),
@@ -431,7 +431,7 @@ pub extern "C" fn molt_zoneinfo_new(key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zoneinfo_key(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "zoneinfo handle must be int"),
@@ -453,7 +453,7 @@ pub extern "C" fn molt_zoneinfo_key(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zoneinfo_utcoffset(handle_bits: u64, dt_components_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "zoneinfo handle must be int"),
@@ -484,7 +484,7 @@ pub extern "C" fn molt_zoneinfo_utcoffset(handle_bits: u64, dt_components_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zoneinfo_tzname(handle_bits: u64, dt_components_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "zoneinfo handle must be int"),
@@ -532,7 +532,7 @@ pub extern "C" fn molt_zoneinfo_tzname(handle_bits: u64, dt_components_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zoneinfo_dst(handle_bits: u64, dt_components_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "zoneinfo handle must be int"),
@@ -566,7 +566,7 @@ pub extern "C" fn molt_zoneinfo_dst(handle_bits: u64, dt_components_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zoneinfo_available_timezones() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let names = available_timezones_set();
         let mut str_bits = Vec::with_capacity(names.len());
         for name in &names {
@@ -586,7 +586,7 @@ pub extern "C" fn molt_zoneinfo_available_timezones() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zoneinfo_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             ZONE_MAP.with(|m| m.borrow_mut().remove(&id));
         }

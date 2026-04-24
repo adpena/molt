@@ -357,7 +357,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
 /// same element references. For immutable/atomic types, returns the same object.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copy_copy(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { shallow_copy_bits(_py, obj_bits) })
+    crate::with_gil_entry_nopanic!(_py, { shallow_copy_bits(_py, obj_bits) })
 }
 
 /// Deep copy of a Python object with a memo dictionary.
@@ -366,7 +366,7 @@ pub extern "C" fn molt_copy_copy(obj_bits: u64) -> u64 {
 /// handles cycles via the memo registry.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copy_deepcopy(obj_bits: u64, memo_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let memo_obj = obj_from_bits(memo_bits);
         let (memo_handle, owned) = if memo_obj.is_none() {
             (memo_alloc(), true)
@@ -391,7 +391,7 @@ pub extern "C" fn molt_copy_deepcopy(obj_bits: u64, memo_bits: u64) -> u64 {
 /// and later freed with `molt_copy_memo_drop`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copy_memo_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = memo_alloc();
         MoltObject::from_int(handle).bits()
     })
@@ -400,7 +400,7 @@ pub extern "C" fn molt_copy_memo_new() -> u64 {
 /// Free a memo handle previously allocated with `molt_copy_memo_new`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copy_memo_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(handle_bits);
         if let Some(i) = to_i64(obj) {
             memo_drop(i);
@@ -412,7 +412,7 @@ pub extern "C" fn molt_copy_memo_drop(handle_bits: u64) -> u64 {
 /// Raise a `copy.Error` exception with the given message.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copy_error(msg_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(msg_bits);
         let msg = string_obj_to_owned(obj).unwrap_or_else(|| "copy.Error".to_string());
         raise_exception::<u64>(_py, "copy.Error", &msg)

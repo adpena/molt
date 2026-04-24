@@ -477,7 +477,7 @@ fn simple_edit_distance(a: &str, b: &str) -> usize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             trace_bad_module_name_arg(_py, "module_new_ptr", name_bits);
@@ -521,7 +521,7 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             trace_bad_module_name_arg(_py, "module_cache_get_ptr", name_bits);
@@ -577,7 +577,7 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
 }
 
 fn molt_module_import_inner(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(val) => val,
             None => {
@@ -2831,7 +2831,7 @@ pub extern "C" fn molt_runpy_run_module(
     init_globals_bits: u64,
     alter_sys_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mod_name = match string_obj_to_owned(obj_from_bits(mod_name_bits)) {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "mod_name must be str"),
@@ -3016,7 +3016,7 @@ pub extern "C" fn molt_runpy_run_path(
     run_name_bits: u64,
     init_globals_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("runpy.run_path", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -3170,7 +3170,7 @@ pub extern "C" fn molt_importlib_exec_restricted_source(
     source_bits: u64,
     filename_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let namespace_ptr = match obj_from_bits(namespace_bits).as_ptr() {
             Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_DICT } => ptr,
             _ => return raise_exception::<_>(_py, "TypeError", "namespace must be dict"),
@@ -3407,7 +3407,7 @@ fn copyreg_reconstructor_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_bootstrap() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dispatch_bits = copyreg_dict_slot_bits(_py, &COPYREG_DISPATCH_TABLE_BITS);
         let extension_bits = copyreg_dict_slot_bits(_py, &COPYREG_EXTENSION_REGISTRY_BITS);
         let inverted_bits = copyreg_dict_slot_bits(_py, &COPYREG_INVERTED_REGISTRY_BITS);
@@ -3444,7 +3444,7 @@ pub extern "C" fn molt_copyreg_pickle(
     reducer_bits: u64,
     constructor_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(reducer_bits)));
         if !callable_ok {
             return raise_exception::<_>(_py, "TypeError", "reduction functions must be callable");
@@ -3469,7 +3469,7 @@ pub extern "C" fn molt_copyreg_pickle(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_constructor(func_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err_bits) = copyreg_add_constructor(_py, func_bits) {
             return err_bits;
         }
@@ -3479,7 +3479,7 @@ pub extern "C" fn molt_copyreg_constructor(func_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_newobj(cls_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let new_bits = match copyreg_attr_required(_py, cls_bits, b"__new__") {
             Ok(bits) => bits,
             Err(err_bits) => return err_bits,
@@ -3507,7 +3507,7 @@ pub extern "C" fn molt_copyreg_newobj(cls_bits: u64, args_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_newobj_ex(cls_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let new_bits = match copyreg_attr_required(_py, cls_bits, b"__new__") {
             Ok(bits) => bits,
             Err(err_bits) => return err_bits,
@@ -3544,7 +3544,7 @@ pub extern "C" fn molt_copyreg_reconstructor(
     base_bits: u64,
     state_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let builtins = builtin_classes(_py);
         let object_bits = builtins.object;
         let obj_bits = if base_bits == object_bits {
@@ -3639,7 +3639,7 @@ pub extern "C" fn molt_copyreg_reconstructor(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let proto_int_bits = molt_int_from_obj(proto_bits, MoltObject::none().bits(), 0);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -3843,7 +3843,7 @@ pub extern "C" fn molt_copyreg_add_extension(
     name_bits: u64,
     code_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(extension_ptr) = copyreg_extension_registry_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
@@ -3921,7 +3921,7 @@ pub extern "C" fn molt_copyreg_remove_extension(
     name_bits: u64,
     code_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(extension_ptr) = copyreg_extension_registry_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
@@ -4001,7 +4001,7 @@ pub extern "C" fn molt_copyreg_remove_extension(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_clear_extension_cache() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(cache_ptr) = copyreg_extension_cache_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
@@ -4054,7 +4054,7 @@ fn sys_modules_dict_ptr(_py: &PyToken<'_>, sys_bits: u64) -> Option<*mut u8> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
@@ -4210,7 +4210,7 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
@@ -4284,7 +4284,7 @@ pub extern "C" fn molt_debug_trace(
     func_len_bits: u64,
     op_idx_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         TRACE_LAST_OP.store(op_idx_bits, Ordering::Relaxed);
         ensure_sigtrap_handler();
         let ptr = func_ptr_bits as usize as *const u8;
@@ -4306,7 +4306,7 @@ pub extern "C" fn molt_debug_trace(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let debug_attr = std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1");
         let trace_attrs = trace_module_attrs();
         let trace_attrs_verbose = trace_module_attrs_verbose();
@@ -4410,7 +4410,7 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace = trace_name_error();
         let trace_globals_mode = trace_module_globals_mode();
         let trace_globals = trace_globals_mode != TraceModuleGlobalsMode::Off;
@@ -4620,7 +4620,7 @@ Use static modules or pre-generated code paths instead."
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace = trace_name_error();
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
@@ -4672,7 +4672,7 @@ pub extern "C" fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_name(module_bits: u64, attr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Keep wasm import parity; module __name__ is stored in the module dict.
         molt_module_get_attr(module_bits, attr_bits)
     })
@@ -4686,7 +4686,7 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
             module_bits, attr_bits, val_bits
         );
     }
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace_attrs = trace_module_attrs();
         let trace_attrs_verbose = trace_module_attrs_verbose();
         let module_obj = obj_from_bits(module_bits);
@@ -4780,7 +4780,7 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let src_obj = obj_from_bits(src_bits);
         let Some(src_ptr) = src_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "module import expects module");
@@ -5015,7 +5015,7 @@ mod tests {
 
     #[test]
     fn restricted_reference_eval_supports_module_attr_then_subscript() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
                 assert!(!namespace_ptr.is_null());
@@ -5068,7 +5068,7 @@ mod tests {
 
     #[test]
     fn sys_module_cache_set_does_not_leave_pending_exception() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = alloc_string(_py, b"sys");
             assert!(!name_ptr.is_null());
             let name_bits = MoltObject::from_ptr(name_ptr).bits();

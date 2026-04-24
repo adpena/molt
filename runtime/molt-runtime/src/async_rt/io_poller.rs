@@ -1000,7 +1000,7 @@ fn io_worker(poller: Arc<IoPoller>) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -1113,7 +1113,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
 #[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_net_capability::<u64>(
             _py,
             &[
@@ -1162,7 +1162,7 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_net_capability::<u64>(
             _py,
             &[
@@ -1216,7 +1216,7 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
 /// Caller must ensure `obj_bits` is a valid I/O object pointer.
 pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;

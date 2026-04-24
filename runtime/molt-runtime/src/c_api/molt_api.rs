@@ -15,7 +15,7 @@ pub extern "C" fn molt_init() -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutdown() -> i32 {
     if crate::state::runtime_state::runtime_state_for_gil().is_some() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             c_api_module_teardown(_py);
         });
     } else {
@@ -55,14 +55,14 @@ pub extern "C" fn molt_gil_is_held() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_handle_incref(handle: MoltHandle) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, handle);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_handle_decref(handle: MoltHandle) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, handle);
     })
 }
@@ -74,17 +74,17 @@ pub extern "C" fn molt_none() -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bool_from_i32(value: i32) -> MoltHandle {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(value != 0).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(value != 0).bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_from_i64(value: i64) -> MoltHandle {
-    crate::with_gil_entry!(_py, { MoltObject::from_int(value).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_int(value).bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_as_i64(value_bits: MoltHandle) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(value) = to_i64(obj_from_bits(value_bits)) {
             return value;
         }
@@ -95,12 +95,12 @@ pub extern "C" fn molt_int_as_i64(value_bits: MoltHandle) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_float_from_f64(value: f64) -> MoltHandle {
-    crate::with_gil_entry!(_py, { MoltObject::from_float(value).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_float(value).bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_float_as_f64(value_bits: MoltHandle) -> f64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let value_obj = obj_from_bits(value_bits);
         if let Some(value) = value_obj.as_float() {
             return value;
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn molt_err_set(
     message_ptr: *const u8,
     message_len: u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(message) = (unsafe { bytes_slice_from_raw(message_ptr, message_len) }) else {
             return raise_i32(
                 _py,
@@ -148,12 +148,12 @@ pub extern "C" fn molt_err_clear() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_err_pending() -> i32 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_err_peek() -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !exception_pending(_py) {
             return none_bits();
         }
@@ -163,7 +163,7 @@ pub extern "C" fn molt_err_peek() -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_err_fetch() -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !exception_pending(_py) {
             return none_bits();
         }
@@ -175,7 +175,7 @@ pub extern "C" fn molt_err_fetch() -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_err_restore(exc_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(exc_bits).is_none() {
             return -1;
         }
@@ -186,7 +186,7 @@ pub extern "C" fn molt_err_restore(exc_bits: MoltHandle) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_err_matches(exc_type_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(exc_type_ptr) = obj_from_bits(exc_type_bits).as_ptr() else {
             return -1;
         };
@@ -228,7 +228,7 @@ pub unsafe extern "C" fn molt_object_getattr_bytes(
     name_ptr: *const u8,
     name_len: u64,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -263,7 +263,7 @@ pub unsafe extern "C" fn molt_object_getattr_borrowed(
     name_ptr: *const u8,
     name_len: u64,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let result = unsafe { molt_object_getattr_bytes(obj_bits, name_ptr, name_len) };
         if result != 0 && !exception_pending(_py) {
             // Convert new reference → borrowed reference.
@@ -282,7 +282,7 @@ pub unsafe extern "C" fn molt_object_setattr_bytes(
     name_len: u64,
     val_bits: MoltHandle,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_i32(
                 _py,
@@ -308,7 +308,7 @@ pub unsafe extern "C" fn molt_object_setattr_bytes(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_hasattr(obj_bits: MoltHandle, name_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let has_bits = molt_has_attr_name(obj_bits, name_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, has_bits);
@@ -330,7 +330,7 @@ pub extern "C" fn molt_object_call(
     args_bits: MoltHandle,
     kwargs_bits: MoltHandle,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         callargs_builder_for_call(_py, callable_bits, args_bits, kwargs_bits)
     })
 }
@@ -347,7 +347,7 @@ pub extern "C" fn molt_object_str(obj_bits: MoltHandle) -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_truthy(obj_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let out = is_truthy(_py, obj_from_bits(obj_bits));
         if exception_pending(_py) {
             -1
@@ -361,7 +361,7 @@ pub extern "C" fn molt_object_truthy(obj_bits: MoltHandle) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_equal(lhs_bits: MoltHandle, rhs_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let eq_bits = molt_eq(lhs_bits, rhs_bits);
         bool_handle_to_i32(_py, eq_bits)
     })
@@ -369,7 +369,7 @@ pub extern "C" fn molt_object_equal(lhs_bits: MoltHandle, rhs_bits: MoltHandle) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_not_equal(lhs_bits: MoltHandle, rhs_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ne_bits = molt_ne(lhs_bits, rhs_bits);
         bool_handle_to_i32(_py, ne_bits)
     })
@@ -377,7 +377,7 @@ pub extern "C" fn molt_object_not_equal(lhs_bits: MoltHandle, rhs_bits: MoltHand
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_contains(container_bits: MoltHandle, item_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let contains_bits = molt_contains(container_bits, item_bits);
         bool_handle_to_i32(_py, contains_bits)
     })
@@ -385,7 +385,7 @@ pub extern "C" fn molt_object_contains(container_bits: MoltHandle, item_bits: Mo
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_ready(type_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_type_handle(_py, type_bits).is_err() {
             return -1;
         }
@@ -400,7 +400,7 @@ pub extern "C" fn molt_module_create(name_bits: MoltHandle) -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_dict(module_bits: MoltHandle) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
             Ok(ptr) => ptr,
             Err(_) => return none_bits(),
@@ -422,7 +422,7 @@ pub extern "C" fn molt_module_capi_register(
     module_def_ptr: usize,
     module_state_size: u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
             Ok(ptr) => ptr,
             Err(code) => return code,
@@ -461,7 +461,7 @@ pub extern "C" fn molt_module_capi_register(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
             Ok(ptr) => ptr,
             Err(_) => return 0,
@@ -479,7 +479,7 @@ pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
             Ok(ptr) => ptr,
             Err(_) => return std::ptr::null_mut(),
@@ -502,7 +502,7 @@ pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> *mut u8
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr: usize) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if module_def_ptr == 0 {
             return raise_i32(
                 _py,
@@ -560,7 +560,7 @@ pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if module_def_ptr == 0 {
             let _ = raise_exception::<u64>(
                 _py,
@@ -579,7 +579,7 @@ pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_state_remove(module_def_ptr: usize) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if module_def_ptr == 0 {
             return raise_i32(
                 _py,
@@ -603,7 +603,7 @@ pub extern "C" fn molt_module_add_object(
     name_bits: MoltHandle,
     value_bits: MoltHandle,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         module_add_object_impl(_py, module_bits, name_bits, value_bits)
     })
 }
@@ -615,7 +615,7 @@ pub unsafe extern "C" fn molt_module_add_object_bytes(
     name_len: u64,
     value_bits: MoltHandle,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_i32(
                 _py,
@@ -645,7 +645,7 @@ pub extern "C" fn molt_module_get_object(
     module_bits: MoltHandle,
     name_bits: MoltHandle,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, { module_get_object_impl(_py, module_bits, name_bits) })
+    crate::with_gil_entry_nopanic!(_py, { module_get_object_impl(_py, module_bits, name_bits) })
 }
 
 #[unsafe(no_mangle)]
@@ -654,7 +654,7 @@ pub unsafe extern "C" fn molt_module_get_object_bytes(
     name_ptr: *const u8,
     name_len: u64,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -681,7 +681,7 @@ pub unsafe extern "C" fn molt_module_get_object_bytes(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_add_type(module_bits: MoltHandle, type_bits: MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_type_handle(_py, type_bits).is_err() {
             return -1;
         }
@@ -708,7 +708,7 @@ pub extern "C" fn molt_module_add_int_constant(
     name_bits: MoltHandle,
     value: i64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         module_add_object_impl(
             _py,
             module_bits,
@@ -725,7 +725,7 @@ pub unsafe extern "C" fn molt_module_add_string_constant(
     value_ptr: *const u8,
     value_len: u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(value_bytes) = (unsafe { bytes_slice_from_raw(value_ptr, value_len) }) else {
             return raise_i32(
                 _py,
@@ -750,7 +750,7 @@ pub extern "C" fn molt_capi_method_dispatch(
     args_tuple_bits: MoltHandle,
     kwargs_bits: MoltHandle,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (self_bits, flags, callback_target) =
             match c_api_method_decode_closure(_py, closure_bits) {
                 Ok(value) => value,
@@ -912,7 +912,7 @@ pub unsafe extern "C" fn molt_cfunction_create_bytes(
     doc_ptr: *const u8,
     doc_len: u64,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if method_flags == C_API_METH_VARARGS_KEYWORDS {
             return raise_exception::<u64>(
                 _py,
@@ -963,7 +963,7 @@ pub unsafe extern "C" fn molt_cfunction_create_keywords_bytes(
     doc_ptr: *const u8,
     doc_len: u64,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if method_flags != C_API_METH_VARARGS_KEYWORDS {
             return raise_exception::<u64>(
                 _py,
@@ -1014,7 +1014,7 @@ pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
     doc_ptr: *const u8,
     doc_len: u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if method_flags == C_API_METH_VARARGS_KEYWORDS {
             return raise_i32(
                 _py,
@@ -1092,7 +1092,7 @@ pub unsafe extern "C" fn molt_module_add_cfunction_keywords_bytes(
     doc_ptr: *const u8,
     doc_len: u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if method_flags != C_API_METH_VARARGS_KEYWORDS {
             return raise_i32(
                 _py,
@@ -1197,7 +1197,7 @@ pub extern "C" fn molt_number_float(obj_bits: MoltHandle) -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sequence_length(seq_bits: MoltHandle) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let len_bits = molt_len(seq_bits);
         if exception_pending(_py) {
             return -1;
@@ -1219,7 +1219,7 @@ pub extern "C" fn molt_sequence_setitem(
     key_bits: MoltHandle,
     val_bits: MoltHandle,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = molt_setitem_method(seq_bits, key_bits, val_bits);
         if exception_pending(_py) { -1 } else { 0 }
     })
@@ -1239,7 +1239,7 @@ pub extern "C" fn molt_mapping_setitem(
     key_bits: MoltHandle,
     val_bits: MoltHandle,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = molt_setitem_method(mapping_bits, key_bits, val_bits);
         if exception_pending(_py) { -1 } else { 0 }
     })
@@ -1247,7 +1247,7 @@ pub extern "C" fn molt_mapping_setitem(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_mapping_length(mapping_bits: MoltHandle) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let len_bits = molt_len(mapping_bits);
         if exception_pending(_py) {
             return -1;
@@ -1260,7 +1260,7 @@ pub extern "C" fn molt_mapping_length(mapping_bits: MoltHandle) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_mapping_keys(mapping_bits: MoltHandle) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let keys_method_bits =
             unsafe { molt_object_getattr_bytes(mapping_bits, b"keys".as_ptr(), 4) };
         if exception_pending(_py) {
@@ -1285,7 +1285,7 @@ pub extern "C" fn molt_mapping_keys(mapping_bits: MoltHandle) -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_tuple_from_array(items: *const MoltHandle, len: u64) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(elems) = (unsafe { handles_slice_from_raw(items, len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -1303,7 +1303,7 @@ pub unsafe extern "C" fn molt_tuple_from_array(items: *const MoltHandle, len: u6
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_list_from_array(items: *const MoltHandle, len: u64) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(elems) = (unsafe { handles_slice_from_raw(items, len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -1325,7 +1325,7 @@ pub unsafe extern "C" fn molt_dict_from_pairs(
     values: *const MoltHandle,
     len: u64,
 ) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(key_slice) = (unsafe { handles_slice_from_raw(keys, len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -1358,7 +1358,7 @@ pub unsafe extern "C" fn molt_buffer_acquire(
     obj_bits: MoltHandle,
     out_view: *mut MoltBufferView,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if out_view.is_null() {
             return raise_i32(_py, "TypeError", "out_view cannot be null");
         }
@@ -1390,7 +1390,7 @@ pub unsafe extern "C" fn molt_buffer_acquire(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if view.is_null() {
             return -1;
         }
@@ -1412,7 +1412,7 @@ pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytes_from(data: *const u8, len: u64) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -1430,7 +1430,7 @@ pub unsafe extern "C" fn molt_bytes_from(data: *const u8, len: u64) -> MoltHandl
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytes_as_ptr(bytes_bits: MoltHandle, out_len: *mut u64) -> *const u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(bytes_bits).as_ptr() else {
             let _ = raise_exception::<u64>(_py, "TypeError", "bytes object expected");
             return std::ptr::null();
@@ -1450,7 +1450,7 @@ pub unsafe extern "C" fn molt_bytes_as_ptr(bytes_bits: MoltHandle, out_len: *mut
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_string_from(data: *const u8, len: u64) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -1471,7 +1471,7 @@ pub unsafe extern "C" fn molt_string_as_ptr(
     string_bits: MoltHandle,
     out_len: *mut u64,
 ) -> *const u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(string_bits).as_ptr() else {
             let _ = raise_exception::<u64>(_py, "TypeError", "string object expected");
             return std::ptr::null();
@@ -1491,7 +1491,7 @@ pub unsafe extern "C" fn molt_string_as_ptr(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytearray_from(data: *const u8, len: u64) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -1512,7 +1512,7 @@ pub unsafe extern "C" fn molt_bytearray_as_ptr(
     bytearray_bits: MoltHandle,
     out_len: *mut u64,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(bytearray_bits).as_ptr() else {
             let _ = raise_exception::<u64>(_py, "TypeError", "bytearray object expected");
             return std::ptr::null_mut();

@@ -238,7 +238,7 @@ fn graph_ready_tuple(_py: &PyToken<'_>, ready: &[usize], nodes: &[NodeInfo]) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = GraphHandle::new(_py) else {
             return MoltObject::none().bits();
         };
@@ -250,7 +250,7 @@ pub extern "C" fn molt_graphlib_new() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -296,7 +296,7 @@ pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_prepare(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -314,7 +314,7 @@ pub extern "C" fn molt_graphlib_prepare(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_get_ready(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -338,7 +338,7 @@ pub extern "C" fn molt_graphlib_get_ready(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_is_active(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -352,7 +352,7 @@ pub extern "C" fn molt_graphlib_is_active(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -426,7 +426,7 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -499,7 +499,7 @@ pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = ptr_from_bits(handle_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();

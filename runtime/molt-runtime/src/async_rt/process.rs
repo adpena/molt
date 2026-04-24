@@ -137,7 +137,7 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
     fd_base_bits: u64,
     fd_max_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(inherit_mode) = to_i64(obj_from_bits(inherit_mode_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -551,7 +551,7 @@ pub unsafe extern "C" fn molt_process_spawn(
     stderr_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             ignore_sigpipe();
             if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
                 return MoltObject::none().bits();
@@ -898,7 +898,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
     process_group_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             ignore_sigpipe();
             if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
                 return MoltObject::none().bits();
@@ -1279,7 +1279,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1315,7 +1315,7 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
 /// `obj_bits` must be a valid process wait future object from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -1379,7 +1379,7 @@ pub unsafe extern "C" fn molt_process_spawn(
     stdout_bits: u64,
     stderr_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
             return MoltObject::none().bits();
         }
@@ -1557,7 +1557,7 @@ pub unsafe extern "C" fn molt_process_spawn(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1593,7 +1593,7 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
 /// `obj_bits` must be a valid process wait future object from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -1634,7 +1634,7 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::from_int(0).bits();
@@ -1651,7 +1651,7 @@ pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::from_int(0).bits();
@@ -1668,7 +1668,7 @@ pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1690,7 +1690,7 @@ pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1712,7 +1712,7 @@ pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1736,7 +1736,7 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1760,7 +1760,7 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1800,7 +1800,7 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1824,7 +1824,7 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1844,7 +1844,7 @@ pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1864,7 +1864,7 @@ pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1884,7 +1884,7 @@ pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1904,7 +1904,7 @@ pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1924,7 +1924,7 @@ pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1944,7 +1944,7 @@ pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return;
@@ -1961,7 +1961,7 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return;
@@ -1983,7 +1983,7 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let entry = wasm_process_handles().lock().unwrap().get(&handle).cloned();
             let Some(slot) = entry else {
                 return;

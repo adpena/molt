@@ -241,7 +241,7 @@ fn handle_from_bits(bits: u64) -> i64 {
 /// Returns a NaN-boxed int handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_new(maxsize_bits: u64, queue_type_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let maxsize_obj = obj_from_bits(maxsize_bits);
         let maxsize_raw = to_i64(maxsize_obj).unwrap_or(0);
         if maxsize_raw < 0 {
@@ -281,7 +281,7 @@ pub extern "C" fn molt_asyncio_queue_new(maxsize_bits: u64, queue_type_bits: u64
 /// Returns `MoltObject::none()` on success.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_put_nowait(handle_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
 
         // We need to inc_ref the item before storing it.  Do it speculatively;
@@ -327,7 +327,7 @@ pub extern "C" fn molt_asyncio_queue_put_nowait(handle_bits: u64, item_bits: u64
 /// Returns the item bits (caller takes ownership of the reference).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_get_nowait(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
 
         let result = with_queue(handle, |state| {
@@ -356,7 +356,7 @@ pub extern "C" fn molt_asyncio_queue_get_nowait(handle_bits: u64) -> u64 {
 /// Return the current number of items in the queue.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_qsize(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(size) = with_queue(handle, |state| state.qsize() as i64) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
@@ -368,7 +368,7 @@ pub extern "C" fn molt_asyncio_queue_qsize(handle_bits: u64) -> u64 {
 /// Return the maxsize of the queue (0 = unlimited).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_maxsize(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(maxsize) = with_queue(handle, |state| state.maxsize as i64) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
@@ -380,7 +380,7 @@ pub extern "C" fn molt_asyncio_queue_maxsize(handle_bits: u64) -> u64 {
 /// Return True if the queue is empty.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_empty(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(empty) = with_queue(handle, |state| state.is_empty()) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
@@ -392,7 +392,7 @@ pub extern "C" fn molt_asyncio_queue_empty(handle_bits: u64) -> u64 {
 /// Return True if the queue is full.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_full(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(full) = with_queue(handle, |state| state.is_full()) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
@@ -407,7 +407,7 @@ pub extern "C" fn molt_asyncio_queue_full(handle_bits: u64) -> u64 {
 /// Returns `MoltObject::none()` on success.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_task_done(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
 
         let result = with_queue(handle, |state| {
@@ -431,7 +431,7 @@ pub extern "C" fn molt_asyncio_queue_task_done(handle_bits: u64) -> u64 {
 /// Return the current `unfinished_tasks` count.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_unfinished_tasks(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(count) = with_queue(handle, |state| state.unfinished_tasks) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
@@ -443,7 +443,7 @@ pub extern "C" fn molt_asyncio_queue_unfinished_tasks(handle_bits: u64) -> u64 {
 /// Return the number of waiting putters.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_putter_count(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(count) = with_queue(handle, |state| state.putters.len() as i64) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
@@ -455,7 +455,7 @@ pub extern "C" fn molt_asyncio_queue_putter_count(handle_bits: u64) -> u64 {
 /// Return the number of waiting getters.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_getter_count(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(count) = with_queue(handle, |state| state.getters.len() as i64) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
@@ -469,7 +469,7 @@ pub extern "C" fn molt_asyncio_queue_getter_count(handle_bits: u64) -> u64 {
 /// Returns `MoltObject::none()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_add_putter(handle_bits: u64, waiter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         inc_ref_bits(_py, waiter_bits);
 
@@ -490,7 +490,7 @@ pub extern "C" fn molt_asyncio_queue_add_putter(handle_bits: u64, waiter_bits: u
 /// Returns `MoltObject::none()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_add_getter(handle_bits: u64, waiter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         inc_ref_bits(_py, waiter_bits);
 
@@ -513,7 +513,7 @@ pub extern "C" fn molt_asyncio_queue_add_getter(handle_bits: u64, waiter_bits: u
 /// Returns the number of putters actually notified (NaN-boxed int).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_notify_putters(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let count = to_i64(obj_from_bits(count_bits)).unwrap_or(1).max(0) as usize;
 
@@ -541,7 +541,7 @@ pub extern "C" fn molt_asyncio_queue_notify_putters(handle_bits: u64, count_bits
 /// Returns the number of getters actually notified (NaN-boxed int).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_notify_getters(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let count = to_i64(obj_from_bits(count_bits)).unwrap_or(1).max(0) as usize;
 
@@ -570,7 +570,7 @@ pub extern "C" fn molt_asyncio_queue_notify_getters(handle_bits: u64, count_bits
 /// Returns `MoltObject::none()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let immediate = is_truthy(_py, obj_from_bits(immediate_bits));
 
@@ -617,7 +617,7 @@ pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: 
 /// Return True if the queue has been shut down.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_is_shutdown(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(shut) = with_queue(handle, |state| state.shutdown) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
@@ -629,7 +629,7 @@ pub extern "C" fn molt_asyncio_queue_is_shutdown(handle_bits: u64) -> u64 {
 /// Drop and clean up a queue handle. All remaining items and waiters are dec_ref'd.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_drop(handle_bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
 
         let removed = QUEUE_REGISTRY.lock().unwrap().remove(&handle);

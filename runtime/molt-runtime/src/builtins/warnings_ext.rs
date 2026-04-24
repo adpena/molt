@@ -249,7 +249,7 @@ pub extern "C" fn molt_warnings_warn(
     category_bits: u64,
     stacklevel_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let message = string_from_bits_or(_py, message_bits, "");
         let category = string_from_bits_or(_py, category_bits, "UserWarning");
         let _stacklevel = i64_from_bits_default(stacklevel_bits, 1);
@@ -301,7 +301,7 @@ pub extern "C" fn molt_warnings_warn_explicit(
     _registry_bits: u64,
     _module_globals_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let message = string_from_bits_or(_py, message_bits, "");
         let category = string_from_bits_or(_py, category_bits, "UserWarning");
         let filename = string_from_bits_or(_py, filename_bits, "<string>");
@@ -349,7 +349,7 @@ pub extern "C" fn molt_warnings_formatwarning(
     lineno_bits: u64,
     line_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let message = string_from_bits_or(_py, message_bits, "");
         let category = string_from_bits_or(_py, category_bits, "UserWarning");
         let filename = string_from_bits_or(_py, filename_bits, "<string>");
@@ -391,7 +391,7 @@ pub extern "C" fn molt_warnings_showwarning(
     _file_bits: u64,
     line_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let message = string_from_bits_or(_py, message_bits, "");
         let category = string_from_bits_or(_py, category_bits, "UserWarning");
         let filename = string_from_bits_or(_py, filename_bits, "<string>");
@@ -433,7 +433,7 @@ pub extern "C" fn molt_warnings_simplefilter(
     lineno_bits: u64,
     append_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let action = string_from_bits_or(_py, action_bits, "default").to_ascii_lowercase();
         if !is_valid_action(&action) {
             let msg = format!("invalid warnings action: {action:?}");
@@ -484,7 +484,7 @@ pub extern "C" fn molt_warnings_filterwarnings(
     lineno_bits: u64,
     append_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let action = string_from_bits_or(_py, action_bits, "default").to_ascii_lowercase();
         if !is_valid_action(&action) {
             let msg = format!("invalid warnings action: {action:?}");
@@ -523,7 +523,7 @@ pub extern "C" fn molt_warnings_filterwarnings(
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_warnings_resetwarnings() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut state = WARNINGS_STATE.lock().unwrap();
         state.filters.clear();
         state.once_registry.clear();
@@ -538,7 +538,7 @@ pub extern "C" fn molt_warnings_resetwarnings() -> u64 {
 /// Returns a list of 5-tuples.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_warnings_filters_get() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let state = WARNINGS_STATE.lock().unwrap();
         let mut tuple_bits: Vec<u64> = Vec::with_capacity(state.filters.len());
 

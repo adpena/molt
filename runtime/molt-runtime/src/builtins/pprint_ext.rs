@@ -544,7 +544,7 @@ fn format_int_underscored(i: i64) -> String {
 /// Generate a safe repr with depth and width limits. Returns a string.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pprint_safe_repr(obj_bits: u64, max_depth: u64, max_width: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let depth = i64_from_bits_default(max_depth, -1);
         let width = i64_from_bits_default(max_width, -1);
         let mut seen = HashSet::new();
@@ -562,7 +562,7 @@ pub extern "C" fn molt_pprint_format(
     depth: u64,
     compact: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let indent_val = i64_from_bits_default(indent, 1);
         let width_val = i64_from_bits_default(width, 80);
         let depth_val = i64_from_bits_default(depth, -1);
@@ -586,7 +586,7 @@ pub extern "C" fn molt_pprint_format(
 /// Check if repr of an object is readable (can be eval'd back). Returns a boolean.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pprint_isreadable(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut seen = HashSet::new();
         let (_repr, readable, recursive) = safe_repr_inner(_py, obj_bits, &mut seen, 0, -1, -1);
         let result = readable && !recursive;
@@ -597,7 +597,7 @@ pub extern "C" fn molt_pprint_isreadable(obj_bits: u64) -> u64 {
 /// Check if an object contains recursive references. Returns a boolean.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pprint_isrecursive(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut seen = HashSet::new();
         let (_repr, _, recursive) = safe_repr_inner(_py, obj_bits, &mut seen, 0, -1, -1);
         MoltObject::from_int(if recursive { 1 } else { 0 }).bits()
@@ -615,7 +615,7 @@ pub extern "C" fn molt_pprint_pformat(
     sort_dicts: u64,
     underscore_numbers: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let indent_val = i64_from_bits_default(indent, 1);
         let width_val = i64_from_bits_default(width, 80);
         let depth_val = i64_from_bits_default(depth, -1);

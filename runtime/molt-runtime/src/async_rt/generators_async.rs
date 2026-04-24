@@ -119,7 +119,7 @@ const WAIT_FOR_FLAG_FORCE_TIMEOUT: i64 = 2;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(future_bits);
         let Some(ptr) = obj.as_ptr() else {
             if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
@@ -164,7 +164,7 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(future_bits);
         let Some(ptr) = obj.as_ptr() else {
             if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
@@ -617,7 +617,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
 /// - `future_bits` must be a valid pointer to a Molt future.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_future_cancel(future_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -630,7 +630,7 @@ pub unsafe extern "C" fn molt_future_cancel(future_bits: u64) -> u64 {
 /// - `future_bits` must be a valid pointer to a Molt future.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_future_cancel_msg(future_bits: u64, msg_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -643,7 +643,7 @@ pub unsafe extern "C" fn molt_future_cancel_msg(future_bits: u64, msg_bits: u64)
 /// - `future_bits` must be a valid pointer to a Molt future.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_future_cancel_clear(future_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -657,7 +657,7 @@ pub unsafe extern "C" fn molt_future_cancel_clear(future_bits: u64) -> u64 {
 /// - `future_bits` must be a valid pointer to a Molt future.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_task_cancel_apply(future_bits: u64, msg_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -675,7 +675,7 @@ pub unsafe extern "C" fn molt_asyncio_task_cancel_apply(future_bits: u64, msg_bi
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_cancel_pending(tasks_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(task_tuple_bits) = tuple_from_iter_bits(_py, tasks_bits) else {
                 return MoltObject::none().bits();
             };
@@ -751,7 +751,7 @@ unsafe fn asyncio_ready_batch_run_tuple(_py: &PyToken<'_>, handle_tuple_bits: u6
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_ready_batch_run(handles_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(handle_tuple_bits) = tuple_from_iter_bits(_py, handles_bits) else {
                 return MoltObject::none().bits();
             };
@@ -827,7 +827,7 @@ pub unsafe extern "C" fn molt_asyncio_loop_enqueue_handle(
     handle_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if asyncio_loop_enqueue_handle_inner(
                 _py,
                 loop_bits,
@@ -853,7 +853,7 @@ pub unsafe extern "C" fn molt_asyncio_ready_queue_drain(
     ready_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let mut total_ran = 0i64;
             loop {
                 let acquire_bits = asyncio_call_method0(_py, ready_lock_bits, b"acquire");
@@ -960,7 +960,7 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify(
     result_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
                 return raise_exception::<u64>(_py, "TypeError", "waiter notify count must be int");
             };
@@ -1028,7 +1028,7 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
     exc_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
                 return raise_exception::<u64>(
                     _py,
@@ -1096,7 +1096,7 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_waiters_remove(waiters_bits: u64, waiter_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let out_bits = asyncio_call_method1(_py, waiters_bits, b"remove", waiter_bits);
             if exception_pending(_py) {
                 asyncio_clear_pending_exception(_py);
@@ -1119,7 +1119,7 @@ pub unsafe extern "C" fn molt_asyncio_condition_wait_for_step(
     predicate_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let callable_bits = molt_is_callable(predicate_bits);
             let is_callable = is_truthy(_py, obj_from_bits(callable_bits));
             if !obj_from_bits(callable_bits).is_none() {
@@ -1176,7 +1176,7 @@ pub unsafe extern "C" fn molt_asyncio_condition_wait_for_step(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_barrier_release(waiters_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(waiter_tuple_bits) = tuple_from_iter_bits(_py, waiters_bits) else {
                 return MoltObject::none().bits();
             };
@@ -1248,7 +1248,7 @@ unsafe fn asyncio_transfer_set_target_exception(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(target_done) = asyncio_method_truthy(_py, target_bits, b"done") else {
                 asyncio_clear_pending_exception(_py);
                 return MoltObject::from_bool(false).bits();
@@ -1327,7 +1327,7 @@ pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_b
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup(waiters_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(waiter_tuple_bits) = tuple_from_iter_bits(_py, waiters_bits) else {
                 return MoltObject::none().bits();
             };
@@ -1387,7 +1387,7 @@ pub unsafe extern "C" fn molt_asyncio_taskgroup_on_task_done(
     task_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let contains_bits = asyncio_call_method1(_py, tasks_bits, b"__contains__", task_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -1465,7 +1465,7 @@ pub unsafe extern "C" fn molt_asyncio_taskgroup_request_cancel(
     cancel_handle_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if !obj_from_bits(cancel_handle_bits).is_none() {
                 return cancel_handle_bits;
             }
@@ -1497,7 +1497,7 @@ pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
     callback_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let callable_bits = molt_is_callable(callback_bits);
             let is_callable = is_truthy(_py, obj_from_bits(callable_bits));
             if !obj_from_bits(callable_bits).is_none() {
@@ -1537,7 +1537,7 @@ pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
 /// - `future_bits` must be a valid pointer to a Molt future.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_task_uncancel_apply(future_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -1556,7 +1556,7 @@ pub unsafe extern "C" fn molt_asyncio_future_invoke_callbacks(
     callbacks_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let trace = matches!(
                 std::env::var("MOLT_TRACE_ASYNCIO_CALLBACKS")
                     .ok()
@@ -1637,7 +1637,7 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
     result_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(waiter_tuple_bits) = tuple_from_iter_bits(_py, waiters_bits) else {
                 return MoltObject::none().bits();
             };
@@ -1685,7 +1685,7 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_task_new(poll_fn_addr, closure_size, TASK_KIND_FUTURE);
         if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok()
             && let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
@@ -1706,7 +1706,7 @@ pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_promise_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(promise_poll_fn_addr(), std::mem::size_of::<u64>() as u64);
         if promise_trace_enabled() {
             eprintln!("molt async trace: promise_new bits=0x{:x}", obj_bits);
@@ -1720,7 +1720,7 @@ pub extern "C" fn molt_promise_new() -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let ptr = ptr_from_bits(obj_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -1760,7 +1760,7 @@ pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if async_trace_enabled() || promise_trace_enabled() {
                 eprintln!(
                     "molt async trace: promise_set_result_enter bits=0x{:x}",
@@ -1823,7 +1823,7 @@ pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_promise_set_exception(future_bits: u64, exc_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(task_ptr) = resolve_task_ptr(future_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
             };
@@ -1862,7 +1862,7 @@ pub unsafe extern "C" fn molt_promise_set_exception(future_bits: u64, exc_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             async_sleep_poll_fn_addr(),
             (2 * std::mem::size_of::<u64>()) as u64,
@@ -1886,7 +1886,7 @@ pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let _obj_ptr = ptr_from_bits(obj_bits);
             if _obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -2622,7 +2622,7 @@ unsafe fn asyncio_drop_payload_slots(_py: &PyToken<'_>, payload_ptr: *mut u64, s
 /// - `reader_bits` must be a valid stream-reader handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_stream_reader_read_new(reader_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_stream_reader_read_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
@@ -2650,7 +2650,7 @@ pub extern "C" fn molt_asyncio_stream_reader_read_new(reader_bits: u64, n_bits: 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_stream_reader_read_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -2687,7 +2687,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_read_poll(obj_bits: u64) -> 
 /// - `reader_bits` must be a valid stream-reader handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_stream_reader_readline_new(reader_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_stream_reader_readline_poll_fn_addr(),
             (2 * std::mem::size_of::<u64>()) as u64,
@@ -2713,7 +2713,7 @@ pub extern "C" fn molt_asyncio_stream_reader_readline_new(reader_bits: u64) -> u
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_stream_reader_readline_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -2749,7 +2749,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_readline_poll(obj_bits: u64)
 /// - `stream_bits` must be a valid stream handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_stream_send_all_new(stream_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_stream_send_all_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
@@ -2777,7 +2777,7 @@ pub extern "C" fn molt_asyncio_stream_send_all_new(stream_bits: u64, data_bits: 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_stream_send_all_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -2828,7 +2828,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_send_all_poll(obj_bits: u64) -> i64
 /// - `buffer_bits` must be bytes-like.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_stream_buffer_snapshot(buffer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let out_bits = molt_bytes_from_obj(buffer_bits);
         if exception_pending(_py) {
             return out_bits;
@@ -2845,7 +2845,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
     count_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
                 return raise_exception::<u64>(
                     _py,
@@ -2916,7 +2916,7 @@ pub extern "C" fn molt_asyncio_socket_reader_read_new(
     n_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_socket_reader_read_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
@@ -2946,7 +2946,7 @@ pub extern "C" fn molt_asyncio_socket_reader_read_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -2984,7 +2984,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(obj_bits: u64) -> 
 /// - `reader_bits` must be a valid socket-reader handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_socket_reader_readline_new(reader_bits: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_socket_reader_readline_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
@@ -3012,7 +3012,7 @@ pub extern "C" fn molt_asyncio_socket_reader_readline_new(reader_bits: u64, fd_b
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3049,7 +3049,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(obj_bits: u64)
 /// - `sock_bits` must be a valid socket object.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_sock_recv_new(sock_bits: u64, size_bits: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_sock_recv_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
@@ -3079,7 +3079,7 @@ pub extern "C" fn molt_asyncio_sock_recv_new(sock_bits: u64, size_bits: u64, fd_
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3131,7 +3131,7 @@ pub extern "C" fn molt_asyncio_sock_recv_into_new(
     nbytes_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_sock_recv_into_poll_fn_addr(),
             (5 * std::mem::size_of::<u64>()) as u64,
@@ -3163,7 +3163,7 @@ pub extern "C" fn molt_asyncio_sock_recv_into_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3222,7 +3222,7 @@ pub extern "C" fn molt_asyncio_sock_sendall_new(
     data_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data_len_bits = molt_len(data_bits);
         if exception_pending(_py) {
             return data_len_bits;
@@ -3275,7 +3275,7 @@ pub extern "C" fn molt_asyncio_sock_sendall_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3392,7 +3392,7 @@ pub extern "C" fn molt_asyncio_sock_recvfrom_new(
     size_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_sock_recvfrom_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
@@ -3422,7 +3422,7 @@ pub extern "C" fn molt_asyncio_sock_recvfrom_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3474,7 +3474,7 @@ pub extern "C" fn molt_asyncio_sock_recvfrom_into_new(
     nbytes_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_sock_recvfrom_into_poll_fn_addr(),
             (5 * std::mem::size_of::<u64>()) as u64,
@@ -3506,7 +3506,7 @@ pub extern "C" fn molt_asyncio_sock_recvfrom_into_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3566,7 +3566,7 @@ pub extern "C" fn molt_asyncio_sock_sendto_new(
     addr_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_sock_sendto_poll_fn_addr(),
             (5 * std::mem::size_of::<u64>()) as u64,
@@ -3598,7 +3598,7 @@ pub extern "C" fn molt_asyncio_sock_sendto_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3663,7 +3663,7 @@ pub extern "C" fn molt_asyncio_sock_connect_new(
     addr_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_sock_connect_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
@@ -3693,7 +3693,7 @@ pub extern "C" fn molt_asyncio_sock_connect_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3817,7 +3817,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
 /// - `sock_bits` must be a valid socket object.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_sock_accept_new(sock_bits: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_sock_accept_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
@@ -3845,7 +3845,7 @@ pub extern "C" fn molt_asyncio_sock_accept_new(sock_bits: u64, fd_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -3897,7 +3897,7 @@ pub extern "C" fn molt_asyncio_timer_handle_new(
     ready_lock_bits: u64,
     ready_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_timer_handle_poll_fn_addr(),
             (7 * std::mem::size_of::<u64>()) as u64,
@@ -3940,7 +3940,7 @@ pub unsafe extern "C" fn molt_asyncio_timer_schedule(
     ready_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let delay_obj = obj_from_bits(molt_float_from_obj(delay_bits));
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -3999,7 +3999,7 @@ pub unsafe extern "C" fn molt_asyncio_timer_handle_cancel(
     timer_task_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if !obj_from_bits(timer_task_bits).is_none() {
                 let cancel_bits = asyncio_call_method0(_py, timer_task_bits, b"cancel");
                 if exception_pending(_py) {
@@ -4024,7 +4024,7 @@ pub unsafe extern "C" fn molt_asyncio_timer_handle_cancel(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_timer_handle_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -4111,7 +4111,7 @@ pub extern "C" fn molt_asyncio_fd_watcher_new(
     args_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_fd_watcher_poll_fn_addr(),
             (6 * std::mem::size_of::<u64>()) as u64,
@@ -4152,7 +4152,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_register(
     events_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let old_entry_bits = asyncio_call_method2(
                 _py,
                 registry_bits,
@@ -4284,7 +4284,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_unregister(
     fileno_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let entry_bits = asyncio_call_method2(
                 _py,
                 registry_bits,
@@ -4324,7 +4324,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_unregister(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -4480,7 +4480,7 @@ pub extern "C" fn molt_asyncio_server_accept_loop_new(
     writer_ctor_bits: u64,
     closed_probe_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fd_bits = unsafe { asyncio_call_method0(_py, sock_bits, b"fileno") };
         if exception_pending(_py) {
             return fd_bits;
@@ -4527,7 +4527,7 @@ pub extern "C" fn molt_asyncio_server_accept_loop_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -4718,7 +4718,7 @@ pub extern "C" fn molt_asyncio_ready_runner_new(
     ready_lock_bits: u64,
     ready_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             asyncio_ready_runner_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
@@ -4748,7 +4748,7 @@ pub extern "C" fn molt_asyncio_ready_runner_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_ready_runner_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -4823,7 +4823,7 @@ pub extern "C" fn molt_asyncio_wait_new(
     timeout_bits: u64,
     return_when_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_tuple_bits) = (unsafe { tuple_from_iter_bits(_py, tasks_bits) }) else {
             return MoltObject::none().bits();
         };
@@ -4911,7 +4911,7 @@ pub extern "C" fn molt_asyncio_wait_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_wait_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -4987,7 +4987,7 @@ pub unsafe extern "C" fn molt_asyncio_wait_poll(obj_bits: u64) -> i64 {
 /// - `tasks_bits` must be iterable; items must implement asyncio Future methods.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_gather_new(tasks_bits: u64, return_exceptions_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_tuple_bits) = (unsafe { tuple_from_iter_bits(_py, tasks_bits) }) else {
             return MoltObject::none().bits();
         };
@@ -5030,7 +5030,7 @@ pub extern "C" fn molt_asyncio_gather_new(tasks_bits: u64, return_exceptions_bit
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_gather_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -5569,7 +5569,7 @@ unsafe fn wait_for_cancel_target(_py: &PyToken<'_>, target_bits: u64) {
 /// - `future_bits` must reference an awaitable future/task.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_wait_for_new(future_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let supported = unsafe { wait_for_is_supported_target(_py, future_bits) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -5603,7 +5603,7 @@ pub extern "C" fn molt_asyncio_wait_for_new(future_bits: u64, timeout_bits: u64)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -5751,7 +5751,7 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let _obj_ptr = ptr_from_bits(obj_bits);
             if _obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -5807,7 +5807,7 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut u8) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if task_ptr.is_null() || future_ptr.is_null() {
                 return 0;
             }
@@ -5836,7 +5836,7 @@ mod tests {
     #[test]
     fn asyncgen_registry_removes_on_drop() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             {
                 let mut guard = asyncgen_registry(_py).lock().unwrap();
                 guard.clear();

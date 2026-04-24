@@ -23,7 +23,7 @@
 //!
 //! All functions follow the canonical Molt intrinsic ABI:
 //!   `pub extern "C" fn molt_re_*(args: u64) -> u64`
-//!   with `crate::with_gil_entry!(_py, { … })` as the outer frame.
+//!   with `crate::with_gil_entry_nopanic!(_py, { … })` as the outer frame.
 
 use molt_obj_model::MoltObject;
 
@@ -218,7 +218,7 @@ pub extern "C" fn molt_re_positive_lookahead(
     pattern_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };
@@ -247,7 +247,7 @@ pub extern "C" fn molt_re_negative_lookahead(
     pattern_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };
@@ -394,7 +394,7 @@ pub extern "C" fn molt_re_positive_lookbehind(
     width_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };
@@ -427,7 +427,7 @@ pub extern "C" fn molt_re_negative_lookbehind(
     width_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };
@@ -553,7 +553,7 @@ fn re_strip_verbose_impl(pattern: &str, flags: i64) -> String {
 /// If the flags do not include VERBOSE (64) the pattern is returned unchanged.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_strip_verbose(pattern_bits: u64, flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "pattern must be str");
         };
@@ -600,7 +600,7 @@ pub extern "C" fn molt_re_fullmatch_check(
     match_start_bits: u64,
     match_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };
@@ -884,7 +884,7 @@ pub extern "C" fn molt_re_named_backref_advance(
     groups_bits: u64,
     name_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Validate that text, pos, end, and name are correctly typed even if
         // the current implementation returns early before using them.
         let Some(_text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
@@ -1950,7 +1950,7 @@ fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern, String> {
 /// Returns -1 and raises `re.error` on parse failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "pattern must be str");
         };
@@ -1981,7 +1981,7 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
 ///   3: warn_pos    — int or None,  char position of nested-set warning (or None)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "handle must be int");
         };
@@ -2978,7 +2978,7 @@ pub extern "C" fn molt_re_execute(
     end_bits: u64,
     mode_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "handle must be int");
         };
@@ -3042,7 +3042,7 @@ pub extern "C" fn molt_re_finditer_collect(
     pos_bits: u64,
     end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "handle must be int");
         };
@@ -3151,7 +3151,7 @@ pub extern "C" fn molt_re_finditer_collect(
 /// every position but do not split at the same position twice.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "handle must be int");
         };
@@ -3308,7 +3308,7 @@ pub extern "C" fn molt_re_sub(
     text_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "handle must be int");
         };
@@ -3621,7 +3621,7 @@ fn re_escape_impl(pattern: &str) -> String {
 /// literal string in a regex.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_escape(pattern_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "pattern must be str");
         };
@@ -3654,7 +3654,7 @@ pub extern "C" fn molt_re_sub_callable(
     text_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "handle must be int");
         };
@@ -3811,7 +3811,7 @@ pub extern "C" fn molt_re_match_group(
     indices_bits: u64,
     group_names_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };
@@ -3974,7 +3974,7 @@ pub extern "C" fn molt_re_match_groups(
     match_tuple_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };
@@ -4065,7 +4065,7 @@ pub extern "C" fn molt_re_match_groupdict(
     default_bits: u64,
     group_names_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "text must be str");
         };

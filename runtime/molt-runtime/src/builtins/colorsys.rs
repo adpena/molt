@@ -145,7 +145,7 @@ fn hsv_sector(_py: &PyToken<'_>, h: f64) -> Option<(i64, f64)> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_colorsys_rgb_to_yiq(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(r) = coerce_real_f64(_py, r_bits) else {
             return MoltObject::none().bits();
         };
@@ -169,7 +169,7 @@ pub extern "C" fn molt_colorsys_rgb_to_yiq(r_bits: u64, g_bits: u64, b_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_colorsys_yiq_to_rgb(y_bits: u64, i_bits: u64, q_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(y) = coerce_real_f64(_py, y_bits) else {
             return MoltObject::none().bits();
         };
@@ -211,7 +211,7 @@ pub extern "C" fn molt_colorsys_yiq_to_rgb(y_bits: u64, i_bits: u64, q_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_colorsys_rgb_to_hls(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(r) = coerce_real_f64(_py, r_bits) else {
             return MoltObject::none().bits();
         };
@@ -275,7 +275,7 @@ fn hls_value(m1: f64, m2: f64, hue: f64) -> f64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_colorsys_hls_to_rgb(h_bits: u64, l_bits: u64, s_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = coerce_real_f64(_py, h_bits) else {
             return MoltObject::none().bits();
         };
@@ -313,7 +313,7 @@ pub extern "C" fn molt_colorsys_hls_to_rgb(h_bits: u64, l_bits: u64, s_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_colorsys_rgb_to_hsv(r_bits: u64, g_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(r) = coerce_real_f64(_py, r_bits) else {
             return MoltObject::none().bits();
         };
@@ -358,7 +358,7 @@ pub extern "C" fn molt_colorsys_rgb_to_hsv(r_bits: u64, g_bits: u64, b_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_colorsys_hsv_to_rgb(h_bits: u64, s_bits: u64, v_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(h) = coerce_real_f64(_py, h_bits) else {
             return MoltObject::none().bits();
         };

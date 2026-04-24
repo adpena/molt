@@ -606,7 +606,7 @@ fn release_bits(_py: &crate::PyToken<'_>, bits: &[u64]) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_constants() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut pairs: Vec<u64> = Vec::new();
         let mut owned_bits: Vec<u64> = Vec::new();
         macro_rules! push_const {
@@ -760,7 +760,7 @@ pub extern "C" fn molt_select_constants() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_poll() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.poll") {
             return err;
         }
@@ -773,7 +773,7 @@ pub extern "C" fn molt_select_poll() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_epoll(sizehint_bits: u64, flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.epoll") {
             return err;
         }
@@ -792,7 +792,7 @@ pub extern "C" fn molt_select_epoll(sizehint_bits: u64, flags_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_devpoll() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.devpoll") {
             return err;
         }
@@ -805,7 +805,7 @@ pub extern "C" fn molt_select_devpoll() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_fileno(fileobj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match object_to_handle(_py, fileobj_bits) {
             Ok(fd) => int_bits_from_i64(_py, fd),
             Err(err) => err,
@@ -815,7 +815,7 @@ pub extern "C" fn molt_select_fileno(fileobj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_default_selector_kind() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let kind = if cfg!(any(
             target_os = "macos",
             target_os = "freebsd",
@@ -839,7 +839,7 @@ pub extern "C" fn molt_select_default_selector_kind() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_backend_available(kind_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(kind) = to_i64(obj_from_bits(kind_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "selector kind must be an integer");
         };
@@ -862,7 +862,7 @@ pub extern "C" fn molt_select_backend_available(kind_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.selector_new") {
             return err;
         }
@@ -889,7 +889,7 @@ pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_fileno(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let selector = match selector_state(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
@@ -900,7 +900,7 @@ pub extern "C" fn molt_select_selector_fileno(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let selector = match selector_state(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
@@ -912,7 +912,7 @@ pub extern "C" fn molt_select_selector_len(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_events(handle_bits: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let selector = match selector_state(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
@@ -936,7 +936,7 @@ pub extern "C" fn molt_select_selector_register(
     fileobj_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.selector_register") {
             return err;
         }
@@ -981,7 +981,7 @@ pub extern "C" fn molt_select_selector_register_fd(
     fd_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.selector_register_fd") {
             return err;
         }
@@ -1015,7 +1015,7 @@ pub extern "C" fn molt_select_selector_register_fd(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_unregister(handle_bits: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
@@ -1038,7 +1038,7 @@ pub extern "C" fn molt_select_selector_unregister(handle_bits: u64, fd_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_unregister_obj(handle_bits: u64, fileobj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let selector_ptr = match selector_state_mut_ptr(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
@@ -1065,7 +1065,7 @@ pub extern "C" fn molt_select_selector_modify(
     fd_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.selector_modify") {
             return err;
         }
@@ -1096,7 +1096,7 @@ pub extern "C" fn molt_select_selector_modify_obj(
     fileobj_bits: u64,
     events_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.selector_modify_obj") {
             return err;
         }
@@ -1123,7 +1123,7 @@ pub extern "C" fn molt_select_selector_modify_obj(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.selector_poll") {
             return err;
         }
@@ -1249,7 +1249,7 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = unsafe { selector_ptr_from_handle(handle_bits) };
         if ptr.is_null() {
             return raise_exception::<u64>(_py, "TypeError", "invalid selector handle");
@@ -1269,7 +1269,7 @@ pub extern "C" fn molt_select_selector_close(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = unsafe { selector_ptr_from_handle(handle_bits) };
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -1295,7 +1295,7 @@ pub extern "C" fn molt_select_select(
     xlist_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = require_net_capability(_py, "select.select") {
             return err;
         }

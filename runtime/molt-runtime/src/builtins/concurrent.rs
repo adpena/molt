@@ -190,7 +190,7 @@ fn worker_loop(receiver: Receiver<Option<WorkItem>>) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let max_workers = to_i64(obj_from_bits(max_workers_bits)).unwrap_or(0).max(1) as usize;
         let workers_capped = max_workers.min(512);
 
@@ -222,7 +222,7 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
     fn_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let pool_id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -274,7 +274,7 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
     wait_bits: u64,
     _cancel_futures_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let pool_id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -334,7 +334,7 @@ fn wait_for_future(future: &SharedFuture, timeout_secs: Option<f64>) -> Result<(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_future_result(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
@@ -377,7 +377,7 @@ pub extern "C" fn molt_concurrent_future_result(handle_bits: u64, timeout_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_future_exception(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
@@ -418,7 +418,7 @@ pub extern "C" fn molt_concurrent_future_exception(handle_bits: u64, timeout_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_future_done(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
@@ -435,7 +435,7 @@ pub extern "C" fn molt_concurrent_future_done(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_future_cancelled(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
@@ -452,7 +452,7 @@ pub extern "C" fn molt_concurrent_future_cancelled(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_future_cancel(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
@@ -474,7 +474,7 @@ pub extern "C" fn molt_concurrent_future_cancel(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_future_running(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
@@ -491,7 +491,7 @@ pub extern "C" fn molt_concurrent_future_running(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_future_add_done_callback(handle_bits: u64, fn_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
@@ -518,7 +518,7 @@ pub extern "C" fn molt_concurrent_future_add_done_callback(handle_bits: u64, fn_
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_future_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             FUTURE_REGISTRY.lock().unwrap().remove(&id);
         }
@@ -530,7 +530,7 @@ pub extern "C" fn molt_concurrent_future_drop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Collect future IDs from a list/tuple of handle bits.
         let futures_obj = obj_from_bits(futures_bits);
         let timeout = {
@@ -618,7 +618,7 @@ pub extern "C" fn molt_concurrent_wait(
     timeout_bits: u64,
     return_when_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let futures_obj = obj_from_bits(futures_bits);
         let timeout = {
             let obj = obj_from_bits(timeout_bits);
@@ -761,15 +761,15 @@ fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_first_completed() -> u64 {
-    crate::with_gil_entry!(_py, { return_str(_py, "FIRST_COMPLETED") })
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "FIRST_COMPLETED") })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_first_exception() -> u64 {
-    crate::with_gil_entry!(_py, { return_str(_py, "FIRST_EXCEPTION") })
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "FIRST_EXCEPTION") })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concurrent_all_completed() -> u64 {
-    crate::with_gil_entry!(_py, { return_str(_py, "ALL_COMPLETED") })
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "ALL_COMPLETED") })
 }

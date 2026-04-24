@@ -398,7 +398,7 @@ fn elem_to_bits(_py: &PyToken<'_>, elem: ArrayElem) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_new(typecode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(typecode_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -430,7 +430,7 @@ pub extern "C" fn molt_array_new(typecode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_from_list(typecode_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(typecode_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "typecode must be str");
         };
@@ -473,7 +473,7 @@ pub extern "C" fn molt_array_from_list(typecode_bits: u64, items_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_append(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -491,7 +491,7 @@ pub extern "C" fn molt_array_append(handle_bits: u64, value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -524,7 +524,7 @@ pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_repeat(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -576,7 +576,7 @@ pub extern "C" fn molt_array_repeat(handle_bits: u64, count_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_repeat_in_place(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -623,7 +623,7 @@ pub extern "C" fn molt_array_repeat_in_place(handle_bits: u64, count_bits: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -676,7 +676,7 @@ pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_ptr = array_handle_ptr_from_bits(handle_bits);
         if handle_ptr.is_null() {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
@@ -776,7 +776,7 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -801,7 +801,7 @@ pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -811,7 +811,7 @@ pub extern "C" fn molt_array_len(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_typecode(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -827,7 +827,7 @@ pub extern "C" fn molt_array_typecode(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_itemsize(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -837,7 +837,7 @@ pub extern "C" fn molt_array_itemsize(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_tobytes(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -851,7 +851,7 @@ pub extern "C" fn molt_array_tobytes(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_frombytes(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -880,7 +880,7 @@ pub extern "C" fn molt_array_frombytes(handle_bits: u64, data_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_tolist(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -906,7 +906,7 @@ pub extern "C" fn molt_array_tolist(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_buffer_info(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -926,7 +926,7 @@ pub extern "C" fn molt_array_buffer_info(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_pop(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -948,7 +948,7 @@ pub extern "C" fn molt_array_pop(handle_bits: u64, index_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_insert(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -975,7 +975,7 @@ pub extern "C" fn molt_array_insert(handle_bits: u64, index_bits: u64, value_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_remove(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -1014,7 +1014,7 @@ pub extern "C" fn molt_array_remove(handle_bits: u64, value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_reverse(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -1037,7 +1037,7 @@ pub extern "C" fn molt_array_reverse(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_count(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -1093,7 +1093,7 @@ pub extern "C" fn molt_array_count(handle_bits: u64, value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
@@ -1155,7 +1155,7 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = ptr_from_bits(handle_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();

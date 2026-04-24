@@ -1393,7 +1393,7 @@ unsafe fn call_capi_method_with_bound_args(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut CallArgs>();
         let ptr = alloc_object(_py, total, TYPE_ID_CALLARGS);
         if ptr.is_null() {
@@ -1472,7 +1472,7 @@ pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u6
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1573,7 +1573,7 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1591,7 +1591,7 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1670,7 +1670,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -2249,7 +2249,7 @@ pub extern "C" fn molt_call_indirect_ic(site_bits: u64, call_bits: u64, builder_
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a list builder.
 pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let builder_ptr = ptr_from_bits(builder_bits);
             let mut builder_guard = PtrDropGuard::new(builder_ptr);
@@ -4791,7 +4791,7 @@ mod tests {
 
     #[test]
     fn protect_aliased_return_with_extra_inc_refs_synthesized_owner() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let list_ptr = alloc_list(_py, &[MoltObject::from_int(1).bits()]);
             assert!(!list_ptr.is_null());
             let list_bits = MoltObject::from_ptr(list_ptr).bits();

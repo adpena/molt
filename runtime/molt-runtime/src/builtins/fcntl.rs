@@ -18,7 +18,7 @@ use crate::libc_compat as libc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fcntl_f_getfl() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
             int_bits_from_i64(_py, libc::F_GETFL as i64)
@@ -32,7 +32,7 @@ pub extern "C" fn molt_fcntl_f_getfl() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fcntl_f_setfl() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
             int_bits_from_i64(_py, libc::F_SETFL as i64)
@@ -46,7 +46,7 @@ pub extern "C" fn molt_fcntl_f_setfl() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fcntl_f_getfd() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
             int_bits_from_i64(_py, libc::F_GETFD as i64)
@@ -60,7 +60,7 @@ pub extern "C" fn molt_fcntl_f_getfd() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fcntl_f_setfd() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
             int_bits_from_i64(_py, libc::F_SETFD as i64)
@@ -74,7 +74,7 @@ pub extern "C" fn molt_fcntl_f_setfd() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fcntl_fd_cloexec() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
             int_bits_from_i64(_py, libc::FD_CLOEXEC as i64)
@@ -88,7 +88,7 @@ pub extern "C" fn molt_fcntl_fd_cloexec() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fcntl_o_nonblock() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::O_NONBLOCK as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::O_NONBLOCK as i64) })
 }
 
 // ── fcntl(fd, cmd[, arg]) ─────────────────────────────────────────────────
@@ -103,7 +103,7 @@ pub extern "C" fn molt_fcntl_o_nonblock() -> u64 {
 ///           F_GETFD returns FD_CLOEXEC (pretend all fds have CLOEXEC).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fcntl(fd_bits: u64, cmd_bits: u64, arg_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("fcntl.fcntl", "process", AuditArgs::None, allowed);
         if !allowed {

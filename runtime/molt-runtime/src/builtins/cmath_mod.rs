@@ -219,7 +219,7 @@ fn catanh(re: f64, im: f64) -> (f64, f64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_sqrt(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -235,7 +235,7 @@ pub extern "C" fn molt_cmath_sqrt(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_exp(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -251,7 +251,7 @@ pub extern "C" fn molt_cmath_exp(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_log(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -267,7 +267,7 @@ pub extern "C" fn molt_cmath_log(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_log10(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -283,7 +283,7 @@ pub extern "C" fn molt_cmath_log10(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_sin(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -299,7 +299,7 @@ pub extern "C" fn molt_cmath_sin(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_cos(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -315,7 +315,7 @@ pub extern "C" fn molt_cmath_cos(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_tan(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -331,7 +331,7 @@ pub extern "C" fn molt_cmath_tan(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_asin(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -347,7 +347,7 @@ pub extern "C" fn molt_cmath_asin(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_acos(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -363,7 +363,7 @@ pub extern "C" fn molt_cmath_acos(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_atan(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -379,7 +379,7 @@ pub extern "C" fn molt_cmath_atan(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_sinh(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -395,7 +395,7 @@ pub extern "C" fn molt_cmath_sinh(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_cosh(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -411,7 +411,7 @@ pub extern "C" fn molt_cmath_cosh(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_tanh(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -427,7 +427,7 @@ pub extern "C" fn molt_cmath_tanh(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_asinh(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -443,7 +443,7 @@ pub extern "C" fn molt_cmath_asinh(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_acosh(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -459,7 +459,7 @@ pub extern "C" fn molt_cmath_acosh(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_atanh(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -476,7 +476,7 @@ pub extern "C" fn molt_cmath_atanh(real_bits: u64, imag_bits: u64) -> u64 {
 /// phase(z) = atan2(imag, real)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_phase(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -492,7 +492,7 @@ pub extern "C" fn molt_cmath_phase(real_bits: u64, imag_bits: u64) -> u64 {
 /// polar(z) -> (r, phi) where r = |z|, phi = phase(z)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_polar(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -518,7 +518,7 @@ pub extern "C" fn molt_cmath_polar(real_bits: u64, imag_bits: u64) -> u64 {
 /// rect(r, phi) -> (r*cos(phi), r*sin(phi))
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_rect(r_bits: u64, phi_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let r = match float_arg(_py, r_bits, "r") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -533,7 +533,7 @@ pub extern "C" fn molt_cmath_rect(r_bits: u64, phi_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_isfinite(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -548,7 +548,7 @@ pub extern "C" fn molt_cmath_isfinite(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_isinf(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -563,7 +563,7 @@ pub extern "C" fn molt_cmath_isinf(real_bits: u64, imag_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_isnan(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -580,7 +580,7 @@ pub extern "C" fn molt_cmath_isnan(real_bits: u64, imag_bits: u64) -> u64 {
 /// Uses |a - b| <= max(rel_tol * max(|a|, |b|), abs_tol)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_isclose(a_real: u64, a_imag: u64, b_real: u64, b_imag: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let are = match float_arg(_py, a_real, "a.real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -613,7 +613,7 @@ pub extern "C" fn molt_cmath_isclose(a_real: u64, a_imag: u64, b_real: u64, b_im
 /// Encoded as (pi, e, tau, inf, infj_re, infj_im, nan, nanj_re, nanj_im)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cmath_constants() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         use std::f64::consts;
         let pi = MoltObject::from_float(consts::PI).bits();
         let e = MoltObject::from_float(consts::E).bits();

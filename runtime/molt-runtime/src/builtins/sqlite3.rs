@@ -5,7 +5,7 @@ use std::path::Path;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sqlite3_connect(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path_obj = obj_from_bits(path_bits);
         let Some(path_str) = string_obj_to_owned(path_obj) else {
             return raise_exception::<u64>(_py, "TypeError", "database path must be a string");
@@ -30,7 +30,7 @@ pub extern "C" fn molt_sqlite3_connect(path_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sqlite3_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match to_i64(obj_from_bits(handle_bits)) {
             Some(h) => h as u64,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
@@ -45,7 +45,7 @@ pub extern "C" fn molt_sqlite3_close(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sqlite3_execute(handle_bits: u64, sql_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match to_i64(obj_from_bits(handle_bits)) {
             Some(h) => h as u64,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),

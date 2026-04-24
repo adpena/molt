@@ -222,7 +222,7 @@ macro_rules! unpack_str {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_days_in_month(year_bits: u64, month_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let year = match unpack_i64(_py, year_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -241,7 +241,7 @@ pub extern "C" fn molt_datetime_days_in_month(year_bits: u64, month_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_is_leap(year_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let year = match unpack_i64(_py, year_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -256,7 +256,7 @@ pub extern "C" fn molt_datetime_ymd_to_ordinal(
     month_bits: u64,
     day_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, year_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -275,7 +275,7 @@ pub extern "C" fn molt_datetime_ymd_to_ordinal(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_ordinal_to_ymd(ordinal_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ordinal = match unpack_i64(_py, ordinal_bits, "ordinal") {
             Ok(v) => v,
             Err(e) => return e,
@@ -292,7 +292,7 @@ pub extern "C" fn molt_datetime_ordinal_to_ymd(ordinal_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_weekday(year_bits: u64, month_bits: u64, day_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, year_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -311,7 +311,7 @@ pub extern "C" fn molt_datetime_weekday(year_bits: u64, month_bits: u64, day_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_isoweekday(year_bits: u64, month_bits: u64, day_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, year_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -331,7 +331,7 @@ pub extern "C" fn molt_datetime_isoweekday(year_bits: u64, month_bits: u64, day_
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_isocalendar(year_bits: u64, month_bits: u64, day_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, year_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -370,7 +370,7 @@ pub extern "C" fn molt_datetime_td_normalize(
     hours_bits: u64,
     weeks_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_f64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -442,7 +442,7 @@ pub extern "C" fn molt_datetime_td_total_seconds(
     seconds_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -633,7 +633,7 @@ fn parse_isotime_str(s: &str) -> Result<(i32, i32, i32, i32, i64), String> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_parse_isoformat_date(text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = unpack_str!(_py, text_bits, "date string");
         match parse_isodate_str(&s) {
             Ok((y, m, d)) => {
@@ -651,7 +651,7 @@ pub extern "C" fn molt_datetime_parse_isoformat_date(text_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_parse_isoformat_time(text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = unpack_str!(_py, text_bits, "time string");
         match parse_isotime_str(&s) {
             Ok((h, mi, sec, us, utcoff)) => {
@@ -679,7 +679,7 @@ pub extern "C" fn molt_datetime_parse_isoformat_time(text_bits: u64) -> u64 {
 /// Returns tuple (y, m, d, h, min, s, us, utcoff_secs_or_none).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_parse_isoformat(text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = unpack_str!(_py, text_bits, "datetime string");
         let b = s.as_bytes();
 
@@ -736,7 +736,7 @@ pub extern "C" fn molt_datetime_parse_isoformat(text_bits: u64) -> u64 {
 /// Returns tuple (y, m, d, h, min, s, us).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_strptime(text_bits: u64, fmt_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text = unpack_str!(_py, text_bits, "text");
         let fmt = unpack_str!(_py, fmt_bits, "format");
 
@@ -1058,7 +1058,7 @@ fn month_name_to_num(lower: &str) -> Result<i32, String> {
 /// "YYYY-MM-DD"
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_format_isodate(y_bits: u64, m_bits: u64, d_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,
@@ -1087,7 +1087,7 @@ pub extern "C" fn molt_datetime_format_isotime(
     us_bits: u64,
     timespec_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let h = match unpack_i64(_py, h_bits, "hour") {
             Ok(v) => v,
             Err(e) => return e,
@@ -1185,7 +1185,7 @@ pub extern "C" fn molt_datetime_format_isodatetime(
     timespec_bits: u64,
     tz_str_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,
@@ -1569,7 +1569,7 @@ pub extern "C" fn molt_datetime_strftime(
     utcoff_bits: u64,
     fmt_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -1635,7 +1635,7 @@ pub extern "C" fn molt_datetime_ctime(
     min_bits: u64,
     s_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -1691,7 +1691,7 @@ fn epoch_to_utc_parts(secs: i64, subsec_us: i64) -> (i32, i32, i32, i32, i32, i3
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_now_utc() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
@@ -1714,7 +1714,7 @@ pub extern "C" fn molt_datetime_now_utc() -> u64 {
 /// Get local time as (y, m, d, h, min, s, us, utcoff_secs).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_now_local() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let now = std::time::SystemTime::now()
@@ -1817,7 +1817,7 @@ fn localtime_to_parts(secs: libc::time_t) -> Result<LocalTimeParts, String> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_fromtimestamp_utc(ts_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ts = match unpack_f64(_py, ts_bits, "timestamp") {
             Ok(v) => v,
             Err(e) => return e,
@@ -1843,7 +1843,7 @@ pub extern "C" fn molt_datetime_fromtimestamp_utc(ts_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_fromtimestamp_local(ts_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ts = match unpack_f64(_py, ts_bits, "timestamp") {
             Ok(v) => v,
             Err(e) => return e,
@@ -1914,7 +1914,7 @@ pub extern "C" fn molt_datetime_to_timestamp(
     us_bits: u64,
     utcoff_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -2037,7 +2037,7 @@ fn localtime_to_epoch_from_local(
 /// Return the current local UTC offset in seconds (east of UTC).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_local_utcoffset() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let now = std::time::SystemTime::now()
@@ -2136,7 +2136,7 @@ fn cpython_tuple_hash(values: &[i64]) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_hash_date(y_bits: u64, m_bits: u64, d_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2163,7 +2163,7 @@ pub extern "C" fn molt_datetime_hash_time(
     us_bits: u64,
     utcoff_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let h = match unpack_i64(_py, h_bits, "hour") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2207,7 +2207,7 @@ pub extern "C" fn molt_datetime_hash_datetime(
     us_bits: u64,
     utcoff_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v as i32,
             Err(e) => return e,
@@ -2263,7 +2263,7 @@ pub extern "C" fn molt_datetime_hash_timedelta(
     secs_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2290,7 +2290,7 @@ pub extern "C" fn molt_datetime_hash_timedelta(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_validate_date(y_bits: u64, m_bits: u64, d_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2328,7 +2328,7 @@ pub extern "C" fn molt_datetime_validate_time(
     us_bits: u64,
     fold_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let h = match unpack_i64(_py, h_bits, "hour") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2388,7 +2388,7 @@ pub extern "C" fn molt_datetime_combine(
     us_bits: u64,
     fold_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2473,7 +2473,7 @@ pub extern "C" fn molt_date_fromisocalendar(
     iso_week_bits: u64,
     iso_day_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iso_year = match unpack_i64(_py, iso_year_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2529,7 +2529,7 @@ pub extern "C" fn molt_timedelta_truediv_scalar(
     us_bits: u64,
     divisor_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2563,7 +2563,7 @@ pub extern "C" fn molt_timedelta_truediv_td(
     b_secs: u64,
     b_us: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a_total = td_total_us(a_days, a_secs, a_us);
         let b_total = td_total_us(b_days, b_secs, b_us);
         if b_total == 0.0 {
@@ -2583,7 +2583,7 @@ pub extern "C" fn molt_timedelta_floordiv_td(
     b_secs: u64,
     b_us: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a_total = td_total_us(a_days, a_secs, a_us) as i64;
         let b_total = td_total_us(b_days, b_secs, b_us) as i64;
         if b_total == 0 {
@@ -2603,7 +2603,7 @@ pub extern "C" fn molt_timedelta_mod_td(
     b_secs: u64,
     b_us: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a_total = td_total_us(a_days, a_secs, a_us) as i64;
         let b_total = td_total_us(b_days, b_secs, b_us) as i64;
         if b_total == 0 {
@@ -2627,7 +2627,7 @@ pub extern "C" fn molt_timedelta_floordiv_scalar(
     us_bits: u64,
     divisor_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2654,7 +2654,7 @@ pub extern "C" fn molt_timedelta_floordiv_scalar(
 /// abs(timedelta) -> timedelta (days, seconds, us) tuple
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timedelta_abs(days_bits: u64, secs_bits: u64, us_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2714,7 +2714,7 @@ fn timedelta_tuple(_py: &PyToken<'_>, days: i64, secs: i64, us: i64) -> u64 {
 /// Coerce a value to int: bools are promoted, ints pass through, else TypeError.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_as_int(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(value_bits);
         // Accept bools (which MoltObject may represent as bool tag).
         if let Some(b) = obj.as_bool() {
@@ -2736,7 +2736,7 @@ pub extern "C" fn molt_datetime_format_time(
     microsecond_bits: u64,
     timespec_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let h = match unpack_i64(_py, hour_bits, "hour") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2777,7 +2777,7 @@ pub extern "C" fn molt_datetime_format_time(
 /// timedelta.__repr__()
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timedelta_repr(days_bits: u64, secs_bits: u64, us_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2801,7 +2801,7 @@ pub extern "C" fn molt_timedelta_repr(days_bits: u64, secs_bits: u64, us_bits: u
 /// timedelta.__str__()
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timedelta_str(days_bits: u64, secs_bits: u64, us_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2839,7 +2839,7 @@ pub extern "C" fn molt_timedelta_str(days_bits: u64, secs_bits: u64, us_bits: u6
 /// timezone.__init__ validation: return offset total seconds or raise.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timezone_validate(days_bits: u64, secs_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2863,7 +2863,7 @@ pub extern "C" fn molt_timezone_validate(days_bits: u64, secs_bits: u64) -> u64 
 /// timezone.tzname() formatting
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timezone_tzname(days_bits: u64, secs_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let days = match unpack_i64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2888,7 +2888,7 @@ pub extern "C" fn molt_timezone_tzname(days_bits: u64, secs_bits: u64) -> u64 {
 /// date.__repr__()
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_date_repr(y_bits: u64, m_bits: u64, d_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2914,7 +2914,7 @@ pub extern "C" fn molt_datetime_time_repr(
     s_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let h = match unpack_i64(_py, h_bits, "hour") {
             Ok(v) => v,
             Err(e) => return e,
@@ -2953,7 +2953,7 @@ pub extern "C" fn molt_datetime_datetime_repr(
     s_bits: u64,
     us_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,
@@ -3016,7 +3016,7 @@ pub extern "C" fn molt_datetime_timetuple(
     yday_bits: u64,
     dst_flag_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
             Ok(v) => v,
             Err(e) => return e,

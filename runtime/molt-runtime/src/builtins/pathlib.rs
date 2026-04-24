@@ -183,7 +183,7 @@ fn path_parts(path: &str, posix: bool) -> Vec<String> {
 /// Joins path segments using POSIX rules.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_join(base_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let base = match require_str(_py, base_bits, "base") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -212,7 +212,7 @@ pub extern "C" fn molt_pathlib_join(base_bits: u64, args_bits: u64) -> u64 {
 /// `pathlib._molt_path_str(path)` -> str  (normalized)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_str(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -227,7 +227,7 @@ pub extern "C" fn molt_pathlib_str(path_bits: u64) -> u64 {
 /// Returns the parts tuple for a path.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_parts(path_bits: u64, posix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -241,7 +241,7 @@ pub extern "C" fn molt_pathlib_parts(path_bits: u64, posix_bits: u64) -> u64 {
 /// `_splitroot(path, posix)` -> tuple[str, str, str]  (drive, root, tail)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_splitroot(path_bits: u64, posix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -264,7 +264,7 @@ pub extern "C" fn molt_pathlib_splitroot(path_bits: u64, posix_bits: u64) -> u64
 /// `path.drive` property
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_drive(path_bits: u64, posix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -278,7 +278,7 @@ pub extern "C" fn molt_pathlib_drive(path_bits: u64, posix_bits: u64) -> u64 {
 /// `path.root` property
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_root(path_bits: u64, posix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -292,7 +292,7 @@ pub extern "C" fn molt_pathlib_root(path_bits: u64, posix_bits: u64) -> u64 {
 /// `path.anchor` property
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_anchor(path_bits: u64, posix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -306,7 +306,7 @@ pub extern "C" fn molt_pathlib_anchor(path_bits: u64, posix_bits: u64) -> u64 {
 /// `path.name` property
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_name(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -323,7 +323,7 @@ pub extern "C" fn molt_pathlib_name(path_bits: u64) -> u64 {
 /// `path.suffix` property
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_suffix(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -340,7 +340,7 @@ pub extern "C" fn molt_pathlib_suffix(path_bits: u64) -> u64 {
 /// `path.suffixes` property -> list[str]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_suffixes(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -364,7 +364,7 @@ pub extern "C" fn molt_pathlib_suffixes(path_bits: u64) -> u64 {
 /// `path.stem` property
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_stem(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -381,7 +381,7 @@ pub extern "C" fn molt_pathlib_stem(path_bits: u64) -> u64 {
 /// `path.parent` property -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_parent(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -402,7 +402,7 @@ pub extern "C" fn molt_pathlib_parent(path_bits: u64) -> u64 {
 /// `path.parents` -> list[str]  (all ancestor paths)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_parents(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -426,7 +426,7 @@ pub extern "C" fn molt_pathlib_parents(path_bits: u64) -> u64 {
 /// `path.is_absolute()` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_absolute(path_bits: u64, posix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -444,7 +444,7 @@ pub extern "C" fn molt_pathlib_is_absolute(path_bits: u64, posix_bits: u64) -> u
 /// `path.is_relative_to(other)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_relative_to(path_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -462,7 +462,7 @@ pub extern "C" fn molt_pathlib_is_relative_to(path_bits: u64, other_bits: u64) -
 /// `path.relative_to(other)` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_relative_to(path_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -487,7 +487,7 @@ pub extern "C" fn molt_pathlib_relative_to(path_bits: u64, other_bits: u64) -> u
 /// `path.with_name(name)` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_with_name(path_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -508,7 +508,7 @@ pub extern "C" fn molt_pathlib_with_name(path_bits: u64, name_bits: u64) -> u64 
 /// `path.with_stem(stem)` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_with_stem(path_bits: u64, stem_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -534,7 +534,7 @@ pub extern "C" fn molt_pathlib_with_stem(path_bits: u64, stem_bits: u64) -> u64 
 /// `path.with_suffix(suffix)` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_with_suffix(path_bits: u64, suffix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -568,7 +568,7 @@ pub extern "C" fn molt_pathlib_with_suffix(path_bits: u64, suffix_bits: u64) -> 
 /// `path.match(pattern)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_match(path_bits: u64, pattern_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -614,7 +614,7 @@ pub extern "C" fn molt_pathlib_hash(path_bits: u64) -> u64 {
 /// `path.__eq__(other)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_eq(path_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -630,7 +630,7 @@ pub extern "C" fn molt_pathlib_eq(path_bits: u64, other_bits: u64) -> u64 {
 /// `path.__lt__(other)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_lt(path_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -646,7 +646,7 @@ pub extern "C" fn molt_pathlib_lt(path_bits: u64, other_bits: u64) -> u64 {
 /// `path.as_posix()` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_as_posix(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -662,7 +662,7 @@ pub extern "C" fn molt_pathlib_as_posix(path_bits: u64) -> u64 {
 /// `Path.cwd()` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_cwd() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match std::env::current_dir() {
             Ok(p) => str_bits(_py, &p.to_string_lossy()),
             Err(err) => raise_os_error::<u64>(_py, err, "cwd"),
@@ -673,7 +673,7 @@ pub extern "C" fn molt_pathlib_cwd() -> u64 {
 /// `Path.home()` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_home() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(unix)]
         let home = std::env::var("HOME").ok();
         #[cfg(windows)]
@@ -693,7 +693,7 @@ pub extern "C" fn molt_pathlib_home() -> u64 {
 /// `path.resolve()` -> str  (absolute, normalized path)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_resolve(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.resolve",
@@ -729,7 +729,7 @@ pub extern "C" fn molt_pathlib_resolve(path_bits: u64) -> u64 {
 /// `path.expanduser()` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_expanduser(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match require_str(_py, path_bits, "path") {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -764,7 +764,7 @@ pub extern "C" fn molt_pathlib_expanduser(path_bits: u64) -> u64 {
 /// `path.exists()` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_exists(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.exists",
@@ -786,7 +786,7 @@ pub extern "C" fn molt_pathlib_exists(path_bits: u64) -> u64 {
 /// `path.is_file()` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_file(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.is_file",
@@ -808,7 +808,7 @@ pub extern "C" fn molt_pathlib_is_file(path_bits: u64) -> u64 {
 /// `path.is_dir()` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_dir(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.is_dir",
@@ -830,7 +830,7 @@ pub extern "C" fn molt_pathlib_is_dir(path_bits: u64) -> u64 {
 /// `path.is_symlink()` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_symlink(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.is_symlink",
@@ -852,7 +852,7 @@ pub extern "C" fn molt_pathlib_is_symlink(path_bits: u64) -> u64 {
 /// `path.is_mount()` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.is_mount",
@@ -899,7 +899,7 @@ pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
 /// `path.stat()` -> tuple  (mode, ino, dev, nlink, uid, gid, size, atime, mtime, ctime)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_stat(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.stat",
@@ -966,7 +966,7 @@ pub extern "C" fn molt_pathlib_stat(path_bits: u64) -> u64 {
 /// `path.lstat()` -> tuple (like stat but doesn't follow symlinks)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_lstat(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.lstat",
@@ -1033,7 +1033,7 @@ pub extern "C" fn molt_pathlib_lstat(path_bits: u64) -> u64 {
 /// `path.iterdir()` -> list[str]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_iterdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.iterdir",
@@ -1066,7 +1066,7 @@ pub extern "C" fn molt_pathlib_iterdir(path_bits: u64) -> u64 {
 /// `path.glob(pattern)` -> list[str]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.glob",
@@ -1120,7 +1120,7 @@ pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
 /// `path.rglob(pattern)` -> list[str]  (recursive glob)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.rglob",
@@ -1174,7 +1174,7 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
 /// `path.mkdir(mode=0o777, parents=False, exist_ok=False)` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_mkdir(path_bits: u64, parents_bits: u64, exist_ok_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.mkdir",
@@ -1210,7 +1210,7 @@ pub extern "C" fn molt_pathlib_mkdir(path_bits: u64, parents_bits: u64, exist_ok
 /// `path.rmdir()` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_rmdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.rmdir",
@@ -1235,7 +1235,7 @@ pub extern "C" fn molt_pathlib_rmdir(path_bits: u64) -> u64 {
 /// `path.unlink(missing_ok=False)` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_unlink(path_bits: u64, missing_ok_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.unlink",
@@ -1264,7 +1264,7 @@ pub extern "C" fn molt_pathlib_unlink(path_bits: u64, missing_ok_bits: u64) -> u
 /// `path.rename(target)` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_rename(path_bits: u64, target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.rename",
@@ -1294,7 +1294,7 @@ pub extern "C" fn molt_pathlib_rename(path_bits: u64, target_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_replace(path_bits: u64, target_bits: u64) -> u64 {
     // replace is identical to rename on Unix; on Windows it's more permissive
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.replace",
@@ -1323,7 +1323,7 @@ pub extern "C" fn molt_pathlib_replace(path_bits: u64, target_bits: u64) -> u64 
 /// `path.touch(exist_ok=True)` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.touch",
@@ -1364,7 +1364,7 @@ pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_symlink_to(path_bits: u64, target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.symlink_to",
@@ -1408,7 +1408,7 @@ pub extern "C" fn molt_pathlib_symlink_to(path_bits: u64, target_bits: u64) -> u
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_symlink_to(_path_bits: u64, _target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink_to")
     })
 }
@@ -1417,7 +1417,7 @@ pub extern "C" fn molt_pathlib_symlink_to(_path_bits: u64, _target_bits: u64) ->
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_hardlink_to(path_bits: u64, target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.hardlink_to",
@@ -1446,7 +1446,7 @@ pub extern "C" fn molt_pathlib_hardlink_to(path_bits: u64, target_bits: u64) -> 
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_hardlink_to(_path_bits: u64, _target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "hardlink_to")
     })
 }
@@ -1454,7 +1454,7 @@ pub extern "C" fn molt_pathlib_hardlink_to(_path_bits: u64, _target_bits: u64) -
 /// `path.readlink()` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_readlink(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.readlink",
@@ -1479,7 +1479,7 @@ pub extern "C" fn molt_pathlib_readlink(path_bits: u64) -> u64 {
 /// `path.read_text(encoding=None)` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_read_text(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.read_text",
@@ -1504,7 +1504,7 @@ pub extern "C" fn molt_pathlib_read_text(path_bits: u64) -> u64 {
 /// `path.read_bytes()` -> bytes
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.read_bytes",
@@ -1536,7 +1536,7 @@ pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
 /// `path.write_text(data)` -> int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_write_text(path_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.write_text",
@@ -1565,7 +1565,7 @@ pub extern "C" fn molt_pathlib_write_text(path_bits: u64, data_bits: u64) -> u64
 /// `path.write_bytes(data)` -> int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.write_bytes",
@@ -1601,7 +1601,7 @@ pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u6
 /// `path.chmod(mode)` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_chmod(path_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "pathlib.chmod",
@@ -1640,7 +1640,7 @@ pub extern "C" fn molt_pathlib_chmod(path_bits: u64, mode_bits: u64) -> u64 {
 /// `path.owner()` -> str (Unix only)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.owner",
@@ -1685,7 +1685,7 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
 /// `path.group()` -> str (Unix only)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.group",
@@ -1734,7 +1734,7 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
 /// `path.samefile(other_path)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "pathlib.samefile",
@@ -1782,5 +1782,5 @@ pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 
 /// Return the OS path separator
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_sep() -> u64 {
-    crate::with_gil_entry!(_py, { str_bits(_py, std::path::MAIN_SEPARATOR_STR) })
+    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, std::path::MAIN_SEPARATOR_STR) })
 }

@@ -234,7 +234,7 @@ fn rmtree_recursive(path: &Path) -> std::io::Result<()> {
 /// Copies file data and permissions but not metadata timestamps.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_copy(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_src_dst_arg(src_bits, dst_bits);
         audit_capability_decision("shutil.copy", "fs.read", audit_args.clone(), allowed_r);
@@ -276,7 +276,7 @@ pub extern "C" fn molt_shutil_copy(src_bits: u64, dst_bits: u64) -> u64 {
 /// Copies file data, permissions, and timestamps.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_copy2(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_src_dst_arg(src_bits, dst_bits);
         audit_capability_decision("shutil.copy2", "fs.read", audit_args.clone(), allowed_r);
@@ -317,7 +317,7 @@ pub extern "C" fn molt_shutil_copymode(
     dst_bits: u64,
     follow_symlinks_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_src_dst_arg(src_bits, dst_bits);
         audit_capability_decision("shutil.copymode", "fs.read", audit_args.clone(), allowed_r);
@@ -353,7 +353,7 @@ pub extern "C" fn molt_shutil_copystat(
     dst_bits: u64,
     follow_symlinks_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_src_dst_arg(src_bits, dst_bits);
         audit_capability_decision("shutil.copystat", "fs.read", audit_args.clone(), allowed_r);
@@ -389,7 +389,7 @@ pub extern "C" fn molt_shutil_copytree(
     dst_bits: u64,
     dirs_exist_ok_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_src_dst_arg(src_bits, dst_bits);
         audit_capability_decision("shutil.copytree", "fs.read", audit_args.clone(), allowed_r);
@@ -421,7 +421,7 @@ pub extern "C" fn molt_shutil_copytree(
 /// `shutil.rmtree(path)` → None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "shutil.rmtree",
@@ -447,7 +447,7 @@ pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
 /// Attempts rename first; falls back to copy+delete for cross-device moves.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_move(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_src_dst_arg(src_bits, dst_bits);
         audit_capability_decision("shutil.move", "fs.read", audit_args.clone(), allowed_r);
@@ -503,7 +503,7 @@ pub extern "C" fn molt_shutil_move(src_bits: u64, dst_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "shutil.disk_usage",
@@ -606,7 +606,7 @@ pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_disk_usage(_path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "disk_usage")
     })
 }
@@ -617,7 +617,7 @@ pub extern "C" fn molt_shutil_disk_usage(_path_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (fb_cols, fb_lines) = if obj_from_bits(fallback_bits).is_none() {
             (80i64, 24i64)
         } else if let Some(ptr) = obj_from_bits(fallback_bits).as_ptr() {
@@ -701,7 +701,7 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // On WASM return the fallback directly.
         let (fb_cols, fb_lines) = if obj_from_bits(fallback_bits).is_none() {
             (80i64, 24i64)
@@ -745,7 +745,7 @@ pub extern "C" fn molt_shutil_make_archive(
     format_bits: u64,
     root_dir_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_path_arg(base_name_bits);
         audit_capability_decision(
@@ -895,7 +895,7 @@ pub extern "C" fn molt_shutil_make_archive(
     _format_bits: u64,
     _root_dir_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "make_archive")
     })
 }
@@ -904,7 +904,7 @@ pub extern "C" fn molt_shutil_make_archive(
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_path_arg(filename_bits);
         audit_capability_decision(
@@ -1012,7 +1012,7 @@ fn unpack_zip(archive: &Path, dest: &Path) -> std::io::Result<()> {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_unpack_archive(_filename_bits: u64, _extract_dir_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "unpack_archive")
     })
 }
@@ -1023,7 +1023,7 @@ pub extern "C" fn molt_shutil_unpack_archive(_filename_bits: u64, _extract_dir_b
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "shutil.chown",
@@ -1122,7 +1122,7 @@ fn lookup_gid(name: &str) -> Option<libc::gid_t> {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_chown(_path_bits: u64, _user_bits: u64, _group_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "chown")
     })
 }

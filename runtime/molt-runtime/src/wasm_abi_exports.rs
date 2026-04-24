@@ -17,7 +17,7 @@ use std::alloc::{Layout, alloc, dealloc};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_getitem(dict_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Fast path: we know the container is a dict (backend proved it).
         // Skip the type-dispatch chain in molt_index entirely.
         let obj = obj_from_bits(dict_bits);
@@ -41,12 +41,12 @@ pub extern "C" fn molt_dict_getitem(dict_bits: u64, key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_getitem(tuple_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_index(tuple_bits, index_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_index(tuple_bits, index_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_setitem(dict_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Fast path: we know the container is a dict (backend proved it).
         // Skip the type-dispatch chain in molt_store_index entirely.
         let obj = obj_from_bits(dict_bits);
@@ -170,7 +170,7 @@ pub extern "C" fn molt_fast_str_strip(method_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_resource_on_allocate(size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(size) = crate::to_i64(obj_from_bits(size_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "size must be an integer");
         };
@@ -186,7 +186,7 @@ pub extern "C" fn molt_resource_on_allocate(size_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_resource_on_free(size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(size) = crate::to_i64(obj_from_bits(size_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "size must be an integer");
         };
