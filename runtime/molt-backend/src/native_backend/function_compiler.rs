@@ -3517,6 +3517,20 @@ impl SimpleBackend {
                 }
                 "add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    eprintln!("DEBUG_ADD: func={} args={:?} out={:?} lhs_raw_primary={} rhs_raw_primary={} lhs_int_like={} rhs_int_like={} lhs_shadow={} rhs_shadow={} prefers_int={} prefers_float={} prefers_str={}",
+                        func_ir.name,
+                        args,
+                        op.out,
+                        args.get(0).map(|a| raw_primary_int.contains(a)).unwrap_or(false),
+                        args.get(1).map(|a| raw_primary_int.contains(a)).unwrap_or(false),
+                        args.get(0).map(|a| int_like_vars.contains(a)).unwrap_or(false),
+                        args.get(1).map(|a| int_like_vars.contains(a)).unwrap_or(false),
+                        args.get(0).map(|a| raw_int_shadow.contains_key(a) || raw_int_shadow_vals.contains_key(a)).unwrap_or(false),
+                        args.get(1).map(|a| raw_int_shadow.contains_key(a) || raw_int_shadow_vals.contains_key(a)).unwrap_or(false),
+                        op_prefers_int_lane(&op),
+                        op_prefers_float_lane(&op),
+                        op_prefers_str_lane(&op),
+                    );
                     // Defer var_get: NaN-boxed operands are only read on paths
                     // that actually need them.  On the both-shadow fast path the
                     // raw i64 values are used directly, so never calling use_var
@@ -3606,6 +3620,7 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            eprintln!("DEBUG_ADD: BOTH-SHADOW fast path for {:?} + {:?} -> {:?}", &args[0], &args[1], &op.out);
                             // Typed IR: raw i64 is PRIMARY.  Branchless iadd
                             // with deferred overflow — the 47-bit inline range
                             // check is deferred to boxing escape points
@@ -3624,6 +3639,7 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
+                            eprintln!("DEBUG_ADD: PROVEN-INT fallback (add) for {:?} + {:?} -> {:?} (lhs_raw_primary={} rhs_raw_primary={})", &args[0], &args[1], &op.out, raw_primary_int.contains(&args[0]), raw_primary_int.contains(&args[1]));
                             // Proven-int path: op_prefers_int_lane guarantees both
                             // operands are int-like. Skip tag check, unbox directly.
                             // Overflow guard retained for BigInt fallback.
@@ -3669,6 +3685,7 @@ impl SimpleBackend {
                             merged_boxed
                         }
                     } else {
+                        eprintln!("DEBUG_ADD: GENERIC fallback (add) for {:?} + {:?} -> {:?} (lhs_raw_primary={} rhs_raw_primary={})", &args[0], &args[1], &op.out, raw_primary_int.contains(&args[0]), raw_primary_int.contains(&args[1]));
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                         let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -19209,6 +19226,46 @@ impl SimpleBackend {
                     raw_float_shadow.retain(|k, _| float_store_target_names.contains(k));
                     raw_bool_shadow_vars.retain(|k, _| bool_store_target_names.contains(k));
 
+                    // Demote phi join slots from raw_primary_int/float at
+                    // loop entry.  A phi variable initialized as raw before
+                    // the loop may be reassigned with a NaN-boxed value on
+                    // the back-edge (e.g. `total = total + data[i]` where
+                    // `data[i]` returns NaN-boxed).  Without this, the
+                    // load_var fast path inside the loop generates code that
+                    // reads the Variable as raw i64 even though the store_var
+                    // on the back-edge stored a NaN-boxed value -- causing
+                    // wrong results or SIGILL (Cranelift type confusion).
+                    //
+                    // Re-box the raw value in the Variable so subsequent
+                    // generic load_var reads produce a valid NaN-boxed value.
+                    // The store_var handler re-promotes if the source is raw.
+                    {
+                        let demote_int: Vec<String> = raw_primary_int
+                            .iter()
+                            .filter(|name| is_join_slot_name(name))
+                            .cloned()
+                            .collect();
+                        for name in &demote_int {
+                            raw_primary_int.remove(name);
+                            if let Some(&var) = vars.get(name) {
+                                let raw_val = builder.use_var(var);
+                                let boxed = box_int_value_hoisted(
+                                    &mut builder,
+                                    raw_val,
+                                    box_int_mask_var,
+                                    box_int_tag_var,
+                                );
+                                builder.def_var(var, boxed);
+                            }
+                        }
+                        // Float-primary variables are NOT demoted here.
+                        // Their main Variable holds raw f64 (types::F64) which
+                        // cannot be replaced with a NaN-boxed I64 value without
+                        // causing a Cranelift type mismatch.  The float
+                        // load_var/store_var paths handle boxing correctly
+                        // through the float shadow system.
+                    }
+
                     let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {
                         // Indexed loops may carry a constant-materialization
@@ -22525,6 +22582,17 @@ impl SimpleBackend {
                                 builder.def_var(dst_var, raw_val);
                             }
                             raw_int_shadow_vals.insert(name.to_string(), raw_val);
+                        } else if let Some(&dst_var) = raw_int_shadow.get(name) {
+                            // Source has NO raw shadow but destination has a
+                            // Variable-backed shadow (loop phi).  The value
+                            // being stored is NaN-boxed.  Unbox it so the
+                            // shadow Variable carries the correct raw i64
+                            // across the loop back-edge.  Without this, the
+                            // shadow retains a stale value from a prior
+                            // iteration or the pre-loop initialization.
+                            let unboxed = unbox_int(&mut builder, *val, &nbc);
+                            builder.def_var(dst_var, unboxed);
+                            raw_int_shadow_vals.insert(name.to_string(), unboxed);
                         }
                         // Propagate raw_bool_shadow through store_var:
                         // Same two-tier pattern as int shadows.
