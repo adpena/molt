@@ -11166,8 +11166,12 @@ def _resolve_cargo_profile_name_cached(
     normalized_raw = raw.strip()
     # dev-fast is the correct default for development — it has debug info
     # + incremental compilation. The plain "dev" profile is unoptimized and
-    # produces a much larger binary. release-fast is the release default.
-    default_profile = "dev-fast" if build_profile == "dev" else "release-fast"
+    # produces a much larger binary.
+    # release-output is the release default for the runtime staticlib: it
+    # uses panic=abort (eliminating ~750KB of exception tables) and opt-level
+    # "z" for minimal binary size. The backend daemon uses release-fast
+    # (panic=unwind for catch_unwind) via _resolve_backend_cargo_profile_name.
+    default_profile = "dev-fast" if build_profile == "dev" else "release-output"
     profile_name = normalized_raw or default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
         return default_profile, f"Invalid {env_var} value: {raw}"
@@ -11933,6 +11937,14 @@ def _native_artifact_source_key(
     stdlib_object_cache_key: str | None,
     is_wasm: bool,
 ) -> str:
+    if base_key is None:
+        # Cache disabled (e.g. --rebuild): return empty key so the daemon
+        # does not match against a shared sentinel that is identical for
+        # every file.  Previously `base_key or ""` produced the same
+        # "|stdlib:<hash>" key for every --rebuild invocation, causing the
+        # daemon in-memory cache to return the first file's compiled output
+        # for all subsequent files in the same daemon session.
+        return ""
     key = base_key or ""
     if is_wasm or not stdlib_object_cache_key:
         return key

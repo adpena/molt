@@ -3517,20 +3517,6 @@ impl SimpleBackend {
                 }
                 "add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    eprintln!("DEBUG_ADD: func={} args={:?} out={:?} lhs_raw_primary={} rhs_raw_primary={} lhs_int_like={} rhs_int_like={} lhs_shadow={} rhs_shadow={} prefers_int={} prefers_float={} prefers_str={}",
-                        func_ir.name,
-                        args,
-                        op.out,
-                        args.get(0).map(|a| raw_primary_int.contains(a)).unwrap_or(false),
-                        args.get(1).map(|a| raw_primary_int.contains(a)).unwrap_or(false),
-                        args.get(0).map(|a| int_like_vars.contains(a)).unwrap_or(false),
-                        args.get(1).map(|a| int_like_vars.contains(a)).unwrap_or(false),
-                        args.get(0).map(|a| raw_int_shadow.contains_key(a) || raw_int_shadow_vals.contains_key(a)).unwrap_or(false),
-                        args.get(1).map(|a| raw_int_shadow.contains_key(a) || raw_int_shadow_vals.contains_key(a)).unwrap_or(false),
-                        op_prefers_int_lane(&op),
-                        op_prefers_float_lane(&op),
-                        op_prefers_str_lane(&op),
-                    );
                     // Defer var_get: NaN-boxed operands are only read on paths
                     // that actually need them.  On the both-shadow fast path the
                     // raw i64 values are used directly, so never calling use_var
@@ -3620,7 +3606,6 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
-                            eprintln!("DEBUG_ADD: BOTH-SHADOW fast path for {:?} + {:?} -> {:?}", &args[0], &args[1], &op.out);
                             // Typed IR: raw i64 is PRIMARY.  Branchless iadd
                             // with deferred overflow — the 47-bit inline range
                             // check is deferred to boxing escape points
@@ -3639,7 +3624,6 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            eprintln!("DEBUG_ADD: PROVEN-INT fallback (add) for {:?} + {:?} -> {:?} (lhs_raw_primary={} rhs_raw_primary={})", &args[0], &args[1], &op.out, raw_primary_int.contains(&args[0]), raw_primary_int.contains(&args[1]));
                             // Proven-int path: op_prefers_int_lane guarantees both
                             // operands are int-like. Skip tag check, unbox directly.
                             // Overflow guard retained for BigInt fallback.
@@ -3685,7 +3669,6 @@ impl SimpleBackend {
                             merged_boxed
                         }
                     } else {
-                        eprintln!("DEBUG_ADD: GENERIC fallback (add) for {:?} + {:?} -> {:?} (lhs_raw_primary={} rhs_raw_primary={})", &args[0], &args[1], &op.out, raw_primary_int.contains(&args[0]), raw_primary_int.contains(&args[1]));
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                         let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -20870,6 +20853,37 @@ impl SimpleBackend {
                     let val = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
+                    // Inline the field init for immediate values (int/float/
+                    // bool/none): just store to obj_ptr + offset with no GIL
+                    // acquire and no function call. For heap-pointer values
+                    // we must call the runtime to inc_ref + mark_has_ptrs.
+                    //
+                    // Check if val is a heap pointer:
+                    //   (val & TAG_MASK) == TAG_PTR
+                    let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+                    let tag_bits = builder.ins().band(*val, tag_mask);
+                    let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+                    let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
+                    let fast_block = builder.create_block();
+                    let slow_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(fast_block, current_block);
+                        builder.insert_block_after(slow_block, fast_block);
+                        builder.insert_block_after(merge_block, slow_block);
+                    }
+                    builder.set_cold_block(slow_block);
+                    builder.ins().brif(is_ptr, slow_block, &[], fast_block, &[]);
+                    // Fast path: immediate value — direct store, no GIL.
+                    switch_to_block_materialized(&mut builder, fast_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                    jump_block(&mut builder, merge_block, &[]);
+                    // Slow path: pointer value — call runtime for inc_ref + mark_has_ptrs + store.
+                    switch_to_block_materialized(&mut builder, slow_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                     let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
                     let callee = Self::import_func_id_split(
                         &mut self.module,
@@ -20879,14 +20893,18 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
+                    builder
                         .ins()
                         .call(local_callee, &[obj_ptr, offset_bits, *val]);
+                    jump_block(&mut builder, merge_block, &[]);
+                    // Merge: continue.
+                    switch_to_block_materialized(&mut builder, merge_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                     if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
-                        let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, out_name.clone(), res);
+                        let none_val = builder.ins().iconst(types::I64, box_none());
+                        def_var_named(&mut builder, &vars, out_name.clone(), none_val);
                     }
                 }
                 "load" => {
@@ -20894,19 +20912,13 @@ impl SimpleBackend {
                     let obj = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Object not found");
                     let offset_val = op.value.unwrap_or(0);
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    // Use a runtime call instead of inline load to avoid
-                    // Cranelift optimization issues with offset-based loads.
-                    let offset_arg = builder.ins().iconst(types::I64, offset_val);
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_object_field_load",
-                        &[types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[obj_ptr, offset_arg]);
-                    let res = builder.inst_results(call)[0];
+                    // Inline the field load: read u64 at obj_ptr + offset,
+                    // then inc_ref the result. This eliminates the runtime
+                    // function call (GIL acquire + debug checks) on the hot
+                    // path for known-layout attribute access.
+                    let res = builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), obj_ptr, offset_val as i32);
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
                     let Some(out_name) = op.out else {
                         continue;
