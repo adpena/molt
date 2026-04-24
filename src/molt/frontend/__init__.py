@@ -10428,6 +10428,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if class_info and not class_info.get("static"):
             class_ref = self._load_local_value(expected_class)
             if class_ref is None:
+                if assume_exact and self._class_layout_stable(expected_class):
+                    # The caller guarantees the object is an instance of
+                    # expected_class (e.g. `self` inside a method body).
+                    # Emit a direct field store even when the class_ref is
+                    # not available in the current scope (class defined
+                    # inside a function).
+                    setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
+                    self.emit(
+                        MoltOp(
+                            kind=setattr_kind,
+                            args=[obj, attr, value, expected_class],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    return
                 self.emit(
                     MoltOp(
                         kind="SETATTR_GENERIC_PTR",
@@ -10557,6 +10572,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if class_info and not class_info.get("static"):
             class_ref = self._load_local_value(expected_class)
             if class_ref is None:
+                if assume_exact and self._class_layout_stable(expected_class):
+                    # The caller guarantees the object is an instance of
+                    # expected_class (e.g. `self` in a method body or a
+                    # freshly created instance in the calling scope).
+                    # Use a direct field load.
+                    res = MoltValue(self.next_var())
+                    self.emit(
+                        MoltOp(
+                            kind="GETATTR",
+                            args=[obj, attr, expected_class],
+                            result=res,
+                        )
+                    )
+                    return res
                 res = MoltValue(self.next_var())
                 self.emit(
                     MoltOp(
@@ -21664,12 +21693,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                         )
                     else:
+                        # Inside a method body, `self` (the first parameter)
+                        # is guaranteed to be an instance of the current class.
+                        # Mark it as exact so the guarded setattr can use a
+                        # direct field store instead of the slow generic path.
+                        is_method_self = (
+                            self.current_class is not None
+                            and isinstance(node.target.value, ast.Name)
+                            and node.target.value.id == self.current_method_first_param
+                            and obj.type_hint == self.current_class
+                        )
                         self._emit_guarded_setattr(
                             obj,
                             node.target.attr,
                             value_node,
                             obj.type_hint,
                             obj_name=obj_name,
+                            assume_exact=is_method_self,
                         )
                 else:
                     self.emit(
@@ -21938,12 +21978,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                 else:
+                    # Inside a method body, `self` (the first parameter)
+                    # is guaranteed to be an instance of the current class.
+                    # Mark it as exact so the guarded setattr can use a
+                    # direct field store instead of the slow generic path.
+                    is_method_self = (
+                        self.current_class is not None
+                        and obj_expr is not None
+                        and isinstance(obj_expr, ast.Name)
+                        and obj_expr.id == self.current_method_first_param
+                        and obj.type_hint == self.current_class
+                    )
                     self._emit_guarded_setattr(
                         obj,
                         attr,
                         value_node,
                         obj.type_hint,
                         obj_name=obj_name,
+                        assume_exact=is_method_self,
                     )
             else:
                 self.emit(
