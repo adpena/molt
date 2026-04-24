@@ -681,12 +681,15 @@ mod tests {
     }
 
     #[test]
-    fn check_exception_and_try_markers_are_structural() {
-        assert!(is_structural("check_exception"));
-        assert!(is_structural("try_start"));
-        assert!(is_structural("try_end"));
-        assert!(is_structural("state_block_start"));
-        assert!(is_structural("state_block_end"));
+    fn check_exception_and_try_markers_are_not_structural() {
+        // Exception-handling ops must NOT be structural — they carry semantics
+        // that must be preserved as TirOps through SSA conversion.  Marking
+        // them structural causes SSA to silently drop them.
+        assert!(!is_structural("check_exception"));
+        assert!(!is_structural("try_start"));
+        assert!(!is_structural("try_end"));
+        assert!(!is_structural("state_block_start"));
+        assert!(!is_structural("state_block_end"));
     }
 
     // ---------------------------------------------------------------------------
