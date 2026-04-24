@@ -87,3 +87,27 @@ macro_rules! with_gil_entry {
         }
     }};
 }
+
+/// Like `with_gil_entry!` but omits `catch_unwind` for performance-critical
+/// hot paths whose bodies are guaranteed never to panic (all error handling
+/// is done via explicit return values, never via unwinding).
+///
+/// This eliminates the ~10ns-per-call overhead of `catch_unwind` (landing
+/// pads, callee-saved register spills, inhibited inlining) while still
+/// acquiring the GIL correctly.
+///
+/// # Safety contract
+/// The `$body` must not panic.  All indexing must be bounds-checked, all
+/// Option/Result values must be handled explicitly.  If this contract is
+/// violated, the process will abort (extern "C" + unwind = UB → abort).
+#[macro_export]
+macro_rules! with_gil_entry_nopanic {
+    ($py:ident, $body:block) => {{
+        let _gil_guard = $crate::concurrency::GilGuard::new();
+        #[cfg(miri)]
+        let _miri_nursery_guard = $crate::object::NurserySuspendGuard::new();
+        let $py = _gil_guard.token();
+        let $py = &$py;
+        $body
+    }};
+}

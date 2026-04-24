@@ -10,10 +10,39 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 
+/// Format an i64 into a stack-allocated buffer, returning the UTF-8 slice.
+/// This avoids the heap allocation of `i.to_string()` in the hot path.
+#[inline(always)]
+fn int_to_stack_str(val: i64, buf: &mut [u8; 24]) -> &[u8] {
+    if val == 0 {
+        buf[0] = b'0';
+        return &buf[..1];
+    }
+    let negative = val < 0;
+    // Work with absolute value using unsigned to avoid i64::MIN overflow.
+    let mut uval: u64 = if negative {
+        (val as u64).wrapping_neg()
+    } else {
+        val as u64
+    };
+    let mut pos = buf.len();
+    while uval > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (uval % 10) as u8;
+        uval /= 10;
+    }
+    if negative {
+        pos -= 1;
+        buf[pos] = b'-';
+    }
+    &buf[pos..]
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val_bits);
+        // Fast path: already a string -- inc_ref and return as-is.
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_STRING {
@@ -21,6 +50,26 @@ pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
                     return val_bits;
                 }
             }
+        }
+        // Fast path: inline int -- stack-format to avoid String allocation.
+        if let Some(i) = obj.as_int() {
+            // Max i64 is 19 digits + sign = 20 bytes; 24 for safety.
+            let mut buf = [0u8; 24];
+            let s = int_to_stack_str(i, &mut buf);
+            let ptr = alloc_string(_py, s);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        // Fast path: inline bool -- use pre-rendered strings.
+        if let Some(b) = obj.as_bool() {
+            let s = if b { b"True" as &[u8] } else { b"False" };
+            let ptr = alloc_string(_py, s);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
         }
         let rendered = format_obj_str(_py, obj);
         if exception_pending(_py) {
