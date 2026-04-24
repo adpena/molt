@@ -1841,6 +1841,41 @@ fn main() -> io::Result<()> {
         ir.tree_shake_luau();
     }
 
+    // Run the full TIR optimization pipeline for Luau — same 14 passes that
+    // native and WASM backends get (refine_types → run_pipeline → refine_types).
+    // Without this, the Luau backend was operating on unoptimized SimpleIR,
+    // missing unboxing, escape analysis, SCCP, strength reduction, BCE, DCE etc.
+    if is_luau {
+        let tir_start = Instant::now();
+        let mut tir_count = 0usize;
+        for func in &mut ir.functions {
+            // Skip tiny functions and annotation stubs.
+            if func.ops.len() < 4 || func.name.contains("__annotate__") {
+                continue;
+            }
+            if func.ops.iter().any(|op| op.kind == "phi") {
+                molt_backend::rewrite_phi_to_store_load(&mut func.ops);
+            }
+            let mut tir_func =
+                molt_backend::tir::lower_from_simple::lower_to_tir(func);
+            molt_backend::tir::type_refine::refine_types(&mut tir_func);
+            let _stats = molt_backend::tir::passes::run_pipeline(&mut tir_func);
+            molt_backend::tir::type_refine::refine_types(&mut tir_func);
+            let type_map = molt_backend::tir::type_refine::extract_type_map(&tir_func);
+            let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(
+                &tir_func, &type_map,
+            );
+            if molt_backend::tir::lower_to_simple::validate_labels(&ops) {
+                func.ops = ops;
+                tir_count += 1;
+            }
+        }
+        let tir_elapsed = tir_start.elapsed();
+        eprintln!(
+            "[molt-luau] TIR optimization: {tir_count} functions in {tir_elapsed:.2?}"
+        );
+    }
+
     let output_kind = if is_luau {
         BackendOutputKind::Luau
     } else if is_rust {

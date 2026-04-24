@@ -256,8 +256,11 @@ pub mod interpret {
         // alignment (4) is satisfied. Standard Vec<u8> has alignment >= 1
         // but f32::from_le_bytes is used as fallback below.
 
-        // Use a temporary f32 accumulator to avoid repeated byte conversions.
-        // This is the dominant cost: M*K*N multiply-accumulate operations.
+        // Cast byte buffers to f32 slices once, eliminating per-element
+        // from_le_bytes in the hot inner loop. On little-endian platforms
+        // (x86_64, aarch64), this is a zero-cost reinterpret.
+        let a = as_f32_slice(a_buf);
+        let b = as_f32_slice(b_buf);
         let mut c = vec![0.0f32; m * n];
 
         // IKJ loop order: for each row of A, stream through K,
@@ -265,22 +268,17 @@ pub mod interpret {
         // This maximizes spatial locality in both B and C.
         for i in 0..m {
             for kk in 0..k {
-                let a_off = (i * k + kk) * 4;
-                let a_val = f32::from_le_bytes(a_buf[a_off..a_off + 4].try_into().unwrap());
-                let b_row_off = kk * n * 4;
+                let a_val = a[i * k + kk];
+                let b_row = kk * n;
                 for j in 0..n {
-                    let b_off = b_row_off + j * 4;
-                    let b_val = f32::from_le_bytes(b_buf[b_off..b_off + 4].try_into().unwrap());
-                    c[i * n + j] += a_val * b_val;
+                    c[i * n + j] = a_val.mul_add(b[b_row + j], c[i * n + j]);
                 }
             }
         }
 
-        // Write results back to output buffer.
-        for (idx, &val) in c.iter().enumerate() {
-            let off = idx * 4;
-            out_buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
-        }
+        // Write results back to output buffer via direct f32 slice.
+        let out_f32 = as_f32_slice_mut(out_buf);
+        out_f32[..m * n].copy_from_slice(&c);
     }
 
     /// Detect and execute a fused softmax pattern:
@@ -294,49 +292,45 @@ pub mod interpret {
     /// `n` is the number of output rows, `reduce_size` is elements per row.
     #[inline(never)]
     pub fn fused_softmax(input_buf: &[u8], output_buf: &mut [u8], n: usize, reduce_size: usize) {
+        let input = as_f32_slice(input_buf);
+        let output = as_f32_slice_mut(output_buf);
+
+        // Pre-allocate exp buffer once, reuse across rows.
+        let mut exp_vals = vec![0.0f64; reduce_size];
+
         for row in 0..n {
             let row_start = row * reduce_size;
+            let row_end = row_start + reduce_size;
+
+            if row_end > input.len() {
+                break;
+            }
+
+            let row_slice = &input[row_start..row_end];
 
             // Pass 1: find max for numerical stability
             let mut max_val = f64::NEG_INFINITY;
-            for j in 0..reduce_size {
-                let idx = row_start + j;
-                let offset = idx * 4;
-                if offset + 4 > input_buf.len() {
-                    continue;
-                }
-                let val =
-                    f32::from_le_bytes(input_buf[offset..offset + 4].try_into().unwrap()) as f64;
+            for &v in row_slice {
+                let val = v as f64;
                 if val > max_val {
                     max_val = val;
                 }
             }
 
             // Pass 2: compute exp2(x - max) and sum
-            let mut exp_vals = vec![0.0f64; reduce_size];
             let mut sum = 0.0f64;
-            for (j, exp_slot) in exp_vals.iter_mut().enumerate() {
-                let idx = row_start + j;
-                let offset = idx * 4;
-                if offset + 4 > input_buf.len() {
-                    continue;
-                }
-                let val =
-                    f32::from_le_bytes(input_buf[offset..offset + 4].try_into().unwrap()) as f64;
-                let e = (val - max_val).exp2();
-                *exp_slot = e;
+            for (j, &v) in row_slice.iter().enumerate() {
+                let e = (v as f64 - max_val).exp2();
+                exp_vals[j] = e;
                 sum += e;
             }
 
             // Pass 3: normalize
             let inv_sum = 1.0 / sum;
-            for (j, &exp_val) in exp_vals.iter().enumerate() {
-                let idx = row_start + j;
-                let offset = idx * 4;
-                if offset + 4 <= output_buf.len() {
-                    let result = (exp_val * inv_sum) as f32;
-                    output_buf[offset..offset + 4].copy_from_slice(&result.to_le_bytes());
-                }
+            let out_len = output.len();
+            let out_row = &mut output[row_start..row_end.min(out_len)];
+            for (j, out_v) in out_row.iter_mut().enumerate() {
+                *out_v = (exp_vals[j] * inv_sum) as f32;
             }
         }
     }
@@ -355,19 +349,23 @@ pub mod interpret {
     /// normalization epsilon.
     #[inline(never)]
     pub fn fused_rms_norm(input_buf: &[u8], output_buf: &mut [u8], n: usize, dim: usize, eps: f64) {
+        let input = as_f32_slice(input_buf);
+        let output = as_f32_slice_mut(output_buf);
+
         for row in 0..n {
             let row_start = row * dim;
+            let row_end = row_start + dim;
+
+            if row_end > input.len() {
+                break;
+            }
+
+            let row_slice = &input[row_start..row_end];
 
             // Pass 1: compute sum of squares
             let mut sum_sq = 0.0f64;
-            for j in 0..dim {
-                let idx = row_start + j;
-                let offset = idx * 4;
-                if offset + 4 > input_buf.len() {
-                    continue;
-                }
-                let val =
-                    f32::from_le_bytes(input_buf[offset..offset + 4].try_into().unwrap()) as f64;
+            for &v in row_slice {
+                let val = v as f64;
                 sum_sq += val * val;
             }
 
@@ -376,18 +374,10 @@ pub mod interpret {
             let inv_rms = 1.0 / (mean_sq + eps).sqrt();
 
             // Pass 2: scale each element
-            for j in 0..dim {
-                let idx = row_start + j;
-                let offset = idx * 4;
-                if offset + 4 > input_buf.len() {
-                    continue;
-                }
-                let val =
-                    f32::from_le_bytes(input_buf[offset..offset + 4].try_into().unwrap()) as f64;
-                let result = (val * inv_rms) as f32;
-                if offset + 4 <= output_buf.len() {
-                    output_buf[offset..offset + 4].copy_from_slice(&result.to_le_bytes());
-                }
+            let out_len = output.len();
+            let out_row = &mut output[row_start..row_end.min(out_len)];
+            for (j, out_v) in out_row.iter_mut().enumerate() {
+                *out_v = (row_slice[j] as f64 * inv_rms) as f32;
             }
         }
     }
@@ -581,8 +571,37 @@ pub mod interpret {
         }
     }
 
+    /// Reinterpret a byte slice as an f32 slice. The buffer must be f32-aligned
+    /// (4-byte alignment minimum). Our alloc functions guarantee 16-byte or
+    /// 4096-byte alignment, so this is always safe for molt-gpu buffers.
+    #[inline(always)]
+    fn as_f32_slice(buf: &[u8]) -> &[f32] {
+        debug_assert_eq!(
+            buf.as_ptr() as usize % 4,
+            0,
+            "buffer not 4-byte aligned for f32 cast"
+        );
+        // SAFETY: Buffers are allocated with alloc_simd_aligned (16-byte) or
+        // alloc_page_aligned (4096-byte), both satisfying f32 alignment (4-byte).
+        // Length is always a multiple of 4 for Float32 buffers.
+        unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f32, buf.len() / 4) }
+    }
+
+    /// Reinterpret a mutable byte slice as a mutable f32 slice.
+    #[inline(always)]
+    fn as_f32_slice_mut(buf: &mut [u8]) -> &mut [f32] {
+        debug_assert_eq!(
+            buf.as_ptr() as usize % 4,
+            0,
+            "buffer not 4-byte aligned for f32 cast"
+        );
+        // SAFETY: Same alignment guarantees as as_f32_slice.
+        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut f32, buf.len() / 4) }
+    }
+
     /// Tiled f32 matmul: C = A @ B (+ optional bias).
     /// 32x32 tiles, IKJ loop order for cache locality on row-major data.
+    /// Uses direct f32 slice access instead of per-element from_le_bytes.
     #[inline(never)]
     fn execute_matmul_f32(
         bufs: &mut [Vec<u8>],
@@ -599,8 +618,11 @@ pub mod interpret {
         // in the inner loop.
         let mut c = vec![0.0f32; m * n];
 
-        let a_buf = &bufs[a_idx];
-        let b_buf = &bufs[b_idx];
+        // Cast byte buffers to f32 slices ONCE, eliminating per-element
+        // from_le_bytes overhead in the hot inner loop. On little-endian
+        // platforms (x86_64, aarch64), this is a zero-cost reinterpret.
+        let a = as_f32_slice(&bufs[a_idx]);
+        let b = as_f32_slice(&bufs[b_idx]);
 
         // Tiled IKJ: iterate over tiles of (i, k) in A and (k, j) in B.
         // Within each tile, the IKJ order broadcasts a[i,k] across B's row.
@@ -617,17 +639,10 @@ pub mod interpret {
                     // Micro-kernel: process tile [ii..i_end, kk..k_end] x [kk..k_end, jj..j_end]
                     for i in ii..i_end {
                         for ki in kk..k_end {
-                            let a_off = (i * k + ki) * 4;
-                            let a_val = f32::from_le_bytes(
-                                a_buf[a_off..a_off + 4].try_into().unwrap(),
-                            );
-                            let b_row_base = ki * n * 4;
+                            let a_val = a[i * k + ki];
+                            let b_row = ki * n;
                             for j in jj..j_end {
-                                let b_off = b_row_base + j * 4;
-                                let b_val = f32::from_le_bytes(
-                                    b_buf[b_off..b_off + 4].try_into().unwrap(),
-                                );
-                                c[i * n + j] += a_val * b_val;
+                                c[i * n + j] = a_val.mul_add(b[b_row + j], c[i * n + j]);
                             }
                         }
                     }
@@ -641,25 +656,44 @@ pub mod interpret {
 
         // Add bias if present
         if let Some(bi) = bias_idx {
-            let bias_buf = &bufs[bi];
+            let bias = as_f32_slice(&bufs[bi]);
             for idx in 0..m * n {
-                let off = idx * 4;
-                let bias_val =
-                    f32::from_le_bytes(bias_buf[off..off + 4].try_into().unwrap());
-                c[idx] += bias_val;
+                c[idx] += bias[idx];
             }
         }
 
-        // Write results to output buffer
-        let out = &mut bufs[0];
-        for (idx, &val) in c.iter().enumerate() {
-            let off = idx * 4;
-            out[off..off + 4].copy_from_slice(&val.to_le_bytes());
-        }
+        // Write results to output buffer via direct f32 slice.
+        let out_f32 = as_f32_slice_mut(&mut bufs[0]);
+        out_f32[..m * n].copy_from_slice(&c);
+    }
+
+    /// Reinterpret a byte slice as an f64 slice.
+    #[inline(always)]
+    fn as_f64_slice(buf: &[u8]) -> &[f64] {
+        debug_assert_eq!(
+            buf.as_ptr() as usize % 8,
+            0,
+            "buffer not 8-byte aligned for f64 cast"
+        );
+        // SAFETY: Buffers are allocated with >= 16-byte alignment.
+        unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f64, buf.len() / 8) }
+    }
+
+    /// Reinterpret a mutable byte slice as a mutable f64 slice.
+    #[inline(always)]
+    fn as_f64_slice_mut(buf: &mut [u8]) -> &mut [f64] {
+        debug_assert_eq!(
+            buf.as_ptr() as usize % 8,
+            0,
+            "buffer not 8-byte aligned for f64 cast"
+        );
+        // SAFETY: Same alignment guarantees as as_f64_slice.
+        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut f64, buf.len() / 8) }
     }
 
     /// Tiled f64 matmul: C = A @ B (+ optional bias).
     /// 32x32 tiles, IKJ loop order for cache locality on row-major data.
+    /// Uses direct f64 slice access instead of per-element from_le_bytes.
     #[inline(never)]
     fn execute_matmul_f64(
         bufs: &mut [Vec<u8>],
@@ -674,8 +708,8 @@ pub mod interpret {
 
         let mut c = vec![0.0f64; m * n];
 
-        let a_buf = &bufs[a_idx];
-        let b_buf = &bufs[b_idx];
+        let a = as_f64_slice(&bufs[a_idx]);
+        let b = as_f64_slice(&bufs[b_idx]);
 
         let mut ii = 0;
         while ii < m {
@@ -689,17 +723,10 @@ pub mod interpret {
 
                     for i in ii..i_end {
                         for ki in kk..k_end {
-                            let a_off = (i * k + ki) * 8;
-                            let a_val = f64::from_le_bytes(
-                                a_buf[a_off..a_off + 8].try_into().unwrap(),
-                            );
-                            let b_row_base = ki * n * 8;
+                            let a_val = a[i * k + ki];
+                            let b_row = ki * n;
                             for j in jj..j_end {
-                                let b_off = b_row_base + j * 8;
-                                let b_val = f64::from_le_bytes(
-                                    b_buf[b_off..b_off + 8].try_into().unwrap(),
-                                );
-                                c[i * n + j] += a_val * b_val;
+                                c[i * n + j] = a_val.mul_add(b[b_row + j], c[i * n + j]);
                             }
                         }
                     }
@@ -712,20 +739,140 @@ pub mod interpret {
         }
 
         if let Some(bi) = bias_idx {
-            let bias_buf = &bufs[bi];
+            let bias = as_f64_slice(&bufs[bi]);
             for idx in 0..m * n {
-                let off = idx * 8;
-                let bias_val =
-                    f64::from_le_bytes(bias_buf[off..off + 8].try_into().unwrap());
-                c[idx] += bias_val;
+                c[idx] += bias[idx];
             }
         }
 
-        let out = &mut bufs[0];
-        for (idx, &val) in c.iter().enumerate() {
-            let off = idx * 8;
-            out[off..off + 8].copy_from_slice(&val.to_le_bytes());
+        let out_f64 = as_f64_slice_mut(&mut bufs[0]);
+        out_f64[..m * n].copy_from_slice(&c);
+    }
+
+    /// Detect a softmax-like reduction pattern in a fused kernel.
+    ///
+    /// Matches any kernel that contains both a ReduceMax and a ReduceSum
+    /// (the hallmark of softmax: max-stabilize, exponentiate, sum-normalize).
+    /// All buffers must be Float32 and contiguous.
+    ///
+    /// Returns `Some((input_buf_idx, reduce_size))` if the pattern matches.
+    fn detect_softmax_pattern(kernel: &FusedKernel) -> Option<(usize, usize)> {
+        // Need at least ReduceMax + something + ReduceSum + something = 4 ops minimum
+        if kernel.ops.len() < 4 {
+            return None;
         }
+
+        // All buffers must be Float32 and contiguous
+        if !kernel
+            .bufs
+            .iter()
+            .all(|b| b.dtype == DType::Float32 && b.st.view().is_contiguous())
+        {
+            return None;
+        }
+
+        let has_reduce_max = kernel
+            .ops
+            .iter()
+            .any(|op| op.op == PrimitiveOp::ReduceMax);
+        let has_reduce_sum = kernel
+            .ops
+            .iter()
+            .any(|op| op.op == PrimitiveOp::ReduceSum);
+
+        if !has_reduce_max || !has_reduce_sum {
+            return None;
+        }
+
+        // Find the input buffer for the ReduceMax (should be the raw input)
+        let reduce_max_op = kernel
+            .ops
+            .iter()
+            .find(|op| op.op == PrimitiveOp::ReduceMax)?;
+        let input_buf_idx = match &reduce_max_op.srcs[0] {
+            FusedSrc::Buf(idx) => *idx,
+            _ => return None,
+        };
+
+        let output_numel = kernel.bufs[0].st.numel();
+        let input_numel = kernel.bufs[input_buf_idx].st.numel();
+        if output_numel == 0 {
+            return None;
+        }
+        let reduce_size = input_numel / output_numel;
+        if reduce_size == 0 || input_numel % output_numel != 0 {
+            return None;
+        }
+
+        Some((input_buf_idx, reduce_size))
+    }
+
+    /// Detect an RMSNorm-like pattern in a fused kernel.
+    ///
+    /// Matches kernels that: square input -> ReduceSum -> scale by rsqrt.
+    /// Specifically: first op is Mul(Buf(x), Buf(x)) (self-multiply = square),
+    /// followed by ReduceSum. All buffers must be Float32 and contiguous.
+    ///
+    /// Returns `Some((input_buf_idx, dim, eps))` if the pattern matches.
+    fn detect_rms_norm_pattern(kernel: &FusedKernel) -> Option<(usize, usize, f64)> {
+        // Need at least Mul(x,x) + ReduceSum = 2 ops
+        if kernel.ops.len() < 2 {
+            return None;
+        }
+
+        // All buffers must be Float32 and contiguous
+        if !kernel
+            .bufs
+            .iter()
+            .all(|b| b.dtype == DType::Float32 && b.st.view().is_contiguous())
+        {
+            return None;
+        }
+
+        // First op must be Mul(Buf(x), Buf(x)) — self-multiply (squaring)
+        let mul_op = &kernel.ops[0];
+        if mul_op.op != PrimitiveOp::Mul {
+            return None;
+        }
+        let input_buf_idx = match (&mul_op.srcs[0], &mul_op.srcs[1]) {
+            (FusedSrc::Buf(a), FusedSrc::Buf(b)) if a == b => *a,
+            _ => return None,
+        };
+
+        // Second op must be ReduceSum
+        if kernel.ops[1].op != PrimitiveOp::ReduceSum {
+            return None;
+        }
+
+        let output_numel = kernel.bufs[0].st.numel();
+        let input_numel = kernel.bufs[input_buf_idx].st.numel();
+        if output_numel == 0 {
+            return None;
+        }
+
+        // For single-row RMSNorm: output_numel == input_numel, dim == input_numel
+        // For multi-row RMSNorm: dim == input_numel / output_numel
+        // The detect path only fires for the square+reduce subkernel which
+        // reduces to a scalar. The full RMSNorm is: Mul(x,x) -> ReduceSum.
+        // output_numel for the reduce kernel is 1 (scalar), dim == input_numel.
+        let dim = input_numel;
+        let n = if output_numel > 0 {
+            output_numel
+        } else {
+            return None;
+        };
+
+        // Use standard epsilon for numerical stability
+        let eps = 1e-6_f64;
+
+        // Only match when output is the same size as input (the full rmsnorm
+        // pattern where we write back x * rsqrt). For partial patterns (just
+        // the reduce), the output is a scalar and we should fall through.
+        if kernel.bufs[0].st.numel() != input_numel {
+            return None;
+        }
+
+        Some((input_buf_idx, dim / n, eps))
     }
 
     /// Interpret and execute a FusedKernel on CPU buffers.
@@ -739,6 +886,25 @@ pub mod interpret {
         // Must be checked BEFORE the SIMD path since matmul contains a reduce op.
         if let Some(pattern) = detect_matmul_pattern(kernel, bufs) {
             execute_matmul_fast(&pattern, bufs);
+            return;
+        }
+
+        // Fast path: detect softmax pattern.
+        // ReduceMax -> Sub -> Mul(log2e) -> Exp2 -> ReduceSum -> Reciprocal -> Mul
+        // Or simpler: any kernel with ReduceMax followed by Sub/Exp2/ReduceSum/Mul.
+        if let Some(pattern) = detect_softmax_pattern(kernel) {
+            let (input_idx, reduce_size) = pattern;
+            let input = bufs[input_idx].clone();
+            fused_softmax(&input, &mut bufs[0], output_numel, reduce_size);
+            return;
+        }
+
+        // Fast path: detect RMSNorm pattern.
+        // Mul(x,x) -> ReduceSum -> ... -> Mul(x, rsqrt)
+        if let Some(pattern) = detect_rms_norm_pattern(kernel) {
+            let (input_idx, dim, eps) = pattern;
+            let input = bufs[input_idx].clone();
+            fused_rms_norm(&input, &mut bufs[0], output_numel, dim, eps);
             return;
         }
 
@@ -757,6 +923,10 @@ pub mod interpret {
         let mut values: Vec<f64> = vec![0.0; kernel.ops.len()];
 
         for gid in 0..output_numel {
+            // Pre-allocate pre_values ONCE outside the reduce inner loop.
+            // This eliminates O(reduce_size) heap allocations per output element.
+            let mut pre_values: Vec<f64> = Vec::new();
+
             for (op_idx, op) in kernel.ops.iter().enumerate() {
                 if matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax) {
                     // Handle reduce ops
@@ -774,14 +944,20 @@ pub mod interpret {
                         _ => unreachable!(),
                     };
 
+                    // Reuse pre_values across reduce iterations instead of
+                    // re-allocating on every iteration of the inner loop.
+                    if op_idx > 0 {
+                        pre_values.resize(op_idx, 0.0);
+                    }
+
                     for rid in 0..reduce_size {
                         let eidx = gid * reduce_size + rid;
 
                         // If there are pre-reduce ops, compute them for this element
                         let val = if op_idx > 0 {
-                            // Re-compute pre-reduce elementwise chain for this element index
-                            let mut pre_values: Vec<f64> = Vec::with_capacity(op_idx);
-                            for pre_op in &kernel.ops[..op_idx] {
+                            // Re-compute pre-reduce elementwise chain for this element index.
+                            // pre_values is reused across iterations (no allocation).
+                            for (pre_idx, pre_op) in kernel.ops[..op_idx].iter().enumerate() {
                                 let get_pre_src = |i: usize| -> f64 {
                                     match &pre_op.srcs[i] {
                                         FusedSrc::Buf(idx) => {
@@ -791,11 +967,10 @@ pub mod interpret {
                                         FusedSrc::Const { val, .. } => *val,
                                     }
                                 };
-                                let result =
+                                pre_values[pre_idx] =
                                     compute_elementwise(pre_op.op, &get_pre_src, pre_op.srcs.len());
-                                pre_values.push(result);
                             }
-                            *pre_values.last().unwrap()
+                            pre_values[op_idx - 1]
                         } else {
                             read_f64(&bufs[input_buf_idx], eidx, kernel.bufs[input_buf_idx].dtype)
                         };
@@ -936,12 +1111,16 @@ pub mod interpret {
                         FusedSrc::Buf(idx) => {
                             let buf = &bufs[*idx];
                             let offset = base * 4; // 4 bytes per f32
-                            let bytes = &buf[offset..offset + 16];
-                            let a = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
-                            let b = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
-                            let c = f32::from_le_bytes(bytes[8..12].try_into().unwrap());
-                            let d = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
-                            f32x4::new([a, b, c, d])
+                            // Load 4 contiguous f32 values in one shot via pointer cast.
+                            // Buffers are allocated with 16-byte alignment (alloc_simd_aligned),
+                            // and base is always a multiple of 4 (chunk * 4), so offset is
+                            // always 16-byte aligned. Use ptr::read for aligned access.
+                            let ptr = buf[offset..].as_ptr() as *const [f32; 4];
+                            // SAFETY: Buffer is 16-byte aligned (alloc_simd_aligned/alloc_page_aligned),
+                            // offset is 16-byte aligned (base = chunk * 4, so offset = chunk * 16),
+                            // and we verified offset + 16 <= buf.len() via simd_count calculation.
+                            let arr = unsafe { std::ptr::read(ptr) };
+                            f32x4::new(arr)
                         }
                         FusedSrc::Op(prior) => simd_values[*prior],
                         FusedSrc::Const { val, .. } => f32x4::splat(*val as f32),
@@ -951,12 +1130,14 @@ pub mod interpret {
                 simd_values[op_idx] = compute_elementwise_simd(op.op, &get_src_simd);
             }
 
-            // Write SIMD output
+            // Write SIMD output: store 4 contiguous f32 values in one shot.
             let result: [f32; 4] = simd_values[kernel.ops.len() - 1].into();
             let offset = base * 4;
-            for (i, &v) in result.iter().enumerate() {
-                let o = offset + i * 4;
-                bufs[0][o..o + 4].copy_from_slice(&v.to_le_bytes());
+            // SAFETY: Same alignment guarantees as the load path above.
+            // Output buffer bufs[0] is 16-byte aligned and offset is 16-byte aligned.
+            let out_ptr = bufs[0][offset..].as_mut_ptr() as *mut [f32; 4];
+            unsafe {
+                std::ptr::write(out_ptr, result);
             }
         }
 

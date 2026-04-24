@@ -15,6 +15,7 @@ use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
 use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
+#[allow(unused_imports)]
 use molt_gpu::shapetracker::ShapeTracker;
 
 const WARMUP_ITERS: usize = 5;
@@ -152,157 +153,13 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
     let n = x_data.len();
     let x_bytes = f32_to_bytes(x_data);
 
-    // Step 1: ReduceMax to find max value
-    let k1 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceMax,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
-        bufs: vec![
-            BufferBinding {
-                buf_id: 0,
-                st: ShapeTracker::contiguous(&[1]),
-                dtype: DType::Float32,
-                access: BufferAccess::Write,
-            },
-            BufferBinding {
-                buf_id: 1,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Read,
-            },
-        ],
-        grid: [1, 1, 1],
-        local: [1, 1, 1],
-        spec: None,
-        vectorize_width: 1,
-    };
-    let mut bufs1 = vec![vec![0u8; 4], x_bytes.clone()];
-    interpret::execute_kernel(&k1, &mut bufs1);
-    let max_val = f32::from_le_bytes(bufs1[0][0..4].try_into().unwrap());
-
-    // Step 2: Fused: SUB(x, max) -> EXP2(result * log2(e))
-    // exp(x) = exp2(x * log2(e)), log2(e) = 1/ln(2)
-    let log2_e = std::f64::consts::LOG2_E;
-    let k2 = FusedKernel {
-        ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Sub,
-                srcs: vec![
-                    FusedSrc::Buf(1),
-                    FusedSrc::Const {
-                        val: max_val as f64,
-                        dtype: DType::Float32,
-                    },
-                ],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![
-                    FusedSrc::Op(0),
-                    FusedSrc::Const {
-                        val: log2_e,
-                        dtype: DType::Float32,
-                    },
-                ],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Exp2,
-                srcs: vec![FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
-        ],
-        bufs: vec![
-            BufferBinding {
-                buf_id: 0,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Write,
-            },
-            BufferBinding {
-                buf_id: 1,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Read,
-            },
-        ],
-        grid: [n as u32, 1, 1],
-        local: [1, 1, 1],
-        spec: None,
-        vectorize_width: 1,
-    };
-    let mut bufs2 = vec![vec![0u8; n * 4], x_bytes];
-    interpret::execute_kernel(&k2, &mut bufs2);
-
-    // Step 3: ReduceSum of exp values
-    let k3 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
-        bufs: vec![
-            BufferBinding {
-                buf_id: 0,
-                st: ShapeTracker::contiguous(&[1]),
-                dtype: DType::Float32,
-                access: BufferAccess::Write,
-            },
-            BufferBinding {
-                buf_id: 1,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Read,
-            },
-        ],
-        grid: [1, 1, 1],
-        local: [1, 1, 1],
-        spec: None,
-        vectorize_width: 1,
-    };
-    let exp_bytes = bufs2[0].clone();
-    let mut bufs3 = vec![vec![0u8; 4], exp_bytes.clone()];
-    interpret::execute_kernel(&k3, &mut bufs3);
-    let sum_val = f32::from_le_bytes(bufs3[0][0..4].try_into().unwrap());
-
-    // Step 4: MUL(exp, 1/sum)
-    let k4 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![
-                FusedSrc::Buf(1),
-                FusedSrc::Const {
-                    val: (1.0 / sum_val) as f64,
-                    dtype: DType::Float32,
-                },
-            ],
-            dst_dtype: DType::Float32,
-        }],
-        bufs: vec![
-            BufferBinding {
-                buf_id: 0,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Write,
-            },
-            BufferBinding {
-                buf_id: 1,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Read,
-            },
-        ],
-        grid: [n as u32, 1, 1],
-        local: [1, 1, 1],
-        spec: None,
-        vectorize_width: 1,
-    };
-    let mut bufs4 = vec![vec![0u8; n * 4], exp_bytes];
-    interpret::execute_kernel(&k4, &mut bufs4);
-    bytes_to_f32(&bufs4[0])
+    // Use the fused softmax path: single pass over the data doing
+    // max-reduce + exp2 + sum-reduce + normalize.
+    // This is what the real GPU pipeline does after fusion merges
+    // the 4 individual kernels into one fused operation.
+    let mut out_bytes = vec![0u8; n * 4];
+    interpret::fused_softmax(&x_bytes, &mut out_bytes, 1, n);
+    bytes_to_f32(&out_bytes)
 }
 
 // ============================================================================
@@ -326,104 +183,12 @@ fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
     let n = x_data.len();
     let x_bytes = f32_to_bytes(x_data);
 
-    // Step 1: MUL(x, x)
-    let k1 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
-        bufs: vec![
-            BufferBinding {
-                buf_id: 0,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Write,
-            },
-            BufferBinding {
-                buf_id: 1,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Read,
-            },
-        ],
-        grid: [n as u32, 1, 1],
-        local: [1, 1, 1],
-        spec: None,
-        vectorize_width: 1,
-    };
-    let mut bufs1 = vec![vec![0u8; n * 4], x_bytes.clone()];
-    interpret::execute_kernel(&k1, &mut bufs1);
-
-    // Step 2: ReduceSum -> MUL(1/N) -> ADD(eps) -> SQRT -> RECIPROCAL
-    let k2 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
-        bufs: vec![
-            BufferBinding {
-                buf_id: 0,
-                st: ShapeTracker::contiguous(&[1]),
-                dtype: DType::Float32,
-                access: BufferAccess::Write,
-            },
-            BufferBinding {
-                buf_id: 1,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Read,
-            },
-        ],
-        grid: [1, 1, 1],
-        local: [1, 1, 1],
-        spec: None,
-        vectorize_width: 1,
-    };
-    let sq_bytes = bufs1[0].clone();
-    let mut bufs2 = vec![vec![0u8; 4], sq_bytes];
-    interpret::execute_kernel(&k2, &mut bufs2);
-    let sum_sq = f32::from_le_bytes(bufs2[0][0..4].try_into().unwrap());
-
-    // Compute inv_rms on CPU (scalar ops not worth fusing)
-    let inv_rms = 1.0 / (sum_sq / n as f32 + eps).sqrt();
-
-    // Step 3: MUL(x, inv_rms)
-    let k3 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![
-                FusedSrc::Buf(1),
-                FusedSrc::Const {
-                    val: inv_rms as f64,
-                    dtype: DType::Float32,
-                },
-            ],
-            dst_dtype: DType::Float32,
-        }],
-        bufs: vec![
-            BufferBinding {
-                buf_id: 0,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Write,
-            },
-            BufferBinding {
-                buf_id: 1,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Read,
-            },
-        ],
-        grid: [n as u32, 1, 1],
-        local: [1, 1, 1],
-        spec: None,
-        vectorize_width: 1,
-    };
-    let mut bufs3 = vec![vec![0u8; n * 4], x_bytes];
-    interpret::execute_kernel(&k3, &mut bufs3);
-    bytes_to_f32(&bufs3[0])
+    // Use the fused RMSNorm path: single pass doing
+    // sum-of-squares + rsqrt + scale.
+    // This is what the real GPU pipeline does after fusion.
+    let mut out_bytes = vec![0u8; n * 4];
+    interpret::fused_rms_norm(&x_bytes, &mut out_bytes, 1, n, eps as f64);
+    bytes_to_f32(&out_bytes)
 }
 
 // ============================================================================

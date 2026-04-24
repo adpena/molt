@@ -13082,6 +13082,38 @@ impl WasmBackend {
                             dst_mem: 0,
                         });
                     }
+                    // ---------------------------------------------------------------
+                    // memory_fill: bulk linear-memory fill (WASM 2.0 bulk-memory op)
+                    //
+                    // IR signature:  memory_fill(dst, val, len)
+                    //   dst  – i64 boxed integer holding i32 linear-memory byte offset
+                    //   val  – i64 boxed integer holding the fill byte (0-255)
+                    //   len  – i64 boxed integer holding the byte count
+                    //
+                    // Emits:  memory.fill  (mem=0)
+                    //         stack: [dst:i32, val:i32, len:i32]
+                    //
+                    // Enables efficient zero-init and constant-fill of linear memory
+                    // regions without round-tripping through host imports or byte loops.
+                    // ---------------------------------------------------------------
+                    "memory_fill" => {
+                        let args = op.args.as_ref().unwrap();
+                        debug_assert!(
+                            args.len() == 3,
+                            "memory_fill requires exactly 3 args (dst, val, len)"
+                        );
+                        let dst = locals[&args[0]];
+                        let val = locals[&args[1]];
+                        let len = locals[&args[2]];
+                        // Unbox each i64 value to i32 for the memory.fill instruction.
+                        func.instruction(&Instruction::LocalGet(dst));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::LocalGet(len));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::MemoryFill(0));
+                    }
                     _ => {}
                 }
 
