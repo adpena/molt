@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn object_builtin_methods_match_runtime_symbols() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let new_bits = object_method_bits(_py, "__new__");
             let init_bits = object_method_bits(_py, "__init__");
             assert!(unsafe {
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn type_call_matches_runtime_symbol() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let call_bits = type_method_bits(_py, "__call__");
             assert!(unsafe {
                 callable_matches_runtime_symbol(call_bits, fn_addr!(crate::molt_type_call))

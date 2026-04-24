@@ -2221,7 +2221,7 @@ fn cached_stdio_handle(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stdin() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         cached_stdio_handle(_py, &SYS_STDIN_HANDLE_BITS, || {
             alloc_stdio_handle(_py, 0, true, false, "<stdin>", "surrogateescape", false)
         })
@@ -2230,7 +2230,7 @@ pub extern "C" fn molt_sys_stdin() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stdout() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         cached_stdio_handle(_py, &SYS_STDOUT_HANDLE_BITS, || {
             alloc_stdio_handle(_py, 1, false, true, "<stdout>", "surrogateescape", false)
         })
@@ -2239,7 +2239,7 @@ pub extern "C" fn molt_sys_stdout() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stderr() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         cached_stdio_handle(_py, &SYS_STDERR_HANDLE_BITS, || {
             alloc_stdio_handle(_py, 2, false, true, "<stderr>", "backslashreplace", true)
         })
@@ -2248,7 +2248,7 @@ pub extern "C" fn molt_sys_stderr() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none = MoltObject::none().bits();
         open_impl(
             _py,
@@ -2275,7 +2275,7 @@ pub extern "C" fn molt_file_open_ex(
     closefd_bits: u64,
     opener_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         open_impl(
             _py,
             file_bits,
@@ -2292,7 +2292,7 @@ pub extern "C" fn molt_file_open_ex(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(name) => name,
             None => return raise_exception::<_>(_py, "TypeError", "io class name must be str"),
@@ -2328,7 +2328,7 @@ pub extern "C" fn molt_file_io_new(
     closefd_bits: u64,
     opener_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode_obj = obj_from_bits(mode_bits);
         let mut mode = if mode_obj.is_none() {
             "r".to_string()
@@ -2381,12 +2381,12 @@ pub extern "C" fn molt_file_io_init(
     _closefd_bits: u64,
     _opener_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw_handle_ptr = match resolve_file_handle_ptr(_py, raw_bits) {
             Ok(ptr) => ptr,
             Err(bits) => return bits,
@@ -2470,7 +2470,7 @@ pub extern "C" fn molt_buffered_init(
     _raw_bits: u64,
     _buffer_size_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
@@ -2483,7 +2483,7 @@ pub extern "C" fn molt_text_io_wrapper_new(
     line_buffering_bits: u64,
     write_through_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let buffer_handle_ptr = match resolve_file_handle_ptr(_py, buffer_bits) {
             Ok(ptr) => ptr,
             Err(bits) => return bits,
@@ -2582,12 +2582,12 @@ pub extern "C" fn molt_text_io_wrapper_init(
     _line_buffering_bits: u64,
     _write_through_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytesio_new(_cls_bits: u64, initial_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let payload = match unsafe { collect_bytes_like(_py, initial_bits) } {
             Ok(payload) => payload,
             Err(bits) => return bits,
@@ -2634,12 +2634,12 @@ pub extern "C" fn molt_bytesio_new(_cls_bits: u64, initial_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytesio_init(_self_bits: u64, _initial_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stringio_new(_cls_bits: u64, initial_bits: u64, newline_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let initial = if obj_from_bits(initial_bits).is_none() {
             String::new()
         } else if let Some(text) = string_obj_to_owned(obj_from_bits(initial_bits)) {
@@ -2699,7 +2699,7 @@ pub extern "C" fn molt_stringio_init(
     _initial_bits: u64,
     _newline_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
@@ -2713,7 +2713,7 @@ pub extern "C" fn molt_open_builtin(
     closefd_bits: u64,
     opener_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         open_impl(
             _py,
             file_bits,
@@ -3738,7 +3738,7 @@ pub(crate) fn file_handle_is_closed(handle: &MoltFileHandle) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -3975,7 +3975,7 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -4204,7 +4204,7 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -4745,7 +4745,7 @@ unsafe fn read_line_multibyte(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -4973,7 +4973,7 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -5318,21 +5318,21 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readinto(handle_bits: u64, buffer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         file_readinto_impl(_py, handle_bits, buffer_bits, "readinto")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readinto1(handle_bits: u64, buffer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         file_readinto_impl(_py, handle_bits, buffer_bits, "readinto1")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -5415,7 +5415,7 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -5476,7 +5476,7 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_getbuffer(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -5509,7 +5509,7 @@ pub extern "C" fn molt_file_getbuffer(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -5646,7 +5646,7 @@ pub extern "C" fn molt_file_reconfigure(
     line_buffering_bits: u64,
     write_through_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -5769,7 +5769,7 @@ pub extern "C" fn molt_file_reconfigure(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -5938,7 +5938,7 @@ pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6000,7 +6000,7 @@ pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6058,7 +6058,7 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6155,7 +6155,7 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6180,7 +6180,7 @@ pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6205,7 +6205,7 @@ pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6239,7 +6239,7 @@ pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6298,7 +6298,7 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_iter(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6324,7 +6324,7 @@ pub extern "C" fn molt_file_iter(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_next(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let line_bits = molt_file_readline(handle_bits, MoltObject::from_int(-1).bits());
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -6351,7 +6351,7 @@ pub extern "C" fn molt_file_next(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_enter(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6367,7 +6367,7 @@ pub extern "C" fn molt_file_enter(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_exit(handle_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6388,12 +6388,12 @@ pub extern "C" fn molt_file_exit_method(
     exc_bits: u64,
     _tb_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { molt_file_exit(handle_bits, exc_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_file_exit(handle_bits, exc_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6569,7 +6569,7 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6632,7 +6632,7 @@ pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
@@ -6671,7 +6671,7 @@ pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");

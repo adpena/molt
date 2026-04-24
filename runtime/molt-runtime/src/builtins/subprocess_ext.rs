@@ -46,13 +46,13 @@ const SUBPROCESS_DEVNULL: i32 = -3;
 /// `subprocess.PIPE` → int (-1)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_subprocess_pipe_const() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_int(SUBPROCESS_PIPE as i64).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_int(SUBPROCESS_PIPE as i64).bits() })
 }
 
 /// `subprocess.STDOUT` → int (-2)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_subprocess_stdout_const() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_int(SUBPROCESS_STDOUT as i64).bits()
     })
 }
@@ -60,7 +60,7 @@ pub extern "C" fn molt_subprocess_stdout_const() -> u64 {
 /// `subprocess.DEVNULL` → int (-3)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_subprocess_devnull_const() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_int(SUBPROCESS_DEVNULL as i64).bits()
     })
 }
@@ -255,7 +255,7 @@ pub extern "C" fn molt_subprocess_run(
     cwd_bits: u64,
     env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
             return MoltObject::none().bits();
         }
@@ -397,7 +397,7 @@ pub extern "C" fn molt_subprocess_run(
     _cwd_bits: u64,
     _env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "NotImplementedError",
@@ -424,7 +424,7 @@ pub extern "C" fn molt_subprocess_check_output(
     cwd_bits: u64,
     env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
             return MoltObject::none().bits();
         }
@@ -498,7 +498,7 @@ pub extern "C" fn molt_subprocess_check_output(
     _cwd_bits: u64,
     _env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "NotImplementedError",
@@ -523,7 +523,7 @@ pub extern "C" fn molt_subprocess_check_call(
     cwd_bits: u64,
     env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_process_capability::<u64>(_py, &["process", "process.exec"]).is_err() {
             return MoltObject::none().bits();
         }
@@ -575,7 +575,7 @@ pub extern "C" fn molt_subprocess_check_call(
     _cwd_bits: u64,
     _env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "NotImplementedError",

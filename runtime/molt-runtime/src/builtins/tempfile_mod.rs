@@ -41,7 +41,7 @@ fn require_str_opt(_py: &PyToken<'_>, bits: u64) -> Option<String> {
 /// `tempfile.gettempdir()` -> str
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_gettempdir() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dir = std::env::temp_dir();
         str_bits(_py, &dir.to_string_lossy())
     })
@@ -50,7 +50,7 @@ pub extern "C" fn molt_tempfile_gettempdir() -> u64 {
 /// `tempfile.gettempdirb()` -> bytes
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_gettempdirb() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dir = std::env::temp_dir();
         let s = dir.to_string_lossy();
         let ptr = alloc_bytes(_py, s.as_bytes());
@@ -67,7 +67,7 @@ pub extern "C" fn molt_tempfile_gettempdirb() -> u64 {
 /// Creates a temporary directory and returns its path.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_mkdtemp(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("tempfile.mkdtemp", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -101,7 +101,7 @@ pub extern "C" fn molt_tempfile_mkdtemp(suffix_bits: u64, prefix_bits: u64, dir_
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_mkstemp(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("tempfile.mkstemp", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -174,7 +174,7 @@ pub extern "C" fn molt_tempfile_mkstemp(
     _prefix_bits: u64,
     _dir_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "mkstemp")
     })
 }
@@ -192,7 +192,7 @@ pub extern "C" fn molt_tempfile_named(
     dir_bits: u64,
     delete_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("tempfile.named", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -274,7 +274,7 @@ pub extern "C" fn molt_tempfile_named(
     _dir_bits: u64,
     _delete_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "NamedTemporaryFile")
     })
 }
@@ -285,7 +285,7 @@ pub extern "C" fn molt_tempfile_named(
 /// Cleanup is handled by the Python wrapper's __exit__.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_tempdir(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("tempfile.tempdir", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -317,7 +317,7 @@ pub extern "C" fn molt_tempfile_tempdir(suffix_bits: u64, prefix_bits: u64, dir_
 /// Removes a temporary directory tree. Used by TemporaryDirectory.__exit__.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_cleanup(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("tempfile.cleanup", "fs.write", AuditArgs::None, allowed);
         if !allowed {

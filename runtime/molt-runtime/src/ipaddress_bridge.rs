@@ -18,7 +18,7 @@ pub extern "C" fn __molt_ipaddr_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -34,7 +34,7 @@ pub extern "C" fn __molt_ipaddr_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_ipaddr_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
     })
@@ -42,7 +42,7 @@ pub extern "C" fn __molt_ipaddr_alloc_list(elems_ptr: *const u64, elems_len: usi
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_ipaddr_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -50,7 +50,7 @@ pub extern "C" fn __molt_ipaddr_alloc_string(data_ptr: *const u8, data_len: usiz
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_ipaddr_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
     })
@@ -88,7 +88,7 @@ pub extern "C" fn __molt_ipaddr_string_obj_to_owned(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_ipaddr_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
@@ -118,7 +118,7 @@ pub extern "C" fn __molt_ipaddr_to_i64(bits: u64, out: *mut i64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_ipaddr_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, val) })
 }
 
 #[unsafe(no_mangle)]
@@ -128,7 +128,7 @@ pub extern "C" fn __molt_ipaddr_int_bits_from_bigint(
     bytes_len: usize,
 ) -> u64 {
     use num_bigint::{BigInt, Sign};
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bytes_len) };
         let s = match sign {
             -1 => Sign::Minus,

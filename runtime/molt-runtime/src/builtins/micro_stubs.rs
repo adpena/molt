@@ -11,7 +11,7 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(_ptr: *const u8, _len: u64, _out
 #[cfg(not(feature = "stdlib_serialization"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cbor_parse_scalar_obj(_obj: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         crate::raise_exception::<u64>(
             _py,
             "NotImplementedError",
@@ -33,7 +33,7 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
 #[cfg(not(feature = "stdlib_serialization"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_msgpack_parse_scalar_obj(_obj: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         crate::raise_exception::<u64>(
             _py,
             "NotImplementedError",
@@ -45,7 +45,7 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(_obj: u64) -> u64 {
 #[cfg(not(feature = "stdlib_compression"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deflate_raw(_input: u64, _level: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         crate::raise_exception::<u64>(
             _py,
             "NotImplementedError",
@@ -57,7 +57,7 @@ pub extern "C" fn molt_deflate_raw(_input: u64, _level: u64) -> u64 {
 #[cfg(not(feature = "stdlib_compression"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inflate_raw(_input: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         crate::raise_exception::<u64>(
             _py,
             "NotImplementedError",

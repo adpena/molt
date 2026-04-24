@@ -33,7 +33,7 @@ fn flag_bits_from_obj(obj_bits: u64) -> Option<i64> {
 /// it for repr).  `value_bits` must be an int bitmask.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_flag_new(name_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = name_bits; // name used only by Python wrapper for member setup
         let Some(val) = flag_bits_from_obj(value_bits) else {
             return raise_exception::<_>(_py, "TypeError", "Flag value must be an integer");
@@ -45,7 +45,7 @@ pub extern "C" fn molt_enum_flag_new(name_bits: u64, value_bits: u64) -> u64 {
 /// Flag.__or__: a | b → combined bitmask.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_flag_or(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "Flag operands must be integers");
         };
@@ -56,7 +56,7 @@ pub extern "C" fn molt_enum_flag_or(a_bits: u64, b_bits: u64) -> u64 {
 /// Flag.__and__: a & b → intersection bitmask.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_flag_and(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "Flag operands must be integers");
         };
@@ -67,7 +67,7 @@ pub extern "C" fn molt_enum_flag_and(a_bits: u64, b_bits: u64) -> u64 {
 /// Flag.__xor__: a ^ b → XOR bitmask.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_flag_xor(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "Flag operands must be integers");
         };
@@ -81,7 +81,7 @@ pub extern "C" fn molt_enum_flag_xor(a_bits: u64, b_bits: u64) -> u64 {
 /// and let the Python wrapper mask to the valid member bits.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_flag_invert(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(a) = flag_bits_from_obj(a_bits) else {
             return raise_exception::<_>(_py, "TypeError", "Flag operand must be an integer");
         };
@@ -93,7 +93,7 @@ pub extern "C" fn molt_enum_flag_invert(a_bits: u64) -> u64 {
 /// Returns True if (a & b) == b (i.e. b is a submask of a).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_flag_contains(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "Flag operands must be integers");
         };
@@ -110,7 +110,7 @@ pub extern "C" fn molt_enum_flag_contains(a_bits: u64, b_bits: u64) -> u64 {
 /// Negative values (sign bit set) are treated as their unsigned u64 bit pattern.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_flag_decompose(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(val) = flag_bits_from_obj(value_bits) else {
             return raise_exception::<_>(_py, "TypeError", "Flag value must be an integer");
         };
@@ -152,7 +152,7 @@ pub extern "C" fn molt_enum_flag_decompose(value_bits: u64) -> u64 {
 /// Returns: `count + 1` as a NaN-boxed int.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_auto_value(count_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(count) = to_i64(obj_from_bits(count_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "auto() count must be an integer");
         };
@@ -173,7 +173,7 @@ pub extern "C" fn molt_enum_auto_value(count_bits: u64) -> u64 {
 /// `members_bits` must be a list of 2-tuples [(name, value), ...].
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_unique_check(members_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(members_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "members must be a list");
@@ -216,7 +216,7 @@ pub extern "C" fn molt_enum_unique_check(members_bits: u64) -> u64 {
 /// Used by `Enum._missing_` and `@verify` to validate membership.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_verify_member(members_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(members_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "members must be a list");
@@ -265,7 +265,7 @@ pub extern "C" fn molt_enum_verify_member(members_bits: u64, value_bits: u64) ->
 /// Returns True/False as NaN-boxed bool.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
             let type_id = unsafe { object_type_id(obj_ptr) };
             if matches!(
@@ -309,7 +309,7 @@ pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
 /// Returns True/False as NaN-boxed bool.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let owner_bits = type_of_bits(_py, obj_bits);
         let Some(owner_ptr) = obj_from_bits(owner_bits).as_ptr() else {
             return MoltObject::from_bool(false).bits();
@@ -336,7 +336,7 @@ pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
 /// CPython's StrEnum._generate_next_value_ returns `name.lower()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(name_bits);
         let Some(name) = string_obj_to_owned(obj) else {
             let tn = type_name(_py, obj);
@@ -369,7 +369,7 @@ pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
 /// `bases_bits`:   tuple of base classes or None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Validate name
         let name_obj = obj_from_bits(name_bits);
         if name_obj.is_none() {
@@ -468,7 +468,7 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
 /// `value_bits`: the value to look up
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
 
         // Get __members__ from the class

@@ -175,7 +175,7 @@ fn od_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 /// Create a new empty OrderedDict. Returns an integer handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = next_ordereddict_handle();
         ORDEREDDICT_REGISTRY
             .lock()
@@ -188,7 +188,7 @@ pub extern "C" fn molt_ordereddict_new() -> u64 {
 /// Create an OrderedDict from a list of (k, v) 2-tuples. Returns handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(pairs_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected a list of pairs");
@@ -227,7 +227,7 @@ pub extern "C" fn molt_ordereddict_setitem(
     key_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -244,7 +244,7 @@ pub extern "C" fn molt_ordereddict_setitem(
 /// Get value for key. Raises KeyError if missing.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_getitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -263,7 +263,7 @@ pub extern "C" fn molt_ordereddict_getitem(handle_bits: u64, key_bits: u64) -> u
 /// Delete key. Raises KeyError if missing. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_delitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -282,7 +282,7 @@ pub extern "C" fn molt_ordereddict_delitem(handle_bits: u64, key_bits: u64) -> u
 /// Return True if key is present.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_contains(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -301,7 +301,7 @@ pub extern "C" fn molt_ordereddict_contains(handle_bits: u64, key_bits: u64) -> 
 /// Return number of entries.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -318,7 +318,7 @@ pub extern "C" fn molt_ordereddict_len(handle_bits: u64) -> u64 {
 /// Return list of keys in insertion order.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_keys(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -341,7 +341,7 @@ pub extern "C" fn molt_ordereddict_keys(handle_bits: u64) -> u64 {
 /// Return list of values in insertion order.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_values(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -364,7 +364,7 @@ pub extern "C" fn molt_ordereddict_values(handle_bits: u64) -> u64 {
 /// Return list of (key, value) 2-tuples in insertion order.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_items(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -399,7 +399,7 @@ pub extern "C" fn molt_ordereddict_move_to_end(
     key_bits: u64,
     last_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -427,7 +427,7 @@ pub extern "C" fn molt_ordereddict_move_to_end(
 /// Remove and return (key, value) from end (last=True) or front (last=False).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_popitem(handle_bits: u64, last_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -452,7 +452,7 @@ pub extern "C" fn molt_ordereddict_popitem(handle_bits: u64, last_bits: u64) -> 
 /// and no default provided (default_bits must be None sentinel or a value).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_pop(handle_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -484,7 +484,7 @@ pub extern "C" fn molt_ordereddict_pop(handle_bits: u64, key_bits: u64, default_
 /// Update from another OrderedDict handle or a regular dict object. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -536,7 +536,7 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
 /// Clear all entries. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_clear(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -553,7 +553,7 @@ pub extern "C" fn molt_ordereddict_clear(handle_bits: u64) -> u64 {
 /// Return a shallow copy as a new handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_copy(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -577,7 +577,7 @@ pub extern "C" fn molt_ordereddict_copy(handle_bits: u64) -> u64 {
 /// Release handle resources. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ordereddict_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -616,7 +616,7 @@ fn cm_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 /// Build a new ChainMap from a list of Molt dict objects. Returns handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_new(maps_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(maps_bits);
         let mut map_list: Vec<u64> = Vec::new();
         if let Some(ptr) = obj.as_ptr() {
@@ -669,7 +669,7 @@ pub extern "C" fn molt_chainmap_new(maps_bits: u64) -> u64 {
 /// Search all maps in order for key. Returns value or raises KeyError.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_getitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -698,7 +698,7 @@ pub extern "C" fn molt_chainmap_getitem(handle_bits: u64, key_bits: u64) -> u64 
 /// Set key in the first (primary) map. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_setitem(handle_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -727,7 +727,7 @@ pub extern "C" fn molt_chainmap_setitem(handle_bits: u64, key_bits: u64, value_b
 /// Delete key from the first map only. Raises KeyError if not found there.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_delitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -757,7 +757,7 @@ pub extern "C" fn molt_chainmap_delitem(handle_bits: u64, key_bits: u64) -> u64 
 /// Return True if key exists in any map.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_contains(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -786,7 +786,7 @@ pub extern "C" fn molt_chainmap_contains(handle_bits: u64, key_bits: u64) -> u64
 /// Return total count of unique keys across all maps.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -820,7 +820,7 @@ pub extern "C" fn molt_chainmap_len(handle_bits: u64) -> u64 {
 /// Return list of unique keys (first occurrence wins, preserving dict order).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_keys(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -862,7 +862,7 @@ pub extern "C" fn molt_chainmap_keys(handle_bits: u64) -> u64 {
 /// If m_bits is None, prepend a fresh empty dict.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_new_child(handle_bits: u64, m_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -905,7 +905,7 @@ pub extern "C" fn molt_chainmap_new_child(handle_bits: u64, m_bits: u64) -> u64 
 /// Return a new ChainMap containing all maps except the first. Returns handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_parents(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -937,7 +937,7 @@ pub extern "C" fn molt_chainmap_parents(handle_bits: u64) -> u64 {
 /// Return list of underlying dict objects.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_maps(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -958,7 +958,7 @@ pub extern "C" fn molt_chainmap_maps(handle_bits: u64) -> u64 {
 /// Release ChainMap handle. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chainmap_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1049,7 +1049,7 @@ fn resolve_index(index: i64, len: usize) -> Option<usize> {
 /// Create a new empty deque with optional maxlen. Returns an integer handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_new(maxlen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let maxlen = match parse_maxlen(_py, maxlen_bits) {
             Ok(m) => m,
             Err(()) => return MoltObject::none().bits(),
@@ -1071,7 +1071,7 @@ pub extern "C" fn molt_deque_new(maxlen_bits: u64) -> u64 {
 /// Returns handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let maxlen = match parse_maxlen(_py, maxlen_bits) {
             Ok(m) => m,
             Err(()) => return MoltObject::none().bits(),
@@ -1102,7 +1102,7 @@ pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64)
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1129,7 +1129,7 @@ pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1155,7 +1155,7 @@ pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64
 /// Raises IndexError if the deque is empty.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_pop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1175,7 +1175,7 @@ pub extern "C" fn molt_deque_pop(handle_bits: u64) -> u64 {
 /// Raises IndexError if the deque is empty.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_popleft(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1196,7 +1196,7 @@ pub extern "C" fn molt_deque_popleft(handle_bits: u64) -> u64 {
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1232,7 +1232,7 @@ pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1269,7 +1269,7 @@ pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) ->
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1303,7 +1303,7 @@ pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
 /// Return the length of the deque as a NaN-boxed int.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1321,7 +1321,7 @@ pub extern "C" fn molt_deque_len(handle_bits: u64) -> u64 {
 /// Raises IndexError "deque index out of range" if out of bounds.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1351,7 +1351,7 @@ pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1388,7 +1388,7 @@ pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bi
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1423,7 +1423,7 @@ pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
 /// Uses iterator, no allocation.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1449,7 +1449,7 @@ pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
 /// Uses iterator, no allocation beyond the snapshot.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1480,7 +1480,7 @@ pub extern "C" fn molt_deque_index(
     start_bits: u64,
     stop_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1547,7 +1547,7 @@ pub extern "C" fn molt_deque_index(
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1602,7 +1602,7 @@ pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1639,7 +1639,7 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_reverse(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1656,7 +1656,7 @@ pub extern "C" fn molt_deque_reverse(handle_bits: u64) -> u64 {
 /// Clear all elements. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_clear(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1674,7 +1674,7 @@ pub extern "C" fn molt_deque_clear(handle_bits: u64) -> u64 {
 /// Returns a new handle with the same maxlen.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1694,7 +1694,7 @@ pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
 /// Return maxlen as NaN-boxed int, or None if unbounded.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_maxlen(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1713,7 +1713,7 @@ pub extern "C" fn molt_deque_maxlen(handle_bits: u64) -> u64 {
 /// Remove handle from the global registry. Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1898,7 +1898,7 @@ fn dd_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 /// Create an empty Counter.  Returns an integer handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = next_counter_handle();
         COUNTER_REGISTRY
             .lock()
@@ -1912,7 +1912,7 @@ pub extern "C" fn molt_counter_new() -> u64 {
 /// Each element becomes a key with count incremented by 1.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_from_iterable(iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(iterable_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected a list or tuple");
@@ -1935,7 +1935,7 @@ pub extern "C" fn molt_counter_from_iterable(iterable_bits: u64) -> u64 {
 /// Create a Counter from a list of (key, count) pairs.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(mapping_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected a list of (key, count) pairs");
@@ -1976,7 +1976,7 @@ pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
 /// Return count for key.  Missing keys return 0 (not KeyError).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_getitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1993,7 +1993,7 @@ pub extern "C" fn molt_counter_getitem(handle_bits: u64, key_bits: u64) -> u64 {
 /// Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_setitem(handle_bits: u64, key_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2010,7 +2010,7 @@ pub extern "C" fn molt_counter_setitem(handle_bits: u64, key_bits: u64, count_bi
 /// Delete key.  Raises KeyError if not found.  Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_delitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2032,7 +2032,7 @@ pub extern "C" fn molt_counter_delitem(handle_bits: u64, key_bits: u64) -> u64 {
 /// Elements with count <= 0 are skipped.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_elements(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2067,7 +2067,7 @@ pub extern "C" fn molt_counter_elements(handle_bits: u64) -> u64 {
 /// Uses stable sort; for ties, insertion order is preserved.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_most_common(handle_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2122,7 +2122,7 @@ pub extern "C" fn molt_counter_most_common(handle_bits: u64, n_bits: u64) -> u64
 /// Sum all counts.  Returns as NaN-boxed int.  No allocation for iteration.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_total(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2144,7 +2144,7 @@ pub extern "C" fn molt_counter_total(handle_bits: u64) -> u64 {
 /// Detection: check if first element is a tuple.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2217,7 +2217,7 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
 /// Subtract counts from source.  Same detection logic as update.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2300,7 +2300,7 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
 /// Return list of (element, count) 2-tuples in insertion order.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_items(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2329,7 +2329,7 @@ pub extern "C" fn molt_counter_items(handle_bits: u64) -> u64 {
 /// Return number of unique elements.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2346,7 +2346,7 @@ pub extern "C" fn molt_counter_len(handle_bits: u64) -> u64 {
 /// Return True if key exists in counter, False otherwise.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_contains(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2441,7 +2441,7 @@ fn counter_binary_op(
 /// c + d: For each key, sum counts.  Only keep positive counts.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_add(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         counter_binary_op(_py, a_bits, b_bits, |a, b| a + b)
     })
 }
@@ -2449,7 +2449,7 @@ pub extern "C" fn molt_counter_add(a_bits: u64, b_bits: u64) -> u64 {
 /// c - d: For each key, subtract counts.  Only keep positive counts.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_sub(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         counter_binary_op(_py, a_bits, b_bits, |a, b| a - b)
     })
 }
@@ -2457,7 +2457,7 @@ pub extern "C" fn molt_counter_sub(a_bits: u64, b_bits: u64) -> u64 {
 /// c | d: Union — max(c[x], d[x]) for each key.  Only keep positive counts.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_or(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         counter_binary_op(_py, a_bits, b_bits, |a, b| a.max(b))
     })
 }
@@ -2465,7 +2465,7 @@ pub extern "C" fn molt_counter_or(a_bits: u64, b_bits: u64) -> u64 {
 /// c & d: Intersection — min(c[x], d[x]) for each key.  Only keep positive.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_and(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         counter_binary_op(_py, a_bits, b_bits, |a, b| a.min(b))
     })
 }
@@ -2475,7 +2475,7 @@ pub extern "C" fn molt_counter_and(a_bits: u64, b_bits: u64) -> u64 {
 /// Deep copy.  Returns new handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_copy(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2496,7 +2496,7 @@ pub extern "C" fn molt_counter_copy(handle_bits: u64) -> u64 {
 /// Clear all entries.  Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_clear(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2514,7 +2514,7 @@ pub extern "C" fn molt_counter_clear(handle_bits: u64) -> u64 {
 /// None, return default.  Otherwise raise KeyError.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_pop(handle_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2540,7 +2540,7 @@ pub extern "C" fn molt_counter_pop(handle_bits: u64, key_bits: u64, default_bits
 /// Release handle resources.  Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2560,7 +2560,7 @@ pub extern "C" fn molt_counter_drop(handle_bits: u64) -> u64 {
 /// Returns integer handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = next_defaultdict_handle();
         DEFAULTDICT_REGISTRY
             .lock()
@@ -2577,7 +2577,7 @@ pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
 /// underlying dict.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_defaultdict_missing(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2605,7 +2605,7 @@ pub extern "C" fn molt_defaultdict_missing(handle_bits: u64, key_bits: u64) -> u
 /// Return the factory_bits.  If None, return None bits.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_defaultdict_factory(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2621,7 +2621,7 @@ pub extern "C" fn molt_defaultdict_factory(handle_bits: u64) -> u64 {
 /// Create new handle with the same factory_bits.  Returns new handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_defaultdict_copy(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2645,7 +2645,7 @@ pub extern "C" fn molt_defaultdict_copy(handle_bits: u64) -> u64 {
 /// Release defaultdict handle.  Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_defaultdict_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2727,7 +2727,7 @@ pub extern "C" fn molt_namedtuple_validate_fields(
     fields_bits: u64,
     rename_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Validate typename
         let Some(typename) = string_obj_to_owned(obj_from_bits(typename_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "typename must be a string");

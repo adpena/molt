@@ -496,7 +496,7 @@ fn in_table_a1(cp: u32) -> bool {
 /// `molt_stringprep_in_table(table_name, char) -> bool`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stringprep_in_table(table_bits: u64, char_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(table_name) = string_obj_to_owned(obj_from_bits(table_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "stringprep: expected str table name");
         };
@@ -543,7 +543,7 @@ pub extern "C" fn molt_stringprep_in_table(table_bits: u64, char_bits: u64) -> u
 /// Falls back to lowercase for non-exception code points.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stringprep_map_table_b3(char_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ch_str) = string_obj_to_owned(obj_from_bits(char_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "map_table_b3: expected str");
         };

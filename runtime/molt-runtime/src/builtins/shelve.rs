@@ -29,7 +29,7 @@ thread_local! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shelve_open(dbm_handle_bits: u64, protocol_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(dbm_handle) = to_i64(obj_from_bits(dbm_handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "dbm_handle must be int");
         };
@@ -46,7 +46,7 @@ pub extern "C" fn molt_shelve_open(dbm_handle_bits: u64, protocol_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shelve_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid handle");
         };
@@ -59,7 +59,7 @@ pub extern "C" fn molt_shelve_close(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shelve_get_dbm_handle(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid handle");
         };
@@ -77,7 +77,7 @@ pub extern "C" fn molt_shelve_get_dbm_handle(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shelve_get_protocol(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid handle");
         };

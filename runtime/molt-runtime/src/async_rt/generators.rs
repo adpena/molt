@@ -261,7 +261,7 @@ unsafe fn generator_method_result(_py: &PyToken<'_>, res_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace_alloc = matches!(
             std::env::var("MOLT_TRACE_GENERATOR_ALLOC").ok().as_deref(),
             Some("1")
@@ -323,7 +323,7 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_awaitable_await(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(self_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -337,7 +337,7 @@ pub extern "C" fn molt_awaitable_await(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_is_native_awaitable(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(val_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -351,7 +351,7 @@ pub extern "C" fn molt_is_native_awaitable(val_bits: u64) -> u64 {
 /// - `token_bits` must be an integer cancel token id.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_task_register_token_owned(task_bits: u64, token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(task_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -366,14 +366,14 @@ pub unsafe extern "C" fn molt_task_register_token_owned(task_bits: u64, token_bi
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         molt_task_new(poll_fn_addr, closure_size, TASK_KIND_GENERATOR)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_is_generator(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let is_gen = maybe_ptr_from_bits(obj_bits)
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_GENERATOR });
         MoltObject::from_bool(is_gen).bits()
@@ -382,7 +382,7 @@ pub extern "C" fn molt_is_generator(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace = matches!(
             std::env::var("MOLT_TRACE_GENERATOR_STATE").ok().as_deref(),
             Some("1")
@@ -495,7 +495,7 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "expected generator");
         };
@@ -724,7 +724,7 @@ unsafe fn generator_raise_from_pending(_py: &PyToken<'_>, ptr: *mut u8, exc_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "expected generator");
         };
@@ -864,7 +864,7 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_next_method(gen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let res = molt_generator_send(gen_bits, MoltObject::none().bits());
         if exception_pending(_py) {
             return res;
@@ -875,7 +875,7 @@ pub extern "C" fn molt_generator_next_method(gen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_send_method(gen_bits: u64, send_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let res = molt_generator_send(gen_bits, send_bits);
         if exception_pending(_py) {
             return res;
@@ -886,7 +886,7 @@ pub extern "C" fn molt_generator_send_method(gen_bits: u64, send_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_throw_method(gen_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "expected generator");
         };
@@ -950,7 +950,7 @@ unsafe fn throw_arg_is_generator_exit(_py: &PyToken<'_>, exc_bits: u64) -> bool 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_close_method(gen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let res = molt_generator_close(gen_bits);
         if exception_pending(_py) {
             return res;
@@ -961,7 +961,7 @@ pub extern "C" fn molt_generator_close_method(gen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_coroutine_close_method(coro_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(coro_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -1291,7 +1291,7 @@ unsafe fn asyncgen_future_new(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_new(gen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "expected generator");
         };
@@ -1319,7 +1319,7 @@ pub extern "C" fn molt_asyncgen_new(gen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_hooks_get() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hooks = runtime_state(_py).asyncgen_hooks.lock().unwrap();
         let ptr = alloc_tuple(_py, &[hooks.firstiter, hooks.finalizer]);
         if ptr.is_null() {
@@ -1332,7 +1332,7 @@ pub extern "C" fn molt_asyncgen_hooks_get() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_hooks_set(firstiter_bits: u64, finalizer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let first_obj = obj_from_bits(firstiter_bits);
         if !first_obj.is_none() {
             let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(firstiter_bits)));
@@ -1376,7 +1376,7 @@ pub extern "C" fn molt_asyncgen_locals_register(
     names_bits: u64,
     offsets_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if fn_ptr == 0 {
             return MoltObject::none().bits();
         }
@@ -1461,7 +1461,7 @@ pub extern "C" fn molt_asyncgen_locals_register(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_locals(asyncgen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let empty_dict = || {
             let ptr = alloc_dict_with_pairs(_py, &[]);
             if ptr.is_null() {
@@ -1540,7 +1540,7 @@ pub extern "C" fn molt_asyncgen_locals(asyncgen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gen_locals_register(fn_ptr: u64, names_bits: u64, offsets_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if fn_ptr == 0 {
             return MoltObject::none().bits();
         }
@@ -1676,7 +1676,7 @@ pub(crate) unsafe fn generator_locals_dict(_py: &PyToken<'_>, gen_ptr: *mut u8) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gen_locals(gen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not a Python generator");
         };
@@ -1693,7 +1693,7 @@ pub extern "C" fn molt_gen_locals(gen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_aiter(asyncgen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "expected async generator");
         };
@@ -1709,7 +1709,7 @@ pub extern "C" fn molt_asyncgen_aiter(asyncgen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_anext(asyncgen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "expected async generator");
@@ -1732,7 +1732,7 @@ pub extern "C" fn molt_asyncgen_anext(asyncgen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_asend(asyncgen_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "expected async generator");
@@ -1750,7 +1750,7 @@ pub extern "C" fn molt_asyncgen_asend(asyncgen_bits: u64, val_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_athrow(asyncgen_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "expected async generator");
@@ -1768,7 +1768,7 @@ pub extern "C" fn molt_asyncgen_athrow(asyncgen_bits: u64, exc_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_aclose(asyncgen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "expected async generator");
         };
@@ -1794,7 +1794,7 @@ pub extern "C" fn molt_asyncgen_aclose(asyncgen_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncgen_shutdown() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace = asyncgen_shutdown_trace_enabled();
         let prior_exc_bits = if exception_pending(_py) {
             let exc_bits = molt_exception_last();
@@ -1845,7 +1845,7 @@ pub extern "C" fn molt_asyncgen_shutdown() -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             struct PendingExceptionGuard<'a> {
                 py: &'a PyToken<'a>,
                 prior_bits: Option<u64>,

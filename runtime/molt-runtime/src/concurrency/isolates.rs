@@ -357,7 +357,7 @@ fn log_thread_exception(_py: &PyToken<'_>) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run_thread_payload(payload: Vec<u8>) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_ptr = alloc_string(_py, b"threading");
         if module_ptr.is_null() {
             return;
@@ -398,7 +398,7 @@ fn run_thread_payload(payload: Vec<u8>) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run_thread_payload_shared(token: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let entry = {
             let mut calls = SHARED_THREAD_CALLS.lock().unwrap();
             calls.remove(&token)
@@ -439,7 +439,7 @@ fn thread_main(payload: Vec<u8>, handle: Arc<MoltThreadHandle>) {
         runtime_reset_for_init(&py, unsafe { &*state_ptr });
     });
     if setup.is_ok() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let _ = molt_isolate_bootstrap();
             }
@@ -508,7 +508,7 @@ pub(crate) fn configured_thread_stack_size() -> Option<usize> {
 /// # Safety
 /// `payload_bits` must reference a valid thread payload tuple allocated by this runtime.
 pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "thread") || has_capability(_py, "thread.spawn");
         audit_capability_decision("thread.spawn", "thread", AuditArgs::None, allowed);
         if !allowed {
@@ -571,7 +571,7 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "thread") || has_capability(_py, "thread.spawn");
         audit_capability_decision("thread.spawn_shared", "thread", AuditArgs::None, allowed);
         if !allowed {
@@ -637,7 +637,7 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
 /// `handle_bits` must be a live thread handle created by `molt_thread_spawn` and `timeout_bits`
 /// must be either `None` or a numeric timeout object.
 pub unsafe extern "C" fn molt_thread_join(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -662,7 +662,7 @@ pub unsafe extern "C" fn molt_thread_join(handle_bits: u64, timeout_bits: u64) -
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
 pub unsafe extern "C" fn molt_thread_is_alive(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -676,7 +676,7 @@ pub unsafe extern "C" fn molt_thread_is_alive(handle_bits: u64) -> u64 {
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
 pub unsafe extern "C" fn molt_thread_ident(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -694,7 +694,7 @@ pub unsafe extern "C" fn molt_thread_ident(handle_bits: u64) -> u64 {
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
 pub unsafe extern "C" fn molt_thread_native_id(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -726,7 +726,7 @@ pub extern "C" fn molt_thread_current_native_id() -> u64 {
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while runtime state is valid.
 pub unsafe extern "C" fn molt_thread_stack_size_get() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let size = THREAD_STACK_SIZE_BYTES.load(AtomicOrdering::Acquire);
         MoltObject::from_int(size as i64).bits()
     })
@@ -737,7 +737,7 @@ pub unsafe extern "C" fn molt_thread_stack_size_get() -> u64 {
 /// # Safety
 /// `size_bits` must be an integer object representing the requested stack size.
 pub unsafe extern "C" fn molt_thread_stack_size_set(size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(size_i64) = to_i64(obj_from_bits(size_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "size must be 0 or a positive integer");
         };
@@ -760,7 +760,7 @@ pub unsafe extern "C" fn molt_thread_stack_size_set(size_bits: u64) -> u64 {
 /// `handle_bits` must be a live thread handle created by this runtime and not already dropped.
 pub unsafe extern "C" fn molt_thread_drop(handle_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -777,7 +777,7 @@ pub unsafe extern "C" fn molt_thread_drop(handle_bits: u64) -> u64 {
 /// # Safety
 /// `name_bits` must be a string object and `daemon_bits` must be a truthy-capable object.
 pub unsafe extern "C" fn molt_thread_registry_set_main(name_bits: u64, daemon_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "thread name must be str");
         };
@@ -798,7 +798,7 @@ pub unsafe extern "C" fn molt_thread_registry_register(
     name_bits: u64,
     daemon_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid thread handle");
         };
@@ -822,7 +822,7 @@ pub unsafe extern "C" fn molt_thread_registry_register(
 /// # Safety
 /// `token_bits` must be an integer object produced by this runtime.
 pub unsafe extern "C" fn molt_thread_registry_forget(token_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(token_i64) = to_i64(obj_from_bits(token_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "thread token must be an integer");
         };
@@ -853,7 +853,7 @@ pub unsafe extern "C" fn molt_thread_registry_forget(token_bits: u64) -> u64 {
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.
 pub unsafe extern "C" fn molt_thread_registry_snapshot() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut tuple_bits = Vec::new();
         {
             let mut registry = THREAD_REGISTRY.lock().unwrap();
@@ -921,7 +921,7 @@ pub unsafe extern "C" fn molt_thread_registry_snapshot() -> u64 {
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.
 pub unsafe extern "C" fn molt_thread_registry_current() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let current_ident = current_thread_id();
         let mut fallback = (
             "MainThread".to_string(),
@@ -994,7 +994,7 @@ pub unsafe extern "C" fn molt_thread_registry_current() -> u64 {
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.
 pub unsafe extern "C" fn molt_thread_registry_active_count() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let current_ident = current_thread_id();
         let mut count: usize = 1;
         {
@@ -1045,7 +1045,7 @@ pub extern "C" fn molt_thread_registry_forget(_token_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_registry_snapshot() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_ptr = alloc_list(_py, &[]);
         if list_ptr.is_null() {
             MoltObject::none().bits()
@@ -1070,7 +1070,7 @@ pub extern "C" fn molt_thread_registry_active_count() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_spawn(_payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<_>(
             _py,
             "NotImplementedError",
@@ -1087,7 +1087,7 @@ pub extern "C" fn molt_thread_spawn_shared(
     _args_bits: u64,
     _kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<_>(
             _py,
             "NotImplementedError",

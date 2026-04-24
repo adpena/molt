@@ -170,7 +170,7 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
 /// lookup on the registry misses.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_intrinsic_resolve(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace = matches!(
             std::env::var("MOLT_TRACE_REQUIRE_INTRINSIC")
                 .ok()
@@ -595,7 +595,7 @@ pub(crate) fn test_manifest_ptr() -> &'static AtomicPtr<u8> {
 /// `src/molt/stdlib/_intrinsics.py`; resolution is runtime-global today.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = namespace_bits;
         let trace = matches!(
             std::env::var("MOLT_TRACE_REQUIRE_INTRINSIC")
@@ -667,7 +667,7 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = namespace_bits;
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
@@ -700,7 +700,7 @@ pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_active_runtime() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
 }
 
 #[cfg(test)]
@@ -713,7 +713,7 @@ mod tests {
         let _guard = crate::TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             register_intrinsics_module(_py);
 
             let module_name_ptr = alloc_string(_py, b"_intrinsics");

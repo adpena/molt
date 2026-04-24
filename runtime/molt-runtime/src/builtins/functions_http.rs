@@ -490,7 +490,7 @@ fn urllib_attr_truthy(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> R
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ctypes_require_ffi() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = crate::has_capability(_py, "ffi.unsafe");
         audit_capability_decision("ffi.require", "ffi.unsafe", AuditArgs::None, allowed);
         if !allowed {
@@ -506,7 +506,7 @@ pub extern "C" fn molt_ctypes_require_ffi() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = crate::has_capability(_py, "ffi.unsafe");
         audit_capability_decision("ffi.coerce_value", "ffi.unsafe", AuditArgs::None, allowed);
         if !allowed {
@@ -549,7 +549,7 @@ pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = crate::has_capability(_py, "ffi.unsafe");
         audit_capability_decision("ffi.default_value", "ffi.unsafe", AuditArgs::None, allowed);
         if !allowed {
@@ -589,7 +589,7 @@ pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ctypes_sizeof(obj_or_type_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = crate::has_capability(_py, "ffi.unsafe");
         audit_capability_decision("ffi.sizeof", "ffi.unsafe", AuditArgs::None, allowed);
         if !allowed {
@@ -3561,7 +3561,7 @@ fn urllib_raise_http_error(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "string must be str");
         };
@@ -3580,7 +3580,7 @@ pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "string must be str");
         };
@@ -3599,7 +3599,7 @@ pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_unquote(string_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "string must be str");
         };
@@ -3615,7 +3615,7 @@ pub extern "C" fn molt_urllib_unquote(string_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_unquote_plus(string_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "string must be str");
         };
@@ -3635,7 +3635,7 @@ pub extern "C" fn molt_urllib_parse_qsl(
     keep_blank_values_bits: u64,
     strict_parsing_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(qs) = string_obj_to_owned(obj_from_bits(qs_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "qs must be str");
         };
@@ -3655,7 +3655,7 @@ pub extern "C" fn molt_urllib_parse_qs(
     keep_blank_values_bits: u64,
     strict_parsing_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(qs) = string_obj_to_owned(obj_from_bits(qs_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "qs must be str");
         };
@@ -3679,7 +3679,7 @@ pub extern "C" fn molt_urllib_parse_qs(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_urlencode(query_bits: u64, doseq_bits: u64, safe_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let doseq = is_truthy(_py, obj_from_bits(doseq_bits));
         let Some(safe) = string_obj_to_owned(obj_from_bits(safe_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "safe must be str");
@@ -3703,7 +3703,7 @@ pub extern "C" fn molt_urllib_urlsplit(
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "url must be str");
         };
@@ -3722,7 +3722,7 @@ pub extern "C" fn molt_http_client_urlsplit(
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "url must be str");
         };
@@ -3741,7 +3741,7 @@ pub extern "C" fn molt_urllib_urlparse(
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "url must be str");
         };
@@ -3762,7 +3762,7 @@ pub extern "C" fn molt_urllib_urlunsplit(
     query_bits: u64,
     fragment_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "scheme must be str");
         };
@@ -3797,7 +3797,7 @@ pub extern "C" fn molt_urllib_urlunparse(
     query_bits: u64,
     fragment_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "scheme must be str");
         };
@@ -3832,7 +3832,7 @@ pub extern "C" fn molt_urllib_urlunparse(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_urldefrag(url_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "url must be str");
         };
@@ -3847,7 +3847,7 @@ pub extern "C" fn molt_urllib_urldefrag(url_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_urljoin(base_bits: u64, url_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(base) = string_obj_to_owned(obj_from_bits(base_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "base must be str");
         };
@@ -3912,7 +3912,7 @@ pub extern "C" fn molt_urllib_urljoin(base_bits: u64, url_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_cookiejar_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = cookiejar_store_new() else {
             return raise_exception::<_>(_py, "RuntimeError", "cookie jar allocation failed");
         };
@@ -3922,7 +3922,7 @@ pub extern "C" fn molt_http_cookiejar_new() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_cookiejar_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
         };
@@ -3935,7 +3935,7 @@ pub extern "C" fn molt_http_cookiejar_len(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_cookiejar_clear(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
         };
@@ -3954,7 +3954,7 @@ pub extern "C" fn molt_http_cookiejar_extract(
     request_url_bits: u64,
     headers_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
         };
@@ -3975,7 +3975,7 @@ pub extern "C" fn molt_http_cookiejar_header_for_url(
     handle_bits: u64,
     request_url_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
         };
@@ -3994,7 +3994,7 @@ pub extern "C" fn molt_http_cookiejar_header_for_url(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_cookies_parse(cookie_header_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(cookie_header) = string_obj_to_owned(obj_from_bits(cookie_header_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "cookie header must be str");
         };
@@ -4016,7 +4016,7 @@ pub extern "C" fn molt_http_cookies_render_morsel(
     max_age_bits: u64,
     expires_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let out = http_cookies_render_morsel_impl(
             _py,
             HttpCookieMorselInput {
@@ -4042,7 +4042,7 @@ pub extern "C" fn molt_urllib_error_urlerror_init(
     reason_bits: u64,
     filename_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !urllib_error_init_args(_py, self_bits, &[reason_bits]) {
             return MoltObject::none().bits();
         }
@@ -4060,7 +4060,7 @@ pub extern "C" fn molt_urllib_error_urlerror_init(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_error_urlerror_str(reason_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let reason_text = crate::format_obj_str(_py, obj_from_bits(reason_bits));
         let out = format!("<urlopen error {reason_text}>");
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -4081,7 +4081,7 @@ pub extern "C" fn molt_urllib_error_httperror_init(
     hdrs_bits: u64,
     fp_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // CPython's urllib.error.HTTPError does not populate BaseException.args
         // with constructor values in this path; normalize args to ().
         if !urllib_error_init_args(_py, self_bits, &[]) {
@@ -4102,7 +4102,7 @@ pub extern "C" fn molt_urllib_error_httperror_init(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_error_httperror_str(code_bits: u64, msg_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let code_text = crate::format_obj_str(_py, obj_from_bits(code_bits));
         let msg_text = crate::format_obj_str(_py, obj_from_bits(msg_bits));
         let out = format!("HTTP Error {code_text}: {msg_text}");
@@ -4121,7 +4121,7 @@ pub extern "C" fn molt_urllib_error_content_too_short_init(
     msg_bits: u64,
     content_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !urllib_error_init_args(_py, self_bits, &[msg_bits]) {
             return MoltObject::none().bits();
         }
@@ -4136,7 +4136,7 @@ pub extern "C" fn molt_urllib_error_content_too_short_init(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_register(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut runtime = socketserver_runtime()
             .lock()
             .expect("socketserver runtime poisoned");
@@ -4148,7 +4148,7 @@ pub extern "C" fn molt_socketserver_register(server_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_unregister(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut runtime = socketserver_runtime()
             .lock()
             .expect("socketserver runtime poisoned");
@@ -4165,7 +4165,7 @@ pub extern "C" fn molt_socketserver_unregister(server_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_dispatch_begin(server_bits: u64, request_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let request = match socketserver_extract_bytes(_py, request_bits, "request payload") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -4197,7 +4197,7 @@ pub extern "C" fn molt_socketserver_dispatch_begin(server_bits: u64, request_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_dispatch_poll(server_bits: u64, request_id_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let request_id = match socketserver_extract_request_id(_py, request_id_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -4230,7 +4230,7 @@ pub extern "C" fn molt_socketserver_dispatch_poll(server_bits: u64, request_id_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_dispatch_cancel(server_bits: u64, request_id_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let request_id = match socketserver_extract_request_id(_py, request_id_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -4249,7 +4249,7 @@ pub extern "C" fn molt_socketserver_dispatch_cancel(server_bits: u64, request_id
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_get_request_poll(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut runtime = socketserver_runtime()
             .lock()
             .expect("socketserver runtime poisoned");
@@ -4287,7 +4287,7 @@ pub extern "C" fn molt_socketserver_set_response(
     request_id_bits: u64,
     response_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let request_id = match socketserver_extract_request_id(_py, request_id_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -4319,7 +4319,7 @@ pub extern "C" fn molt_socketserver_serve_forever(
     server_bits: u64,
     poll_interval_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let poll_interval = to_f64(obj_from_bits(poll_interval_bits))
             .unwrap_or(0.5)
             .max(0.0);
@@ -4422,7 +4422,7 @@ pub extern "C" fn molt_socketserver_serve_forever(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(get_request_name_bits) = attr_name_bits_from_bytes(_py, b"get_request") else {
             return MoltObject::none().bits();
         };
@@ -4689,7 +4689,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_shutdown(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !urllib_request_set_attr(
             _py,
             server_bits,
@@ -4880,7 +4880,7 @@ fn http_server_compute_close_connection_impl(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_server_read_request(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match http_server_read_request_impl(_py, handler_bits) {
             Ok(state) => MoltObject::from_int(state).bits(),
             Err(bits) => bits,
@@ -4890,7 +4890,7 @@ pub extern "C" fn molt_http_server_read_request(handler_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_server_compute_close_connection(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match http_server_compute_close_connection_impl(_py, handler_bits) {
             Ok(close) => MoltObject::from_bool(close).bits(),
             Err(bits) => bits,
@@ -4900,7 +4900,7 @@ pub extern "C" fn molt_http_server_compute_close_connection(handler_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_server_handle_one_request(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match http_server_handle_one_request_impl(_py, handler_bits) {
             Ok(keep_running) => MoltObject::from_bool(keep_running).bits(),
             Err(bits) => bits,
@@ -4914,7 +4914,7 @@ pub extern "C" fn molt_http_server_send_response(
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "code must be int");
         };
@@ -4936,7 +4936,7 @@ pub extern "C" fn molt_http_server_send_response_only(
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "code must be int");
         };
@@ -4958,7 +4958,7 @@ pub extern "C" fn molt_http_server_send_header(
     keyword_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let keyword = crate::format_obj_str(_py, obj_from_bits(keyword_bits));
         let value = crate::format_obj_str(_py, obj_from_bits(value_bits));
         match http_server_send_header_impl(_py, handler_bits, &keyword, &value) {
@@ -4970,7 +4970,7 @@ pub extern "C" fn molt_http_server_send_header(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_server_end_headers(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match http_server_end_headers_impl(_py, handler_bits) {
             Ok(()) => MoltObject::none().bits(),
             Err(bits) => bits,
@@ -4984,7 +4984,7 @@ pub extern "C" fn molt_http_server_send_error(
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "code must be int");
         };
@@ -5005,7 +5005,7 @@ pub extern "C" fn molt_http_server_version_string(
     server_version_bits: u64,
     sys_version_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let server_version = crate::format_obj_str(_py, obj_from_bits(server_version_bits));
         let sys_version = if obj_from_bits(sys_version_bits).is_none() {
             String::new()
@@ -5022,7 +5022,7 @@ pub extern "C" fn molt_http_server_version_string(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_server_date_time_string(timestamp_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let out = match http_server_date_time_string_from_bits(_py, timestamp_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5036,7 +5036,7 @@ pub extern "C" fn molt_http_server_date_time_string(timestamp_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_status_reason(code_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "status code must be int");
         };
@@ -5051,7 +5051,7 @@ pub extern "C" fn molt_http_status_reason(code_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_status_constants() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let entries = http_status_constants();
         let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
         let mut owned_bits: Vec<u64> = Vec::with_capacity(entries.len() * 2);
@@ -5083,7 +5083,7 @@ pub extern "C" fn molt_http_status_constants() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_status_responses() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let entries = http_status_constants();
         let mut seen_codes: HashSet<i64> = HashSet::new();
         let mut pairs: Vec<u64> = Vec::new();
@@ -5125,7 +5125,7 @@ pub extern "C" fn molt_urllib_request_request_init(
     headers_bits: u64,
     method_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let url_text = crate::format_obj_str(_py, obj_from_bits(url_bits));
         let url_ptr = alloc_string(_py, url_text.as_bytes());
         if url_ptr.is_null() {
@@ -5153,7 +5153,7 @@ pub extern "C" fn molt_urllib_request_request_init(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_opener_init(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_ptr = alloc_list_with_capacity(_py, &[], 0);
         if list_ptr.is_null() {
             return MoltObject::none().bits();
@@ -5170,7 +5170,7 @@ pub extern "C" fn molt_urllib_request_opener_init(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_add_handler(opener_bits: u64, handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_bits = match urllib_request_ensure_handlers_list(_py, opener_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
@@ -5208,7 +5208,7 @@ pub extern "C" fn molt_urllib_request_add_handler(opener_bits: u64, handler_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut owned_request_refs: Vec<u64> = Vec::new();
         let out_bits = (|| -> u64 {
             let mut active_request_bits = request_bits;
@@ -5642,7 +5642,7 @@ pub extern "C" fn molt_urllib_request_process_http_error(
     request_bits: u64,
     response_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match urllib_request_response_handle_from_bits(_py, response_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5667,7 +5667,7 @@ pub extern "C" fn molt_urllib_request_process_http_error(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_read(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -5747,7 +5747,7 @@ fn urllib_response_readinto_len(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -5854,7 +5854,7 @@ fn urllib_response_seek_pos(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_readline(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -5884,7 +5884,7 @@ pub extern "C" fn molt_urllib_request_response_readline(handle_bits: u64, size_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -5961,7 +5961,7 @@ pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_readable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -5982,7 +5982,7 @@ pub extern "C" fn molt_urllib_request_response_readable(handle_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_writable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6003,7 +6003,7 @@ pub extern "C" fn molt_urllib_request_response_writable(handle_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_seekable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6024,7 +6024,7 @@ pub extern "C" fn molt_urllib_request_response_seekable(handle_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_tell(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6056,7 +6056,7 @@ pub extern "C" fn molt_urllib_request_response_seek(
     offset_bits: u64,
     whence_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6095,7 +6095,7 @@ pub extern "C" fn molt_urllib_request_response_seek(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6110,7 +6110,7 @@ pub extern "C" fn molt_urllib_request_response_close(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6121,7 +6121,7 @@ pub extern "C" fn molt_urllib_request_response_drop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_geturl(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6144,7 +6144,7 @@ pub extern "C" fn molt_urllib_request_response_geturl(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_getcode(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6161,7 +6161,7 @@ pub extern "C" fn molt_urllib_request_response_getcode(handle_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_getreason(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6191,7 +6191,7 @@ pub extern "C" fn molt_urllib_request_response_getheader(
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6222,7 +6222,7 @@ pub extern "C" fn molt_urllib_request_response_getheader(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_getheaders(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6240,7 +6240,7 @@ pub extern "C" fn molt_urllib_request_response_getheaders(handle_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_getheaders_list(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6268,7 +6268,7 @@ fn urllib_response_message_bits(_py: &crate::PyToken<'_>, handle: i64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_message(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
@@ -6278,7 +6278,7 @@ pub extern "C" fn molt_urllib_request_response_message(handle_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_parse_header_pairs(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match socketserver_extract_bytes(_py, data_bits, "header data") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6293,7 +6293,7 @@ pub extern "C" fn molt_http_parse_header_pairs(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_message_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = http_message_store_new() else {
             return MoltObject::none().bits();
         };
@@ -6303,7 +6303,7 @@ pub extern "C" fn molt_http_message_new() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_message_parse(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match socketserver_extract_bytes(_py, data_bits, "header data") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6322,7 +6322,7 @@ pub extern "C" fn molt_http_message_set_raw(
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6344,7 +6344,7 @@ pub extern "C" fn molt_http_message_get(
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6381,7 +6381,7 @@ pub extern "C" fn molt_http_message_get(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6407,7 +6407,7 @@ pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_message_items(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6435,7 +6435,7 @@ pub extern "C" fn molt_http_message_items(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6452,7 +6452,7 @@ pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_message_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6467,7 +6467,7 @@ pub extern "C" fn molt_http_message_len(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_message_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6483,7 +6483,7 @@ pub extern "C" fn molt_http_client_connection_new(
     port_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(host) = string_obj_to_owned(obj_from_bits(host_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "host must be str");
         };
@@ -6518,7 +6518,7 @@ pub extern "C" fn molt_http_client_connection_putrequest(
     skip_host_bits: u64,
     skip_accept_encoding_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6555,7 +6555,7 @@ pub extern "C" fn molt_http_client_connection_putheader(
     header_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6583,7 +6583,7 @@ pub extern "C" fn molt_http_client_connection_putheader(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_connection_endheaders(handle_bits: u64, body_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6634,7 +6634,7 @@ pub extern "C" fn molt_http_client_connection_endheaders(handle_bits: u64, body_
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_connection_send(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6667,7 +6667,7 @@ pub extern "C" fn molt_http_client_connection_request(
     body_bits: u64,
     headers_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6722,7 +6722,7 @@ pub extern "C" fn molt_http_client_connection_request(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6782,7 +6782,7 @@ pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_connection_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6798,7 +6798,7 @@ pub extern "C" fn molt_http_client_connection_close(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_connection_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6810,7 +6810,7 @@ pub extern "C" fn molt_http_client_connection_drop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_connection_get_buffer(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6832,7 +6832,7 @@ pub extern "C" fn molt_http_client_execute(
     headers_bits: u64,
     body_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(host) = string_obj_to_owned(obj_from_bits(host_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "host must be str");
         };
@@ -6906,7 +6906,7 @@ pub extern "C" fn molt_http_client_response_drop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_response_getstatus(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6921,7 +6921,7 @@ pub extern "C" fn molt_http_client_response_getstatus(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_response_getreason(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6949,7 +6949,7 @@ pub extern "C" fn molt_http_client_response_getheader(
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6983,7 +6983,7 @@ pub extern "C" fn molt_http_client_response_getheader(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_response_getheaders(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -7002,7 +7002,7 @@ pub extern "C" fn molt_http_client_response_getheaders(handle_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_client_response_message(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,

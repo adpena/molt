@@ -319,7 +319,7 @@ fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_index(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let err = format!(
             "'{}' object cannot be interpreted as an integer",
             type_name(_py, obj_from_bits(obj_bits))
@@ -333,7 +333,7 @@ pub extern "C" fn molt_operator_index(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter_init(self_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let items_obj = obj_from_bits(items_bits);
         let Some(items_ptr) = items_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -372,7 +372,7 @@ pub extern "C" fn molt_operator_itemgetter_init(self_bits: u64, items_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_attrgetter_init(self_bits: u64, attrs_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let attrs_obj = obj_from_bits(attrs_bits);
         let Some(attrs_ptr) = attrs_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -432,7 +432,7 @@ pub extern "C" fn molt_operator_methodcaller_init(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "methodcaller() name must be str");
@@ -461,7 +461,7 @@ pub extern "C" fn molt_operator_methodcaller_init(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter(items_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let items_obj = obj_from_bits(items_bits);
         let Some(items_ptr) = items_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -506,12 +506,12 @@ pub extern "C" fn molt_operator_itemgetter(items_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter_type() -> u64 {
-    crate::with_gil_entry!(_py, { itemgetter_class(_py) })
+    crate::with_gil_entry_nopanic!(_py, { itemgetter_class(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let attrs_obj = obj_from_bits(attrs_bits);
         let Some(attrs_ptr) = attrs_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -572,7 +572,7 @@ pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_attrgetter_type() -> u64 {
-    crate::with_gil_entry!(_py, { attrgetter_class(_py) })
+    crate::with_gil_entry_nopanic!(_py, { attrgetter_class(_py) })
 }
 
 #[unsafe(no_mangle)]
@@ -581,7 +581,7 @@ pub extern "C" fn molt_operator_methodcaller(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "methodcaller() name must be str");
@@ -616,12 +616,12 @@ pub extern "C" fn molt_operator_methodcaller(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_methodcaller_type() -> u64 {
-    crate::with_gil_entry!(_py, { methodcaller_class(_py) })
+    crate::with_gil_entry_nopanic!(_py, { methodcaller_class(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter_call(self_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let items_bits = unsafe { itemgetter_items_bits(self_ptr) };
         let items_ptr = obj_from_bits(items_bits).as_ptr();
@@ -702,7 +702,7 @@ fn resolve_attr_path(_py: &PyToken<'_>, obj_bits: u64, name: &str) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_attrgetter_call(self_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let attrs_bits = unsafe { attrgetter_attrs_bits(self_ptr) };
         let attrs_ptr = obj_from_bits(attrs_bits).as_ptr();
@@ -748,7 +748,7 @@ pub extern "C" fn molt_operator_attrgetter_call(self_bits: u64, obj_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_methodcaller_call(self_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let name_bits = unsafe { methodcaller_name_bits(self_ptr) };
         let args_bits = unsafe { methodcaller_args_bits(self_ptr) };
@@ -919,7 +919,7 @@ pub extern "C" fn molt_operator_xor(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_neg(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
         if let Some(i) = to_i64(obj) {
             return int_bits_from_i128(_py, -(i as i128));
@@ -966,7 +966,7 @@ pub extern "C" fn molt_operator_neg(val: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_pos(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
         if let Some(i) = to_i64(obj) {
             return MoltObject::from_int(i).bits();
@@ -1017,7 +1017,7 @@ pub extern "C" fn molt_operator_invert(val: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_not(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let truthy = molt_is_truthy(val) != 0;
         MoltObject::from_bool(!truthy).bits()
     })
@@ -1025,7 +1025,7 @@ pub extern "C" fn molt_operator_not(val: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_truth(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let truthy = molt_is_truthy(val) != 0;
         MoltObject::from_bool(truthy).bits()
     })
@@ -1093,7 +1093,7 @@ pub extern "C" fn molt_operator_delitem(obj_bits: u64, key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_countof(container_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter_checked(container_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1135,7 +1135,7 @@ pub extern "C" fn molt_operator_countof(container_bits: u64, value_bits: u64) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         if let Some(ptr) = obj.as_ptr() {
             let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__length_hint__") else {

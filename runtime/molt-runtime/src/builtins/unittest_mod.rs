@@ -69,7 +69,7 @@ thread_local! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let id = next_handle_id();
         RESULTS.with(|m| m.borrow_mut().insert(id, TestResultState::new()));
         int_bits_from_i64(_py, id)
@@ -78,7 +78,7 @@ pub extern "C" fn molt_unittest_result_new() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_tests_run(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             match m.borrow().get(&handle) {
@@ -91,7 +91,7 @@ pub extern "C" fn molt_unittest_result_tests_run(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_start_test(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             if let Some(s) = m.borrow_mut().get_mut(&handle) {
@@ -104,7 +104,7 @@ pub extern "C" fn molt_unittest_result_start_test(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_add_failure(handle_bits: u64, test_bits: u64, err_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let test = string_obj_to_owned(obj_from_bits(test_bits)).unwrap_or_default();
         let err = string_obj_to_owned(obj_from_bits(err_bits)).unwrap_or_default();
@@ -119,7 +119,7 @@ pub extern "C" fn molt_unittest_result_add_failure(handle_bits: u64, test_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_add_error(handle_bits: u64, test_bits: u64, err_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let test = string_obj_to_owned(obj_from_bits(test_bits)).unwrap_or_default();
         let err = string_obj_to_owned(obj_from_bits(err_bits)).unwrap_or_default();
@@ -134,7 +134,7 @@ pub extern "C" fn molt_unittest_result_add_error(handle_bits: u64, test_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_add_skip(handle_bits: u64, test_bits: u64, reason_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let test = string_obj_to_owned(obj_from_bits(test_bits)).unwrap_or_default();
         let reason = string_obj_to_owned(obj_from_bits(reason_bits)).unwrap_or_default();
@@ -149,7 +149,7 @@ pub extern "C" fn molt_unittest_result_add_skip(handle_bits: u64, test_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_add_expected_failure(handle_bits: u64, test_bits: u64, err_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let test = string_obj_to_owned(obj_from_bits(test_bits)).unwrap_or_default();
         let err = string_obj_to_owned(obj_from_bits(err_bits)).unwrap_or_default();
@@ -164,7 +164,7 @@ pub extern "C" fn molt_unittest_result_add_expected_failure(handle_bits: u64, te
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_add_unexpected_success(handle_bits: u64, test_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let test = string_obj_to_owned(obj_from_bits(test_bits)).unwrap_or_default();
         RESULTS.with(|m| {
@@ -178,7 +178,7 @@ pub extern "C" fn molt_unittest_result_add_unexpected_success(handle_bits: u64, 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_was_successful(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             match m.borrow().get(&handle) {
@@ -191,7 +191,7 @@ pub extern "C" fn molt_unittest_result_was_successful(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_stop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             if let Some(s) = m.borrow_mut().get_mut(&handle) {
@@ -204,7 +204,7 @@ pub extern "C" fn molt_unittest_result_stop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_should_stop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             match m.borrow().get(&handle) {
@@ -217,7 +217,7 @@ pub extern "C" fn molt_unittest_result_should_stop(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_failures_count(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             match m.borrow().get(&handle) {
@@ -230,7 +230,7 @@ pub extern "C" fn molt_unittest_result_failures_count(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_errors_count(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             match m.borrow().get(&handle) {
@@ -243,7 +243,7 @@ pub extern "C" fn molt_unittest_result_errors_count(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_skipped_count(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             match m.borrow().get(&handle) {
@@ -256,7 +256,7 @@ pub extern "C" fn molt_unittest_result_skipped_count(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_result_summary(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         RESULTS.with(|m| {
             match m.borrow().get(&handle) {
@@ -289,7 +289,7 @@ pub extern "C" fn molt_unittest_result_drop(handle_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_format_failure(first_bits: u64, second_bits: u64, msg_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let first = string_obj_to_owned(obj_from_bits(first_bits)).unwrap_or_else(|| "None".to_string());
         let second = string_obj_to_owned(obj_from_bits(second_bits)).unwrap_or_else(|| "None".to_string());
         let msg_obj = obj_from_bits(msg_bits);
@@ -305,7 +305,7 @@ pub extern "C" fn molt_unittest_format_failure(first_bits: u64, second_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unittest_safe_repr(obj_bits: u64, short_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text = string_obj_to_owned(obj_from_bits(obj_bits)).unwrap_or_else(|| "None".to_string());
         let short = is_truthy(_py, obj_from_bits(short_bits));
         let result = if short && text.len() > 80 {
@@ -322,7 +322,7 @@ pub extern "C" fn molt_unittest_count_diff_all_purpose(
     first_bits: u64,
     second_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let first = string_obj_to_owned(obj_from_bits(first_bits)).unwrap_or_default();
         let second = string_obj_to_owned(obj_from_bits(second_bits)).unwrap_or_default();
         if first == second {

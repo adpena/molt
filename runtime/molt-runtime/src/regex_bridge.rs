@@ -18,7 +18,7 @@ pub extern "C" fn __molt_regex_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -30,7 +30,7 @@ pub extern "C" fn __molt_regex_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ pub extern "C" fn __molt_regex_exception_pending() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
     })
@@ -47,7 +47,7 @@ pub extern "C" fn __molt_regex_alloc_tuple(elems_ptr: *const u64, elems_len: usi
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
     })
@@ -55,7 +55,7 @@ pub extern "C" fn __molt_regex_alloc_list(elems_ptr: *const u64, elems_len: usiz
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -66,7 +66,7 @@ pub extern "C" fn __molt_regex_alloc_dict_with_pairs(
     pairs_ptr: *const u64,
     pairs_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
     })
@@ -105,7 +105,7 @@ pub extern "C" fn __molt_regex_string_obj_to_owned(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
     })
@@ -117,14 +117,14 @@ pub extern "C" fn __molt_regex_is_truthy(bits: u64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, bits);
     })
 }
@@ -157,7 +157,7 @@ pub extern "C" fn __molt_regex_dict_get_in_place(
     key_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
                 unsafe {
@@ -176,7 +176,7 @@ pub extern "C" fn __molt_regex_dict_set_in_place(
     key_bits: u64,
     val_bits: u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) };
         1
     })
@@ -194,7 +194,7 @@ pub extern "C" fn __molt_regex_dict_order_clone(
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let order = unsafe { dict_order(ptr) }.clone();
         if order.is_empty() {
             return 0;
@@ -224,7 +224,7 @@ pub extern "C" fn __molt_regex_molt_iter_next(iter_bits: u64, out: *mut u64) -> 
     let result = crate::object::ops_iter::molt_iter_next(iter_bits);
     let none_bits = MoltObject::none().bits();
     if result == none_bits {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if exception_pending(_py) {
                 0 // StopIteration or error
             } else {
@@ -252,7 +252,7 @@ pub extern "C" fn __molt_regex_attr_name_bits_from_bytes(
     key_ptr: *const u8,
     key_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         crate::builtins::attr::attr_name_bits_from_bytes(_py, key).unwrap_or_default()
     })
@@ -260,7 +260,7 @@ pub extern "C" fn __molt_regex_attr_name_bits_from_bytes(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_call_callable1(call_bits: u64, arg0: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { crate::call::dispatch::call_callable1(_py, call_bits, arg0) }
     })
 }

@@ -2607,7 +2607,7 @@ mod tests {
             std::env::set_var("MOLT_ASSERT_NO_PENDING_ON_SUCCESS", "1");
         }
         let _guard = EnvGuard("MOLT_ASSERT_NO_PENDING_ON_SUCCESS");
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let kind_bits = string_bits("RuntimeError");
             let msg_bits = string_bits("stale pending");
             let args_list = crate::molt_list_builtin(crate::molt_missing());

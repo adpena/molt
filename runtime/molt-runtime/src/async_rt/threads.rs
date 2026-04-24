@@ -254,7 +254,7 @@ pub unsafe extern "C" fn molt_thread_submit(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let future_bits = molt_future_new(thread_poll_fn_addr(), 0);
         let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
             return MoltObject::none().bits();
@@ -291,7 +291,7 @@ pub unsafe extern "C" fn molt_thread_submit(
     _args_bits: u64,
     _kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "RuntimeError", "thread submit unsupported on wasm")
     })
 }
@@ -301,7 +301,7 @@ pub unsafe extern "C" fn molt_thread_submit(
 /// `obj_bits` must be a valid thread wait future object from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -342,7 +342,7 @@ pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
 /// # Safety
 /// Caller must ensure `_obj_bits` is a valid thread object pointer or zero.
 pub unsafe extern "C" fn molt_thread_poll(_obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, { pending_bits_i64() })
+    crate::with_gil_entry_nopanic!(_py, { pending_bits_i64() })
 }
 
 // --- asyncio.to_thread intrinsic ---
@@ -360,7 +360,7 @@ pub unsafe extern "C" fn molt_asyncio_to_thread(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Create a future backed by the thread poll function, identical to
         // molt_thread_submit — the only difference is the name so that the
         // Python shim can invoke the intrinsic directly.
@@ -405,7 +405,7 @@ pub unsafe extern "C" fn molt_asyncio_to_thread(
     kwargs_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             // On WASM there is no thread pool; call the function synchronously.
             let result = call_thread_callable(_py, callable_bits, args_bits, kwargs_bits);
             if exception_pending(_py) {
@@ -462,7 +462,7 @@ const WASM_THREAD_BLOCKED_MODULES: &[&str] = &[
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_wasm_check_module_gate(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name) = crate::string_obj_to_owned(name_obj) else {
             return MoltObject::none().bits();
@@ -499,7 +499,7 @@ pub unsafe extern "C" fn molt_wasm_check_module_gate(_name_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_start(_callable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "RuntimeError",

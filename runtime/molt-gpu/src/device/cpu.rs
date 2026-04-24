@@ -290,7 +290,7 @@ pub mod interpret {
     ///
     /// `input` and `output` are f32 slices of length `rows * reduce_size`.
     /// `rows` is the number of output rows, `reduce_size` is elements per row.
-    #[inline(never)]
+    #[inline(always)]
     pub fn fused_softmax_f32(input: &[f32], output: &mut [f32], rows: usize, reduce_size: usize) {
         for row in 0..rows {
             let row_start = row * reduce_size;
@@ -303,28 +303,32 @@ pub mod interpret {
             let row_slice = &input[row_start..row_end];
             let out_len = output.len();
             let out_row = &mut output[row_start..row_end.min(out_len)];
+            softmax_row(row_slice, out_row);
+        }
+    }
 
-            // Pass 1: find max for numerical stability (f32)
-            let mut max_val = f32::NEG_INFINITY;
-            for &v in row_slice {
-                if v > max_val {
-                    max_val = v;
-                }
-            }
+    /// Compute softmax over a single row of f32 data.
+    ///
+    /// Uses iterator-based max and zip patterns for optimal auto-vectorization.
+    /// `input` and `output` must have the same length.
+    #[inline(always)]
+    fn softmax_row(input: &[f32], output: &mut [f32]) {
+        // Pass 1: find max for numerical stability.
+        // f32::max propagates NaN correctly and auto-vectorizes.
+        let max_val = input.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
-            // Pass 2: compute exp(x - max) and sum, write directly to output
-            let mut sum = 0.0f32;
-            for (j, &v) in row_slice.iter().enumerate() {
-                let e = (v - max_val).exp();
-                out_row[j] = e;
-                sum += e;
-            }
+        // Pass 2: compute exp(x - max) and accumulate sum.
+        let mut sum = 0.0f32;
+        for (out, &v) in output.iter_mut().zip(input.iter()) {
+            let e = (v - max_val).exp();
+            *out = e;
+            sum += e;
+        }
 
-            // Pass 3: normalize in-place
-            let inv_sum = 1.0f32 / sum;
-            for out_v in out_row.iter_mut() {
-                *out_v *= inv_sum;
-            }
+        // Pass 3: normalize in-place.
+        let inv_sum = 1.0f32 / sum;
+        for out_v in output.iter_mut() {
+            *out_v *= inv_sum;
         }
     }
 
@@ -352,7 +356,7 @@ pub mod interpret {
     /// `input` and `output` are f32 slices of length `rows * dim`.
     /// `rows` is the number of rows, `dim` is elements per row, `eps` is the
     /// normalization epsilon.
-    #[inline(never)]
+    #[inline(always)]
     pub fn fused_rms_norm_f32(
         input: &[f32],
         output: &mut [f32],

@@ -65,7 +65,7 @@ unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let name_obj = obj_from_bits(name_bits);
             let Some(name_ptr) = name_obj.as_ptr() else {

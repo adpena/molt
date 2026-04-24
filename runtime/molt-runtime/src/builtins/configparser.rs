@@ -394,7 +394,7 @@ fn string_pairs_to_list(_py: &PyToken<'_>, pairs: &[(String, String)]) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // `defaults_bits` is a dict of str→str or None.
         let defaults = if obj_from_bits(defaults_bits).is_none() {
             SectionMap::new()
@@ -442,7 +442,7 @@ pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_read(handle_bits: u64, filename_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -488,7 +488,7 @@ pub extern "C" fn molt_configparser_read(handle_bits: u64, filename_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_read_string(handle_bits: u64, text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -507,7 +507,7 @@ pub extern "C" fn molt_configparser_read_string(handle_bits: u64, text_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_sections(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -525,7 +525,7 @@ pub extern "C" fn molt_configparser_sections(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_has_section(handle_bits: u64, section_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -550,7 +550,7 @@ pub extern "C" fn molt_configparser_has_option(
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -581,7 +581,7 @@ pub extern "C" fn molt_configparser_get(
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -625,7 +625,7 @@ pub extern "C" fn molt_configparser_getint(
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -670,7 +670,7 @@ pub extern "C" fn molt_configparser_getfloat(
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -715,7 +715,7 @@ pub extern "C" fn molt_configparser_getboolean(
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -765,7 +765,7 @@ pub extern "C" fn molt_configparser_set(
     option_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -800,7 +800,7 @@ pub extern "C" fn molt_configparser_set(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_add_section(handle_bits: u64, section_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -829,7 +829,7 @@ pub extern "C" fn molt_configparser_add_section(handle_bits: u64, section_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_remove_section(handle_bits: u64, section_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -856,7 +856,7 @@ pub extern "C" fn molt_configparser_remove_option(
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -885,7 +885,7 @@ pub extern "C" fn molt_configparser_remove_option(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_options(handle_bits: u64, section_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -916,7 +916,7 @@ pub extern "C" fn molt_configparser_options(handle_bits: u64, section_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_items(handle_bits: u64, section_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -946,7 +946,7 @@ pub extern "C" fn molt_configparser_items(handle_bits: u64, section_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_write(handle_bits: u64, filename_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -970,7 +970,7 @@ pub extern "C" fn molt_configparser_write(handle_bits: u64, filename_bits: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             CONFIG_REGISTRY.lock().unwrap().remove(&id);
         }
@@ -986,7 +986,7 @@ pub extern "C" fn molt_configparser_drop(handle_bits: u64) -> u64 {
 /// This allows the Python side to write to any file-like object.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_write_string(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -1014,7 +1014,7 @@ pub extern "C" fn molt_configparser_get_raw(
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -1053,7 +1053,7 @@ pub extern "C" fn molt_configparser_interpolate_basic(
     section_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -1088,7 +1088,7 @@ pub extern "C" fn molt_configparser_interpolate_extended(
     section_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -1183,7 +1183,7 @@ pub extern "C" fn molt_configparser_read_file(
     content_bits: u64,
     source_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
@@ -1204,7 +1204,7 @@ pub extern "C" fn molt_configparser_read_file(
 /// Get the defaults dict as a list of (key, value) pairs.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_defaults(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };

@@ -615,7 +615,7 @@ pub extern "C" fn molt_ast_parse(
     feature_version_bits: u64,
     ctors_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(value) => value,
             None => return raise_exception::<_>(_py, "TypeError", "source must be str"),
@@ -703,7 +703,7 @@ pub extern "C" fn molt_ast_parse(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ast_walk(node_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let kind = match node_kind_name(_py, node_bits) {
             Ok(value) => value,
             Err(err) => return err,
@@ -765,7 +765,7 @@ pub extern "C" fn molt_ast_walk(node_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = clean_bits;
         let Some(body_bits) = (match get_attr_optional(_py, node_bits, b"body") {
             Ok(value) => value,
@@ -827,7 +827,7 @@ pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64
 /// Reads the `_fields` class attribute and extracts each named attribute.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let node = obj_from_bits(node_bits);
         if node.is_none() {
             return raise_exception::<_>(_py, "TypeError", "expected an AST node, got None");
@@ -918,7 +918,7 @@ fn has_fields_attr(_py: &crate::PyToken<'_>, obj_bits: u64) -> bool {
 /// lists containing AST instances.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let node = obj_from_bits(node_bits);
         if node.is_none() {
             return raise_exception::<_>(_py, "TypeError", "expected an AST node, got None");

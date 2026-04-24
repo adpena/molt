@@ -77,7 +77,7 @@ thread_local! {
 /// Returns: NaN-boxed integer handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextvars_new_var(name_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let handle = NEXT_VAR_HANDLE.fetch_add(1, Ordering::Relaxed);
         // Store the default (inc_ref if not None).
         let default_obj = obj_from_bits(default_bits);
@@ -98,7 +98,7 @@ pub extern "C" fn molt_contextvars_new_var(name_bits: u64, default_bits: u64) ->
 /// Returns: the current value, or the default, or raises LookupError.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextvars_get(var_bits: u64) -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let Some(handle) = to_i64(obj_from_bits(var_bits)) else {
             return raise_exception::<u64>(py, "TypeError", "ContextVar handle must be an integer");
         };
@@ -136,7 +136,7 @@ pub extern "C" fn molt_contextvars_get(var_bits: u64) -> u64 {
 /// Returns: NaN-boxed integer token handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextvars_set(var_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let Some(handle) = to_i64(obj_from_bits(var_bits)) else {
             return raise_exception::<u64>(py, "TypeError", "ContextVar handle must be an integer");
         };
@@ -184,7 +184,7 @@ pub extern "C" fn molt_contextvars_set(var_bits: u64, value_bits: u64) -> u64 {
 /// Returns: None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextvars_reset(var_bits: u64, token_bits: u64) -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let Some(caller_var) = to_i64(obj_from_bits(var_bits)) else {
             return raise_exception::<u64>(py, "TypeError", "ContextVar handle must be an integer");
         };
@@ -242,7 +242,7 @@ pub extern "C" fn molt_contextvars_reset(var_bits: u64, token_bits: u64) -> u64 
 /// Returns: NaN-boxed integer context handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextvars_copy_context() -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let ctx_handle = NEXT_CONTEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
 
         let snapshot = CONTEXT_FRAMES.with(|frames| {

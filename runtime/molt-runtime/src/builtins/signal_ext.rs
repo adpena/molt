@@ -150,7 +150,7 @@ fn handler_bits_to_py(_py: &PyToken<'_>, signum: i32, bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("signal.signal", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -220,7 +220,7 @@ pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_getsignal(signum_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let signum = match sig_from_bits(_py, signum_bits) {
             Ok(v) => v,
             Err(e) => return e,
@@ -232,7 +232,7 @@ pub extern "C" fn molt_signal_getsignal(signum_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_raise_signal(signum_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("signal.raise", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -270,7 +270,7 @@ pub extern "C" fn molt_signal_raise_signal(signum_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_alarm(seconds_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("signal.alarm", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -300,7 +300,7 @@ pub extern "C" fn molt_signal_alarm(seconds_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_pause() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("signal.pause", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -328,7 +328,7 @@ pub extern "C" fn molt_signal_pause() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_set_wakeup_fd(fd_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "process");
         audit_capability_decision("signal.set_wakeup_fd", "process", AuditArgs::None, allowed);
         if !allowed {
@@ -348,43 +348,43 @@ pub extern "C" fn molt_signal_set_wakeup_fd(fd_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigabrt() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGABRT as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGABRT as i64) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigfpe() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGFPE as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGFPE as i64) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigill() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGILL as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGILL as i64) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigint() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGINT as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGINT as i64) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigsegv() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGSEGV as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGSEGV as i64) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigterm() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGTERM as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGTERM as i64) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sighup() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGHUP as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGHUP as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 1_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 1_i64) })
     }
 }
 
@@ -392,11 +392,11 @@ pub extern "C" fn molt_signal_sighup() -> u64 {
 pub extern "C" fn molt_signal_sigquit() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGQUIT as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGQUIT as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 3_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 3_i64) })
     }
 }
 
@@ -404,11 +404,11 @@ pub extern "C" fn molt_signal_sigquit() -> u64 {
 pub extern "C" fn molt_signal_sigusr1() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGUSR1 as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGUSR1 as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 10_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 10_i64) })
     }
 }
 
@@ -416,11 +416,11 @@ pub extern "C" fn molt_signal_sigusr1() -> u64 {
 pub extern "C" fn molt_signal_sigusr2() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGUSR2 as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGUSR2 as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 12_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 12_i64) })
     }
 }
 
@@ -428,11 +428,11 @@ pub extern "C" fn molt_signal_sigusr2() -> u64 {
 pub extern "C" fn molt_signal_sigchld() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGCHLD as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGCHLD as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 17_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 17_i64) })
     }
 }
 
@@ -440,11 +440,11 @@ pub extern "C" fn molt_signal_sigchld() -> u64 {
 pub extern "C" fn molt_signal_sigalrm() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGALRM as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGALRM as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 14_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 14_i64) })
     }
 }
 
@@ -452,27 +452,27 @@ pub extern "C" fn molt_signal_sigalrm() -> u64 {
 pub extern "C" fn molt_signal_sigpipe() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGPIPE as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGPIPE as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 13_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 13_i64) })
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sig_dfl() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, SIG_DFL_INT) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, SIG_DFL_INT) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sig_ign() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, SIG_IGN_INT) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, SIG_IGN_INT) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_nsig() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, effective_nsig()) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, effective_nsig()) })
 }
 
 // ── Extended signal number constants ────────────────────────────────────────
@@ -481,11 +481,11 @@ pub extern "C" fn molt_signal_nsig() -> u64 {
 pub extern "C" fn molt_signal_sig_block() -> u64 {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIG_BLOCK as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIG_BLOCK as i64) })
     }
     #[cfg(any(not(unix), target_arch = "wasm32"))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 0_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 0_i64) })
     }
 }
 
@@ -493,11 +493,11 @@ pub extern "C" fn molt_signal_sig_block() -> u64 {
 pub extern "C" fn molt_signal_sig_unblock() -> u64 {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIG_UNBLOCK as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIG_UNBLOCK as i64) })
     }
     #[cfg(any(not(unix), target_arch = "wasm32"))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 1_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 1_i64) })
     }
 }
 
@@ -505,11 +505,11 @@ pub extern "C" fn molt_signal_sig_unblock() -> u64 {
 pub extern "C" fn molt_signal_sig_setmask() -> u64 {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIG_SETMASK as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIG_SETMASK as i64) })
     }
     #[cfg(any(not(unix), target_arch = "wasm32"))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 2_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 2_i64) })
     }
 }
 
@@ -517,11 +517,11 @@ pub extern "C" fn molt_signal_sig_setmask() -> u64 {
 pub extern "C" fn molt_signal_sigbus() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGBUS as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGBUS as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 7_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 7_i64) })
     }
 }
 
@@ -529,11 +529,11 @@ pub extern "C" fn molt_signal_sigbus() -> u64 {
 pub extern "C" fn molt_signal_sigcont() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGCONT as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGCONT as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 18_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 18_i64) })
     }
 }
 
@@ -541,11 +541,11 @@ pub extern "C" fn molt_signal_sigcont() -> u64 {
 pub extern "C" fn molt_signal_sigstop() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGSTOP as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGSTOP as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 19_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 19_i64) })
     }
 }
 
@@ -553,11 +553,11 @@ pub extern "C" fn molt_signal_sigstop() -> u64 {
 pub extern "C" fn molt_signal_sigtstp() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGTSTP as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGTSTP as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 20_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 20_i64) })
     }
 }
 
@@ -565,11 +565,11 @@ pub extern "C" fn molt_signal_sigtstp() -> u64 {
 pub extern "C" fn molt_signal_sigttin() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGTTIN as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGTTIN as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 21_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 21_i64) })
     }
 }
 
@@ -577,11 +577,11 @@ pub extern "C" fn molt_signal_sigttin() -> u64 {
 pub extern "C" fn molt_signal_sigttou() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGTTOU as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGTTOU as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 22_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 22_i64) })
     }
 }
 
@@ -589,11 +589,11 @@ pub extern "C" fn molt_signal_sigttou() -> u64 {
 pub extern "C" fn molt_signal_sigxcpu() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGXCPU as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGXCPU as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 24_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 24_i64) })
     }
 }
 
@@ -601,11 +601,11 @@ pub extern "C" fn molt_signal_sigxcpu() -> u64 {
 pub extern "C" fn molt_signal_sigxfsz() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGXFSZ as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGXFSZ as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 25_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 25_i64) })
     }
 }
 
@@ -613,11 +613,11 @@ pub extern "C" fn molt_signal_sigxfsz() -> u64 {
 pub extern "C" fn molt_signal_sigvtalrm() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGVTALRM as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGVTALRM as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 26_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 26_i64) })
     }
 }
 
@@ -625,11 +625,11 @@ pub extern "C" fn molt_signal_sigvtalrm() -> u64 {
 pub extern "C" fn molt_signal_sigprof() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGPROF as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGPROF as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 27_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 27_i64) })
     }
 }
 
@@ -637,11 +637,11 @@ pub extern "C" fn molt_signal_sigprof() -> u64 {
 pub extern "C" fn molt_signal_sigwinch() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGWINCH as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGWINCH as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 28_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 28_i64) })
     }
 }
 
@@ -649,11 +649,11 @@ pub extern "C" fn molt_signal_sigwinch() -> u64 {
 pub extern "C" fn molt_signal_sigsys() -> u64 {
     #[cfg(unix)]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, libc::SIGSYS as i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, libc::SIGSYS as i64) })
     }
     #[cfg(not(unix))]
     {
-        crate::with_gil_entry!(_py, { int_bits_from_i64(_py, 31_i64) })
+        crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, 31_i64) })
     }
 }
 
@@ -705,7 +705,7 @@ unsafe fn sigset_to_list_bits(_py: &PyToken<'_>, set: &libc::sigset_t) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_default_int_handler(_signum_bits: u64, _frame_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = (_signum_bits, _frame_bits);
         raise_exception::<u64>(_py, "KeyboardInterrupt", "")
     })
@@ -713,7 +713,7 @@ pub extern "C" fn molt_signal_default_int_handler(_signum_bits: u64, _frame_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_strsignal(signum_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let signum = match sig_from_bits(_py, signum_bits) {
             Ok(v) => v,
             Err(e) => return e,
@@ -775,7 +775,7 @@ pub extern "C" fn molt_signal_strsignal(signum_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let how_obj = obj_from_bits(how_bits);
@@ -830,7 +830,7 @@ pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_pthread_kill(thread_id_bits: u64, signum_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let tid_obj = obj_from_bits(thread_id_bits);
@@ -872,7 +872,7 @@ pub extern "C" fn molt_signal_pthread_kill(thread_id_bits: u64, signum_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigpending() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
@@ -895,7 +895,7 @@ pub extern "C" fn molt_signal_sigpending() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_sigwait(sigset_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let sigset_obj = obj_from_bits(sigset_bits);
@@ -936,7 +936,7 @@ pub extern "C" fn molt_signal_sigwait(sigset_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_valid_signals() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Enumerate known valid signal numbers for this platform.
         let valid: Vec<i64> = {
             #[cfg(unix)]

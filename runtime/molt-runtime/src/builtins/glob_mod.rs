@@ -59,7 +59,7 @@ pub extern "C" fn molt_glob_glob(
     root_dir_bits: u64,
     recursive_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("glob.glob", "fs.read", AuditArgs::None, allowed);
         if !allowed {

@@ -565,27 +565,27 @@ pub(crate) fn atexit_run_exitfuncs_teardown(_py: &PyToken<'_>) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_atexit_register(func_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         atexit_register_impl(_py, func_bits, args_bits, kwargs_bits)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_atexit_unregister(func_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { atexit_unregister_impl(_py, func_bits) })
+    crate::with_gil_entry_nopanic!(_py, { atexit_unregister_impl(_py, func_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_atexit_clear() -> u64 {
-    crate::with_gil_entry!(_py, { atexit_clear_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { atexit_clear_impl(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_atexit_run_exitfuncs() -> u64 {
-    crate::with_gil_entry!(_py, { atexit_run_exitfuncs_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { atexit_run_exitfuncs_impl(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_atexit_ncallbacks() -> u64 {
-    crate::with_gil_entry!(_py, { atexit_ncallbacks_impl(_py) })
+    crate::with_gil_entry_nopanic!(_py, { atexit_ncallbacks_impl(_py) })
 }

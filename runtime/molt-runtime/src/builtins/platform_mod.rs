@@ -123,7 +123,7 @@ fn get_uname() -> &'static UnameInfo {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_system() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = get_uname().sysname.as_str();
         return_str(_py, s)
     })
@@ -131,7 +131,7 @@ pub extern "C" fn molt_platform_system() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_machine() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = get_uname().machine.as_str();
         return_str(_py, s)
     })
@@ -139,7 +139,7 @@ pub extern "C" fn molt_platform_machine() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_processor() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // On macOS arm64 the processor string is "arm" in CPython.
         // We mirror PLATFORM_MACHINE which is the most portable value.
         return_str(_py, PLATFORM_MACHINE)
@@ -148,7 +148,7 @@ pub extern "C" fn molt_platform_processor() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_architecture() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bits_ptr = alloc_string(_py, PLATFORM_BITS.as_bytes());
         let link_ptr = alloc_string(_py, b"");
         if bits_ptr.is_null() || link_ptr.is_null() {
@@ -170,7 +170,7 @@ pub extern "C" fn molt_platform_architecture() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_node() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = get_uname().nodename.as_str();
         return_str(_py, s)
     })
@@ -178,7 +178,7 @@ pub extern "C" fn molt_platform_node() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_release() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = get_uname().release.as_str();
         return_str(_py, s)
     })
@@ -186,7 +186,7 @@ pub extern "C" fn molt_platform_release() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_version() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = get_uname().version.as_str();
         return_str(_py, s)
     })
@@ -194,7 +194,7 @@ pub extern "C" fn molt_platform_version() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_platform(aliased_bits: u64, terse_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _aliased = is_truthy(_py, obj_from_bits(aliased_bits));
         let terse = is_truthy(_py, obj_from_bits(terse_bits));
         let uname = get_uname();
@@ -212,12 +212,12 @@ pub extern "C" fn molt_platform_platform(aliased_bits: u64, terse_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_python_version() -> u64 {
-    crate::with_gil_entry!(_py, { return_str(_py, MOLT_PYTHON_VERSION) })
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, MOLT_PYTHON_VERSION) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_python_version_tuple() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let major_ptr = alloc_string(_py, MOLT_PYTHON_MAJOR.as_bytes());
         let minor_ptr = alloc_string(_py, MOLT_PYTHON_MINOR.as_bytes());
         let micro_ptr = alloc_string(_py, MOLT_PYTHON_MICRO.as_bytes());
@@ -241,17 +241,17 @@ pub extern "C" fn molt_platform_python_version_tuple() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_python_implementation() -> u64 {
-    crate::with_gil_entry!(_py, { return_str(_py, "Molt") })
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "Molt") })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_python_compiler() -> u64 {
-    crate::with_gil_entry!(_py, { return_str(_py, "Molt/Cranelift") })
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "Molt/Cranelift") })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_uname() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let uname = get_uname();
         let make_str = |s: &str| -> u64 {
             let ptr = alloc_string(_py, s.as_bytes());

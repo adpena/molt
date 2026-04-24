@@ -923,7 +923,7 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match ascii_or_bytes_arg(_py, data_bits, "a2b_base64") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -938,7 +938,7 @@ pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "b2a_base64") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -950,7 +950,7 @@ pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match ascii_or_bytes_arg(_py, data_bits, "a2b_hex") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -971,7 +971,7 @@ pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "b2a_hex") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -984,7 +984,7 @@ pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_qp(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match ascii_or_bytes_arg(_py, data_bits, "a2b_qp") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -996,7 +996,7 @@ pub extern "C" fn molt_binascii_a2b_qp(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "b2a_qp") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1008,7 +1008,7 @@ pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match ascii_or_bytes_arg(_py, data_bits, "a2b_uu") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1023,7 +1023,7 @@ pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "b2a_uu") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1061,7 +1061,7 @@ const CRC32_TABLE: [u32; 256] = {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_crc32(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "crc32") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1087,7 +1087,7 @@ pub extern "C" fn molt_binascii_crc32(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "crc_hqx") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1119,7 +1119,7 @@ pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 
 /// begin/end framing.  Reuses the internal `uu_encode` per-line function.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "uu_codec_encode") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1158,7 +1158,7 @@ pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_
 /// decode lines, expect end).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "uu_codec_decode") {
             Ok(v) => v,
             Err(bits) => return bits,

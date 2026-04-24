@@ -100,7 +100,7 @@ fn clone_optional_callable(_py: &PyToken<'_>, value_bits: u64) -> u64 {
 /// `sys.maxsize` -> isize::MAX
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_maxsize() -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, isize::MAX as i64) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, isize::MAX as i64) })
 }
 
 /// `sys.maxunicode` -> 0x10FFFF (Unicode max code point)
@@ -112,7 +112,7 @@ pub extern "C" fn molt_sys_maxunicode() -> u64 {
 /// `sys.byteorder` -> "little" or "big"
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_byteorder() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let order = if cfg!(target_endian = "little") {
             "little"
         } else {
@@ -129,7 +129,7 @@ pub extern "C" fn molt_sys_byteorder() -> u64 {
 /// `sys.prefix` -> installation prefix path
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_prefix() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Molt compiled binaries are self-contained; prefix is the binary's parent directory
         let prefix = std::env::current_exe()
             .ok()
@@ -160,7 +160,7 @@ pub extern "C" fn molt_sys_base_exec_prefix() -> u64 {
 /// `sys.platlibdir` -> "lib" on most platforms
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_platlibdir() -> u64 {
-    crate::with_gil_entry!(_py, { str_bits(_py, "lib") })
+    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, "lib") })
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ pub extern "C" fn molt_sys_platlibdir() -> u64 {
 /// Fields: max, max_exp, max_10_exp, min, min_exp, min_10_exp, dig, mant_dig, epsilon, radix, rounds
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_float_info() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let values: [u64; 11] = [
             MoltObject::from_float(f64::MAX).bits(),
             MoltObject::from_int(f64::MAX_EXP as i64).bits(),
@@ -198,7 +198,7 @@ pub extern "C" fn molt_sys_float_info() -> u64 {
 /// Fields: bits_per_digit, sizeof_digit, default_max_str_digits, str_digits_check_threshold
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_int_info() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Molt uses NaN-boxed 47-bit inline ints; for API compat report CPython-compatible values
         let values: [u64; 4] = [
             MoltObject::from_int(30).bits(),   // bits_per_digit (CPython default)
@@ -219,7 +219,7 @@ pub extern "C" fn molt_sys_int_info() -> u64 {
 /// Fields: width, modulus, inf, nan, imag, algorithm, hash_bits, seed_bits, cutoff
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_hash_info() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let width = if cfg!(target_pointer_width = "64") {
             64i64
         } else {
@@ -254,7 +254,7 @@ pub extern "C" fn molt_sys_hash_info() -> u64 {
 /// `sys.thread_info` -> 3-element tuple (name, lock, version)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_thread_info() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_str = if cfg!(target_os = "windows") {
             "nt"
         } else if cfg!(target_arch = "wasm32") {
@@ -292,7 +292,7 @@ pub extern "C" fn molt_sys_is_finalizing() -> u64 {
 /// `sys.getrefcount(obj)` -> best-effort runtime refcount, including call arg ref.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_getrefcount(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let count = if let Some(ptr) = obj.as_ptr() {
             let header = unsafe { header_from_obj_ptr(ptr) };
@@ -308,7 +308,7 @@ pub extern "C" fn molt_sys_getrefcount(obj_bits: u64) -> u64 {
 /// `sys.settrace(tracefunc)` -> store process-level trace hook (or None).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_settrace(tracefunc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = ensure_trace_or_profile_callable(_py, tracefunc_bits, "settrace") {
             return err;
         }
@@ -323,7 +323,7 @@ pub extern "C" fn molt_sys_settrace(tracefunc_bits: u64) -> u64 {
 /// `sys.gettrace()` -> current process-level trace hook.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_gettrace() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let state = sys_trace_profile_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -334,7 +334,7 @@ pub extern "C" fn molt_sys_gettrace() -> u64 {
 /// `sys.setprofile(profilefunc)` -> store process-level profile hook (or None).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_setprofile(profilefunc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Err(err) = ensure_trace_or_profile_callable(_py, profilefunc_bits, "setprofile") {
             return err;
         }
@@ -349,7 +349,7 @@ pub extern "C" fn molt_sys_setprofile(profilefunc_bits: u64) -> u64 {
 /// `sys.getprofile()` -> current process-level profile hook.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_getprofile() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let state = sys_trace_profile_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -360,7 +360,7 @@ pub extern "C" fn molt_sys_getprofile() -> u64 {
 /// `sys.intern(string)` -> interned string
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_intern(s_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let s = match string_obj_to_owned(obj_from_bits(s_bits)) {
             Some(s) => s,
             None => {
@@ -465,7 +465,7 @@ pub extern "C" fn molt_sys_getsizeof(obj_bits: u64, default_bits: u64) -> u64 {
 /// Python wrapper converts to frozenset.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stdlib_module_names() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let names: &[&str] = &[
             "__future__",
             "_abc",
@@ -668,7 +668,7 @@ pub extern "C" fn molt_sys_stdlib_module_names() -> u64 {
 /// `sys.builtin_module_names` -> tuple of built-in module names
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_builtin_module_names() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let names: &[&str] = &[
             "_abc",
             "_ast",
@@ -727,7 +727,7 @@ pub extern "C" fn molt_sys_builtin_module_names() -> u64 {
 /// `sys.orig_argv` -> original argv from process start
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_orig_argv() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let args: Vec<String> = std::env::args().collect();
         let mut bits_vec: Vec<u64> = Vec::with_capacity(args.len());
         for arg in &args {
@@ -756,7 +756,7 @@ pub extern "C" fn molt_sys_orig_argv() -> u64 {
 /// `sys.copyright` -> Molt copyright string
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_copyright() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text = "Copyright (c) Molt contributors.\nAll Rights Reserved.\n\nCopyright (c) 2001-2024 Python Software Foundation.\nAll Rights Reserved.";
         str_bits(_py, text)
     })
@@ -769,13 +769,13 @@ pub extern "C" fn molt_sys_copyright() -> u64 {
 /// `sys.getdefaultencoding()` -> "utf-8"
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_getdefaultencoding() -> u64 {
-    crate::with_gil_entry!(_py, { str_bits(_py, "utf-8") })
+    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, "utf-8") })
 }
 
 /// `sys.getfilesystemencoding()` -> "utf-8"
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_getfilesystemencoding() -> u64 {
-    crate::with_gil_entry!(_py, { str_bits(_py, "utf-8") })
+    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, "utf-8") })
 }
 
 // --- Thread switch interval (GIL timeslice stub) ---
@@ -795,7 +795,7 @@ pub extern "C" fn molt_sys_getswitchinterval() -> u64 {
 /// `sys.setswitchinterval(interval)` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_setswitchinterval(interval_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(interval_bits);
         let val = match to_f64(obj) {
             Some(v) => v,
@@ -830,7 +830,7 @@ pub extern "C" fn molt_sys_get_int_max_str_digits() -> u64 {
 /// `sys.set_int_max_str_digits(maxdigits)` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_set_int_max_str_digits(maxdigits_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let val = match to_i64(obj_from_bits(maxdigits_bits)) {
             Some(v) => v,
             None => {
@@ -860,7 +860,7 @@ pub extern "C" fn molt_sys_set_int_max_str_digits(maxdigits_bits: u64) -> u64 {
 /// is done on the Python side (since the result must be a Python object).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_call_tracing_validate(func_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !is_truthy(_py, obj_from_bits(molt_is_callable(func_bits))) {
             return raise_exception::<u64>(
                 _py,
@@ -894,7 +894,7 @@ fn audit_hooks() -> &'static Mutex<Vec<u64>> {
 /// `sys.addaudithook(hook)` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_addaudithook(hook_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !is_truthy(_py, obj_from_bits(molt_is_callable(hook_bits))) {
             return raise_exception::<u64>(_py, "TypeError", "expected a callable object");
         }
@@ -918,7 +918,7 @@ pub extern "C" fn molt_sys_audit_hook_count() -> u64 {
 /// `sys._audit_get_hooks()` -> list of callable bits
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_audit_get_hooks() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hooks = audit_hooks().lock().unwrap();
         if hooks.is_empty() {
             let ptr = alloc_list(_py, &[]);
@@ -938,7 +938,7 @@ pub extern "C" fn molt_sys_audit_get_hooks() -> u64 {
 /// `sys.exit(code)` -> raises SystemExit
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_exit(code_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = code_bits;
         raise_exception::<u64>(_py, "SystemExit", "")
     })
@@ -952,7 +952,7 @@ pub extern "C" fn molt_sys_exit(code_bits: u64) -> u64 {
 /// `sys._displayhook_write(text)` -> None  (write text to stdout)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_displayhook_write(text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(s) = string_obj_to_owned(obj_from_bits(text_bits)) {
             print!("{s}");
             MoltObject::none().bits()
@@ -965,7 +965,7 @@ pub extern "C" fn molt_sys_displayhook_write(text_bits: u64) -> u64 {
 /// `sys._excepthook_write(text)` -> None  (write text to stderr)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_excepthook_write(text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(s) = string_obj_to_owned(obj_from_bits(text_bits)) {
             eprint!("{s}");
             MoltObject::none().bits()
@@ -985,7 +985,7 @@ pub extern "C" fn molt_sys_excepthook_write(text_bits: u64) -> u64 {
 /// as the canonical `sys.argv` list on first access.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_argv() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let args: Vec<String> = std::env::args().collect();
         let mut bits_vec: Vec<u64> = Vec::with_capacity(args.len());
         for arg in &args {
@@ -1019,7 +1019,7 @@ pub extern "C" fn molt_sys_argv() -> u64 {
 /// attribute at bootstrap time.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_modules() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
             MoltObject::none().bits()
@@ -1035,7 +1035,7 @@ pub extern "C" fn molt_sys_modules() -> u64 {
 /// and the executable location.  The Python wrapper may mutate this list.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_path() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut entries: Vec<String> = Vec::new();
 
         // 1. Current directory (empty string = cwd per CPython convention)

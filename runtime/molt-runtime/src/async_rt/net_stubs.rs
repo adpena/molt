@@ -38,7 +38,7 @@ pub(crate) fn ws_wait_release(_py: &PyToken<'_>, _future_ptr: *mut u8) {}
 
 macro_rules! net_error {
     () => {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             crate::raise_exception::<u64>(
                 _py,
                 "OSError",

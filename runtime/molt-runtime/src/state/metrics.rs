@@ -56,7 +56,7 @@ mod wasm_stubs {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_snapshot() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if profile_enabled(_py) {
                 sample_peak_rss();
             }
@@ -65,14 +65,14 @@ mod wasm_stubs {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_struct_field_store() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
         })
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_handle_resolve() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             profile_hit(_py, &HANDLE_RESOLVE_COUNT);
         })
     }
@@ -237,7 +237,7 @@ mod native {
     /// compiled code or periodically from the runtime.
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_snapshot() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if profile_enabled(_py) {
                 sample_peak_rss();
             }
@@ -246,14 +246,14 @@ mod native {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_struct_field_store() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
         })
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_handle_resolve() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             profile_hit(_py, &HANDLE_RESOLVE_COUNT);
         })
     }

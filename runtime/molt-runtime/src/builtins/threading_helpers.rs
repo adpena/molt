@@ -31,7 +31,7 @@ fn make_string_bits(py: &PyToken<'_>, s: &str) -> u64 {
 /// Returns the next thread name as a NaN-boxed string: "Thread-N".
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_threading_next_name() -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let n = THREAD_NAME_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let name = format!("Thread-{}", n);
         make_string_bits(py, &name)
@@ -41,7 +41,7 @@ pub extern "C" fn molt_threading_next_name() -> u64 {
 /// Returns the next thread token as a NaN-boxed integer.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_threading_next_token() -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let n = THREAD_TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         int_bits_from_i64(py, n as i64)
     })
@@ -60,7 +60,7 @@ pub unsafe extern "C" fn molt_threading_validate_timeout(
     mode_bits: u64,
     blocking_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let timeout_obj = obj_from_bits(timeout_bits);
         let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0);
         let blocking = is_truthy(py, obj_from_bits(blocking_bits));
@@ -141,7 +141,7 @@ pub unsafe extern "C" fn molt_threading_validate_timeout(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_threading_invoke_hooks(trace_bits: u64, profile_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(py, {
+        crate::with_gil_entry_nopanic!(py, {
             let trace_obj = obj_from_bits(trace_bits);
             if !trace_obj.is_none() {
                 let none_bits = MoltObject::none().bits();
@@ -168,7 +168,7 @@ pub unsafe extern "C" fn molt_threading_invoke_hooks(trace_bits: u64, profile_bi
 /// Raises RuntimeError if the record is malformed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_threading_parse_registry_record(record_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(record_bits);
         if obj.is_none() {
             return raise_exception::<u64>(_py, "RuntimeError", "invalid thread registry record");
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn molt_threading_registry_record_tuple(
     native_id_bits: u64,
     alive_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(py, {
+    crate::with_gil_entry_nopanic!(py, {
         let ptr = alloc_tuple(
             py,
             &[

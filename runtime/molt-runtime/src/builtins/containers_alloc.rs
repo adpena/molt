@@ -8,7 +8,7 @@ use crate::{
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>()
             + std::mem::size_of::<*mut Vec<u64>>()
             + std::mem::size_of::<*mut Vec<usize>>();
@@ -106,7 +106,7 @@ pub(crate) fn dict_pair_from_item(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let mut capacity = 0usize;
         if let Some(ptr) = obj.as_ptr() {
@@ -135,7 +135,7 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>()
             + std::mem::size_of::<*mut Vec<u64>>()
             + std::mem::size_of::<*mut Vec<usize>>();
@@ -161,7 +161,7 @@ pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>()
             + std::mem::size_of::<*mut Vec<u64>>()
             + std::mem::size_of::<*mut Vec<usize>>();

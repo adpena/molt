@@ -19,7 +19,7 @@ pub extern "C" fn __molt_http_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -31,12 +31,12 @@ pub extern "C" fn __molt_http_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_clear_exception() {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         clear_exception(_py);
     })
 }
@@ -68,7 +68,7 @@ pub extern "C" fn __molt_http_molt_raise(exc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
     })
@@ -80,7 +80,7 @@ pub extern "C" fn __molt_http_alloc_list_with_capacity(
     elems_len: usize,
     cap: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list_with_capacity(_py, elems, cap)
     })
@@ -88,7 +88,7 @@ pub extern "C" fn __molt_http_alloc_list_with_capacity(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -96,7 +96,7 @@ pub extern "C" fn __molt_http_alloc_string(data_ptr: *const u8, data_len: usize)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
     })
@@ -107,7 +107,7 @@ pub extern "C" fn __molt_http_alloc_dict_with_pairs(
     pairs_ptr: *const u64,
     pairs_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
     })
@@ -146,7 +146,7 @@ pub extern "C" fn __molt_http_string_obj_to_owned(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
     })
@@ -163,14 +163,14 @@ pub extern "C" fn __molt_http_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, bits);
     })
 }
@@ -223,7 +223,7 @@ pub extern "C" fn __molt_http_dict_get_in_place(
     key_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
                 unsafe {
@@ -270,7 +270,7 @@ pub extern "C" fn __molt_http_molt_iter_next(iter_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_attr_name_bits_from_bytes(key_ptr: *const u8, key_len: usize) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         crate::builtins::attr::attr_name_bits_from_bytes(_py, key).unwrap_or_default()
     })
@@ -278,21 +278,21 @@ pub extern "C" fn __molt_http_attr_name_bits_from_bytes(key_ptr: *const u8, key_
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_call_callable0(call_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { crate::call::dispatch::call_callable0(_py, call_bits) }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_call_callable1(call_bits: u64, arg0: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { crate::call::dispatch::call_callable1(_py, call_bits, arg0) }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { crate::call::dispatch::call_callable2(_py, call_bits, arg0, arg1) }
     })
 }
@@ -303,7 +303,7 @@ pub extern "C" fn __molt_http_call_class_init_with_args(
     args_ptr: *const u64,
     args_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let args = unsafe { std::slice::from_raw_parts(args_ptr, args_len) };
         let class_ptr = obj_from_bits(class_bits)
             .as_ptr()
@@ -314,7 +314,7 @@ pub extern "C" fn __molt_http_call_class_init_with_args(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_missing_bits() -> u64 {
-    crate::with_gil_entry!(_py, { missing_bits(_py) })
+    crate::with_gil_entry_nopanic!(_py, { missing_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
@@ -328,7 +328,7 @@ pub extern "C" fn __molt_http_molt_getattr_builtin(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_molt_is_callable(bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if is_truthy(_py, obj_from_bits(molt_is_callable(bits))) {
             1
         } else {
@@ -347,7 +347,7 @@ pub extern "C" fn __molt_http_format_obj_str(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let s = crate::format_obj_str(_py, obj);
         let bytes = s.into_bytes().into_boxed_slice();
@@ -425,7 +425,7 @@ pub extern "C" fn __molt_http_bytes_like_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_has_capability(name_ptr: *const u8, name_len: usize) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
@@ -480,7 +480,7 @@ pub extern "C" fn __molt_http_env_state_get(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_builtin_classes(name_ptr: *const u8, name_len: usize) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
@@ -500,7 +500,7 @@ pub extern "C" fn __molt_http_resolve_global_bits(
     name_len: usize,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(module_ptr, module_len))
         };

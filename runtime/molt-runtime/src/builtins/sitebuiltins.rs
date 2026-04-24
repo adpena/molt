@@ -36,7 +36,7 @@ fn print_str(_py: &PyToken<'_>, text: &[u8]) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_site_help0() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         print_str(_py, b"Molt help is not available in compiled binaries.");
         MoltObject::none().bits()
     })
@@ -44,7 +44,7 @@ pub extern "C" fn molt_site_help0() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_site_help1(target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         print_str(_py, b"Molt help is not available in compiled binaries.");
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -61,7 +61,7 @@ pub extern "C" fn molt_site_help1(target_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_site_credits() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         print_str(_py, MOLT_CREDITS_TEXT.as_bytes());
         MoltObject::none().bits()
     })
@@ -69,7 +69,7 @@ pub extern "C" fn molt_site_credits() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_site_license() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         print_str(_py, MOLT_LICENSE_TEXT.as_bytes());
         MoltObject::none().bits()
     })
@@ -77,7 +77,7 @@ pub extern "C" fn molt_site_license() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_site_copyright() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         print_str(
             _py,
             "Copyright (c) 2026 Alejandro Peña.\nAll Rights Reserved.".as_bytes(),
@@ -88,7 +88,7 @@ pub extern "C" fn molt_site_copyright() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_site_quitter_call(code_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let code_obj = obj_from_bits(code_bits);
         let args_ptr = if code_obj.is_none() {
             alloc_tuple(_py, &[])

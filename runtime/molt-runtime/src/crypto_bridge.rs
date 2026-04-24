@@ -23,7 +23,7 @@ pub extern "C" fn __molt_crypto_raise_exception(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let type_name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
         };
@@ -35,7 +35,7 @@ pub extern "C" fn __molt_crypto_raise_exception(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ pub extern "C" fn __molt_crypto_exception_pending() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
     })
@@ -52,7 +52,7 @@ pub extern "C" fn __molt_crypto_alloc_bytes(data_ptr: *const u8, data_len: usize
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
@@ -131,7 +131,7 @@ pub extern "C" fn __molt_crypto_type_name(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let name = type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
@@ -147,7 +147,7 @@ pub extern "C" fn __molt_crypto_type_name(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
     })
@@ -164,14 +164,14 @@ pub extern "C" fn __molt_crypto_release_ptr(ptr: *mut u8) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, bits);
     })
 }
@@ -196,7 +196,7 @@ pub extern "C" fn __molt_crypto_to_i64(bits: u64, out: *mut i64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val) })
+    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, val) })
 }
 
 #[unsafe(no_mangle)]
@@ -205,7 +205,7 @@ pub extern "C" fn __molt_crypto_int_bits_from_bigint(
     data_ptr: *const u8,
     data_len: usize,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let sign = match sign {
             -1 => Sign::Minus,
@@ -223,7 +223,7 @@ pub extern "C" fn __molt_crypto_index_i64_from_obj(
     err_ptr: *const u8,
     err_len: usize,
 ) -> i64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         _index_i64_from_obj(_py, obj_bits, err)
@@ -239,7 +239,7 @@ pub extern "C" fn __molt_crypto_index_bigint_from_obj(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         match _index_bigint_from_obj(_py, obj_bits, err) {
@@ -280,7 +280,7 @@ pub extern "C" fn __molt_crypto_dict_get_in_place(
     key_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
                 unsafe {

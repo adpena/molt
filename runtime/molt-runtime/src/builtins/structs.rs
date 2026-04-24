@@ -969,7 +969,7 @@ fn struct_unpack_values(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_calcsize(format_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let format_obj = obj_from_bits(format_bits);
         let format = match format_obj_to_owned(_py, format_obj) {
             Ok(format) => format,
@@ -988,7 +988,7 @@ pub extern "C" fn molt_struct_calcsize(format_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let format_obj = obj_from_bits(format_bits);
         let format = match format_obj_to_owned(_py, format_obj) {
             Ok(format) => format,
@@ -1300,7 +1300,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_unpack(format_bits: u64, buffer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let format_obj = obj_from_bits(format_bits);
         let format = match format_obj_to_owned(_py, format_obj) {
             Ok(format) => format,
@@ -1336,7 +1336,7 @@ pub extern "C" fn molt_struct_unpack(format_bits: u64, buffer_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_pack_into(buffer_bits: u64, offset_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let payload_obj = obj_from_bits(data_bits);
         let payload_bytes = match struct_read_buffer_bytes(_py, payload_obj) {
             Ok(buf) => buf,
@@ -1481,7 +1481,7 @@ pub extern "C" fn molt_struct_unpack_from(
     buffer_bits: u64,
     offset_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let format_obj = obj_from_bits(format_bits);
         let format = match format_obj_to_owned(_py, format_obj) {
             Ok(format) => format,
@@ -1556,7 +1556,7 @@ pub extern "C" fn molt_struct_unpack_from(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_iter_unpack(format_bits: u64, buffer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let format_obj = obj_from_bits(format_bits);
         let format = match format_obj_to_owned(_py, format_obj) {
             Ok(format) => format,
@@ -1625,7 +1625,7 @@ mod tests {
     #[test]
     fn struct_unsigned_bits_promotes_large_u64_without_zeroing() {
         let expected = "72623859790382856";
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let bits = struct_unsigned_bits(_py, 0x0102_0304_0506_0708);
             let repr_bits = crate::molt_repr_from_obj(bits);
             let Some(repr_ptr) = obj_from_bits(repr_bits).as_ptr() else {
@@ -1640,7 +1640,7 @@ mod tests {
 
     #[test]
     fn molt_struct_unpack_from_reads_u64_from_bytes_object() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let fmt_ptr = alloc_string(_py, b"<Q");
             assert!(!fmt_ptr.is_null());
             let fmt_bits = MoltObject::from_ptr(fmt_ptr).bits();

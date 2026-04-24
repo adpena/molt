@@ -205,14 +205,14 @@ fn decode_half_bytes_to_f32_object(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_interop_decode_f16_bytes_to_f32(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         decode_half_bytes_to_f32_object(_py, data_bits, decode_f16_payload_to_f32_bytes)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_interop_decode_bf16_bytes_to_f32(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         decode_half_bytes_to_f32_object(_py, data_bits, decode_bf16_payload_to_f32_bytes)
     })
 }
@@ -2364,7 +2364,7 @@ unsafe fn build_tensor_instance(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_thread_id() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let tid = current_gpu_launch_context().thread_id;
         if trace_gpu_thread_id_enabled() {
             eprintln!("[molt gpu thread_id] tid={tid}");
@@ -2375,28 +2375,28 @@ pub extern "C" fn molt_gpu_thread_id() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_block_id() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_int(current_gpu_launch_context().block_id).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_block_dim() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_int(current_gpu_launch_context().block_dim).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_grid_dim() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_int(current_gpu_launch_context().grid_dim).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_barrier() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
@@ -2406,7 +2406,7 @@ pub extern "C" fn molt_gpu_kernel_launch(
     threads_bits: u64,
     builder_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace_launch = trace_gpu_kernel_launch_enabled();
         let grid = match parse_i64_launch_arg(_py, grid_bits, "grid") {
             Ok(value) => value,
@@ -5084,7 +5084,7 @@ unsafe fn build_tensor_from_data_bits(
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5424,7 +5424,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
     weight_bits: u64,
     split_sizes_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5579,7 +5579,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
     x_bits: u64,
     weight_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5693,7 +5693,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5764,7 +5764,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5809,7 +5809,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5896,7 +5896,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_data_list(x_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5917,7 +5917,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
     indices_bits: u64,
     allow_negative_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace_take_rows = std::env::var("MOLT_TRACE_GPU_TAKE_ROWS").as_deref() == Ok("1");
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
@@ -6078,7 +6078,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (a, a_shape) = match unsafe { tensor_runtime_view(_py, a_bits, "a") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6170,7 +6170,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
     updates_bits: u64,
     allow_negative_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace_scatter_rows = std::env::var("MOLT_TRACE_GPU_SCATTER_ROWS").as_deref() == Ok("1");
         let (base, base_shape) = match unsafe { tensor_runtime_view(_py, base_bits, "base") } {
             Ok(value) => value,
@@ -6361,7 +6361,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let tensor_class_bits =
             match unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Tensor", "Tensor") } {
                 Ok(bits) => bits,
@@ -6460,7 +6460,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
     mask_bits: u64,
     scale_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (q, q_shape) = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6893,7 +6893,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
     mask_bits: u64,
     scale_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (q, q_shape) = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -8785,7 +8785,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_interop__load_safetensors(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let load_bits = match unsafe {
             module_global_bits(
                 _py,
@@ -8814,7 +8814,7 @@ pub extern "C" fn molt_gpu_tensor_from_parts(
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let size = match parse_usize_arg(_py, size_bits, "size") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -8889,7 +8889,7 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
     repeats_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -9001,7 +9001,7 @@ pub extern "C" fn molt_gpu_tensor_from_buffer(
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let (shape_bits, owns_shape_bits) = match normalize_shape_bits(_py, shape_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -9026,7 +9026,7 @@ pub extern "C" fn molt_gpu_tensor_from_buffer(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_buffer_to_list(buffer_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let count = match parse_usize_arg(_py, count_bits, "count") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -9095,7 +9095,7 @@ pub extern "C" fn molt_gpu_linear_contiguous(
     out_features_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace_linear = std::env::var("MOLT_TRACE_GPU_LINEAR").as_deref() == Ok("1");
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
@@ -9298,7 +9298,7 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
     split_sizes_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -9532,7 +9532,7 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
     in_features_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -9744,7 +9744,7 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
     op_code_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a_format = match parse_format(_py, a_format_bits, "a_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -9860,7 +9860,7 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
     b_shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a_format = match parse_format(_py, a_format_bits, "a_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -10048,7 +10048,7 @@ pub extern "C" fn molt_gpu_rope_apply_contiguous(
     seq_len_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -10216,7 +10216,7 @@ pub extern "C" fn molt_gpu_permute_contiguous(
     dims_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -10292,7 +10292,7 @@ pub extern "C" fn molt_gpu_softmax_last_axis_contiguous(
     shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -10373,7 +10373,7 @@ pub extern "C" fn molt_gpu_rms_norm_last_axis_contiguous(
     eps_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -10449,7 +10449,7 @@ pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
     shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -11000,7 +11000,7 @@ mod tests {
     #[test]
     fn gpu_tensor_from_parts_wraps_tensor_and_buffer_objects() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let tensor_name_ptr = alloc_string(_py, b"Tensor");
             let buffer_name_ptr = alloc_string(_py, b"Buffer");
             let tensor_cls_ptr = alloc_class_obj(_py, MoltObject::from_ptr(tensor_name_ptr).bits());
@@ -11069,7 +11069,7 @@ mod tests {
     #[test]
     fn gpu_repeat_axis_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let data_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
             let fmt_ptr = alloc_string(_py, b"f");
             let shape_ptr = alloc_tuple(
@@ -11108,7 +11108,7 @@ mod tests {
     #[test]
     fn gpu_buffer_to_list_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let tensor_name_ptr = alloc_string(_py, b"Tensor");
             let buffer_name_ptr = alloc_string(_py, b"Buffer");
             let tensor_cls_ptr = alloc_class_obj(_py, MoltObject::from_ptr(tensor_name_ptr).bits());
@@ -11151,7 +11151,7 @@ mod tests {
     #[test]
     fn gpu_module_tensor_linear_wrapper_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let tensor_name_ptr = alloc_string(_py, b"Tensor");
             let buffer_name_ptr = alloc_string(_py, b"Buffer");
             let tensor_cls_ptr = alloc_class_obj(_py, MoltObject::from_ptr(tensor_name_ptr).bits());
@@ -11199,7 +11199,7 @@ mod tests {
     #[test]
     fn gpu_module_tensor_reshape_view_wrapper_reuses_buffer() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let tensor_name_ptr = alloc_string(_py, b"Tensor");
             let buffer_name_ptr = alloc_string(_py, b"Buffer");
             let tensor_cls_ptr = alloc_class_obj(_py, MoltObject::from_ptr(tensor_name_ptr).bits());
@@ -11246,7 +11246,7 @@ mod tests {
     #[test]
     fn gpu_module_tensor_data_list_and_zeros_wrappers_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let tensor_name_ptr = alloc_string(_py, b"Tensor");
             let buffer_name_ptr = alloc_string(_py, b"Buffer");
             let tensor_cls_ptr = alloc_class_obj(_py, MoltObject::from_ptr(tensor_name_ptr).bits());
@@ -11309,7 +11309,7 @@ mod tests {
     #[test]
     fn gpu_linear_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
             let w_ptr = alloc_bytes(_py, &f32_bytes(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0]));
             let fmt_ptr = alloc_string(_py, b"f");
@@ -11343,7 +11343,7 @@ mod tests {
     #[test]
     fn gpu_linear_split_last_dim_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
             let w_ptr = alloc_bytes(
                 _py,
@@ -11398,7 +11398,7 @@ mod tests {
     #[test]
     fn gpu_linear_split_last_dim_contiguous_f32_three_way_wider_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0]));
             let w_ptr = alloc_bytes(
                 _py,
@@ -11451,7 +11451,7 @@ mod tests {
     #[test]
     fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
             let w_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0]));
             let fmt_ptr = alloc_string(_py, b"f");
@@ -11481,7 +11481,7 @@ mod tests {
     #[test]
     fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wide_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[2.0, 3.0]));
             let w_ptr = alloc_bytes(
                 _py,
@@ -11517,7 +11517,7 @@ mod tests {
     #[test]
     fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wider_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[2.0, 3.0]));
             let w_ptr = alloc_bytes(
                 _py,
@@ -11557,7 +11557,7 @@ mod tests {
     #[test]
     fn gpu_broadcast_binary_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let a_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
             let b_ptr = alloc_bytes(_py, &f32_bytes(&[10.0, 20.0]));
             let fmt_ptr = alloc_string(_py, b"f");
@@ -11602,7 +11602,7 @@ mod tests {
     #[test]
     fn gpu_matmul_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let a_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
             let b_ptr = alloc_bytes(_py, &f32_bytes(&[5.0, 6.0, 7.0, 8.0]));
             let fmt_ptr = alloc_string(_py, b"f");
@@ -11646,7 +11646,7 @@ mod tests {
     #[test]
     fn gpu_rope_apply_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
             let cos_ptr = alloc_bytes(_py, &f32_bytes(&[0.0, 1.0]));
             let sin_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 0.0]));
@@ -11681,7 +11681,7 @@ mod tests {
     #[test]
     fn gpu_rope_apply_contiguous_rejects_odd_dim() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0]));
             let cos_ptr = alloc_bytes(_py, &f32_bytes(&[1.0]));
             let sin_ptr = alloc_bytes(_py, &f32_bytes(&[0.0]));
@@ -11710,7 +11710,7 @@ mod tests {
     #[test]
     fn gpu_softmax_last_axis_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
             let fmt_ptr = alloc_string(_py, b"f");
             let shape_ptr = alloc_tuple(
@@ -11744,7 +11744,7 @@ mod tests {
     #[test]
     fn gpu_rms_norm_last_axis_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(_py, &f32_bytes(&[3.0, 4.0, 0.0, 5.0]));
             let fmt_ptr = alloc_string(_py, b"f");
             let shape_ptr = alloc_tuple(
@@ -11781,7 +11781,7 @@ mod tests {
     #[test]
     fn gpu_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
         let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let x_ptr = alloc_bytes(
                 _py,
                 &f32_bytes(&[1.0, 10.0, -2.0, 20.0, 3.0, 30.0, 4.0, 40.0]),

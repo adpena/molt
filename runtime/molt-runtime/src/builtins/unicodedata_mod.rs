@@ -877,7 +877,7 @@ fn alloc_str(_py: &PyToken<'_>, s: &str) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_name(ch_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -903,7 +903,7 @@ pub extern "C" fn molt_unicodedata_name(ch_bits: u64, default_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_lookup(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "argument must be str");
         };
@@ -918,7 +918,7 @@ pub extern "C" fn molt_unicodedata_lookup(name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_category(ch_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -929,7 +929,7 @@ pub extern "C" fn molt_unicodedata_category(ch_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_bidirectional(ch_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -940,7 +940,7 @@ pub extern "C" fn molt_unicodedata_bidirectional(ch_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_combining(ch_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -951,7 +951,7 @@ pub extern "C" fn molt_unicodedata_combining(ch_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_mirrored(ch_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -976,7 +976,7 @@ pub extern "C" fn molt_unicodedata_mirrored(ch_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_decomposition(ch_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -994,7 +994,7 @@ pub extern "C" fn molt_unicodedata_decomposition(ch_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_normalize(form_bits: u64, text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(form) = string_obj_to_owned(obj_from_bits(form_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "form must be str");
         };
@@ -1021,7 +1021,7 @@ pub extern "C" fn molt_unicodedata_normalize(form_bits: u64, text_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_is_normalized(form_bits: u64, text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(form) = string_obj_to_owned(obj_from_bits(form_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "form must be str");
         };
@@ -1047,7 +1047,7 @@ pub extern "C" fn molt_unicodedata_is_normalized(form_bits: u64, text_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_numeric(ch_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -1093,7 +1093,7 @@ pub extern "C" fn molt_unicodedata_numeric(ch_bits: u64, default_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_decimal(ch_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -1112,7 +1112,7 @@ pub extern "C" fn molt_unicodedata_decimal(ch_bits: u64, default_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_digit(ch_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -1143,7 +1143,7 @@ pub extern "C" fn molt_unicodedata_digit(ch_bits: u64, default_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_east_asian_width(ch_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -1154,5 +1154,5 @@ pub extern "C" fn molt_unicodedata_east_asian_width(ch_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_unidata_version() -> u64 {
-    crate::with_gil_entry!(_py, { alloc_str(_py, UNIDATA_VERSION) })
+    crate::with_gil_entry_nopanic!(_py, { alloc_str(_py, UNIDATA_VERSION) })
 }

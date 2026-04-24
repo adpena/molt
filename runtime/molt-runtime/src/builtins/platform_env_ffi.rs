@@ -3,7 +3,7 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_getnode() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match uuid_node() {
             Ok(node) => MoltObject::from_int(node as i64).bits(),
             Err(err) => raise_exception::<_>(_py, "RuntimeError", &err),
@@ -13,7 +13,7 @@ pub extern "C" fn molt_uuid_getnode() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let payload = match uuid_v4_bytes() {
             Ok(bytes) => bytes,
             Err(err) => return raise_exception::<_>(_py, "RuntimeError", &err),
@@ -29,7 +29,7 @@ pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "time.wall") || has_capability(_py, "time");
         audit_capability_decision("time.uuid1", "time.wall", AuditArgs::None, allowed);
         if !allowed {
@@ -82,7 +82,7 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let namespace = match bytes_arg_from_bits(_py, namespace_bits, "namespace") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -110,7 +110,7 @@ pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let namespace = match bytes_arg_from_bits(_py, namespace_bits, "namespace") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -138,7 +138,7 @@ pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_name() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         init_atomic_bits(_py, &OS_NAME_CACHE, || {
             let ptr = alloc_string(_py, os_name_str().as_bytes());
             if ptr.is_null() {
@@ -152,7 +152,7 @@ pub extern "C" fn molt_os_name() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_platform() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         init_atomic_bits(_py, &SYS_PLATFORM_CACHE, || {
             let ptr = alloc_string(_py, sys_platform_str().as_bytes());
             if ptr.is_null() {
@@ -166,7 +166,7 @@ pub extern "C" fn molt_sys_platform() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_locale_setlocale(_category_bits: u64, locale_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(locale_bits).is_none() {
             let current = locale_state()
                 .lock()
@@ -195,7 +195,7 @@ pub extern "C" fn molt_locale_setlocale(_category_bits: u64, locale_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_locale_getpreferredencoding(_do_setlocale_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let current = locale_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -209,7 +209,7 @@ pub extern "C" fn molt_locale_getpreferredencoding(_do_setlocale_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_locale_getlocale(_category_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let current = locale_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -245,7 +245,7 @@ pub extern "C" fn molt_locale_getlocale(_category_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gettext_gettext(message_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, message_bits);
         message_bits
     })
@@ -253,7 +253,7 @@ pub extern "C" fn molt_gettext_gettext(message_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gettext_ngettext(singular_bits: u64, plural_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let one = MoltObject::from_int(1);
         let result_bits = if obj_eq(_py, obj_from_bits(n_bits), one) {
             singular_bits
@@ -641,7 +641,7 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_errno_constants() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         init_atomic_bits(_py, &ERRNO_CONSTANTS_CACHE, || {
             let constants = collect_errno_constants();
             let mut pairs = Vec::with_capacity(constants.len() * 2);
@@ -697,7 +697,7 @@ pub extern "C" fn molt_errno_constants() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_constants() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         init_atomic_bits(_py, &SOCKET_CONSTANTS_CACHE, || {
             let constants = socket_constants();
             let mut pairs = Vec::with_capacity(constants.len() * 2);
@@ -735,7 +735,7 @@ pub extern "C" fn molt_socket_constants() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return default_bits,
@@ -780,7 +780,7 @@ pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_set(key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::none().bits(),
@@ -811,7 +811,7 @@ pub extern "C" fn molt_env_set(key_bits: u64, value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_unset(key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::from_bool(false).bits(),
@@ -838,7 +838,7 @@ pub extern "C" fn molt_env_unset(key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_len() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "env.read");
         audit_capability_decision("env.len", "env.read", AuditArgs::None, allowed);
         if !allowed {
@@ -856,7 +856,7 @@ pub extern "C" fn molt_env_len() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_contains(key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::from_bool(false).bits(),
@@ -883,7 +883,7 @@ pub extern "C" fn molt_env_contains(key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_snapshot() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "env.read");
         audit_capability_decision("env.snapshot", "env.read", AuditArgs::None, allowed);
         if !allowed {
@@ -936,7 +936,7 @@ pub extern "C" fn molt_env_snapshot() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_popitem() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "env.write");
         audit_capability_decision("env.popitem", "env.write", AuditArgs::None, allowed);
         if !allowed {
@@ -980,7 +980,7 @@ pub extern "C" fn molt_env_popitem() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_clear() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "env.write");
         audit_capability_decision("env.clear", "env.write", AuditArgs::None, allowed);
         if !allowed {
@@ -998,7 +998,7 @@ pub extern "C" fn molt_env_clear() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::none().bits(),
@@ -1029,7 +1029,7 @@ pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_unsetenv(key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::none().bits(),

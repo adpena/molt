@@ -42,7 +42,7 @@ use super::sockets::{socket_close_raw_windows, socketpair_windows_loopback_raw};
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if require_net_capability::<u64>(_py, &["net", "net.connect", "net.listen", "net.bind"])
                 .is_err()
             {
@@ -181,7 +181,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_net_capability::<u64>(_py, &["net", "net.connect", "net.listen", "net.bind"])
             .is_err()
         {
@@ -275,7 +275,7 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
     flags_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if require_net_capability::<u64>(_py, &["net", "net.connect", "net.bind", "net"])
                 .is_err()
             {
@@ -401,7 +401,7 @@ pub extern "C" fn molt_socket_getaddrinfo(
     _proto_bits: u64,
     _flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if require_net_capability::<u64>(_py, &["net", "net.connect", "net.bind", "net"]).is_err() {
             return MoltObject::none().bits();
         }
@@ -659,7 +659,7 @@ pub extern "C" fn molt_socket_getaddrinfo(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as i32;
             let obj = obj_from_bits(addr_bits);
             let Some(ptr) = obj.as_ptr() else {
@@ -724,7 +724,7 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getnameinfo(_addr_bits: u64, _flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
         let obj = obj_from_bits(_addr_bits);
         let Some(ptr) = obj.as_ptr() else {
@@ -774,7 +774,7 @@ pub extern "C" fn molt_socket_getnameinfo(_addr_bits: u64, _flags_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_gethostname() -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let mut buf = vec![0u8; 256];
             let ret = libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len());
             if ret != 0 {
@@ -795,7 +795,7 @@ pub unsafe extern "C" fn molt_socket_gethostname() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_gethostname() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut buf = vec![0u8; 256];
         let mut out_len: u32 = 0;
         let mut rc = unsafe {
@@ -1132,7 +1132,7 @@ fn socket_reverse_pointer_name(addr: &IpAddr) -> String {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_gethostbyname(host_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let family_bits = MoltObject::from_int(libc::AF_INET as i64).bits();
         let zero_bits = MoltObject::from_int(0).bits();
         let none_bits = MoltObject::none().bits();
@@ -1160,7 +1160,7 @@ pub extern "C" fn molt_socket_gethostbyname(host_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_gethostbyname_ex(host_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let host = match host_from_bits(_py, host_bits) {
             Ok(Some(val)) => val,
             Ok(None) => {
@@ -1215,7 +1215,7 @@ pub extern "C" fn molt_socket_gethostbyname_ex(host_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let host = match host_from_bits(_py, host_bits) {
             Ok(Some(val)) => val,
             Ok(None) => return raise_exception::<_>(_py, "TypeError", "host name cannot be None"),
@@ -1357,7 +1357,7 @@ pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getfqdn(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut target = match host_from_bits(_py, name_bits) {
             Ok(value) => value.unwrap_or_default(),
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
@@ -1462,7 +1462,7 @@ pub extern "C" fn molt_socket_getfqdn(name_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_getservbyname(name_bits: u64, proto_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let name = match host_from_bits(_py, name_bits) {
                 Ok(Some(val)) => val,
                 Ok(None) => {
@@ -1503,7 +1503,7 @@ pub unsafe extern "C" fn molt_socket_getservbyname(name_bits: u64, proto_bits: u
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getservbyname(_name_bits: u64, _proto_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match host_from_bits(_py, _name_bits) {
             Ok(Some(val)) => val,
             Ok(None) => {
@@ -1544,7 +1544,7 @@ pub extern "C" fn molt_socket_getservbyname(_name_bits: u64, _proto_bits: u64) -
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_getservbyport(port_bits: u64, proto_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let port = match to_i64(obj_from_bits(port_bits)) {
                 Some(val) if val >= 0 && val <= u16::MAX as i64 => val as u16,
                 _ => return raise_exception::<_>(_py, "TypeError", "port must be int"),
@@ -1582,7 +1582,7 @@ pub unsafe extern "C" fn molt_socket_getservbyport(port_bits: u64, proto_bits: u
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getservbyport(_port_bits: u64, _proto_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let port = match to_i64(obj_from_bits(_port_bits)) {
             Some(val) if val >= 0 && val <= u16::MAX as i64 => val as u16,
             _ => return raise_exception::<_>(_py, "TypeError", "port must be int"),
@@ -1637,7 +1637,7 @@ pub extern "C" fn molt_socket_getservbyport(_port_bits: u64, _proto_bits: u64) -
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_getprotobyname(name_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let name = match host_from_bits(_py, name_bits) {
                 Ok(Some(val)) => val,
                 Ok(None) => {
@@ -1671,7 +1671,7 @@ pub unsafe extern "C" fn molt_socket_getprotobyname(name_bits: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getprotobyname(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match host_from_bits(_py, name_bits) {
             Ok(Some(val)) => val,
             Ok(None) => {
@@ -1708,7 +1708,7 @@ pub extern "C" fn molt_socket_getprotobyname(name_bits: u64) -> u64 {
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let family = to_i64(obj_from_bits(family_bits)).unwrap_or(0) as i32;
         let addr = match host_from_bits(_py, address_bits) {
             Ok(Some(val)) => val,
@@ -1756,7 +1756,7 @@ pub unsafe extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_inet_pton(_family_bits: u64, _address_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let family = to_i64(obj_from_bits(_family_bits)).unwrap_or(0) as i32;
         let addr = match host_from_bits(_py, _address_bits) {
             Ok(Some(val)) => val,
@@ -1807,7 +1807,7 @@ pub extern "C" fn molt_socket_inet_pton(_family_bits: u64, _address_bits: u64) -
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let family = to_i64(obj_from_bits(family_bits)).unwrap_or(0) as i32;
             let obj = obj_from_bits(packed_bits);
             let data = if let Some(ptr) = obj.as_ptr() {
@@ -1872,7 +1872,7 @@ pub unsafe extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u6
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_inet_ntop(_family_bits: u64, _packed_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let family = to_i64(obj_from_bits(_family_bits)).unwrap_or(0) as i32;
         let obj = obj_from_bits(_packed_bits);
         let data = if let Some(ptr) = obj.as_ptr() {
@@ -1972,7 +1972,7 @@ fn socket_u32_from_int_only(_py: &PyToken<'_>, value_bits: u64) -> Option<u32> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_htons(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(value) = socket_u16_from_index(_py, value_bits, "htons") else {
             return MoltObject::none().bits();
         };
@@ -1982,7 +1982,7 @@ pub extern "C" fn molt_socket_htons(value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_ntohs(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(value) = socket_u16_from_index(_py, value_bits, "ntohs") else {
             return MoltObject::none().bits();
         };
@@ -1992,7 +1992,7 @@ pub extern "C" fn molt_socket_ntohs(value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_htonl(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(value) = socket_u32_from_int_only(_py, value_bits) else {
             return MoltObject::none().bits();
         };
@@ -2002,7 +2002,7 @@ pub extern "C" fn molt_socket_htonl(value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_ntohl(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(value) = socket_u32_from_int_only(_py, value_bits) else {
             return MoltObject::none().bits();
         };
@@ -2013,7 +2013,7 @@ pub extern "C" fn molt_socket_ntohl(value_bits: u64) -> u64 {
 #[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_has_ipv6() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let supported = std::net::TcpListener::bind("[::1]:0").is_ok();
         MoltObject::from_bool(supported).bits()
     })
@@ -2022,7 +2022,7 @@ pub extern "C" fn molt_socket_has_ipv6() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_has_ipv6() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let supported = unsafe { crate::molt_socket_has_ipv6_host() };
         MoltObject::from_bool(supported != 0).bits()
     })
@@ -2033,7 +2033,7 @@ pub extern "C" fn molt_socket_has_ipv6() -> u64 {
 #[cfg(unix)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_if_nameindex() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let head = libc::if_nameindex();
             if head.is_null() {
@@ -2081,7 +2081,7 @@ pub extern "C" fn molt_socket_if_nameindex() -> u64 {
 #[cfg(not(unix))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_if_nameindex() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_ptr = alloc_list(_py, &[]);
         if list_ptr.is_null() {
             return MoltObject::none().bits();
@@ -2093,7 +2093,7 @@ pub extern "C" fn molt_socket_if_nameindex() -> u64 {
 #[cfg(unix)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_if_nametoindex(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(val) => val,
             None => {
@@ -2131,7 +2131,7 @@ pub extern "C" fn molt_socket_if_nametoindex(name_bits: u64) -> u64 {
 #[cfg(not(unix))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_if_nametoindex(_name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "OSError",
@@ -2143,7 +2143,7 @@ pub extern "C" fn molt_socket_if_nametoindex(_name_bits: u64) -> u64 {
 #[cfg(unix)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_if_indextoname(index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let index = match to_i64(obj_from_bits(index_bits)) {
             Some(val) if val >= 0 && val <= u32::MAX as i64 => val as libc::c_uint,
             _ => {
@@ -2177,7 +2177,7 @@ pub extern "C" fn molt_socket_if_indextoname(index_bits: u64) -> u64 {
 #[cfg(not(unix))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_if_indextoname(_index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "OSError",
@@ -2191,7 +2191,7 @@ pub extern "C" fn molt_socket_if_indextoname(_index_bits: u64) -> u64 {
 #[cfg(unix)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_cmsg_len(datalen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let datalen = match to_i64(obj_from_bits(datalen_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "datalen must be an integer"),
@@ -2218,7 +2218,7 @@ pub extern "C" fn molt_socket_cmsg_len(datalen_bits: u64) -> u64 {
 #[cfg(not(unix))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_cmsg_len(datalen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let datalen = match to_i64(obj_from_bits(datalen_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "datalen must be an integer"),
@@ -2239,7 +2239,7 @@ pub extern "C" fn molt_socket_cmsg_len(datalen_bits: u64) -> u64 {
 #[cfg(unix)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let datalen = match to_i64(obj_from_bits(datalen_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "datalen must be an integer"),
@@ -2266,7 +2266,7 @@ pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
 #[cfg(not(unix))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let datalen = match to_i64(obj_from_bits(datalen_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "datalen must be an integer"),
@@ -2291,7 +2291,7 @@ pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
 #[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_has_dualstack_ipv6() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let supported = (|| -> bool {
             let sock = match Socket::new(Domain::IPV6, socket2::Type::STREAM, None) {
                 Ok(s) => s,
@@ -2306,7 +2306,7 @@ pub extern "C" fn molt_socket_has_dualstack_ipv6() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_has_dualstack_ipv6() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(false).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(false).bits() })
 }
 
 // --- send_fds / recv_fds high-level helpers ---
@@ -2323,7 +2323,7 @@ pub unsafe extern "C" fn molt_socket_send_fds(
     address_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let fd_values = match iter_values_from_bits(_py, fds_bits) {
                 Ok(vals) => vals,
                 Err(bits) => return bits,
@@ -2386,7 +2386,7 @@ pub unsafe extern "C" fn molt_socket_send_fds(
     _flags_bits: u64,
     _address_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "OSError", "send_fds is not supported on this platform")
     })
 }
@@ -2401,7 +2401,7 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
     maxfds_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let maxfds = match to_i64(obj_from_bits(maxfds_bits)) {
             Some(v) if v > 0 => v as usize,
             _ => return raise_exception::<u64>(_py, "ValueError", "maxfds must be at least 1"),
@@ -2516,7 +2516,7 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
     _maxfds_bits: u64,
     _flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "OSError", "recv_fds is not supported on this platform")
     })
 }
@@ -2535,7 +2535,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     offset_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if socket_ptr.is_null() {
             return raise_exception::<u64>(_py, "OSError", "invalid socket handle");
@@ -2607,7 +2607,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     offset_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if socket_ptr.is_null() {
             return raise_exception::<u64>(_py, "OSError", "invalid socket handle");
@@ -2702,7 +2702,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     count_bits: u64,
 ) -> u64 {
     // Fallback: read from file fd + send to socket in chunks
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if socket_ptr.is_null() {
             return raise_exception::<u64>(_py, "OSError", "invalid socket handle");
@@ -2782,7 +2782,7 @@ pub extern "C" fn molt_socket_sendfile(
     _offset_bits: u64,
     _count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "OSError", "sendfile is not supported on this platform")
     })
 }
@@ -2797,7 +2797,7 @@ pub extern "C" fn molt_socket_sendfile(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_sethostname(name_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
                 Some(s) => s,
                 None => {
@@ -2823,7 +2823,7 @@ pub unsafe extern "C" fn molt_socket_sethostname(name_bits: u64) -> u64 {
 #[cfg(not(unix))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_sethostname(_name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
             "OSError",
@@ -2854,7 +2854,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
     const ALG_SET_IV: c_int = 2;
     const ALG_SET_AEAD_ASSOCLEN: c_int = 4;
 
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if socket_ptr.is_null() {
             return raise_exception::<u64>(_py, "OSError", "invalid socket handle");
@@ -3002,7 +3002,7 @@ pub extern "C" fn molt_socket_sendmsg_afalg(
     _assoclen_bits: u64,
     _flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "OSError", "sendmsg_afalg is only supported on Linux")
     })
 }

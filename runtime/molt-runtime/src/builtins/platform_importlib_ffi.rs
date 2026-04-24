@@ -2,7 +2,7 @@ use super::*;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_path(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -14,7 +14,7 @@ pub extern "C" fn molt_sys_bootstrap_path(module_file_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_pythonpath(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -27,7 +27,7 @@ pub extern "C" fn molt_sys_bootstrap_pythonpath(module_file_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_module_roots(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -40,7 +40,7 @@ pub extern "C" fn molt_sys_bootstrap_module_roots(module_file_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_pwd(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -55,7 +55,7 @@ pub extern "C" fn molt_sys_bootstrap_pwd(module_file_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_include_cwd(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -67,7 +67,7 @@ pub extern "C" fn molt_sys_bootstrap_include_cwd(module_file_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_stdlib_root(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -85,7 +85,7 @@ pub extern "C" fn molt_sys_bootstrap_stdlib_root(module_file_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_payload(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -188,7 +188,7 @@ pub extern "C" fn molt_importlib_source_loader_payload(
     path_bits: u64,
     spec_is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -212,7 +212,7 @@ pub extern "C" fn molt_importlib_extension_loader_payload(
     path_bits: u64,
     spec_is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.extension_loader_payload",
@@ -260,7 +260,7 @@ pub extern "C" fn molt_importlib_sourceless_loader_payload(
     path_bits: u64,
     spec_is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -284,7 +284,7 @@ pub extern "C" fn molt_importlib_source_exec_payload(
     path_bits: u64,
     spec_is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.source_exec_payload",
@@ -375,7 +375,7 @@ pub extern "C" fn molt_importlib_zip_source_exec_payload(
     inner_path_bits: u64,
     spec_is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.zip.source_exec_payload",
@@ -484,7 +484,7 @@ pub extern "C" fn molt_importlib_exec_extension(
     module_name_bits: u64,
     path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.exec.extension",
@@ -597,7 +597,7 @@ pub extern "C" fn molt_importlib_exec_sourceless(
     module_name_bits: u64,
     path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.exec.sourceless",
@@ -688,7 +688,7 @@ pub extern "C" fn molt_importlib_exec_sourceless(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_linecache_loader_get_source(loader_bits: u64, module_name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -706,7 +706,7 @@ pub extern "C" fn molt_linecache_loader_get_source(loader_bits: u64, module_name
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_spec_is_package(module_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match importlib_module_spec_is_package_bits(_py, module_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
@@ -720,7 +720,7 @@ pub extern "C" fn molt_importlib_coerce_module_name(
     loader_bits: u64,
     spec_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static MODULE_NAME_NAME: AtomicU64 = AtomicU64::new(0);
         static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
         static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
@@ -1058,7 +1058,7 @@ fn importlib_path_importer_cache_signature_tuple_bits(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_coerce_search_paths(value_bits: u64, label_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let label = match string_arg_from_bits(_py, label_bits, "label") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1076,7 +1076,7 @@ pub extern "C" fn molt_importlib_coerce_search_paths(value_bits: u64, label_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_finder_signature(finders_bits: u64, label_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let label = match string_arg_from_bits(_py, label_bits, "label") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1093,7 +1093,7 @@ pub extern "C" fn molt_importlib_path_importer_cache_signature(
     path_importer_cache_bits: u64,
     label_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let label = match string_arg_from_bits(_py, label_bits, "label") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1111,7 +1111,7 @@ pub extern "C" fn molt_importlib_path_importer_cache_signature(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_path_is_archive_member(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1122,7 +1122,7 @@ pub extern "C" fn molt_importlib_path_is_archive_member(path_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_package_root_from_origin(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1139,7 +1139,7 @@ pub extern "C" fn molt_importlib_package_root_from_origin(path_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_validate_resource_name(resource_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let resource = match string_arg_from_bits(_py, resource_bits, "resource name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1156,7 +1156,7 @@ pub extern "C" fn molt_importlib_validate_resource_name(resource_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_normalize_path(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text_bits = unsafe { call_callable1(_py, builtin_classes(_py).str, path_bits) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1186,7 +1186,7 @@ pub extern "C" fn molt_importlib_resources_only(
     default_bits: u64,
     too_long_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1236,7 +1236,7 @@ pub extern "C" fn molt_importlib_resources_reader_resource_path_from_roots(
     roots_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.reader.resource_path_from_roots",
@@ -1273,7 +1273,7 @@ pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes_from_roots
     roots_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.reader.open_resource_bytes_from_roots",
@@ -1315,7 +1315,7 @@ pub extern "C" fn molt_importlib_resources_reader_is_resource_from_roots(
     roots_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.reader.is_resource_from_roots",
@@ -1344,7 +1344,7 @@ pub extern "C" fn molt_importlib_resources_reader_is_resource_from_roots(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_contents_from_roots(roots_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.reader.contents_from_roots",
@@ -1376,7 +1376,7 @@ pub extern "C" fn molt_importlib_resources_reader_contents_from_roots(roots_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_traceback_exception_suppress_context(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match traceback_exception_suppress_context_bits(_py, value_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
@@ -1389,7 +1389,7 @@ pub extern "C" fn molt_importlib_zip_read_entry(
     archive_path_bits: u64,
     inner_path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.zip.read_entry",
@@ -1427,7 +1427,7 @@ pub extern "C" fn molt_importlib_zip_read_entry(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("importlib.read_file", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -1452,7 +1452,7 @@ pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1467,7 +1467,7 @@ pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_decode_source(source_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(source_ptr) = obj_from_bits(source_bits).as_ptr() else {
             inc_ref_bits(_py, source_bits);
             return source_bits;
@@ -1496,7 +1496,7 @@ pub extern "C" fn molt_importlib_decode_source(source_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_source_hash(source_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let source = match bytes_arg_from_bits(_py, source_bits, "source_bytes") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1515,7 +1515,7 @@ pub extern "C" fn molt_importlib_source_hash(source_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_source_from_cache(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, path_bits);
         path_bits
     })
@@ -1677,7 +1677,7 @@ fn importlib_find_in_path_payload(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resolve_name(name_bits: u64, package_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_arg_from_bits(_py, name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1739,7 +1739,7 @@ pub extern "C" fn molt_importlib_resolve_name(name_bits: u64, package_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_known_absent_missing_name(resolved_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let resolved = match string_arg_from_bits(_py, resolved_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1756,7 +1756,7 @@ pub extern "C" fn molt_importlib_known_absent_missing_name(resolved_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_import_optional(module_name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1792,7 +1792,7 @@ pub extern "C" fn molt_importlib_import_or_fallback(
     module_name_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1824,7 +1824,7 @@ pub extern "C" fn molt_importlib_import_or_fallback(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_import_required(module_name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1852,7 +1852,7 @@ pub extern "C" fn molt_importlib_export_attrs(
     module_name_bits: u64,
     export_names_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1968,7 +1968,7 @@ pub extern "C" fn molt_importlib_load_module_shim(
     loader_bits: u64,
     fullname_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static LOAD_MODULE_SHIM_NAME: AtomicU64 = AtomicU64::new(0);
 
         let fullname = match string_arg_from_bits(_py, fullname_bits, "fullname") {
@@ -2013,7 +2013,7 @@ pub extern "C" fn molt_importlib_load_module_shim(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_joinpath(traversable_bits: u64, child_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static JOINPATH_NAME: AtomicU64 = AtomicU64::new(0);
 
         let joinpath_name = intern_static_name(_py, &JOINPATH_NAME, b"joinpath");
@@ -2051,7 +2051,7 @@ pub extern "C" fn molt_importlib_resources_joinpath(traversable_bits: u64, child
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_open_mode_is_text(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mode = match string_arg_from_bits(_py, mode_bits, "mode") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -2072,7 +2072,7 @@ pub extern "C" fn molt_importlib_resources_open_mode_is_text(mode_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_package_leaf_name(package_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -2099,7 +2099,7 @@ pub extern "C" fn molt_importlib_import_module(
     util_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let resolved = match string_arg_from_bits(_py, resolved_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -2218,7 +2218,7 @@ pub extern "C" fn molt_importlib_import_module(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static BUILTIN_IMPORTER_NAME: AtomicU64 = AtomicU64::new(0);
         static FROZEN_IMPORTER_NAME: AtomicU64 = AtomicU64::new(0);
         static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
@@ -2341,7 +2341,7 @@ pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static GENERIC_NAME: AtomicU64 = AtomicU64::new(0);
         static PARAM_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
         static PARAM_SPEC_ARGS_NAME: AtomicU64 = AtomicU64::new(0);
@@ -2512,7 +2512,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
     contextlib_bits: u64,
     _itertools_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static ANY_NAME: AtomicU64 = AtomicU64::new(0);
         static DICT_NAME: AtomicU64 = AtomicU64::new(0);
         static ITERATOR_NAME: AtomicU64 = AtomicU64::new(0);
@@ -2742,7 +2742,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
     machinery_bits: u64,
     util_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static BYTECODE_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
         static DEBUG_BYTECODE_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
         static EXTENSION_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
@@ -3157,7 +3157,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_find_in_path(fullname_bits: u64, search_paths_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         importlib_find_in_path_payload(_py, fullname_bits, search_paths_bits, false)
     })
 }
@@ -3167,7 +3167,7 @@ pub extern "C" fn molt_importlib_find_in_path_package_context(
     fullname_bits: u64,
     search_paths_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         importlib_find_in_path_payload(_py, fullname_bits, search_paths_bits, true)
     })
 }
@@ -3183,7 +3183,7 @@ pub extern "C" fn molt_importlib_find_spec(
     package_context_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -3225,7 +3225,7 @@ pub extern "C" fn molt_importlib_find_spec_orchestrate(
     spec_cache_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -3277,7 +3277,7 @@ pub extern "C" fn molt_importlib_find_spec_from_path_hooks(
     package_context_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -3767,7 +3767,7 @@ pub extern "C" fn molt_importlib_pathfinder_find_spec(
     path_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static PATH_NAME: AtomicU64 = AtomicU64::new(0);
 
         let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
@@ -3855,7 +3855,7 @@ pub extern "C" fn molt_importlib_filefinder_find_spec(
     path_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -3899,7 +3899,7 @@ pub extern "C" fn molt_importlib_filefinder_find_spec(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_invalidate_caches() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static SPEC_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
         static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
 
@@ -3929,7 +3929,7 @@ pub extern "C" fn molt_importlib_invalidate_caches() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_filefinder_invalidate(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
         static POP_NAME: AtomicU64 = AtomicU64::new(0);
 
@@ -4037,7 +4037,7 @@ pub extern "C" fn molt_importlib_reload(
     machinery_bits: u64,
     import_module_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static NAME_NAME: AtomicU64 = AtomicU64::new(0);
         static FILE_NAME: AtomicU64 = AtomicU64::new(0);
         static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
@@ -4364,7 +4364,7 @@ pub extern "C" fn molt_importlib_find_spec_payload(
     path_importer_cache_bits: u64,
     package_context_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -4599,7 +4599,7 @@ pub extern "C" fn molt_importlib_bootstrap_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
                 Ok(value) => value,
@@ -4704,7 +4704,7 @@ pub extern "C" fn molt_importlib_bootstrap_payload(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_runtime_state_payload() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match importlib_runtime_state_payload_bits(_py) {
             Ok(bits) => bits,
             Err(err) => err,
@@ -4714,7 +4714,7 @@ pub extern "C" fn molt_importlib_runtime_state_payload() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_runtime_modules() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match importlib_runtime_modules_bits(_py) {
             Ok(bits) => bits,
             Err(err) => err,
@@ -4724,7 +4724,7 @@ pub extern "C" fn molt_importlib_runtime_modules() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_runtime_state_view() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match importlib_runtime_state_payload_bits(_py) {
             Ok(bits) => bits,
             Err(err) => err,
@@ -4738,7 +4738,7 @@ pub extern "C" fn molt_importlib_existing_spec(
     modules_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
         static FILE_NAME: AtomicU64 = AtomicU64::new(0);
         static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
@@ -4871,7 +4871,7 @@ pub extern "C" fn molt_importlib_parent_search_paths(
     module_name_bits: u64,
     modules_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
 
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
@@ -5027,7 +5027,7 @@ pub extern "C" fn molt_importlib_parent_search_paths(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static DEFAULT_META_PATH_BOOTSTRAPPED: AtomicU64 = AtomicU64::new(0);
         static META_PATH_NAME: AtomicU64 = AtomicU64::new(0);
         static PATH_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
@@ -5124,7 +5124,7 @@ pub extern "C" fn molt_importlib_search_paths(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
                 Ok(value) => value,
@@ -5148,7 +5148,7 @@ pub extern "C" fn molt_importlib_namespace_paths(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.namespace_paths",
@@ -5182,7 +5182,7 @@ pub extern "C" fn molt_importlib_namespace_paths(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_path_payload(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.path_payload",
@@ -5257,7 +5257,7 @@ pub extern "C" fn molt_importlib_resources_package_info(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.package_info",
@@ -5326,7 +5326,7 @@ pub extern "C" fn molt_importlib_resources_open_resource_bytes_from_package(
     module_file_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.open_resource_bytes_from_package",
@@ -5379,7 +5379,7 @@ pub extern "C" fn molt_importlib_resources_open_resource_bytes_from_package_part
     module_file_bits: u64,
     path_parts_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.open_resource_bytes_from_package_parts",
@@ -5434,7 +5434,7 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package(
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static DECODE_NAME: AtomicU64 = AtomicU64::new(0);
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
@@ -5551,7 +5551,7 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package_parts(
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static DECODE_NAME: AtomicU64 = AtomicU64::new(0);
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
@@ -5665,7 +5665,7 @@ pub extern "C" fn molt_importlib_resources_contents_from_package(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.contents_from_package",
@@ -5725,7 +5725,7 @@ pub extern "C" fn molt_importlib_resources_contents_from_package_parts(
     module_file_bits: u64,
     path_parts_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.contents_from_package_parts",
@@ -5777,7 +5777,7 @@ pub extern "C" fn molt_importlib_resources_is_resource_from_package(
     module_file_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.is_resource_from_package",
@@ -5831,7 +5831,7 @@ pub extern "C" fn molt_importlib_resources_is_resource_from_package_parts(
     module_file_bits: u64,
     path_parts_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.is_resource_from_package_parts",
@@ -5879,7 +5879,7 @@ pub extern "C" fn molt_importlib_resources_resource_path_from_package(
     module_file_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.resource_path_from_package",
@@ -5938,7 +5938,7 @@ pub extern "C" fn molt_importlib_resources_resource_path_from_package_parts(
     module_file_bits: u64,
     path_parts_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.resource_path_from_package_parts",
@@ -5988,7 +5988,7 @@ pub extern "C" fn molt_importlib_resources_as_file_enter(
     traversable_bits: u64,
     traversable_type_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if isinstance_bits(_py, traversable_bits, traversable_type_bits) {
             inc_ref_bits(_py, traversable_bits);
             return traversable_bits;
@@ -6017,7 +6017,7 @@ pub extern "C" fn molt_importlib_resources_as_file_exit(
     _exc_bits: u64,
     _tb_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(false).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(false).bits() })
 }
 
 #[unsafe(no_mangle)]
@@ -6025,7 +6025,7 @@ pub extern "C" fn molt_importlib_resources_module_name(
     module_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match importlib_resources_module_name_from_bits(_py, module_bits, fallback_bits)
         {
             Ok(value) => value,
@@ -6043,7 +6043,7 @@ pub extern "C" fn molt_importlib_resources_loader_reader(
     module_bits: u64,
     module_name_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module_name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6063,7 +6063,7 @@ pub extern "C" fn molt_importlib_resources_files_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.files_payload",
@@ -6146,7 +6146,7 @@ pub extern "C" fn molt_importlib_resources_files_payload(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_files_traversable(reader_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         match importlib_reader_files_traversable_bits(_py, reader_bits) {
             Ok(Some(bits)) => bits,
             Ok(None) => MoltObject::none().bits(),
@@ -6157,7 +6157,7 @@ pub extern "C" fn molt_importlib_resources_reader_files_traversable(reader_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_roots(reader_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let roots = match importlib_resources_reader_roots_impl(_py, reader_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6171,7 +6171,7 @@ pub extern "C" fn molt_importlib_resources_reader_roots(reader_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_contents(reader_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let entries = match importlib_resources_reader_contents_impl(_py, reader_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6188,7 +6188,7 @@ pub extern "C" fn molt_importlib_resources_reader_resource_path(
     reader_bits: u64,
     name_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_arg_from_bits(_py, name_bits, "name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6212,7 +6212,7 @@ pub extern "C" fn molt_importlib_resources_reader_is_resource(
     reader_bits: u64,
     name_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_arg_from_bits(_py, name_bits, "name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6229,7 +6229,7 @@ pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes(
     reader_bits: u64,
     name_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_arg_from_bits(_py, name_bits, "name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6253,7 +6253,7 @@ pub extern "C" fn molt_importlib_resources_reader_child_names(
     reader_bits: u64,
     parts_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let parts = match string_sequence_arg_from_bits(_py, parts_bits, "parts") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6271,7 +6271,7 @@ pub extern "C" fn molt_importlib_resources_reader_child_names(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_exists(reader_bits: u64, parts_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let parts = match string_sequence_arg_from_bits(_py, parts_bits, "parts") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6285,7 +6285,7 @@ pub extern "C" fn molt_importlib_resources_reader_exists(reader_bits: u64, parts
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_reader_is_dir(reader_bits: u64, parts_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let parts = match string_sequence_arg_from_bits(_py, parts_bits, "parts") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6302,7 +6302,7 @@ pub extern "C" fn molt_importlib_metadata_dist_paths(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.dist_paths",
@@ -6335,7 +6335,7 @@ pub extern "C" fn molt_importlib_metadata_entry_points_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.entry_points_payload",
@@ -6370,7 +6370,7 @@ pub extern "C" fn molt_importlib_metadata_entry_points_select_payload(
     group_bits: u64,
     name_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.entry_points_select_payload",
@@ -6419,7 +6419,7 @@ pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.entry_points_filter_payload",
@@ -6467,7 +6467,7 @@ pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_normalize_name(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name = match string_arg_from_bits(_py, name_bits, "name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6596,7 +6596,7 @@ fn alloc_importlib_metadata_payload_dict_bits(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.payload",
@@ -6624,7 +6624,7 @@ pub extern "C" fn molt_importlib_metadata_distributions_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.distributions_payload",
@@ -6672,7 +6672,7 @@ pub extern "C" fn molt_importlib_metadata_distributions_payload(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_record_payload(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.record_payload",
@@ -6761,7 +6761,7 @@ pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.packages_distributions_payload",
@@ -6823,7 +6823,7 @@ pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
         static CREATE_MODULE_NAME: AtomicU64 = AtomicU64::new(0);
         static SPEC_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
@@ -7020,7 +7020,7 @@ pub extern "C" fn molt_importlib_spec_from_loader(
     is_package_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
         static IS_PACKAGE_NAME: AtomicU64 = AtomicU64::new(0);
         let _name = match string_arg_from_bits(_py, name_bits, "name") {
@@ -7096,7 +7096,7 @@ pub extern "C" fn molt_importlib_spec_from_file_location(
     submodule_search_locations_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
         static SOURCE_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
         static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
@@ -7244,7 +7244,7 @@ pub extern "C" fn molt_importlib_set_module_state(
     package_root_bits: u64,
     module_spec_cls_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
         static MODULE_NAME_NAME: AtomicU64 = AtomicU64::new(0);
         static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
@@ -7475,7 +7475,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
     module_package_bits: u64,
     package_root_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
         static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
         static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
@@ -7616,7 +7616,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_spec_from_file_location_payload(path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -7672,7 +7672,7 @@ pub extern "C" fn molt_importlib_spec_from_file_location_payload(path_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runpy_resolve_path(path_bits: u64, module_file_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("runpy.resolve_path", "fs.read", AuditArgs::None, allowed);
         if !allowed {

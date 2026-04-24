@@ -95,7 +95,7 @@ fn kwd_mark_bits(_py: &PyToken<'_>) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_kwd_mark() -> u64 {
-    crate::with_gil_entry!(_py, { kwd_mark_bits(_py) })
+    crate::with_gil_entry_nopanic!(_py, { kwd_mark_bits(_py) })
 }
 
 fn iter_self_bits(_py: &PyToken<'_>) -> u64 {
@@ -175,7 +175,7 @@ fn itertools_class(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_iter_self(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, self_bits);
         self_bits
     })
@@ -1033,7 +1033,7 @@ fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_chain(iterables_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterables_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterables_bits);
@@ -1063,7 +1063,7 @@ pub extern "C" fn molt_itertools_chain_from_iterable(iterables_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         loop {
             let current_bits = unsafe { chain_current_bits(self_ptr) };
@@ -1106,7 +1106,7 @@ pub extern "C" fn molt_itertools_islice(
     stop_bits: u64,
     step_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = kwd_mark_bits(_py);
         let stop_only = stop_bits == missing;
         let start_obj = obj_from_bits(start_bits);
@@ -1229,7 +1229,7 @@ pub extern "C" fn molt_itertools_islice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let iter_bits = unsafe { islice_iter_bits(self_ptr) };
         let stop = unsafe { islice_stop(self_ptr) };
@@ -1270,7 +1270,7 @@ pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let times = if obj_from_bits(times_bits).is_none() {
             -1
         } else {
@@ -1300,7 +1300,7 @@ pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let obj_bits = unsafe { repeat_obj_bits(self_ptr) };
         let times = unsafe { repeat_times(self_ptr) };
@@ -1317,7 +1317,7 @@ pub extern "C" fn molt_itertools_repeat_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_count(start_bits: u64, step_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let class_bits = count_class(_py);
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
@@ -1339,7 +1339,7 @@ pub extern "C" fn molt_itertools_count(start_bits: u64, step_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_count_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let current_bits = unsafe { count_current_bits(self_ptr) };
         let step_bits = unsafe { count_step_bits(self_ptr) };
@@ -1358,7 +1358,7 @@ pub extern "C" fn molt_itertools_count_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_cycle(iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -1406,7 +1406,7 @@ pub extern "C" fn molt_itertools_cycle(iterable_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_cycle_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let list_bits = unsafe { cycle_saved_bits(self_ptr) };
         let list_ptr = obj_from_bits(list_bits).as_ptr();
@@ -1436,7 +1436,7 @@ pub extern "C" fn molt_itertools_accumulate(
     func_bits: u64,
     initial_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -1472,7 +1472,7 @@ pub extern "C" fn molt_itertools_accumulate(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let iter_bits = unsafe { accumulate_iter_bits(self_ptr) };
         let func_bits = unsafe { accumulate_func_bits(self_ptr) };
@@ -1520,7 +1520,7 @@ pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_batched(iterable_bits: u64, n_bits: u64, strict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let n = index_i64_from_obj(_py, n_bits, "n must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1558,7 +1558,7 @@ pub extern "C" fn molt_itertools_batched(iterable_bits: u64, n_bits: u64, strict
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         if unsafe { batched_done(self_ptr) } != 0 {
             return raise_exception::<u64>(_py, "StopIteration", "");
@@ -1605,7 +1605,7 @@ pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_compress(data_bits: u64, selectors_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let data_iter_bits = molt_iter(data_bits);
         if obj_from_bits(data_iter_bits).is_none() {
             return raise_not_iterable(_py, data_bits);
@@ -1638,7 +1638,7 @@ pub extern "C" fn molt_itertools_compress(data_bits: u64, selectors_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_compress_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_iter_bits = unsafe { compress_data_iter_bits(self_ptr) };
         let selectors_iter_bits = unsafe { compress_selectors_iter_bits(self_ptr) };
@@ -1665,7 +1665,7 @@ pub extern "C" fn molt_itertools_compress_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_dropwhile(predicate_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -1695,7 +1695,7 @@ pub extern "C" fn molt_itertools_dropwhile(predicate_bits: u64, iterable_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_dropwhile_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let predicate_bits = unsafe { dropwhile_predicate_bits(self_ptr) };
         let iter_bits = unsafe { dropwhile_iter_bits(self_ptr) };
@@ -1736,7 +1736,7 @@ pub extern "C" fn molt_itertools_dropwhile_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_filterfalse(predicate_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -1765,7 +1765,7 @@ pub extern "C" fn molt_itertools_filterfalse(predicate_bits: u64, iterable_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_filterfalse_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let predicate_bits = unsafe { filterfalse_predicate_bits(self_ptr) };
         let iter_bits = unsafe { filterfalse_iter_bits(self_ptr) };
@@ -1796,7 +1796,7 @@ pub extern "C" fn molt_itertools_filterfalse_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_pairwise(iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -1823,7 +1823,7 @@ pub extern "C" fn molt_itertools_pairwise(iterable_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let iter_bits = unsafe { pairwise_iter_bits(self_ptr) };
         let started = unsafe { pairwise_started(self_ptr) } != 0;
@@ -1858,7 +1858,7 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let repeat = index_i64_from_obj(_py, repeat_bits, "repeat argument must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1942,7 +1942,7 @@ pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { product_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2001,7 +2001,7 @@ pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(pool_bits) = (unsafe { crate::tuple_from_iter_bits(_py, iterable_bits) }) else {
             return MoltObject::none().bits();
         };
@@ -2069,7 +2069,7 @@ pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { permutations_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2126,7 +2126,7 @@ pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_combinations(iterable_bits: u64, r_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(pool_bits) = (unsafe { crate::tuple_from_iter_bits(_py, iterable_bits) }) else {
             return MoltObject::none().bits();
         };
@@ -2186,7 +2186,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement(
     iterable_bits: u64,
     r_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(pool_bits) = (unsafe { crate::tuple_from_iter_bits(_py, iterable_bits) }) else {
             return MoltObject::none().bits();
         };
@@ -2243,7 +2243,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_combinations_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { combinations_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2299,7 +2299,7 @@ pub extern "C" fn molt_itertools_combinations_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_combinations_with_replacement_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { combinations_with_replacement_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2356,7 +2356,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement_next(self_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_groupby(iterable_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -2430,7 +2430,7 @@ fn groupby_advance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         if unsafe { groupby_done(self_ptr) } != 0 {
             return raise_exception::<u64>(_py, "StopIteration", "");
@@ -2498,7 +2498,7 @@ pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let parent_bits = unsafe { groupby_iter_parent_bits(self_ptr) };
         let target_bits = unsafe { groupby_iter_target_bits(self_ptr) };
@@ -2529,7 +2529,7 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_starmap(func_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -2558,7 +2558,7 @@ pub extern "C" fn molt_itertools_starmap(func_bits: u64, iterable_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_starmap_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let func_bits = unsafe { starmap_func_bits(self_ptr) };
         let iter_bits = unsafe { starmap_iter_bits(self_ptr) };
@@ -2582,7 +2582,7 @@ pub extern "C" fn molt_itertools_starmap_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_takewhile(predicate_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -2612,7 +2612,7 @@ pub extern "C" fn molt_itertools_takewhile(predicate_bits: u64, iterable_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_takewhile_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         if unsafe { takewhile_done(self_ptr) } != 0 {
             return raise_exception::<u64>(_py, "StopIteration", "");
@@ -2652,7 +2652,7 @@ pub extern "C" fn molt_itertools_takewhile_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_zip_longest(iterables_bits: u64, fillvalue_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(iterables_ptr) = obj_from_bits(iterables_bits).as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "zip_longest expects a tuple");
         };
@@ -2716,7 +2716,7 @@ pub extern "C" fn molt_itertools_zip_longest(iterables_bits: u64, fillvalue_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { zip_longest_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2764,7 +2764,7 @@ pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let n = index_i64_from_obj(_py, n_bits, "n must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -2839,7 +2839,7 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { tee_data_ptr(self_ptr) };
         if data_ptr.is_null() {
