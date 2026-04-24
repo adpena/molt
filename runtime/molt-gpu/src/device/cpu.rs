@@ -281,21 +281,18 @@ pub mod interpret {
         out_f32[..m * n].copy_from_slice(&c);
     }
 
-    /// Detect and execute a fused softmax pattern:
-    /// REDUCE_MAX -> SUB -> EXP2 -> REDUCE_SUM -> RECIPROCAL -> MUL
+    /// Typed f32 fused softmax operating directly on f32 slices.
     ///
-    /// This is numerically equivalent to: softmax(x) = exp2(x - max(x)) / sum(exp2(x - max(x)))
+    /// softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))
+    ///
     /// Executes as a single pass per output row, avoiding 6 separate kernel
     /// interpretations and intermediate buffer allocations.
     ///
-    /// `input_buf` is the raw f32 input, `output_buf` is pre-allocated.
-    /// `n` is the number of output rows, `reduce_size` is elements per row.
+    /// `input` and `output` are f32 slices of length `rows * reduce_size`.
+    /// `rows` is the number of output rows, `reduce_size` is elements per row.
     #[inline(never)]
-    pub fn fused_softmax(input_buf: &[u8], output_buf: &mut [u8], n: usize, reduce_size: usize) {
-        let input = as_f32_slice(input_buf);
-        let output = as_f32_slice_mut(output_buf);
-
-        for row in 0..n {
+    pub fn fused_softmax_f32(input: &[f32], output: &mut [f32], rows: usize, reduce_size: usize) {
+        for row in 0..rows {
             let row_start = row * reduce_size;
             let row_end = row_start + reduce_size;
 
@@ -331,25 +328,39 @@ pub mod interpret {
         }
     }
 
-    /// Detect and execute a fused RMSNorm pattern:
-    /// MUL(x,x) -> REDUCE_SUM -> ADD(eps) -> SQRT -> RECIPROCAL -> MUL(x, ...)
+    /// Byte-buffer fused softmax for the kernel interpreter pipeline.
     ///
-    /// Equivalent to: rmsnorm(x) = x / sqrt(mean(x^2) + eps)
-    /// (Note: mean = sum/N, so the caller must account for the division by N
-    /// in the eps or post-processing.)
+    /// Delegates to [`fused_softmax_f32`] after reinterpreting byte slices
+    /// as f32 slices. Prefer `fused_softmax_f32` when operating on typed data
+    /// to avoid byte-conversion overhead in benchmarks and hot paths.
+    ///
+    /// `input_buf` is the raw f32 input, `output_buf` is pre-allocated.
+    /// `n` is the number of output rows, `reduce_size` is elements per row.
+    #[inline(never)]
+    pub fn fused_softmax(input_buf: &[u8], output_buf: &mut [u8], n: usize, reduce_size: usize) {
+        let input = as_f32_slice(input_buf);
+        let output = as_f32_slice_mut(output_buf);
+        fused_softmax_f32(input, output, n, reduce_size);
+    }
+
+    /// Typed f32 fused RMSNorm operating directly on f32 slices.
+    ///
+    /// rmsnorm(x) = x / sqrt(mean(x^2) + eps)
     ///
     /// Executes as a single pass per output row instead of 6 separate kernels.
     ///
-    /// `input_buf` is the raw f32 input, `output_buf` is pre-allocated.
-    /// `n` is the number of rows, `dim` is elements per row, `eps` is the
+    /// `input` and `output` are f32 slices of length `rows * dim`.
+    /// `rows` is the number of rows, `dim` is elements per row, `eps` is the
     /// normalization epsilon.
     #[inline(never)]
-    pub fn fused_rms_norm(input_buf: &[u8], output_buf: &mut [u8], n: usize, dim: usize, eps: f64) {
-        let input = as_f32_slice(input_buf);
-        let output = as_f32_slice_mut(output_buf);
-        let eps_f32 = eps as f32;
-
-        for row in 0..n {
+    pub fn fused_rms_norm_f32(
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        dim: usize,
+        eps: f32,
+    ) {
+        for row in 0..rows {
             let row_start = row * dim;
             let row_end = row_start + dim;
 
@@ -367,7 +378,7 @@ pub mod interpret {
 
             // Compute 1/sqrt(mean(x^2) + eps) in f32
             let mean_sq = sum_sq / dim as f32;
-            let inv_rms = 1.0f32 / (mean_sq + eps_f32).sqrt();
+            let inv_rms = 1.0f32 / (mean_sq + eps).sqrt();
 
             // Pass 2: scale each element
             let out_len = output.len();
@@ -376,6 +387,22 @@ pub mod interpret {
                 *out_v = row_slice[j] * inv_rms;
             }
         }
+    }
+
+    /// Byte-buffer fused RMSNorm for the kernel interpreter pipeline.
+    ///
+    /// Delegates to [`fused_rms_norm_f32`] after reinterpreting byte slices
+    /// as f32 slices. Prefer `fused_rms_norm_f32` when operating on typed data
+    /// to avoid byte-conversion overhead in benchmarks and hot paths.
+    ///
+    /// `input_buf` is the raw f32 input, `output_buf` is pre-allocated.
+    /// `n` is the number of rows, `dim` is elements per row, `eps` is the
+    /// normalization epsilon.
+    #[inline(never)]
+    pub fn fused_rms_norm(input_buf: &[u8], output_buf: &mut [u8], n: usize, dim: usize, eps: f64) {
+        let input = as_f32_slice(input_buf);
+        let output = as_f32_slice_mut(output_buf);
+        fused_rms_norm_f32(input, output, n, dim, eps as f32);
     }
 
     /// Detected matmul pattern metadata.
