@@ -310,23 +310,29 @@ opt-level = 3
 # Output-binary profile: used when building the runtime staticlib that gets
 # linked into user output binaries. Key differences from release-fast:
 #
-# panic = "abort"    — output binaries do not need the backend's catch_unwind
-#                      retry mechanism. Eliminates ~750KB of exception tables.
+# panic = "abort"    — eliminates ~800KB of exception handling tables
+#                      (__eh_frame + __gcc_except_tab + __unwind_info).
+#                      Safe because all 3900+ FFI entry points use the
+#                      with_gil_entry_nopanic! macro (no catch_unwind).
+#                      The few catch_unwind sites in isolates/object code
+#                      degrade to process abort on panic — acceptable for
+#                      output binaries since panics indicate runtime bugs,
+#                      not recoverable Python exceptions.
 # opt-level "z"      — minimises code size; user hot paths are in compiled
 #                      Python code (optimized by Cranelift), not runtime glue.
-# lto = "thin"       — cross-crate optimization without LLVM bitcode overhead.
-#                      Fat LTO with codegen-units=1 produces a single monolithic
-#                      object file that the system linker cannot split, defeating
-#                      -dead_strip / --gc-sections entirely.
-# codegen-units = 16 — splits the runtime into multiple object files so the
-#                      linker only pulls in objects containing referenced symbols.
-#                      Combined with -dead_strip, this enables function-level
-#                      dead code elimination across the runtime.
+# lto = "fat"        — fat LTO + codegen-units=1 produces a single object file
+#                      with SUBSECTIONS_VIA_SYMBOLS set (macOS) or
+#                      -ffunction-sections (Linux), enabling the system linker
+#                      to strip individual functions via -dead_strip /
+#                      --gc-sections even within that single object.
+# codegen-units = 1  — maximum cross-crate inlining and dead code elimination
+#                      during the LTO pass. The system linker handles the
+#                      remaining function-level stripping.
 [profile.release-output]
 inherits = "release"
 opt-level = "z"
-lto = "thin"
-codegen-units = 16
+lto = "fat"
+codegen-units = 1
 panic = "abort"
 strip = true
 

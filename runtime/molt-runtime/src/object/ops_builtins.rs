@@ -1118,7 +1118,7 @@ unsafe fn probe_simple_func(func_bits: u64, expected_arity: usize) -> Option<u64
 /// Fast 0-argument function call. No args — minimal dispatch.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             if let Some(fn_ptr) = probe_simple_func(func_bits, 0) {
                 if !recursion_guard_enter() {
