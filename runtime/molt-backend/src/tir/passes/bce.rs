@@ -286,7 +286,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     for bid in &block_ids {
         if let Some(block) = func.blocks.get_mut(bid) {
             for op in block.ops.iter_mut() {
-                if op.opcode != OpCode::Index {
+                if op.opcode != OpCode::Index && op.opcode != OpCode::StoreIndex {
                     continue;
                 }
                 // Already marked by a previous phase or pass.

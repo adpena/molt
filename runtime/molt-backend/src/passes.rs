@@ -434,6 +434,7 @@ pub fn inline_functions(ir: &mut SimpleIR) {
                             ic_index: None,
                             col_offset: None,
                             end_col_offset: None,
+                            bce_safe: None,
                         });
                     }
                     continue;
