@@ -1025,4 +1025,100 @@ mod tests {
         let stats = run(&mut func);
         assert_eq!(stats.values_changed, 0, "dict loop should not be transformed");
     }
+
+    #[test]
+    fn devirt_list_repeat_mul_build_list() {
+        // `for x in [True] * n` should be devirtualized.
+        // Source: Mul(BuildList([True]), n) — recognized as a list via
+        // is_list_source tracing through Mul to BuildList.
+        let mut func = TirFunction::new("test_mul_list".into(), vec![], TirType::None);
+
+        let true_val = func.fresh_value();
+        let list_1 = func.fresh_value();
+        let n = func.fresh_value();
+        let is_prime = func.fresh_value();
+        let iter_val = func.fresh_value();
+
+        let header_id = func.fresh_block();
+        let body_id = func.fresh_block();
+        let exit_id = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_const_int(n, 100),
+                make_op(OpCode::Mul, vec![list_1, n], vec![is_prime]),
+                make_op(OpCode::GetIter, vec![is_prime], vec![iter_val]),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header_id,
+                args: vec![],
+            };
+        }
+
+        let elem_val = func.fresh_value();
+        let done_val = func.fresh_value();
+        let header = TirBlock {
+            id: header_id,
+            args: vec![],
+            ops: vec![make_op(
+                OpCode::IterNextUnboxed,
+                vec![iter_val],
+                vec![elem_val, done_val],
+            )],
+            terminator: Terminator::CondBranch {
+                cond: done_val,
+                then_block: exit_id,
+                then_args: vec![],
+                else_block: body_id,
+                else_args: vec![],
+            },
+        };
+        func.blocks.insert(header_id, header);
+        func.loop_roles.insert(header_id, LoopRole::LoopHeader);
+
+        let body = TirBlock {
+            id: body_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![],
+            },
+        };
+        func.blocks.insert(body_id, body);
+
+        let exit = TirBlock {
+            id: exit_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        };
+        func.blocks.insert(exit_id, exit);
+        func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
+
+        let stats = run(&mut func);
+        assert!(
+            stats.values_changed > 0,
+            "Mul(BuildList, count) should be recognized as a list for iter_devirt"
+        );
+
+        // The body should now contain an Index op with container_type="list".
+        let body_block = &func.blocks[&body_id];
+        let index_op = body_block
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Index);
+        assert!(index_op.is_some(), "Body must contain synthesized Index op");
+        let idx_op = index_op.unwrap();
+        assert_eq!(
+            idx_op.attrs.get("container_type"),
+            Some(&AttrValue::Str("list".to_string())),
+            "Synthesized Index must carry container_type=list"
+        );
+
+        crate::tir::verify::verify_function(&func).expect("verification should pass");
+    }
 }
