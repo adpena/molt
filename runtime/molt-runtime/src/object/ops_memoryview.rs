@@ -9,7 +9,7 @@ use num_traits::ToPrimitive;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -83,7 +83,7 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_from_flags(obj_bits: u64, flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let flag_type = class_name_for_error(type_of_bits(_py, flags_bits));
         let err = format!("'{flag_type}' object cannot be interpreted as an integer");
         let Some(flags) = index_bigint_from_obj(_py, flags_bits, &err) else {
@@ -111,7 +111,7 @@ pub extern "C" fn molt_memoryview_cast(
     shape_bits: u64,
     has_shape_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let view = obj_from_bits(view_bits);
         let view_ptr = match view.as_ptr() {
             Some(ptr) => ptr,
@@ -260,7 +260,7 @@ pub extern "C" fn molt_memoryview_cast(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_tobytes(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -322,7 +322,7 @@ unsafe fn memoryview_tolist_recursive(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -385,7 +385,7 @@ pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_count(bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -460,7 +460,7 @@ pub extern "C" fn molt_memoryview_count(bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -534,7 +534,7 @@ pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_hex(bits: u64, sep_bits: u64, bytes_per_sep_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -555,7 +555,7 @@ pub extern "C" fn molt_memoryview_hex(bits: u64, sep_bits: u64, bytes_per_sep_bi
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_release(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -573,7 +573,7 @@ pub extern "C" fn molt_memoryview_release(bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -638,7 +638,7 @@ pub struct BufferExport {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferExport) -> i32 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if out_ptr.is_null() {
                 return 1;
             }

@@ -15,7 +15,7 @@ use super::ops::{
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_update_missing(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dict_obj = obj_from_bits(dict_bits);
         let key_obj = obj_from_bits(key_bits);
         if dict_obj.as_ptr().is_none() || key_obj.as_ptr().is_none() {
@@ -61,7 +61,7 @@ pub extern "C" fn molt_dict_update_missing(dict_bits: u64, key_bits: u64, val_bi
 /// Specialized `in` for dict containers (hash lookup, no type dispatch).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let container = obj_from_bits(container_bits);
         if let Some(ptr) = container.as_ptr() {
             unsafe {
@@ -357,7 +357,7 @@ pub(crate) unsafe fn dict_update_apply(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -421,7 +421,7 @@ pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64
             }
         }
     }
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.get expects dict");
@@ -451,7 +451,7 @@ pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_inc(dict_bits: u64, key_bits: u64, delta_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
@@ -476,7 +476,7 @@ pub extern "C" fn molt_dict_inc(dict_bits: u64, key_bits: u64, delta_bits: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
@@ -513,7 +513,7 @@ pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bit
 /// (raises KeyError if key is absent).  Otherwise, pop(key, default).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_pop_method(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let has_default = !crate::builtins::methods::is_missing_bits(_py, default_bits);
         let actual_default = if has_default {
             default_bits
@@ -532,7 +532,7 @@ pub extern "C" fn molt_dict_pop(
     default_bits: u64,
     has_default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dict_obj = obj_from_bits(dict_bits);
         let has_default = obj_from_bits(has_default_bits).as_int().unwrap_or(0) != 0;
         let Some(ptr) = dict_obj.as_ptr() else {
@@ -582,7 +582,7 @@ pub extern "C" fn molt_dict_pop(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dict_obj = obj_from_bits(dict_bits);
         let Some(ptr) = dict_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
@@ -616,7 +616,7 @@ pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bi
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dict_obj = obj_from_bits(dict_bits);
         let Some(ptr) = dict_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
@@ -656,7 +656,7 @@ pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_update(dict_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dict_obj = obj_from_bits(dict_bits);
         let Some(ptr) = dict_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
@@ -672,7 +672,7 @@ pub extern "C" fn molt_dict_update(dict_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_clear(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.clear expects dict");
@@ -695,7 +695,7 @@ pub extern "C" fn molt_dict_clear(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
@@ -722,7 +722,7 @@ pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.popitem expects dict");
@@ -761,7 +761,7 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let dict_obj = obj_from_bits(dict_bits);
         let Some(ptr) = dict_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
@@ -882,7 +882,7 @@ pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_keys(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.keys expects dict");
@@ -911,7 +911,7 @@ pub extern "C" fn molt_dict_keys(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_values(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.values expects dict");
@@ -940,7 +940,7 @@ pub extern "C" fn molt_dict_values(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_items(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.items expects dict");
@@ -987,7 +987,7 @@ pub extern "C" fn molt_dict_getitem_borrowed(dict_bits: u64, key_bits: u64) -> u
             }
         }
     }
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return 0;

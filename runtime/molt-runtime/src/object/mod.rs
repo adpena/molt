@@ -1408,7 +1408,7 @@ pub(crate) fn bits_from_ptr(ptr: *mut u8) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             inc_ref_ptr(_py, ptr);
         })
     }
@@ -1419,7 +1419,7 @@ pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             dec_ref_ptr(_py, ptr);
         })
     }
@@ -2420,7 +2420,7 @@ mod tests {
         let _guard = crate::TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let total_size = std::mem::size_of::<MoltHeader>() + 16;
             drain_pool(_py, total_size);
             let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
@@ -2494,7 +2494,7 @@ mod tests {
         let _guard = crate::TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let total_size = std::mem::size_of::<MoltHeader>() + 16;
             drain_pool(_py, total_size);
             let idx = object_pool_index(total_size).expect("pool index should be valid");

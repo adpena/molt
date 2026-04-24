@@ -19,7 +19,7 @@ use super::ops_sys::{decode_slice_bound, slice_error};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if runtime_state(_py).code_slots.get().is_some() {
             return MoltObject::none().bits();
         }
@@ -34,7 +34,7 @@ pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(slots) = runtime_state(_py).code_slots.get() else {
             return raise_exception::<_>(_py, "RuntimeError", "code slots not initialized");
         };
@@ -66,7 +66,7 @@ pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut code_bits = MoltObject::none().bits();
         let func_obj = obj_from_bits(func_bits);
         if let Some(func_ptr) = func_obj.as_ptr() {
@@ -94,7 +94,7 @@ pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(slots) = runtime_state(_py).code_slots.get() else {
             return MoltObject::none().bits();
         };
@@ -135,7 +135,7 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_exit() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if matches!(
             std::env::var("MOLT_TRACE_TRACE_EXIT_PENDING")
                 .ok()
@@ -176,7 +176,7 @@ pub extern "C" fn molt_guarded_call(
     code_id: i64,
 ) -> u64 {
     if !recursion_guard_enter() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             return raise_exception::<u64>(
                 _py,
                 "RecursionError",
@@ -185,7 +185,7 @@ pub extern "C" fn molt_guarded_call(
         });
     }
     if code_id >= 0 {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if let Some(slots) = runtime_state(_py).code_slots.get() {
                 let idx = code_id as usize;
                 let code_bits = if idx < slots.len() {
@@ -204,7 +204,7 @@ pub extern "C" fn molt_guarded_call(
         molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
     };
     if code_id >= 0 {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             frame_stack_pop(_py);
         });
     }
@@ -227,7 +227,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
     callee_bits: u64,
 ) -> u64 {
     if !recursion_guard_enter() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             return raise_exception::<u64>(
                 _py,
                 "RecursionError",
@@ -236,7 +236,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
         });
     }
     if callee_bits != 0 {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let mut code_bits = MoltObject::none().bits();
             let func_obj = obj_from_bits(callee_bits);
             if let Some(func_ptr) = func_obj.as_ptr() {
@@ -265,7 +265,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
         molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
     };
     if callee_bits != 0 {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             frame_stack_pop(_py);
         });
     }
@@ -622,7 +622,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 // parameters AND is called via the direct fn_ptr dispatch table.
                 // molt_call_func_dispatch handles arbitrary arities via callargs,
                 // so this should never be reached in practice.
-                crate::with_gil_entry!(_py, {
+                crate::with_gil_entry_nopanic!(_py, {
                     return raise_exception::<u64>(
                         _py,
                         "RuntimeError",
@@ -664,7 +664,7 @@ pub extern "C" fn molt_call_func_dispatch(
     nargs: u64,
     code_id: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let n = nargs as usize;
         let args_ptr = args_ptr_bits as usize as *const u64;
 
@@ -1141,7 +1141,7 @@ pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
 /// Fast 1-argument function call. Args passed in registers — no stack spill.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             if let Some(fn_ptr) = probe_simple_func(func_bits, 1) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
@@ -1159,7 +1159,7 @@ pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
 /// Fast 2-argument function call. Args passed in registers — no stack spill.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             if let Some(fn_ptr) = probe_simple_func(func_bits, 2) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
@@ -1177,7 +1177,7 @@ pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 
 /// Fast 3-argument function call. Args passed in registers — no stack spill.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast3(func_bits: u64, a0: u64, a1: u64, a2: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             if let Some(fn_ptr) = probe_simple_func(func_bits, 3) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
@@ -1206,7 +1206,7 @@ fn molt_call_func_via_callargs(callable_bits: u64, args: &[u64]) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let line_obj = obj_from_bits(line_bits);
         let line = if line_obj.is_int() || line_obj.is_bool() {
             to_i64(line_obj).unwrap_or(0)
@@ -1241,12 +1241,12 @@ fn trace_line_pending_enabled() -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_repr_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_repr_from_obj(val_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_repr_from_obj(val_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val_bits);
         let spec_obj = obj_from_bits(spec_bits);
         let Some(spec_ptr) = spec_obj.as_ptr() else {
@@ -1315,12 +1315,12 @@ pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_callable_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_is_callable(val_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_is_callable(val_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_round_builtin(val_bits: u64, ndigits_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         let has_ndigits = ndigits_bits != missing;
         let has_ndigits_bits = MoltObject::from_bool(has_ndigits).bits();
@@ -1335,7 +1335,7 @@ pub extern "C" fn molt_round_builtin(val_bits: u64, ndigits_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_obj = molt_iter(iter_bits);
         if obj_from_bits(iter_obj).is_none() {
             return raise_not_iterable(_py, iter_bits);
@@ -1378,7 +1378,7 @@ pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_obj = molt_iter(iter_bits);
         if obj_from_bits(iter_obj).is_none() {
             return raise_not_iterable(_py, iter_bits);
@@ -1421,7 +1421,7 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val_bits);
         if let Some(i) = to_i64(obj) {
             return int_bits_from_i128(_py, (i as i128).abs());
@@ -1461,7 +1461,7 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a_bits);
         let rhs = obj_from_bits(b_bits);
         // If either operand is a float, skip ALL integer paths so that
@@ -1751,14 +1751,14 @@ fn molt_minmax_builtin(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_min_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         molt_minmax_builtin(_py, args_bits, key_bits, default_bits, false, "min")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         molt_minmax_builtin(_py, args_bits, key_bits, default_bits, true, "max")
     })
 }
@@ -1775,7 +1775,7 @@ enum SortError {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_obj = molt_iter(iter_bits);
         if obj_from_bits(iter_obj).is_none() {
             return raise_not_iterable(_py, iter_bits);
@@ -1909,7 +1909,7 @@ pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let start_obj = obj_from_bits(start_bits);
         if let Some(ptr) = start_obj.as_ptr() {
             unsafe {
@@ -2131,7 +2131,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if default_bits == missing {
             return molt_get_attr_name(obj_bits, name_bits);
@@ -2143,7 +2143,7 @@ pub extern "C" fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bi
 /// Python `setattr(obj, name, value)` builtin.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_setattr_builtin(obj_bits: u64, name_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         molt_object_setattr(obj_bits, name_bits, val_bits);
         MoltObject::none().bits()
     })
@@ -2152,7 +2152,7 @@ pub extern "C" fn molt_setattr_builtin(obj_bits: u64, name_bits: u64, val_bits: 
 /// Python `delattr(obj, name)` builtin.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_delattr_builtin(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let res = molt_object_delattr(obj_bits, name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -2163,7 +2163,7 @@ pub extern "C" fn molt_delattr_builtin(obj_bits: u64, name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if obj_bits == missing {
             // CPython parity: vars() == locals() when called with no arguments.
@@ -2190,7 +2190,7 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(_self_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -2909,12 +2909,12 @@ unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_dir_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { unsafe { dir_default_collect(_py, self_bits) } })
+    crate::with_gil_entry_nopanic!(_py, { unsafe { dir_default_collect(_py, self_bits) } })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_format_method(self_bits: u64, spec_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let spec_obj = obj_from_bits(spec_bits);
         let Some(spec) = string_obj_to_owned(spec_obj) else {
             return raise_exception::<_>(_py, "TypeError", "format_spec must be str");
@@ -2930,34 +2930,34 @@ pub extern "C" fn molt_object_format_method(self_bits: u64, spec_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_lt_method(_self_bits: u64, _other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+    crate::with_gil_entry_nopanic!(_py, { not_implemented_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_le_method(_self_bits: u64, _other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+    crate::with_gil_entry_nopanic!(_py, { not_implemented_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_gt_method(_self_bits: u64, _other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+    crate::with_gil_entry_nopanic!(_py, { not_implemented_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_ge_method(_self_bits: u64, _other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+    crate::with_gil_entry_nopanic!(_py, { not_implemented_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_bool_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_bool(is_truthy(_py, obj_from_bits(self_bits))).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_ceil_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         inc_ref_bits(_py, self_bits);
         self_bits
     })
@@ -2965,12 +2965,12 @@ pub extern "C" fn molt_int_ceil_method(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_abs_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_abs_builtin(self_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_abs_builtin(self_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_add_method(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let builtins = builtin_classes(_py);
         let other_ty = type_of_bits(_py, other_bits);
         if other_ty != builtins.int && other_ty != builtins.bool {
@@ -2982,7 +2982,7 @@ pub extern "C" fn molt_int_add_method(self_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_and_method(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let builtins = builtin_classes(_py);
         let other_ty = type_of_bits(_py, other_bits);
         if other_ty != builtins.int && other_ty != builtins.bool {
@@ -2994,7 +2994,7 @@ pub extern "C" fn molt_int_and_method(self_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_divmod_method(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let builtins = builtin_classes(_py);
         let other_ty = type_of_bits(_py, other_bits);
         if other_ty != builtins.int && other_ty != builtins.bool {
@@ -3006,7 +3006,7 @@ pub extern "C" fn molt_int_divmod_method(self_bits: u64, other_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_str_add_method(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let builtins = builtin_classes(_py);
         let other_ty = type_of_bits(_py, other_bits);
         if other_ty != builtins.str {
@@ -3018,7 +3018,7 @@ pub extern "C" fn molt_str_add_method(self_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if obj_bits == missing {
             // CPython: dir() (no args) lists the caller's local scope.
@@ -3287,17 +3287,17 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_init(_self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_init_subclass(_cls_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);
@@ -3423,7 +3423,7 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);
@@ -3465,7 +3465,7 @@ pub extern "C" fn molt_type_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_call(cls_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
@@ -3498,7 +3498,7 @@ pub extern "C" fn molt_type_call(cls_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);
@@ -3548,7 +3548,7 @@ pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_delattr(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);
@@ -3596,7 +3596,7 @@ pub extern "C" fn molt_object_delattr(obj_bits: u64, name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_eq(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if self_bits == other_bits {
             return MoltObject::from_bool(true).bits();
         }
@@ -3606,7 +3606,7 @@ pub extern "C" fn molt_object_eq(self_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_ne(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if self_bits == other_bits {
             return MoltObject::from_bool(false).bits();
         }
@@ -3622,7 +3622,7 @@ pub extern "C" fn molt_print_builtin(
     file_bits: u64,
     flush_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         fn print_string_arg_bits(
             _py: &PyToken<'_>,
             bits: u64,
@@ -4040,7 +4040,7 @@ pub extern "C" fn molt_print_builtin(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let sys_name_bits = intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
         if obj_from_bits(sys_name_bits).is_none() {
             return raise_exception::<_>(_py, "RuntimeError", "sys module name missing");
@@ -4214,7 +4214,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_super_builtin(type_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_super_new(type_bits, obj_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_super_new(type_bits, obj_bits) })
 }
 
 // ---------------------------------------------------------------------------
@@ -4225,7 +4225,7 @@ pub extern "C" fn molt_super_builtin(type_bits: u64, obj_bits: u64) -> u64 {
 /// `int(x=0, base=10)` — wraps `molt_int_from_obj`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_builtin(val_bits: u64, base_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             // int() with no args => 0
@@ -4245,7 +4245,7 @@ pub extern "C" fn molt_int_builtin(val_bits: u64, base_bits: u64) -> u64 {
 /// `float(x=0.0)` — wraps `molt_float_from_obj`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_float_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             return MoltObject::from_float(0.0).bits();
@@ -4257,7 +4257,7 @@ pub extern "C" fn molt_float_builtin(val_bits: u64) -> u64 {
 /// `bool(x=False)` — wraps `is_truthy`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bool_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             return MoltObject::from_bool(false).bits();
@@ -4289,7 +4289,7 @@ pub extern "C" fn molt_str_builtin(val_bits: u64) -> u64 {
 /// `bytes(source=b'')` — wraps `molt_bytes_from_obj`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             let ptr = alloc_bytes(_py, &[]);
@@ -4305,7 +4305,7 @@ pub extern "C" fn molt_bytes_builtin(val_bits: u64) -> u64 {
 /// `bytearray(source=bytearray())` — wraps `molt_bytearray_from_obj`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             let ptr = alloc_bytearray(_py, &[]);
@@ -4321,7 +4321,7 @@ pub extern "C" fn molt_bytearray_builtin(val_bits: u64) -> u64 {
 /// `list(iterable=())` — constructs a list from an iterable.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             let ptr = alloc_list(_py, &[]);
@@ -4342,7 +4342,7 @@ pub extern "C" fn molt_list_builtin(val_bits: u64) -> u64 {
 /// `tuple(iterable=())` — constructs a tuple from an iterable.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             let ptr = alloc_tuple(_py, &[]);
@@ -4363,7 +4363,7 @@ pub extern "C" fn molt_tuple_builtin(val_bits: u64) -> u64 {
 /// `dict(mapping_or_iterable=None)` — wraps `molt_dict_from_obj`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             return molt_dict_new(0);
@@ -4375,7 +4375,7 @@ pub extern "C" fn molt_dict_builtin(val_bits: u64) -> u64 {
 /// `set(iterable=())` — constructs a set from an iterable.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             return molt_set_new(0);
@@ -4396,7 +4396,7 @@ pub extern "C" fn molt_set_builtin(val_bits: u64) -> u64 {
 /// `frozenset(iterable=())` — constructs a frozenset from an iterable.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             return molt_frozenset_new(0);
@@ -4413,7 +4413,7 @@ pub extern "C" fn molt_frozenset_builtin(val_bits: u64) -> u64 {
 /// `range(stop)` / `range(start, stop[, step])` — wraps `molt_range_new`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_range_builtin(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if start_bits == missing {
             return raise_exception::<_>(
@@ -4440,7 +4440,7 @@ pub extern "C" fn molt_range_builtin(start_bits: u64, stop_bits: u64, step_bits:
 /// `slice(stop)` / `slice(start, stop[, step])` — wraps `molt_slice_new`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_builtin(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         let none = MoltObject::none().bits();
         if start_bits == missing {
@@ -4478,7 +4478,7 @@ pub extern "C" fn molt_type_builtin(val_bits: u64) -> u64 {
 /// `complex(real=0, imag=0)` — wraps `molt_complex_from_obj`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_complex_builtin(real_bits: u64, imag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         let actual_real = if real_bits == missing {
             MoltObject::from_int(0).bits()
@@ -4517,7 +4517,7 @@ pub extern "C" fn molt_staticmethod_builtin(func_bits: u64) -> u64 {
 /// `property(fget=None, fset=None, fdel=None)` — wraps `molt_property_new`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_property_builtin(get_bits: u64, set_bits: u64, del_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         let none = MoltObject::none().bits();
         let g = if get_bits == missing { none } else { get_bits };
@@ -4559,7 +4559,7 @@ pub extern "C" fn molt_iter_builtin(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let start_obj = obj_from_bits(start_bits);
         let end_obj = obj_from_bits(end_bits);
@@ -4760,7 +4760,7 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_intarray_from_seq(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
@@ -4792,7 +4792,7 @@ pub extern "C" fn molt_intarray_from_seq(bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_from_list(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
