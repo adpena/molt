@@ -65,6 +65,24 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
         // of checking every arithmetic op is unnecessary.
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        // BigInt fast path — hoisted above inline int/float checks because
+        // BigInt operands fail every is_int/is_float/to_i64 check before
+        // reaching the pointer dispatch, wasting ~8 branch mispredictions
+        // per call.  In tight BigInt loops (e.g. fib(1_000_000)) this path
+        // dominates, so checking it first avoids all that overhead.
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            let ltype = unsafe { object_type_id(lp) };
+            let rtype = unsafe { object_type_id(rp) };
+            if ltype == TYPE_ID_BIGINT && rtype == TYPE_ID_BIGINT {
+                let l_ref = unsafe { bigint_ref(lp) };
+                let r_ref = unsafe { bigint_ref(rp) };
+                let res: BigInt = l_ref + r_ref;
+                if let Some(i) = bigint_to_inline(&res) {
+                    return MoltObject::from_int(i).bits();
+                }
+                return bigint_bits(_py, res);
+            }
+        }
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 -> 2).
         if !lhs.is_float()
@@ -83,18 +101,7 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
             unsafe {
                 let ltype = object_type_id(lp);
                 let rtype = object_type_id(rp);
-                // BigInt fast path — most critical for tight arithmetic loops
-                // (e.g. fib(1_000_000)).  Uses references to avoid cloning both
-                // operands on every iteration.
-                if ltype == TYPE_ID_BIGINT && rtype == TYPE_ID_BIGINT {
-                    let l_ref = bigint_ref(lp);
-                    let r_ref = bigint_ref(rp);
-                    let res: BigInt = l_ref + r_ref;
-                    if let Some(i) = bigint_to_inline(&res) {
-                        return MoltObject::from_int(i).bits();
-                    }
-                    return bigint_bits(_py, res);
-                }
+                // BigInt+BigInt already handled above (hoisted fast path).
                 if ltype == TYPE_ID_STRING && rtype == TYPE_ID_STRING {
                     let l_len = string_len(lp);
                     let r_len = string_len(rp);
