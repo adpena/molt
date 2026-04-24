@@ -22,7 +22,7 @@ Purpose: Compile Python source to native or WASM artifacts.
 
 Key flags:
 - `--module <name>` (use `name.__main__` when present)
-- `--target {native,wasm,<triple>}`
+- `--target {native,wasm,luau,mlir,<triple>}`
 - `--codec {msgpack,cbor,json}` (default: `msgpack`)
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
 - `--type-facts <path>` (optional Type Facts Artifact from `molt check`)
