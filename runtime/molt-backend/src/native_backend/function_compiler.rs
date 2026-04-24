@@ -3948,6 +3948,8 @@ impl SimpleBackend {
                         }
                         merge_res
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
@@ -4177,6 +4179,8 @@ impl SimpleBackend {
                         }
                         merge_res
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
@@ -10607,8 +10611,6 @@ impl SimpleBackend {
                 }
                 "lt" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
-                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let in_active_loop = !loop_stack.is_empty();
                     let lr = if in_active_loop {
                         // Variable-backed shadows are phi-correct across loop
@@ -10637,11 +10639,19 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
                         // One-operand: unbox only the non-raw side
-                        let lv = lr.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = rr.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
+                        let lv = lr.unwrap_or_else(|| {
+                            let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                            unbox_int(&mut builder, *lhs, &nbc)
+                        });
+                        let rv = rr.unwrap_or_else(|| {
+                            let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                            unbox_int(&mut builder, *rhs, &nbc)
+                        });
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
                         let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
@@ -10649,11 +10659,15 @@ impl SimpleBackend {
                         let cmp = builder.ins().fcmp(FloatCC::LessThan, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
@@ -10717,8 +10731,6 @@ impl SimpleBackend {
                 }
                 "le" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
-                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let in_active_loop = !loop_stack.is_empty();
                     let lr = if in_active_loop {
                         shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
@@ -10744,11 +10756,19 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
-                        let lv = lr.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = rr.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
+                        let lv = lr.unwrap_or_else(|| {
+                            let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                            unbox_int(&mut builder, *lhs, &nbc)
+                        });
+                        let rv = rr.unwrap_or_else(|| {
+                            let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                            unbox_int(&mut builder, *rhs, &nbc)
+                        });
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
                         let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
@@ -10756,6 +10776,8 @@ impl SimpleBackend {
                         let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp =
@@ -10764,6 +10786,8 @@ impl SimpleBackend {
                                 .icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
@@ -10830,8 +10854,6 @@ impl SimpleBackend {
                 }
                 "gt" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
-                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let in_active_loop = !loop_stack.is_empty();
                     let lhs_shadow = if in_active_loop {
                         shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
@@ -10857,6 +10879,8 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
                         let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
@@ -10864,6 +10888,8 @@ impl SimpleBackend {
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder
@@ -10871,6 +10897,8 @@ impl SimpleBackend {
                             .icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
@@ -10936,8 +10964,6 @@ impl SimpleBackend {
                 }
                 "ge" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
-                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let in_active_loop = !loop_stack.is_empty();
                     let lhs_shadow = if in_active_loop {
                         shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
@@ -10963,6 +10989,8 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                             .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
                         let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
@@ -10972,6 +11000,8 @@ impl SimpleBackend {
                             .fcmp(FloatCC::GreaterThanOrEqual, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp =
@@ -10980,6 +11010,8 @@ impl SimpleBackend {
                                 .icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
+                        let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                        let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
@@ -11209,7 +11241,6 @@ impl SimpleBackend {
                 }
                 "not" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let res = if let Some(raw_val) = shadow_value_for(
                         &mut builder,
                         &raw_bool_shadow_vars,
@@ -11231,6 +11262,7 @@ impl SimpleBackend {
                         result
                     } else if op_prefers_bool_lane(&op) {
                         // NaN-boxed bool: extract bit 0 and flip.
+                        let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*val, one);
                         let is_zero = builder.ins().icmp_imm(IntCC::Equal, bit0, 0);
@@ -11244,6 +11276,7 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                         let call = builder.ins().call(local_callee, &[*val]);
                         builder.inst_results(call)[0]
                     };
@@ -11408,7 +11441,6 @@ impl SimpleBackend {
                 }
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let res = if let Some(raw_val) = shadow_value_for(
                         &mut builder,
                         &raw_bool_shadow_vars,
@@ -11428,12 +11460,16 @@ impl SimpleBackend {
                             &raw_int_shadow_vals,
                             &args[0],
                         )
-                        .unwrap_or_else(|| unbox_int(&mut builder, *val, &nbc));
+                        .unwrap_or_else(|| {
+                            let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
+                            unbox_int(&mut builder, *val, &nbc)
+                        });
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
                         box_bool_value(&mut builder, is_nonzero, &nbc)
                     } else if op_prefers_bool_lane(&op) {
                         // For known bools, extract bit 0 directly — no function call.
+                        let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*val, one);
                         let is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0);
@@ -11447,6 +11483,7 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                         let call = builder.ins().call(local_callee, &[*val]);
                         let truthy = builder.inst_results(call)[0];
                         let cond = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
@@ -16546,7 +16583,6 @@ impl SimpleBackend {
                     raw_int_shadow_vals.clear();
                     raw_float_shadow_vals.clear();
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     // Inline truthiness for bool/int types to avoid function call overhead.
                     let cond_bool = if let Some(raw_val) = shadow_value_for(
                         &mut builder,
@@ -16559,6 +16595,7 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_bool_lane(&op) {
                         // NaN-boxed bool: bit 0 is the boolean value.
+                        let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*cond, one);
                         builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
@@ -16571,9 +16608,13 @@ impl SimpleBackend {
                             &raw_int_shadow_vals,
                             &args[0],
                         )
-                        .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
+                        .unwrap_or_else(|| {
+                            let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
+                            unbox_int(&mut builder, *cond, &nbc)
+                        });
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
+                        let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                         // Speculative inline truthiness: check NaN-box tag
                         // to avoid molt_is_truthy function call for bool/int.
                         //
@@ -18325,8 +18366,6 @@ impl SimpleBackend {
                         is_block_filled = true;
                     } else {
                         let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                        let cond = var_get(&mut builder, &vars, &args[0])
-                            .expect("Loop break cond not found");
                         let frame = loop_stack.last().unwrap();
                         let current_block = builder
                             .current_block()
@@ -18366,6 +18405,7 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else if cond_is_bool_typed {
                             // NaN-boxed bool: bit 0 is the boolean value.
+                            let cond = var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
                             let one = builder.ins().iconst(types::I64, 1);
                             let payload = builder.ins().band(*cond, one);
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
@@ -18382,9 +18422,13 @@ impl SimpleBackend {
                                     &args[0],
                                 )
                             }
-                            .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
+                            .unwrap_or_else(|| {
+                                let cond = var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
+                                unbox_int(&mut builder, *cond, &nbc)
+                            });
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
+                            let cond = var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
                                 &mut self.import_ids,
@@ -18487,8 +18531,6 @@ impl SimpleBackend {
                         is_block_filled = true;
                     } else {
                         let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                        let cond = var_get(&mut builder, &vars, &args[0])
-                            .expect("Loop break cond not found");
                         let frame = loop_stack.last().unwrap();
                         if debug_loop_cfg.is_some() {
                             eprintln!(
@@ -18544,6 +18586,7 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else if cond_is_bool_typed {
                             // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
+                            let cond = var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
                             let one = builder.ins().iconst(types::I64, 1);
                             let payload = builder.ins().band(*cond, one);
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
@@ -18560,9 +18603,13 @@ impl SimpleBackend {
                                     &args[0],
                                 )
                             }
-                            .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
+                            .unwrap_or_else(|| {
+                                let cond = var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
+                                unbox_int(&mut builder, *cond, &nbc)
+                            });
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
+                            let cond = var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
                                 &mut self.import_ids,
@@ -20298,7 +20345,6 @@ impl SimpleBackend {
                 }
                 "br_if" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     let target_id = op.value.unwrap_or(0);
                     let target_block = state_blocks[&target_id];
                     let origin_block = builder
@@ -20326,6 +20372,7 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if var_is_bool(cond_name) {
                         // NaN-boxed bool: bit 0 is the boolean value.
+                        let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*cond, one);
                         builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
@@ -20337,9 +20384,13 @@ impl SimpleBackend {
                             &raw_int_shadow_vals,
                             &args[0],
                         )
-                        .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
+                        .unwrap_or_else(|| {
+                            let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
+                            unbox_int(&mut builder, *cond, &nbc)
+                        });
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
+                        let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                         // Speculative inline truthiness: check NaN-box tag
                         // to avoid molt_is_truthy function call for bool/int.
                         // NaN-boxed False is 0x7ffa000000000000 (nonzero),
