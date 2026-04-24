@@ -11710,8 +11710,14 @@ impl SimpleBackend {
                             &args[1],
                         )
                     };
+                    // Helper: propagate raw bool shadow from a Cranelift icmp/fcmp
+                    // result (i8) so downstream loop_break_if_true/false and `if`
+                    // ops branch directly on the raw value, eliminating NaN-box
+                    // round-trips (box_bool_value + band+icmp extraction).
+                    let mut lt_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr, rr);
+                        lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
                         // One-operand: unbox only the non-raw side
@@ -11724,12 +11730,14 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *rhs, &nbc)
                         });
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lv, rv);
+                        lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[0]);
                         let rf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[1]);
                         let cmp = builder.ins().fcmp(FloatCC::LessThan, lf, rf);
+                        lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -11737,6 +11745,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
+                        lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -11798,8 +11807,16 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        // Propagate raw bool shadow so loop branches and
+                        // if-conditions skip NaN-box extraction entirely.
+                        if let Some(raw_b) = lt_raw_bool {
+                            raw_bool_values.insert(out__.clone(), raw_b);
+                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                builder.def_var(bvar, raw_b);
+                            }
+                        }
                     }
                 }
                 "le" => {
@@ -11825,8 +11842,10 @@ impl SimpleBackend {
                             &args[1],
                         )
                     };
+                    let mut le_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
+                        le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
                         let lv = lr.unwrap_or_else(|| {
@@ -11838,12 +11857,14 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *rhs, &nbc)
                         });
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lv, rv);
+                        le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[0]);
                         let rf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[1]);
                         let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lf, rf);
+                        le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -11854,6 +11875,7 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val);
+                        le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -11918,8 +11940,14 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        if let Some(raw_b) = le_raw_bool {
+                            raw_bool_values.insert(out__.clone(), raw_b);
+                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                builder.def_var(bvar, raw_b);
+                            }
+                        }
                     }
                 }
                 "gt" => {
@@ -11945,14 +11973,30 @@ impl SimpleBackend {
                             &args[1],
                         )
                     };
+                    let mut gt_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
+                        gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if lhs_shadow.is_some() || rhs_shadow.is_some() {
+                        // One operand raw, one boxed: unbox only the non-raw side.
+                        let lv = lhs_shadow.unwrap_or_else(|| {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            unbox_int(&mut builder, *lhs, &nbc)
+                        });
+                        let rv = rhs_shadow.unwrap_or_else(|| {
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            unbox_int(&mut builder, *rhs, &nbc)
+                        });
+                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lv, rv);
+                        gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[0]);
                         let rf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[1]);
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lf, rf);
+                        gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -11962,6 +12006,7 @@ impl SimpleBackend {
                         let cmp = builder
                             .ins()
                             .icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val);
+                        gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -12025,8 +12070,14 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        if let Some(raw_b) = gt_raw_bool {
+                            raw_bool_values.insert(out__.clone(), raw_b);
+                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                builder.def_var(bvar, raw_b);
+                            }
+                        }
                     }
                 }
                 "ge" => {
@@ -12052,8 +12103,23 @@ impl SimpleBackend {
                             &args[1],
                         )
                     };
+                    let mut ge_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
+                        ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if lhs_shadow.is_some() || rhs_shadow.is_some() {
+                        // One operand raw, one boxed: unbox only the non-raw side.
+                        let lv = lhs_shadow.unwrap_or_else(|| {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            unbox_int(&mut builder, *lhs, &nbc)
+                        });
+                        let rv = rhs_shadow.unwrap_or_else(|| {
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            unbox_int(&mut builder, *rhs, &nbc)
+                        });
+                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lv, rv);
+                        ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
@@ -12062,6 +12128,7 @@ impl SimpleBackend {
                         let cmp = builder
                             .ins()
                             .fcmp(FloatCC::GreaterThanOrEqual, lf, rf);
+                        ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -12072,6 +12139,7 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val);
+                        ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -12138,17 +12206,55 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        if let Some(raw_b) = ge_raw_bool {
+                            raw_bool_values.insert(out__.clone(), raw_b);
+                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                builder.def_var(bvar, raw_b);
+                            }
+                        }
                     }
                 }
                 "eq" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let res = if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
+                    let in_active_loop = !loop_stack.is_empty();
+                    let eq_lr = if in_active_loop {
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                    } else {
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
+                    };
+                    let eq_rr = if in_active_loop {
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                    } else {
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1])
+                    };
+                    let mut eq_raw_bool: Option<Value> = None;
+                    let res = if let (Some(lr), Some(rr)) = (eq_lr, eq_rr) {
+                        // Both operands have raw int shadows: direct icmp,
+                        // no unboxing needed.
+                        let cmp = builder.ins().icmp(IntCC::Equal, lr, rr);
+                        eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if eq_lr.is_some() || eq_rr.is_some() {
+                        // One operand raw, one boxed: unbox only the non-raw side.
+                        let lv = eq_lr.unwrap_or_else(|| {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            unbox_int(&mut builder, *lhs, &nbc)
+                        });
+                        let rv = eq_rr.unwrap_or_else(|| {
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            unbox_int(&mut builder, *rhs, &nbc)
+                        });
+                        let cmp = builder.ins().icmp(IntCC::Equal, lv, rv);
+                        eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[0]);
                         let rf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[1]);
                         let cmp = builder.ins().fcmp(FloatCC::Equal, lf, rf);
+                        eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, direct unbox + compare.
@@ -12157,6 +12263,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
+                        eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -12200,17 +12307,54 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        if let Some(raw_b) = eq_raw_bool {
+                            raw_bool_values.insert(out__.clone(), raw_b);
+                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                builder.def_var(bvar, raw_b);
+                            }
+                        }
                     }
                 }
                 "ne" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let res = if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
+                    let in_active_loop = !loop_stack.is_empty();
+                    let ne_lr = if in_active_loop {
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                    } else {
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
+                    };
+                    let ne_rr = if in_active_loop {
+                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                    } else {
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1])
+                    };
+                    let mut ne_raw_bool: Option<Value> = None;
+                    let res = if let (Some(lr), Some(rr)) = (ne_lr, ne_rr) {
+                        // Both operands have raw int shadows: direct icmp.
+                        let cmp = builder.ins().icmp(IntCC::NotEqual, lr, rr);
+                        ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if ne_lr.is_some() || ne_rr.is_some() {
+                        // One operand raw, one boxed.
+                        let lv = ne_lr.unwrap_or_else(|| {
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            unbox_int(&mut builder, *lhs, &nbc)
+                        });
+                        let rv = ne_rr.unwrap_or_else(|| {
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            unbox_int(&mut builder, *rhs, &nbc)
+                        });
+                        let cmp = builder.ins().icmp(IntCC::NotEqual, lv, rv);
+                        ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[0]);
                         let rf = float_value_for_mixed(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &raw_int_shadow, &raw_int_shadow_vals, &raw_primary_int, &int_like_vars, &bool_like_vars, &nbc, box_int_mask_var, box_int_tag_var, &args[1]);
                         let cmp = builder.ins().fcmp(FloatCC::NotEqual, lf, rf);
+                        ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, direct unbox + compare.
@@ -12219,6 +12363,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
+                        ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -12262,8 +12407,14 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        if let Some(raw_b) = ne_raw_bool {
+                            raw_bool_values.insert(out__.clone(), raw_b);
+                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                builder.def_var(bvar, raw_b);
+                            }
+                        }
                     }
                 }
                 "string_eq" => {
@@ -12585,6 +12736,7 @@ impl SimpleBackend {
                 }
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let mut bool_raw: Option<Value> = None;
                     let res = if let Some(raw_val) = shadow_value_for(
                         &mut builder,
                         &raw_bool_shadow_vars,
@@ -12593,6 +12745,8 @@ impl SimpleBackend {
                     ) {
                         // Raw bool from proven list_bool getitem or const_bool.
                         // bool(x) where x is already raw 0/1 — just re-box.
+                        // Propagate the raw shadow directly (already 0/1).
+                        bool_raw = Some(raw_val);
                         let is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0);
                         box_bool_value(&mut builder, is_nonzero, &nbc)
                     } else if op_prefers_int_lane(&op) {
@@ -12610,12 +12764,14 @@ impl SimpleBackend {
                         });
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
+                        bool_raw = Some(builder.ins().uextend(types::I64, is_nonzero));
                         box_bool_value(&mut builder, is_nonzero, &nbc)
                     } else if op_prefers_bool_lane(&op) {
                         // For known bools, extract bit 0 directly — no function call.
                         let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*val, one);
+                        bool_raw = Some(bit0);
                         let is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0);
                         box_bool_value(&mut builder, is_nonzero, &nbc)
                     } else {
@@ -12633,8 +12789,14 @@ impl SimpleBackend {
                         let cond = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
                         box_bool_value(&mut builder, cond, &nbc)
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        if let Some(raw_b) = bool_raw {
+                            raw_bool_values.insert(out__.clone(), raw_b);
+                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                builder.def_var(bvar, raw_b);
+                            }
+                        }
                     }
                 }
                 "and" => {
