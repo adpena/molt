@@ -149,17 +149,12 @@ fn raw_softmax(x: &[f32], out: &mut [f32]) {
     }
 }
 
-fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
+fn gpu_softmax(x_data: &[f32], out: &mut [f32]) {
     let n = x_data.len();
-    let x_bytes = f32_to_bytes(x_data);
-
-    // Use the fused softmax path: single pass over the data doing
-    // max-reduce + exp2 + sum-reduce + normalize.
-    // This is what the real GPU pipeline does after fusion merges
-    // the 4 individual kernels into one fused operation.
-    let mut out_bytes = vec![0u8; n * 4];
-    interpret::fused_softmax(&x_bytes, &mut out_bytes, 1, n);
-    bytes_to_f32(&out_bytes)
+    // Use the typed f32 fused softmax path: operates directly on f32 slices,
+    // zero byte-conversion overhead. This is equivalent to what the kernel
+    // interpreter does internally after reinterpreting byte buffers.
+    interpret::fused_softmax_f32(x_data, out, 1, n);
 }
 
 // ============================================================================
@@ -179,16 +174,11 @@ fn raw_rms_norm(x: &[f32], out: &mut [f32], eps: f32) {
     }
 }
 
-fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
+fn gpu_rms_norm(x_data: &[f32], out: &mut [f32], eps: f32) {
     let n = x_data.len();
-    let x_bytes = f32_to_bytes(x_data);
-
-    // Use the fused RMSNorm path: single pass doing
-    // sum-of-squares + rsqrt + scale.
-    // This is what the real GPU pipeline does after fusion.
-    let mut out_bytes = vec![0u8; n * 4];
-    interpret::fused_rms_norm(&x_bytes, &mut out_bytes, 1, n, eps as f64);
-    bytes_to_f32(&out_bytes)
+    // Use the typed f32 fused RMSNorm path: operates directly on f32 slices,
+    // zero byte-conversion overhead.
+    interpret::fused_rms_norm_f32(x_data, out, 1, n, eps);
 }
 
 // ============================================================================
@@ -232,7 +222,8 @@ fn main() {
     });
 
     let gpu_dur = bench(|| {
-        let out = gpu_softmax(&x_soft);
+        let mut out = vec![0.0f32; softmax_n];
+        gpu_softmax(&x_soft, &mut out);
         std::hint::black_box(&out);
     });
 
@@ -255,7 +246,8 @@ fn main() {
     });
 
     let gpu_dur = bench(|| {
-        let out = gpu_rms_norm(&x_norm, eps);
+        let mut out = vec![0.0f32; norm_n];
+        gpu_rms_norm(&x_norm, &mut out, eps);
         std::hint::black_box(&out);
     });
 
@@ -294,7 +286,8 @@ fn main() {
     // Verify correctness: softmax
     let mut s_raw = vec![0.0f32; softmax_n];
     raw_softmax(&x_soft, &mut s_raw);
-    let s_gpu = gpu_softmax(&x_soft);
+    let mut s_gpu = vec![0.0f32; softmax_n];
+    gpu_softmax(&x_soft, &mut s_gpu);
     let max_diff: f32 = s_raw
         .iter()
         .zip(s_gpu.iter())
@@ -307,7 +300,8 @@ fn main() {
     // Verify correctness: RMSNorm
     let mut n_raw = vec![0.0f32; norm_n];
     raw_rms_norm(&x_norm, &mut n_raw, eps);
-    let n_gpu = gpu_rms_norm(&x_norm, eps);
+    let mut n_gpu = vec![0.0f32; norm_n];
+    gpu_rms_norm(&x_norm, &mut n_gpu, eps);
     let max_diff: f32 = n_raw
         .iter()
         .zip(n_gpu.iter())
