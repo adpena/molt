@@ -288,6 +288,11 @@ fn shadow_pair_available(
 /// On the fast path (value fits 47-bit inline range), this emits a single
 /// compare + a well-predicted conditional branch into `box_int_value_hoisted`.
 /// On the cold path, it calls `molt_int_from_i64` to allocate a BigInt.
+///
+/// When a variable is raw-primary (main Variable holds unboxed i64) but
+/// has no shadow (e.g. after block boundary clears tier-2 values for a
+/// non-loop variable), the raw value is read directly from the main
+/// Variable and overflow-safe boxed.
 #[cfg(feature = "native-backend")]
 fn ensure_boxed_overflow_safe(
     module: &mut ObjectModule,
@@ -300,9 +305,21 @@ fn ensure_boxed_overflow_safe(
     vars: &BTreeMap<String, Variable>,
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
+    raw_primary_int: &std::collections::BTreeSet<String>,
     name: &str,
 ) -> Value {
-    if let Some(raw_val) = shadow_value_for(builder, raw_int_shadow, raw_int_shadow_vals, name) {
+    // Try shadow first (tier 2 value or tier 1 variable).
+    let raw_from_shadow = shadow_value_for(builder, raw_int_shadow, raw_int_shadow_vals, name);
+    // If no shadow but the variable IS raw-primary, read the main Variable
+    // directly — it holds the same unboxed i64.
+    let raw_val = raw_from_shadow.or_else(|| {
+        if raw_primary_int.contains(name) {
+            vars.get(name).map(|&var| builder.use_var(var))
+        } else {
+            None
+        }
+    });
+    if let Some(raw_val) = raw_val {
         let fits = int_value_fits_inline(builder, raw_val);
         let fast_blk = builder.create_block();
         let slow_blk = builder.create_block();
@@ -2723,16 +2740,15 @@ impl SimpleBackend {
                     const INLINE_MIN: i64 = -(1_i64 << 46);
                     const INLINE_MAX: i64 = (1_i64 << 46) - 1;
                     if (INLINE_MIN..=INLINE_MAX).contains(&val) {
-                        let boxed = box_int(val);
-                        let iconst = builder.ins().iconst(types::I64, boxed);
+                        // Typed IR: raw i64 is PRIMARY.  Integer constants
+                        // always fit in 47-bit inline range, so the raw value
+                        // is unconditionally correct.  Boxing is deferred to
+                        // escape points (return, call args, heap stores) via
+                        // var_get_boxed / ensure_boxed_overflow_safe.
+                        let raw_val = builder.ins().iconst(types::I64, val);
                         if let Some(ref out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, iconst);
-                            // Mark as raw-primary so var_get_boxed knows this
-                            // variable may hold a raw i64 in a future phase.
+                            def_var_named(&mut builder, &vars, out__, raw_val);
                             raw_primary_int.insert(out__.clone());
-                            // Integer constants are unconditionally int-typed.
-                            // Always seed the shadow — no type hint needed.
-                            let raw_val = builder.ins().iconst(types::I64, val);
                             if let Some(&shadow_var) = raw_int_shadow.get(out__) {
                                 builder.def_var(shadow_var, raw_val);
                             }
@@ -3066,21 +3082,23 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
-                            // Both-shadow chain: branchless iadd with deferred
-                            // overflow.  The 47-bit inline range check is deferred
-                            // to boxing escape points (return_value, call args)
-                            // where the raw shadow is re-boxed with overflow
-                            // handling via `molt_int_from_i64`.  This eliminates
-                            // the per-add branch + merge overhead (~4 ns/iter).
+                            // Typed IR: raw i64 is PRIMARY.  Branchless iadd
+                            // with deferred overflow — the 47-bit inline range
+                            // check is deferred to boxing escape points
+                            // (return_value, call args) via var_get_boxed /
+                            // ensure_boxed_overflow_safe.  No boxing instruction
+                            // is emitted here; the raw sum flows through
+                            // Cranelift Variables directly.
                             let sum = builder.ins().iadd(lhs_raw, rhs_raw);
-                            let boxed = box_int_value_hoisted(&mut builder, sum, box_int_mask_var, box_int_tag_var);
                             if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, sum);
+                                raw_primary_int.insert(out__.clone());
                                 if let Some(&shadow_var) = raw_int_shadow.get(out__) {
                                     builder.def_var(shadow_var, sum);
                                 }
                                 raw_int_shadow_vals.insert(out__.clone(), sum);
                             }
-                            boxed
+                            continue;
                         } else {
                             // Proven-int path: op_prefers_int_lane guarantees both
                             // operands are int-like. Skip tag check, unbox directly.
@@ -3275,12 +3293,12 @@ impl SimpleBackend {
                             )
                         }
                         .unwrap();
-                        // Branchless iadd with deferred overflow.
-                        // See `add` both-shadow chain comment for rationale.
+                        // Typed IR: raw i64 is PRIMARY.  Branchless iadd
+                        // with deferred overflow — no boxing emitted here.
                         let raw_result = builder.ins().iadd(lhs_val, rhs_val);
-                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
+                            def_var_named(&mut builder, &vars, out_name, raw_result);
+                            raw_primary_int.insert(out_name.clone());
                             if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
                                 builder.def_var(shadow_var, raw_result);
                             }
@@ -6551,6 +6569,7 @@ impl SimpleBackend {
                         &vars,
                         box_int_mask_var,
                         box_int_tag_var,
+                        &raw_primary_int,
                         &args[1],
                     );
                     let callee = Self::import_func_id_split(
@@ -9057,6 +9076,7 @@ impl SimpleBackend {
                             &vars,
                             box_int_mask_var,
                             box_int_tag_var,
+                            &raw_primary_int,
                             &args[2],
                         );
                         let callee = Self::import_func_id_split(
@@ -13733,6 +13753,7 @@ impl SimpleBackend {
                             &vars,
                             box_int_mask_var,
                             box_int_tag_var,
+                            &raw_primary_int,
                             name,
                         );
                         args.push(val);
@@ -20451,6 +20472,7 @@ impl SimpleBackend {
                         &vars,
                         box_int_mask_var,
                         box_int_tag_var,
+                        &raw_primary_int,
                         var_name,
                     );
                     let ret_root = alias_roots

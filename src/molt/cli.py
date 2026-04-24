@@ -9378,6 +9378,136 @@ def _codesign_binary(binary_path: Path) -> None:
         pass  # codesign not available or failed — proceed optimistically
 
 
+def _run_bolt_post_link(
+    *,
+    bolt_requested: bool,
+    bolt_training_cmd: str | None,
+    target: str,
+    output: str | None,
+    out_dir: str | None,
+    build_rc: int,
+    json_output: bool,
+) -> int:
+    """Run BOLT post-link optimization after a successful native build.
+
+    Returns 0 when BOLT was not requested or ran successfully, or a nonzero
+    return code on failure.
+    """
+    if not bolt_requested:
+        return 0
+    if build_rc != 0:
+        return 0  # build already failed — skip BOLT
+
+    # BOLT only applies to native targets.
+    is_native = target in {"native"} or (
+        target is not None
+        and "-" in target
+        and "wasm" not in target
+        and "luau" not in target
+    )
+    if not is_native:
+        if not json_output:
+            print(
+                "Warning: --bolt is only supported for native targets; skipping.",
+                file=sys.stderr,
+            )
+        return 0
+
+    # Locate the BOLT wrapper script.
+    bolt_script = Path(__file__).resolve().parents[2] / "tools" / "bolt_optimize.sh"
+    if not bolt_script.exists():
+        msg = f"BOLT script not found: {bolt_script}"
+        if json_output:
+            _emit_json(
+                _json_payload("build", "error", errors=[msg]),
+                json_output,
+            )
+        else:
+            print(msg, file=sys.stderr)
+        return 1
+
+    # Determine the output binary path.  When --output is given we can
+    # resolve it directly; otherwise BOLT requires it explicitly because
+    # the default output path lives inside internal build state.
+    if output:
+        binary_path = Path(output).expanduser()
+        if not binary_path.is_absolute():
+            base = Path(out_dir) if out_dir else Path.cwd()
+            binary_path = base / binary_path
+    else:
+        if not json_output:
+            print(
+                "Error: --bolt requires an explicit --output path so BOLT "
+                "can locate the binary.",
+                file=sys.stderr,
+            )
+        return 1
+
+    if not binary_path.exists():
+        msg = f"BOLT: output binary not found at {binary_path}"
+        if not json_output:
+            print(msg, file=sys.stderr)
+        return 1
+
+    # Build the bolt command.
+    bolt_cmd: list[str] = ["bash", str(bolt_script), str(binary_path)]
+    if bolt_training_cmd:
+        bolt_cmd.append(bolt_training_cmd)
+
+    if not json_output:
+        print(
+            f"==> Running BOLT post-link optimization on {binary_path}...",
+            file=sys.stderr,
+        )
+
+    try:
+        bolt_proc = subprocess.run(
+            bolt_cmd,
+            capture_output=not json_output,
+            timeout=300,  # 5 min ceiling
+        )
+    except FileNotFoundError:
+        if not json_output:
+            print("BOLT: bash not found", file=sys.stderr)
+        return 1
+    except subprocess.TimeoutExpired:
+        if not json_output:
+            print("BOLT: optimization timed out (300s)", file=sys.stderr)
+        return 1
+
+    if bolt_proc.returncode != 0:
+        if not json_output:
+            stderr_text = (
+                bolt_proc.stderr
+                if isinstance(bolt_proc.stderr, str)
+                else (
+                    bolt_proc.stderr.decode("utf-8", errors="replace")
+                    if bolt_proc.stderr
+                    else ""
+                )
+            )
+            if stderr_text:
+                print(stderr_text, file=sys.stderr)
+            print("BOLT optimization failed", file=sys.stderr)
+        return bolt_proc.returncode
+
+    # Replace the original binary with the BOLT-optimized one.
+    bolt_binary = Path(f"{binary_path}.bolt")
+    if bolt_binary.exists():
+        import shutil as _shutil
+
+        _shutil.move(str(bolt_binary), str(binary_path))
+        # Re-sign on macOS after replacing the binary.
+        _codesign_binary(binary_path)
+        if not json_output:
+            print(
+                f"==> BOLT-optimized binary installed: {binary_path}",
+                file=sys.stderr,
+            )
+
+    return 0
+
+
 def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
     result = 0
     shift = 0

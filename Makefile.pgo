@@ -1,4 +1,4 @@
-.PHONY: pgo-clean pgo-build pgo-train pgo-merge pgo-optimize pgo-full pgo-bench
+.PHONY: pgo-clean pgo-build pgo-train pgo-merge pgo-optimize pgo-full pgo-bench bolt bolt-backend
 
 PGO_DIR       := /tmp/molt-pgo
 PGO_TARGET    := /tmp/molt-pgo-target
@@ -53,3 +53,15 @@ pgo-bench:
 	python3 -m molt build --target native --output /tmp/pgo_bench bench/pgo_training.py --rebuild
 	@echo "=== Running compiled binary ==="
 	/tmp/pgo_bench
+
+# BOLT post-link optimization for the molt-backend binary.
+# Instruments, profiles with a training workload, and reorders
+# functions/basic blocks for optimal icache utilization.
+bolt-backend:
+	tools/bolt_optimize.sh target/release-fast/molt-backend
+
+# BOLT for a user-compiled binary (pass BINARY= and optionally TRAINING=).
+# Example: make -f Makefile.pgo bolt BINARY=/tmp/sieve_bench
+bolt:
+	@test -n "$(BINARY)" || { echo "Usage: make -f Makefile.pgo bolt BINARY=<path> [TRAINING=<cmd>]"; exit 1; }
+	tools/bolt_optimize.sh $(BINARY) $(or $(TRAINING),$(BINARY))
