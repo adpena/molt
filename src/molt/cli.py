@@ -141,6 +141,7 @@ _RUNTIME_IMPORT_PROTOCOL_TARGETS = frozenset(
 _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
     {
         "builtins",
+        "_intrinsics",
         "importlib",
         "importlib.util",
         "importlib.machinery",

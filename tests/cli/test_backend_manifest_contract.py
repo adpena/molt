@@ -181,7 +181,13 @@ def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
     assert "vfs_bundle_tar" in runtime_manifest["features"]
 
 
-def test_runtime_manifest_native_crate_types_exclude_cdylib() -> None:
+def test_runtime_manifest_crate_types_include_all_link_targets() -> None:
+    """Validate the runtime ships staticlib + rlib + cdylib.
+
+    cdylib is required so ``cargo build -p molt-runtime --target wasm32-…``
+    emits a stable ``.wasm`` artifact consumed by the WASM split-runtime lane.
+    See ``build.rs`` for the authoritative rationale.
+    """
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
         runtime_manifest = tomllib.load(handle)
@@ -190,7 +196,7 @@ def test_runtime_manifest_native_crate_types_exclude_cdylib() -> None:
 
     assert "staticlib" in crate_types
     assert "rlib" in crate_types
-    assert "cdylib" not in crate_types
+    assert "cdylib" in crate_types
 
 
 def test_backend_manifest_gates_loop_continue_to_native_backend() -> None:
