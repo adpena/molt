@@ -1445,7 +1445,7 @@ pub extern "C" fn molt_len_list(bits: u64) -> u64 {
 /// Fast len for known-str values. Single type check, no 18-type dispatch.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_len_str(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {

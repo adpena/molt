@@ -1836,6 +1836,62 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut 
                         return done_true;
                     }
                     // BigInt range — fall through to slow path.
+
+                    // ── DICT_KEYS_VIEW fast path (zero alloc) ──────
+                    if target_type == TYPE_ID_DICT_KEYS_VIEW {
+                        let len = dict_view_len(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= len {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return done_true;
+                        }
+                        if let Some((key_bits, _val_bits)) = dict_view_entry(target_ptr, idx) {
+                            inc_ref_bits(_py, key_bits);
+                            *value_out = key_bits;
+                            iter_set_index(ptr, idx + 1);
+                            return done_false;
+                        }
+                        iter_set_index(ptr, ITER_EXHAUSTED);
+                        return done_true;
+                    }
+
+                    // ── DICT_VALUES_VIEW fast path (zero alloc) ────
+                    if target_type == TYPE_ID_DICT_VALUES_VIEW {
+                        let len = dict_view_len(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= len {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return done_true;
+                        }
+                        if let Some((_key_bits, val_bits)) = dict_view_entry(target_ptr, idx) {
+                            inc_ref_bits(_py, val_bits);
+                            *value_out = val_bits;
+                            iter_set_index(ptr, idx + 1);
+                            return done_false;
+                        }
+                        iter_set_index(ptr, ITER_EXHAUSTED);
+                        return done_true;
+                    }
+
+                    // ── DICT_ITEMS_VIEW fast path (1 alloc: (k,v) tuple) ──
+                    // Avoids the wrapper (value, done) tuple allocation and
+                    // the is_truthy dispatch on the done flag.
+                    if target_type == TYPE_ID_DICT_ITEMS_VIEW {
+                        let len = dict_view_len(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= len {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return done_true;
+                        }
+                        if let Some((key_bits, val_bits)) = dict_view_entry(target_ptr, idx) {
+                            let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
+                            if tuple_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            *value_out = MoltObject::from_ptr(tuple_ptr).bits();
+                            iter_set_index(ptr, idx + 1);
+                            return done_false;
+                        }
+                        iter_set_index(ptr, ITER_EXHAUSTED);
+                        return done_true;
+                    }
                 }
             }
 

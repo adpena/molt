@@ -14,7 +14,26 @@ use std::alloc::{Layout, alloc, dealloc};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_getitem(dict_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_index(dict_bits, key_bits) })
+    crate::with_gil_entry!(_py, {
+        // Fast path: we know the container is a dict (backend proved it).
+        // Skip the type-dispatch chain in molt_index entirely.
+        let obj = obj_from_bits(dict_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == crate::TYPE_ID_DICT {
+                    if let Some(val) = crate::dict_get_in_place(_py, ptr, key_bits) {
+                        if obj_from_bits(val).as_ptr().is_some() {
+                            crate::inc_ref_bits(_py, val);
+                        }
+                        return val;
+                    }
+                    return crate::raise_key_error_with_key(_py, key_bits);
+                }
+            }
+        }
+        // Fallback for non-dict (shouldn't happen if backend proved dict).
+        molt_index(dict_bits, key_bits)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -25,6 +44,21 @@ pub extern "C" fn molt_tuple_getitem(tuple_bits: u64, index_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_setitem(dict_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // Fast path: we know the container is a dict (backend proved it).
+        // Skip the type-dispatch chain in molt_store_index entirely.
+        let obj = obj_from_bits(dict_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == crate::TYPE_ID_DICT {
+                    crate::dict_set_in_place(_py, ptr, key_bits, value_bits);
+                    if crate::exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return dict_bits;
+                }
+            }
+        }
+        // Fallback for non-dict (shouldn't happen if backend proved dict).
         let _ = molt_store_index(dict_bits, key_bits, value_bits);
         MoltObject::none().bits()
     })

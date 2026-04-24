@@ -713,33 +713,109 @@ pub extern "C" fn molt_string_rpartition(hay_bits: u64, sep_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let none_bits = MoltObject::none().bits();
-        let false_bits = MoltObject::from_bool(false).bits();
-        molt_string_startswith_slice(
-            hay_bits,
-            needle_bits,
-            none_bits,
-            none_bits,
-            false_bits,
-            false_bits,
-        )
+    crate::with_gil_entry_nopanic!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let needle = obj_from_bits(needle_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::from_bool(false).bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::from_bool(false).bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // Single-prefix fast path (most common case)
+            if let Some(needle_ptr) = needle.as_ptr() {
+                let needle_type = object_type_id(needle_ptr);
+                if needle_type == TYPE_ID_STRING {
+                    let needle_bytes =
+                        std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+                    return MoltObject::from_bool(hay_bytes.starts_with(needle_bytes)).bits();
+                }
+                if needle_type == TYPE_ID_TUPLE {
+                    let elems = seq_vec_ref(needle_ptr);
+                    for &elem_bits in elems.iter() {
+                        let elem = obj_from_bits(elem_bits);
+                        if let Some(elem_ptr) = elem.as_ptr() {
+                            if object_type_id(elem_ptr) == TYPE_ID_STRING {
+                                let elem_bytes = std::slice::from_raw_parts(
+                                    string_bytes(elem_ptr),
+                                    string_len(elem_ptr),
+                                );
+                                if hay_bytes.starts_with(elem_bytes) {
+                                    return MoltObject::from_bool(true).bits();
+                                }
+                            }
+                        }
+                    }
+                    return MoltObject::from_bool(false).bits();
+                }
+            }
+            // Non-str, non-tuple needle: delegate to slice path for error handling
+            let none_bits = MoltObject::none().bits();
+            let false_bits = MoltObject::from_bool(false).bits();
+            molt_string_startswith_slice(
+                hay_bits,
+                needle_bits,
+                none_bits,
+                none_bits,
+                false_bits,
+                false_bits,
+            )
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let none_bits = MoltObject::none().bits();
-        let false_bits = MoltObject::from_bool(false).bits();
-        molt_string_endswith_slice(
-            hay_bits,
-            needle_bits,
-            none_bits,
-            none_bits,
-            false_bits,
-            false_bits,
-        )
+    crate::with_gil_entry_nopanic!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let needle = obj_from_bits(needle_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::from_bool(false).bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::from_bool(false).bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            if let Some(needle_ptr) = needle.as_ptr() {
+                let needle_type = object_type_id(needle_ptr);
+                if needle_type == TYPE_ID_STRING {
+                    let needle_bytes =
+                        std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+                    return MoltObject::from_bool(hay_bytes.ends_with(needle_bytes)).bits();
+                }
+                if needle_type == TYPE_ID_TUPLE {
+                    let elems = seq_vec_ref(needle_ptr);
+                    for &elem_bits in elems.iter() {
+                        let elem = obj_from_bits(elem_bits);
+                        if let Some(elem_ptr) = elem.as_ptr() {
+                            if object_type_id(elem_ptr) == TYPE_ID_STRING {
+                                let elem_bytes = std::slice::from_raw_parts(
+                                    string_bytes(elem_ptr),
+                                    string_len(elem_ptr),
+                                );
+                                if hay_bytes.ends_with(elem_bytes) {
+                                    return MoltObject::from_bool(true).bits();
+                                }
+                            }
+                        }
+                    }
+                    return MoltObject::from_bool(false).bits();
+                }
+            }
+            let none_bits = MoltObject::none().bits();
+            let false_bits = MoltObject::from_bool(false).bits();
+            molt_string_endswith_slice(
+                hay_bits,
+                needle_bits,
+                none_bits,
+                none_bits,
+                false_bits,
+                false_bits,
+            )
+        }
     })
 }
 
@@ -2656,7 +2732,7 @@ pub extern "C" fn molt_string_encode(hay_bits: u64, encoding_bits: u64, errors_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -2666,8 +2742,25 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path: pure ASCII strings use SIMD case conversion
-            if hay_bytes.iter().all(|&b| b < 0x80) {
+            // Single-pass ASCII check + already-lowercase detection.
+            // If all bytes are ASCII and already lowercase, return the
+            // input with an inc_ref instead of allocating a copy.
+            let mut is_ascii = true;
+            let mut already_lower = true;
+            for &b in hay_bytes {
+                if b >= 0x80 {
+                    is_ascii = false;
+                    break;
+                }
+                if b >= b'A' && b <= b'Z' {
+                    already_lower = false;
+                }
+            }
+            if is_ascii {
+                if already_lower {
+                    inc_ref_bits(_py, hay_bits);
+                    return hay_bits;
+                }
                 let lowered = bytes_ascii_lower(hay_bytes);
                 let ptr = alloc_string(_py, &lowered);
                 if ptr.is_null() {
@@ -2717,7 +2810,7 @@ pub extern "C" fn molt_string_casefold(hay_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -2727,8 +2820,23 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path: pure ASCII strings use SIMD case conversion
-            if hay_bytes.iter().all(|&b| b < 0x80) {
+            // Single-pass ASCII check + already-uppercase detection.
+            let mut is_ascii = true;
+            let mut already_upper = true;
+            for &b in hay_bytes {
+                if b >= 0x80 {
+                    is_ascii = false;
+                    break;
+                }
+                if b >= b'a' && b <= b'z' {
+                    already_upper = false;
+                }
+            }
+            if is_ascii {
+                if already_upper {
+                    inc_ref_bits(_py, hay_bits);
+                    return hay_bits;
+                }
                 let uppered = bytes_ascii_upper(hay_bytes);
                 let ptr = alloc_string(_py, &uppered);
                 if ptr.is_null() {
@@ -3321,7 +3429,7 @@ pub extern "C" fn molt_string_title(hay_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let chars = obj_from_bits(chars_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -3332,50 +3440,89 @@ pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+
+            if chars.is_none() {
+                // Default strip (whitespace) -- ASCII fast path avoids from_utf8.
+                // ASCII whitespace: 0x09..=0x0D, 0x20
+                let mut start = 0usize;
+                let mut end = hay_bytes.len();
+                let is_ascii = hay_bytes.iter().all(|&b| b < 0x80);
+                if is_ascii {
+                    while start < end && is_ascii_whitespace(hay_bytes[start]) {
+                        start += 1;
+                    }
+                    while end > start && is_ascii_whitespace(hay_bytes[end - 1]) {
+                        end -= 1;
+                    }
+                    if start == 0 && end == hay_bytes.len() {
+                        // No whitespace to strip -- return same object.
+                        inc_ref_bits(_py, hay_bits);
+                        return hay_bits;
+                    }
+                    let trimmed = &hay_bytes[start..end];
+                    let ptr = alloc_string(_py, trimmed);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(ptr).bits();
+                }
+                // Non-ASCII: fall through to str::trim.
+                let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                    return MoltObject::none().bits();
+                };
+                let trimmed = hay_str.trim();
+                if trimmed.len() == hay_bytes.len() {
+                    inc_ref_bits(_py, hay_bits);
+                    return hay_bits;
+                }
+                let ptr = alloc_string(_py, trimmed.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
+
+            // Custom chars strip.
+            let Some(chars_ptr) = chars.as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "strip arg must be None or str");
+            };
+            if object_type_id(chars_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "strip arg must be None or str");
+            }
+            let chars_bytes =
+                std::slice::from_raw_parts(string_bytes(chars_ptr), string_len(chars_ptr));
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::none().bits();
             };
-            let trimmed = if chars.is_none() {
-                hay_str.trim()
+            let Ok(chars_str) = std::str::from_utf8(chars_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let trimmed = if chars_str.is_empty() {
+                hay_str
             } else {
-                let Some(chars_ptr) = chars.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "strip arg must be None or str");
-                };
-                if object_type_id(chars_ptr) != TYPE_ID_STRING {
-                    return raise_exception::<_>(_py, "TypeError", "strip arg must be None or str");
+                let mut strip_chars = HashSet::new();
+                for ch in chars_str.chars() {
+                    strip_chars.insert(ch);
                 }
-                let chars_bytes =
-                    std::slice::from_raw_parts(string_bytes(chars_ptr), string_len(chars_ptr));
-                let Ok(chars_str) = std::str::from_utf8(chars_bytes) else {
-                    return MoltObject::none().bits();
-                };
-                if chars_str.is_empty() {
-                    hay_str
-                } else {
-                    let mut strip_chars = HashSet::new();
-                    for ch in chars_str.chars() {
-                        strip_chars.insert(ch);
+                let mut start = None;
+                for (idx, ch) in hay_str.char_indices() {
+                    if !strip_chars.contains(&ch) {
+                        start = Some(idx);
+                        break;
                     }
-                    let mut start = None;
-                    for (idx, ch) in hay_str.char_indices() {
-                        if !strip_chars.contains(&ch) {
-                            start = Some(idx);
-                            break;
-                        }
-                    }
-                    match start {
-                        None => "",
-                        Some(start_idx) => {
-                            let mut end = None;
-                            for (idx, ch) in hay_str.char_indices().rev() {
-                                if !strip_chars.contains(&ch) {
-                                    end = Some(idx + ch.len_utf8());
-                                    break;
-                                }
+                }
+                match start {
+                    None => "",
+                    Some(start_idx) => {
+                        let mut end = None;
+                        for (idx, ch) in hay_str.char_indices().rev() {
+                            if !strip_chars.contains(&ch) {
+                                end = Some(idx + ch.len_utf8());
+                                break;
                             }
-                            let end_idx = end.unwrap_or(start_idx);
-                            &hay_str[start_idx..end_idx]
                         }
+                        let end_idx = end.unwrap_or(start_idx);
+                        &hay_str[start_idx..end_idx]
                     }
                 }
             };
@@ -3386,6 +3533,12 @@ pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
             MoltObject::from_ptr(ptr).bits()
         }
     })
+}
+
+/// Fast inline ASCII whitespace check matching Python's definition.
+#[inline(always)]
+fn is_ascii_whitespace(b: u8) -> bool {
+    b == b' ' || (b >= 0x09 && b <= 0x0D)
 }
 
 fn string_lstrip_chars<'a>(hay_str: &'a str, chars_str: &str) -> &'a str {
