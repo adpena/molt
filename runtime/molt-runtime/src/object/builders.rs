@@ -4,12 +4,12 @@ use crate::PyToken;
 use crate::*;
 
 pub extern "C" fn molt_header_size() -> u64 {
-    crate::with_gil_entry!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
+    crate::with_gil_entry_nopanic!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let size = usize_from_bits(size_bits);
         let total_size = size + std::mem::size_of::<MoltHeader>();
         let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
@@ -37,7 +37,7 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
 /// refcount yet — the reuse replaces the drop.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_reuse_token(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = MoltObject::from_bits(bits);
         let Some(ptr) = obj.as_ptr() else {
             // Inline value (int, float, bool, None) — no heap allocation to reuse.
@@ -85,7 +85,7 @@ pub extern "C" fn molt_reuse_token(bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_reuse_alloc(token: u64, size_bits: u64) -> u64 {
     if token != 0 {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let ptr = token as *mut u8;
             unsafe {
                 let header = crate::object::header_from_obj_ptr(ptr);
@@ -185,7 +185,7 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if class_bits != 0 {
             let class_obj = obj_from_bits(class_bits);
             let Some(class_ptr) = class_obj.as_ptr() else {
@@ -218,7 +218,7 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if class_bits != 0 {
             let class_obj = obj_from_bits(class_bits);
             let Some(class_ptr) = class_obj.as_ptr() else {
@@ -251,7 +251,7 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if class_bits != 0 {
             let class_obj = obj_from_bits(class_bits);
             let Some(class_ptr) = class_obj.as_ptr() else {
@@ -342,7 +342,7 @@ pub(crate) fn alloc_set_with_entries(_py: &PyToken<'_>, entries: &[u64]) -> *mut
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let debug = matches!(
             std::env::var("MOLT_DEBUG_LIST_BUILDER").ok().as_deref(),
             Some("1")
@@ -428,7 +428,7 @@ impl Drop for PtrDropGuard {
 /// Caller must ensure `builder_bits` is valid and points to a list builder.
 pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return;
@@ -448,7 +448,7 @@ pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) {
 /// Caller must ensure `builder_bits` is valid and points to a list builder.
 pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -484,7 +484,7 @@ pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
 /// Caller must ensure `builder_bits` is valid and points to a list builder with owned refs.
 pub unsafe extern "C" fn molt_list_builder_finish_owned(builder_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -518,7 +518,7 @@ pub unsafe extern "C" fn molt_list_builder_finish_owned(builder_bits: u64) -> u6
 /// Caller must ensure `builder_bits` is valid and points to a tuple builder.
 pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -551,7 +551,7 @@ pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
 /// inc_ref before each append). No additional inc_ref is performed.
 pub unsafe extern "C" fn molt_tuple_builder_finish_owned(builder_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -579,7 +579,7 @@ pub unsafe extern "C" fn molt_tuple_builder_finish_owned(builder_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
         let ptr = alloc_object(_py, total, TYPE_ID_DICT_BUILDER);
         if ptr.is_null() {
@@ -600,7 +600,7 @@ pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
 /// Caller must ensure `builder_bits` is valid and points to a dict builder.
 pub unsafe extern "C" fn molt_dict_builder_append(builder_bits: u64, key: u64, val: u64) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return;
@@ -621,7 +621,7 @@ pub unsafe extern "C" fn molt_dict_builder_append(builder_bits: u64, key: u64, v
 /// Caller must ensure `builder_bits` is valid and points to a dict builder.
 pub unsafe extern "C" fn molt_dict_builder_finish(builder_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -644,7 +644,7 @@ pub unsafe extern "C" fn molt_dict_builder_finish(builder_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_builder_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
         let ptr = alloc_object(_py, total, TYPE_ID_SET_BUILDER);
         if ptr.is_null() {
@@ -665,7 +665,7 @@ pub extern "C" fn molt_set_builder_new(capacity_bits: u64) -> u64 {
 /// Caller must ensure `builder_bits` is valid and points to a set builder.
 pub unsafe extern "C" fn molt_set_builder_append(builder_bits: u64, key: u64) {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return;
@@ -685,7 +685,7 @@ pub unsafe extern "C" fn molt_set_builder_append(builder_bits: u64, key: u64) {
 /// Caller must ensure `builder_bits` is valid and points to a set builder.
 pub unsafe extern "C" fn molt_set_builder_finish(builder_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();

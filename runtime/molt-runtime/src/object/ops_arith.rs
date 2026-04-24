@@ -35,7 +35,7 @@ fn is_number_for_concat(obj: MoltObject) -> bool {
 /// (defensive: the frontend may have mis-inferred the type hint).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_str_concat(lhs_bits: u64, rhs_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(lhs_bits);
         let rhs = obj_from_bits(rhs_bits);
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
@@ -224,7 +224,7 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_concat(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         if is_number_for_concat(lhs) && is_number_for_concat(rhs) {
@@ -236,7 +236,7 @@ pub extern "C" fn molt_concat(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
@@ -316,7 +316,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_concat(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         if is_number_for_concat(lhs) && is_number_for_concat(rhs) {
@@ -448,7 +448,7 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
@@ -870,7 +870,7 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
@@ -918,7 +918,7 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // BigInt fast path — hoisted to avoid wasted to_i64/is_float checks
@@ -1001,7 +1001,7 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Python true division: int / int always returns float
@@ -1070,7 +1070,7 @@ pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_div(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let idiv_name_bits = intern_static_name(
                 _py,
@@ -1087,7 +1087,7 @@ pub extern "C" fn molt_inplace_div(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let either_float = lhs.is_float() || rhs.is_float();
@@ -1157,7 +1157,7 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_floordiv(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let idiv_name_bits = intern_static_name(
                 _py,
@@ -2142,7 +2142,7 @@ fn string_percent_format_impl(_py: &PyToken<'_>, text: &str, rhs_bits: u64) -> O
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Int fast path first — much more common than string % formatting.
@@ -2217,7 +2217,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_mod(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let imod_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.imod_name, b"__imod__");
@@ -2355,7 +2355,7 @@ fn mod_inverse_bigint(value: BigInt, modulus: &BigInt) -> Option<BigInt> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
@@ -2476,7 +2476,7 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_pow(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let ipow_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.ipow_name, b"__ipow__");
@@ -2490,7 +2490,7 @@ pub extern "C" fn molt_inplace_pow(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let mod_obj = obj_from_bits(m);
@@ -2569,7 +2569,7 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let val = obj_from_bits(val_bits);
         let has_ndigits = to_i64(obj_from_bits(has_ndigits_bits)).unwrap_or(0) != 0;
         if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
@@ -2732,7 +2732,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let val = obj_from_bits(val_bits);
         if let Some(i) = to_i64(val) {
             return MoltObject::from_int(i).bits();
@@ -3122,7 +3122,7 @@ fn build_union_type(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Guard: skip int fast path if either operand is a float, because
@@ -3242,7 +3242,7 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
@@ -3298,7 +3298,7 @@ pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Guard: skip int fast path if either operand is a float, because
@@ -3389,7 +3389,7 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
@@ -3423,7 +3423,7 @@ pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Guard: skip int fast path if either operand is a float, because
@@ -3514,7 +3514,7 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_invert(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
         // Python 3.12+ DeprecationWarning for ~bool.
         // Constant bools (~True/~False) are handled at compile time by
@@ -3549,7 +3549,7 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_neg(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
         if let Some(i) = to_i64(obj) {
             let res = -(i as i128);
@@ -3590,7 +3590,7 @@ pub extern "C" fn molt_neg(val: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
@@ -3624,7 +3624,7 @@ pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let trace_shift = std::env::var("MOLT_TRACE_BIGINT_SHIFT").as_deref() == Ok("1");
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
@@ -3687,7 +3687,7 @@ pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_lshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let ilshift_name_bits = intern_static_name(
                 _py,
@@ -3704,7 +3704,7 @@ pub extern "C" fn molt_inplace_lshift(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let shift = index_i64_from_obj(_py, b, "shift count must be int");
@@ -3733,7 +3733,7 @@ pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let irshift_name_bits = intern_static_name(
                 _py,
@@ -3754,7 +3754,7 @@ mod tests {
 
     #[test]
     fn molt_lshift_promotes_bigint_operand_correctly() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let lhs = int_bits_from_i128(_py, 283686952306183);
             let rhs = MoltObject::from_int(8).bits();
             let out = molt_lshift(lhs, rhs);
@@ -3770,7 +3770,7 @@ mod tests {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_matmul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
@@ -3801,7 +3801,7 @@ pub extern "C" fn molt_matmul(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_matmul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let imatmul_name_bits = intern_static_name(
                 _py,

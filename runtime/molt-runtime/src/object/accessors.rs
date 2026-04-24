@@ -224,7 +224,7 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr: *mut u8, offset_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let offset = usize_from_bits(offset_bits);
             object_field_get_ptr_raw(_py, obj_ptr, offset)
         })
@@ -240,7 +240,7 @@ pub unsafe extern "C" fn molt_object_field_set_ptr(
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let offset = usize_from_bits(offset_bits);
             object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits)
         })
@@ -257,7 +257,7 @@ pub unsafe extern "C" fn molt_object_field_init_ptr(
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let offset = usize_from_bits(offset_bits);
             object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits)
         })
@@ -339,7 +339,7 @@ pub unsafe extern "C" fn molt_guard_layout_ptr(
     expected_version: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let matches = guard_layout_match(_py, obj_ptr, class_bits, expected_version);
             if !matches {
                 profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT);
@@ -361,7 +361,7 @@ pub unsafe extern "C" fn molt_guarded_field_get_ptr(
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let offset = usize_from_bits(offset_bits);
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
@@ -388,7 +388,7 @@ pub unsafe extern "C" fn molt_guarded_field_set_ptr(
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let offset = usize_from_bits(offset_bits);
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
@@ -411,7 +411,7 @@ pub unsafe extern "C" fn molt_guarded_field_init_ptr(
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let offset = usize_from_bits(offset_bits);
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 return object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
@@ -426,7 +426,7 @@ pub unsafe extern "C" fn molt_guarded_field_init_ptr(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
             };
@@ -448,7 +448,7 @@ pub unsafe extern "C" fn molt_object_field_set(
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
             };
@@ -485,7 +485,7 @@ pub unsafe extern "C" fn molt_object_field_init(
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
             };
@@ -535,7 +535,7 @@ pub unsafe extern "C" fn molt_getattr_ic(
     ic_index_bits: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if obj_ptr.is_null() {
                 return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
             }
@@ -701,7 +701,7 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
     ic_index: u64,
 ) -> i64 {
     unsafe {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             if obj_ptr.is_null() {
                 return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
             }
@@ -748,7 +748,7 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
 /// Reads a NaN-boxed value at `obj_ptr + offset` and inc-refs it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_field_load(obj_ptr: *mut u8, offset: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { object_field_get_ptr_raw(_py, obj_ptr, offset as usize) }
     })
 }

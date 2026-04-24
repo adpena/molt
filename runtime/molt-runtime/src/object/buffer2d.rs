@@ -5,7 +5,7 @@ use crate::{
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let rows = match to_i64(obj_from_bits(rows_bits)) {
             Some(val) if val >= 0 => val as usize,
             _ => return raise_exception::<_>(_py, "TypeError", "rows must be a non-negative int"),
@@ -39,7 +39,7 @@ pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let row = match to_i64(obj_from_bits(row_bits)) {
             Some(val) if val >= 0 => val as usize,
             _ => return raise_exception::<_>(_py, "TypeError", "row must be a non-negative int"),
@@ -77,7 +77,7 @@ pub extern "C" fn molt_buffer2d_set(
     col_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let row = match to_i64(obj_from_bits(row_bits)) {
             Some(val) if val >= 0 => val as usize,
             _ => return raise_exception::<_>(_py, "TypeError", "row must be a non-negative int"),
@@ -115,7 +115,7 @@ pub extern "C" fn molt_buffer2d_set(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let a = obj_from_bits(a_bits);
         let b = obj_from_bits(b_bits);
         let (a_ptr, b_ptr) = match (a.as_ptr(), b.as_ptr()) {

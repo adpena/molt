@@ -20,7 +20,7 @@ pub extern "C" fn molt_print_newline() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_print_obj(val: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let args_ptr = alloc_tuple(_py, &[val]);
         if args_ptr.is_null() {
             return;
@@ -38,7 +38,7 @@ pub extern "C" fn molt_print_obj(val: u64) {
 /// Print a string to stderr followed by newline.  Used by the compiler to
 /// emit runtime warnings (DeprecationWarning, etc.) in CPython's format.
 pub extern "C" fn molt_warn_stderr(msg_bits: u64) {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(msg_bits);
         if let Some(s) = string_obj_to_owned(obj) {
             // Flush stdout first to ensure correct ordering when stdout and
@@ -1197,7 +1197,7 @@ mod tests {
 
     #[test]
     fn module_repr_includes_file_when_present() {
-        crate::with_gil_entry!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = alloc_string(_py, b"pathlib");
             assert!(!name_ptr.is_null());
             let name_bits = MoltObject::from_ptr(name_ptr).bits();

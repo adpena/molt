@@ -446,7 +446,7 @@ fn weakset_find_index(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -463,7 +463,7 @@ pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_refs(target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
             let ptr = alloc_list(_py, &[]);
             return MoltObject::from_ptr(ptr).bits();
@@ -477,7 +477,7 @@ pub extern "C" fn molt_weakref_refs(target_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_count(target_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
             return int_bits_from_i64(_py, 0);
         };
@@ -492,7 +492,7 @@ pub extern "C" fn molt_weakref_register(
     target_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
@@ -538,7 +538,7 @@ pub extern "C" fn molt_weakref_register(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
@@ -559,7 +559,7 @@ pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_callback(weak_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
@@ -584,7 +584,7 @@ pub extern "C" fn molt_weakref_callback(weak_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
@@ -612,7 +612,7 @@ pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_drop(weak_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -627,7 +627,7 @@ pub extern "C" fn molt_weakref_drop(weak_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_collect() -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         weakref_collect_for_gc(_py);
         MoltObject::none().bits()
     })
@@ -635,7 +635,7 @@ pub extern "C" fn molt_weakref_collect() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_finalize_track(finalizer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(finalizer_bits).is_none() {
             return raise_exception::<_>(
                 _py,
@@ -663,7 +663,7 @@ pub extern "C" fn molt_weakref_finalize_track(finalizer_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_finalize_untrack(finalizer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut guard = runtime_state(_py).weakref_finalizers.lock().unwrap();
         let mut idx = 0usize;
         while idx < guard.len() {
@@ -686,7 +686,7 @@ pub extern "C" fn molt_weakkeydict_set(
     key_hash_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -723,7 +723,7 @@ pub extern "C" fn molt_weakkeydict_set(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_get(dict_bits: u64, key_bits: u64, key_hash_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -750,7 +750,7 @@ pub extern "C" fn molt_weakkeydict_get(dict_bits: u64, key_bits: u64, key_hash_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_del(dict_bits: u64, key_bits: u64, key_hash_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -781,7 +781,7 @@ pub extern "C" fn molt_weakkeydict_contains(
     key_bits: u64,
     key_hash_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -803,7 +803,7 @@ pub extern "C" fn molt_weakkeydict_contains(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_len(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -832,7 +832,7 @@ pub extern "C" fn molt_weakkeydict_len(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_items(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -869,7 +869,7 @@ pub extern "C" fn molt_weakkeydict_items(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_keyrefs(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -902,7 +902,7 @@ pub extern "C" fn molt_weakkeydict_keyrefs(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_popitem(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -938,7 +938,7 @@ pub extern "C" fn molt_weakkeydict_popitem(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakkeydict_clear(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakkeydict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakKeyDictionary expects object") {
             Ok(ptr) => ptr,
@@ -962,7 +962,7 @@ pub extern "C" fn molt_weakvaluedict_set(
     key_hash_bits: u64,
     value_ref_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1001,7 +1001,7 @@ pub extern "C" fn molt_weakvaluedict_set(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_get(dict_bits: u64, key_bits: u64, key_hash_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1035,7 +1035,7 @@ pub extern "C" fn molt_weakvaluedict_get(dict_bits: u64, key_bits: u64, key_hash
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_del(dict_bits: u64, key_bits: u64, key_hash_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1066,7 +1066,7 @@ pub extern "C" fn molt_weakvaluedict_contains(
     key_bits: u64,
     key_hash_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1088,7 +1088,7 @@ pub extern "C" fn molt_weakvaluedict_contains(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_len(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1117,7 +1117,7 @@ pub extern "C" fn molt_weakvaluedict_len(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_items(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1154,7 +1154,7 @@ pub extern "C" fn molt_weakvaluedict_items(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_valuerefs(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1187,7 +1187,7 @@ pub extern "C" fn molt_weakvaluedict_valuerefs(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_popitem(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1222,7 +1222,7 @@ pub extern "C" fn molt_weakvaluedict_popitem(dict_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakvaluedict_clear(dict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakvaluedict_slots(_py);
         let dict_ptr = match expect_obj_ptr(_py, dict_bits, "WeakValueDictionary expects object") {
             Ok(ptr) => ptr,
@@ -1246,7 +1246,7 @@ pub extern "C" fn molt_weakset_add(
     item_ref_bits: u64,
     item_hash_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakset_slots(_py);
         let set_ptr = match expect_obj_ptr(_py, set_bits, "WeakSet expects object") {
             Ok(ptr) => ptr,
@@ -1274,7 +1274,7 @@ pub extern "C" fn molt_weakset_add(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_discard(set_bits: u64, item_bits: u64, item_hash_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakset_slots(_py);
         let set_ptr = match expect_obj_ptr(_py, set_bits, "WeakSet expects object") {
             Ok(ptr) => ptr,
@@ -1299,7 +1299,7 @@ pub extern "C" fn molt_weakset_discard(set_bits: u64, item_bits: u64, item_hash_
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_remove(set_bits: u64, item_bits: u64, item_hash_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakset_slots(_py);
         let set_ptr = match expect_obj_ptr(_py, set_bits, "WeakSet expects object") {
             Ok(ptr) => ptr,
@@ -1325,7 +1325,7 @@ pub extern "C" fn molt_weakset_remove(set_bits: u64, item_bits: u64, item_hash_b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_pop(set_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakset_slots(_py);
         let set_ptr = match expect_obj_ptr(_py, set_bits, "WeakSet expects object") {
             Ok(ptr) => ptr,
@@ -1357,7 +1357,7 @@ pub extern "C" fn molt_weakset_pop(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_contains(set_bits: u64, item_bits: u64, item_hash_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakset_slots(_py);
         let set_ptr = match expect_obj_ptr(_py, set_bits, "WeakSet expects object") {
             Ok(ptr) => ptr,
@@ -1379,7 +1379,7 @@ pub extern "C" fn molt_weakset_contains(set_bits: u64, item_bits: u64, item_hash
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_len(set_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakset_slots(_py);
         let set_ptr = match expect_obj_ptr(_py, set_bits, "WeakSet expects object") {
             Ok(ptr) => ptr,
@@ -1408,7 +1408,7 @@ pub extern "C" fn molt_weakset_len(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_items(set_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakset_slots(_py);
         let set_ptr = match expect_obj_ptr(_py, set_bits, "WeakSet expects object") {
             Ok(ptr) => ptr,
@@ -1441,7 +1441,7 @@ pub extern "C" fn molt_weakset_items(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakset_clear(set_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         prune_weakset_slots(_py);
         let set_ptr = match expect_obj_ptr(_py, set_bits, "WeakSet expects object") {
             Ok(ptr) => ptr,

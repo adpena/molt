@@ -55,7 +55,7 @@ pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Op
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.extend expects bytearray");
@@ -81,7 +81,7 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_append(bytearray_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.append expects bytearray");
@@ -107,7 +107,7 @@ pub extern "C" fn molt_bytearray_append(bytearray_bits: u64, val_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_clear(bytearray_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.clear expects bytearray");
@@ -124,7 +124,7 @@ pub extern "C" fn molt_bytearray_clear(bytearray_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_copy(bytearray_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.copy expects bytearray");
@@ -149,7 +149,7 @@ pub extern "C" fn molt_bytearray_insert(
     index_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.insert expects bytearray");
@@ -191,7 +191,7 @@ pub extern "C" fn molt_bytearray_insert(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let index_obj = obj_from_bits(index_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
@@ -232,7 +232,7 @@ pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_remove(bytearray_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.remove expects bytearray");
@@ -260,7 +260,7 @@ pub extern "C" fn molt_bytearray_remove(bytearray_bits: u64, val_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_reverse(bytearray_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.reverse expects bytearray");
@@ -281,7 +281,7 @@ pub extern "C" fn molt_bytearray_reverse(bytearray_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.resize expects bytearray");
@@ -314,7 +314,7 @@ pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let sep = obj_from_bits(sep_bits);
         let items = obj_from_bits(items_bits);
         let sep_ptr = match sep.as_ptr() {
@@ -548,7 +548,7 @@ pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_join(sep_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let sep_obj = obj_from_bits(sep_bits);
         let Some(sep_ptr) = sep_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "join expects a bytearray separator");
@@ -589,7 +589,7 @@ pub extern "C" fn molt_bytearray_join(sep_bits: u64, items_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_find(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_bytes_find_slice(
@@ -673,7 +673,7 @@ pub extern "C" fn molt_bytes_find_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -743,7 +743,7 @@ pub extern "C" fn molt_bytes_find_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_bytes_rfind_slice(
@@ -766,7 +766,7 @@ pub extern "C" fn molt_bytes_rfind_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -836,7 +836,7 @@ pub extern "C" fn molt_bytes_rfind_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_startswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_bytes_startswith_slice(
@@ -852,7 +852,7 @@ pub extern "C" fn molt_bytes_startswith(hay_bits: u64, needle_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_bytes_endswith_slice(
@@ -875,7 +875,7 @@ pub extern "C" fn molt_bytes_startswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -953,7 +953,7 @@ pub extern "C" fn molt_bytes_endswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1024,7 +1024,7 @@ pub extern "C" fn molt_bytes_endswith_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_count(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1081,7 +1081,7 @@ pub extern "C" fn molt_bytes_count_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1148,7 +1148,7 @@ pub extern "C" fn molt_bytes_count_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_find(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_bytearray_find_slice(
@@ -1164,7 +1164,7 @@ pub extern "C" fn molt_bytearray_find(hay_bits: u64, needle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_bytearray_rfind_slice(
@@ -1180,7 +1180,7 @@ pub extern "C" fn molt_bytearray_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_startswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_bytearray_startswith_slice(
@@ -1196,7 +1196,7 @@ pub extern "C" fn molt_bytearray_startswith(hay_bits: u64, needle_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_bytearray_endswith_slice(
@@ -1219,7 +1219,7 @@ pub extern "C" fn molt_bytearray_find_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1296,7 +1296,7 @@ pub extern "C" fn molt_bytearray_rfind_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1373,7 +1373,7 @@ pub extern "C" fn molt_bytearray_startswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1451,7 +1451,7 @@ pub extern "C" fn molt_bytearray_endswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1522,7 +1522,7 @@ pub extern "C" fn molt_bytearray_endswith_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_count(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1579,7 +1579,7 @@ pub extern "C" fn molt_bytearray_count_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1646,7 +1646,7 @@ pub extern "C" fn molt_bytearray_count_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_splitlines(hay_bits: u64, keepends_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let keepends = is_truthy(_py, obj_from_bits(keepends_bits));
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1666,7 +1666,7 @@ pub extern "C" fn molt_bytes_splitlines(hay_bits: u64, keepends_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_splitlines(hay_bits: u64, keepends_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let keepends = is_truthy(_py, obj_from_bits(keepends_bits));
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1741,7 +1741,7 @@ where
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_partition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let sep = obj_from_bits(sep_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1785,7 +1785,7 @@ pub extern "C" fn molt_bytes_partition(hay_bits: u64, sep_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_rpartition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let sep = obj_from_bits(sep_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1829,7 +1829,7 @@ pub extern "C" fn molt_bytes_rpartition(hay_bits: u64, sep_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_partition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let sep = obj_from_bits(sep_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1873,7 +1873,7 @@ pub extern "C" fn molt_bytearray_partition(hay_bits: u64, sep_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_rpartition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let sep = obj_from_bits(sep_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1917,7 +1917,7 @@ pub extern "C" fn molt_bytearray_rpartition(hay_bits: u64, sep_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let maxsplit_bits = MoltObject::from_int(-1).bits();
         molt_bytes_split_max(hay_bits, needle_bits, maxsplit_bits)
     })
@@ -1925,7 +1925,7 @@ pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_split_max(hay_bits: u64, needle_bits: u64, maxsplit_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
@@ -1989,7 +1989,7 @@ pub extern "C" fn molt_bytes_split_max(hay_bits: u64, needle_bits: u64, maxsplit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_rsplit(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let maxsplit_bits = MoltObject::from_int(-1).bits();
         molt_bytes_rsplit_max(hay_bits, needle_bits, maxsplit_bits)
     })
@@ -2001,7 +2001,7 @@ pub extern "C" fn molt_bytes_rsplit_max(
     needle_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
@@ -2137,7 +2137,7 @@ where
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_strip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if trace_bytes_strip() {
             let hay = obj_from_bits(hay_bits);
             let info = hay
@@ -2159,7 +2159,7 @@ pub extern "C" fn molt_bytes_strip(hay_bits: u64, chars_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -2174,7 +2174,7 @@ pub extern "C" fn molt_bytes_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -2189,7 +2189,7 @@ pub extern "C" fn molt_bytes_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_split(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let maxsplit_bits = MoltObject::from_int(-1).bits();
         molt_bytearray_split_max(hay_bits, needle_bits, maxsplit_bits)
     })
@@ -2201,7 +2201,7 @@ pub extern "C" fn molt_bytearray_split_max(
     needle_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
@@ -2265,7 +2265,7 @@ pub extern "C" fn molt_bytearray_split_max(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_rsplit(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let maxsplit_bits = MoltObject::from_int(-1).bits();
         molt_bytearray_rsplit_max(hay_bits, needle_bits, maxsplit_bits)
     })
@@ -2277,7 +2277,7 @@ pub extern "C" fn molt_bytearray_rsplit_max(
     needle_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
@@ -2342,7 +2342,7 @@ pub extern "C" fn molt_bytearray_rsplit_max(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_strip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -2357,7 +2357,7 @@ pub extern "C" fn molt_bytearray_strip(hay_bits: u64, chars_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -2372,7 +2372,7 @@ pub extern "C" fn molt_bytearray_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -2451,7 +2451,7 @@ fn bytes_decode_impl(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_decode(hay_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_decode_impl(_py, hay_bits, encoding_bits, errors_bits, TYPE_ID_BYTES)
     })
 }
@@ -2462,7 +2462,7 @@ pub extern "C" fn molt_bytearray_decode(
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_decode_impl(_py, hay_bits, encoding_bits, errors_bits, TYPE_ID_BYTEARRAY)
     })
 }
@@ -2474,7 +2474,7 @@ pub extern "C" fn molt_bytes_replace(
     replacement_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let replacement = obj_from_bits(replacement_bits);
@@ -2803,7 +2803,7 @@ pub(crate) fn bytes_hex_from_bits(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_upper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -2825,7 +2825,7 @@ pub extern "C" fn molt_bytes_upper(hay_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_lower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -3324,98 +3324,98 @@ fn bytes_remove_affix_impl(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_capitalize(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_capitalize)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_capitalize(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_capitalize)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_swapcase(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_swapcase)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_swapcase(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_swapcase)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_title(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_title)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_title(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_title)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isalpha(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_alpha)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isalpha(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_alpha)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isalnum(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_alnum)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isalnum(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_alnum)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isdigit(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_digit)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isdigit(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_digit)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isspace(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_whitespace)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isspace(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(
             _py,
             hay_bits,
@@ -3427,49 +3427,49 @@ pub extern "C" fn molt_bytearray_isspace(hay_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_islower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_islower)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_islower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_islower)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isupper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_isupper)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isupper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_isupper)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_istitle(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_istitle)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_istitle(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_istitle)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isascii(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
             bytes.iter().all(|b| b.is_ascii())
         })
@@ -3478,7 +3478,7 @@ pub extern "C" fn molt_bytes_isascii(hay_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isascii(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
             bytes.iter().all(|b| b.is_ascii())
         })
@@ -3487,21 +3487,21 @@ pub extern "C" fn molt_bytearray_isascii(hay_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_upper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_upper)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_lower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_lower)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_center(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -3516,7 +3516,7 @@ pub extern "C" fn molt_bytes_center(hay_bits: u64, width_bits: u64, fill_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_center(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -3531,7 +3531,7 @@ pub extern "C" fn molt_bytearray_center(hay_bits: u64, width_bits: u64, fill_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_ljust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -3546,7 +3546,7 @@ pub extern "C" fn molt_bytes_ljust(hay_bits: u64, width_bits: u64, fill_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_ljust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -3561,7 +3561,7 @@ pub extern "C" fn molt_bytearray_ljust(hay_bits: u64, width_bits: u64, fill_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_rjust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -3576,7 +3576,7 @@ pub extern "C" fn molt_bytes_rjust(hay_bits: u64, width_bits: u64, fill_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_rjust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -3591,56 +3591,56 @@ pub extern "C" fn molt_bytearray_rjust(hay_bits: u64, width_bits: u64, fill_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_zfill(hay_bits: u64, width_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_zfill_impl(_py, hay_bits, width_bits, TYPE_ID_BYTES)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_zfill(hay_bits: u64, width_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_zfill_impl(_py, hay_bits, width_bits, TYPE_ID_BYTEARRAY)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_expandtabs_impl(_py, hay_bits, tabsize_bits, TYPE_ID_BYTES)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_expandtabs_impl(_py, hay_bits, tabsize_bits, TYPE_ID_BYTEARRAY)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_removeprefix(hay_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_remove_affix_impl(_py, hay_bits, prefix_bits, TYPE_ID_BYTES, false)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_removeprefix(hay_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_remove_affix_impl(_py, hay_bits, prefix_bits, TYPE_ID_BYTEARRAY, false)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_removesuffix(hay_bits: u64, suffix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_remove_affix_impl(_py, hay_bits, suffix_bits, TYPE_ID_BYTES, true)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_removesuffix(hay_bits: u64, suffix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_remove_affix_impl(_py, hay_bits, suffix_bits, TYPE_ID_BYTEARRAY, true)
     })
 }
@@ -3654,7 +3654,7 @@ pub extern "C" fn molt_bytes_index_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let idx_bits = molt_bytes_find_slice(
             hay_bits,
             needle_bits,
@@ -3682,7 +3682,7 @@ pub extern "C" fn molt_bytes_rindex_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let idx_bits = molt_bytes_rfind_slice(
             hay_bits,
             needle_bits,
@@ -3710,7 +3710,7 @@ pub extern "C" fn molt_bytearray_index_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let idx_bits = molt_bytearray_find_slice(
             hay_bits,
             needle_bits,
@@ -3738,7 +3738,7 @@ pub extern "C" fn molt_bytearray_rindex_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let idx_bits = molt_bytearray_rfind_slice(
             hay_bits,
             needle_bits,
@@ -3852,7 +3852,7 @@ fn bytes_translate_impl(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_translate(hay_bits: u64, table_bits: u64, delete_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -3881,7 +3881,7 @@ pub extern "C" fn molt_bytearray_translate(
     table_bits: u64,
     delete_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -3906,7 +3906,7 @@ pub extern "C" fn molt_bytearray_translate(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_maketrans(from_bits: u64, to_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let from_obj = obj_from_bits(from_bits);
         let to_obj = obj_from_bits(to_bits);
         let from_ptr = match from_obj.as_ptr() {
@@ -4015,7 +4015,7 @@ fn bytes_fromhex_parse(_py: &PyToken<'_>, text: &[u8]) -> Result<Vec<u8>, u64> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text_obj = obj_from_bits(text_bits);
         let Some(text_ptr) = text_obj.as_ptr() else {
             let msg = format!(
@@ -4066,7 +4066,7 @@ pub extern "C" fn molt_bytes_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let text_obj = obj_from_bits(text_bits);
         let Some(text_ptr) = text_obj.as_ptr() else {
             let msg = format!(
@@ -4117,7 +4117,7 @@ pub extern "C" fn molt_bytearray_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_hex(hay_bits: u64, sep_bits: u64, bytes_per_sep_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -4134,7 +4134,7 @@ pub extern "C" fn molt_bytes_hex(hay_bits: u64, sep_bits: u64, bytes_per_sep_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_hex(hay_bits: u64, sep_bits: u64, bytes_per_sep_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -4156,7 +4156,7 @@ pub extern "C" fn molt_bytearray_replace(
     replacement_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let replacement = obj_from_bits(replacement_bits);
@@ -4631,21 +4631,21 @@ fn bytes_from_str_impl(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_from_obj(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_from_obj_impl(_py, bits, BytesCtorKind::Bytes)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_from_obj(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_from_obj_impl(_py, bits, BytesCtorKind::Bytearray)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_from_str(src_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_from_str_impl(
             _py,
             src_bits,
@@ -4662,7 +4662,7 @@ pub extern "C" fn molt_bytearray_from_str(
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         bytes_from_str_impl(
             _py,
             src_bits,
