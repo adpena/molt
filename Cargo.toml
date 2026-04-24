@@ -9,7 +9,6 @@ members = [
     "runtime/molt-runtime-tk",
     "runtime/molt-obj-model",
     "runtime/molt-backend",
-    "runtime/molt-backend-mlir",
     "runtime/molt-db",
     "runtime/molt-worker",
     "runtime/molt-wasm-host",
@@ -21,7 +20,14 @@ members = [
     "runtime/molt-tier",
     "runtime/molt-gpu",
 ]
-exclude = ["deploy/browser/simd-ops-rs"]
+exclude = [
+    "deploy/browser/simd-ops-rs",
+    # molt-backend-mlir requires system LLVM 22 (mlir-sys). Excluded from
+    # default workspace to prevent cargo check --all failures on machines
+    # without LLVM installed. Build explicitly with:
+    #   cargo check -p molt-backend-mlir
+    "runtime/molt-backend-mlir",
+]
 resolver = "2"
 
 [profile.dev]
