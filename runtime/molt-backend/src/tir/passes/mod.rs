@@ -140,6 +140,10 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
 
     run_pass!("range_devirt", range_devirt::run(func));
     run_pass!("iter_devirt", iter_devirt::run(func));
+    run_pass!(
+        "tuple_scalarize",
+        deforestation::run_tuple_scalarize(func)
+    );
     run_pass!("loop_narrow", loop_narrow::run(func));
     run_pass!("unboxing", unboxing::run(func));
     run_pass!("block_versioning", block_versioning::run(func));

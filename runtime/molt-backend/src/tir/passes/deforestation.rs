@@ -545,6 +545,255 @@ fn fuse_list(func: &mut TirFunction, chain: &IteratorChain, stats: &mut PassStat
 }
 
 // ---------------------------------------------------------------------------
+// Tuple Scalarization (Boxing Elimination)
+// ---------------------------------------------------------------------------
+//
+// Eliminates intermediate tuples that are built and immediately unpacked.
+//
+// ```python
+// a, b = b, a + b     # Fibonacci swap
+// ```
+//
+// Before scalarization:
+//   %tuple = BuildTuple(%b, %a_plus_b)
+//   (%new_a, %new_b) = Copy[_original_kind="unpack_sequence"](%tuple)
+//
+// After scalarization:
+//   %new_a = Copy(%b)
+//   %new_b = Copy(%a_plus_b)
+//
+// The BuildTuple + unpack_sequence pair is pure overhead: a heap allocation
+// created and immediately destroyed.  Scalarization replaces this with
+// direct SSA value copies -- zero allocation, zero refcount traffic.
+//
+// Safety conditions:
+// 1. The BuildTuple result must not escape (used only by the unpack op).
+// 2. The unpack element count must match the BuildTuple operand count.
+// 3. Both ops must be in the same block (ensures no intervening control flow).
+
+/// A matched BuildTuple + unpack_sequence pair eligible for scalarization.
+#[derive(Debug)]
+struct TupleScalarizeCandidate {
+    /// Block containing both ops.
+    block_id: BlockId,
+    /// Index of the BuildTuple op within the block.
+    build_idx: usize,
+    /// Index of the unpack_sequence (Copy with _original_kind) op within the block.
+    unpack_idx: usize,
+    /// Operands of the BuildTuple (the element values being packed).
+    tuple_elements: Vec<ValueId>,
+    /// Results of the unpack_sequence (the unpacked target values).
+    unpack_results: Vec<ValueId>,
+}
+
+/// Eliminate intermediate tuples that are built and immediately unpacked.
+///
+/// Scans every block for `BuildTuple` ops whose result is used exactly once
+/// by an `unpack_sequence` (represented as `Copy` with `_original_kind`
+/// attribute) in the same block.  When the element counts match, both ops
+/// are replaced with direct `Copy` ops connecting tuple elements to unpack
+/// targets.
+pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
+    let mut stats = PassStats {
+        name: "tuple_scalarize",
+        ..Default::default()
+    };
+
+    // Phase 1: Build a use-count map for all values.
+    // Count uses in both ops and terminators.
+    let mut use_counts: HashMap<ValueId, usize> = HashMap::new();
+
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            for &operand in &op.operands {
+                *use_counts.entry(operand).or_insert(0) += 1;
+            }
+        }
+        // Count terminator uses.
+        match &block.terminator {
+            Terminator::Branch { args, .. } => {
+                for v in args {
+                    *use_counts.entry(*v).or_insert(0) += 1;
+                }
+            }
+            Terminator::CondBranch {
+                cond,
+                then_args,
+                else_args,
+                ..
+            } => {
+                *use_counts.entry(*cond).or_insert(0) += 1;
+                for v in then_args {
+                    *use_counts.entry(*v).or_insert(0) += 1;
+                }
+                for v in else_args {
+                    *use_counts.entry(*v).or_insert(0) += 1;
+                }
+            }
+            Terminator::Return { values } => {
+                for v in values {
+                    *use_counts.entry(*v).or_insert(0) += 1;
+                }
+            }
+            Terminator::Switch {
+                value,
+                cases,
+                default_args,
+                ..
+            } => {
+                *use_counts.entry(*value).or_insert(0) += 1;
+                for (_, _, args) in cases {
+                    for v in args {
+                        *use_counts.entry(*v).or_insert(0) += 1;
+                    }
+                }
+                for v in default_args {
+                    *use_counts.entry(*v).or_insert(0) += 1;
+                }
+            }
+            Terminator::Unreachable => {}
+        }
+    }
+
+    // Phase 2: Find scalarization candidates.
+    // A candidate is a BuildTuple whose single-result value is used exactly
+    // once, and that single use is an unpack_sequence in the same block with
+    // matching element count.
+    let mut candidates: Vec<TupleScalarizeCandidate> = Vec::new();
+
+    for (&bid, block) in &func.blocks {
+        // Index BuildTuple results in this block for quick lookup.
+        // Map from result ValueId -> (op index, operands).
+        let mut build_tuples: HashMap<ValueId, (usize, Vec<ValueId>)> = HashMap::new();
+
+        for (i, op) in block.ops.iter().enumerate() {
+            if op.opcode == OpCode::BuildTuple && op.results.len() == 1 {
+                let tuple_val = op.results[0];
+                build_tuples.insert(tuple_val, (i, op.operands.clone()));
+            }
+        }
+
+        if build_tuples.is_empty() {
+            continue;
+        }
+
+        // Scan for unpack_sequence ops that consume a locally-built tuple.
+        for (i, op) in block.ops.iter().enumerate() {
+            // unpack_sequence is stored as Copy with _original_kind = "unpack_sequence"
+            if op.opcode != OpCode::Copy {
+                continue;
+            }
+            let is_unpack = op
+                .attrs
+                .get("_original_kind")
+                .is_some_and(|v| matches!(v, AttrValue::Str(s) if s == "unpack_sequence"));
+            if !is_unpack {
+                continue;
+            }
+
+            // unpack_sequence has exactly one operand (the tuple) and N results.
+            if op.operands.len() != 1 || op.results.is_empty() {
+                continue;
+            }
+
+            let tuple_val = op.operands[0];
+
+            // Check if this tuple was built in the same block.
+            let (build_idx, ref tuple_elements) = match build_tuples.get(&tuple_val) {
+                Some(entry) => (entry.0, &entry.1),
+                None => continue,
+            };
+
+            // Check that the tuple value is used exactly once (by this unpack).
+            // This guarantees the tuple doesn't escape.
+            let count = use_counts.get(&tuple_val).copied().unwrap_or(0);
+            if count != 1 {
+                continue;
+            }
+
+            // Check element count match.
+            if tuple_elements.len() != op.results.len() {
+                continue;
+            }
+
+            // The BuildTuple must come before the unpack in the same block.
+            if build_idx >= i {
+                continue;
+            }
+
+            candidates.push(TupleScalarizeCandidate {
+                block_id: bid,
+                build_idx,
+                unpack_idx: i,
+                tuple_elements: tuple_elements.to_vec(),
+                unpack_results: op.results.clone(),
+            });
+        }
+    }
+
+    if candidates.is_empty() {
+        return stats;
+    }
+
+    // Phase 3: Apply scalarization.
+    // Process candidates per-block, sorted by descending op index so that
+    // removals don't invalidate earlier indices.
+    //
+    // Group candidates by block.
+    let mut by_block: HashMap<BlockId, Vec<&TupleScalarizeCandidate>> = HashMap::new();
+    for c in &candidates {
+        by_block.entry(c.block_id).or_default().push(c);
+    }
+
+    for (bid, mut block_candidates) in by_block {
+        // Sort by descending unpack_idx so we can remove from the end first.
+        block_candidates.sort_by(|a, b| b.unpack_idx.cmp(&a.unpack_idx));
+
+        let block = func.blocks.get_mut(&bid).unwrap();
+
+        for candidate in &block_candidates {
+            // Build replacement Copy ops for each element.
+            let copy_ops: Vec<TirOp> = candidate
+                .tuple_elements
+                .iter()
+                .zip(candidate.unpack_results.iter())
+                .map(|(&src, &dst)| TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::Copy,
+                    operands: vec![src],
+                    results: vec![dst],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                })
+                .collect();
+
+            let n_copies = copy_ops.len();
+
+            // Remove the unpack_sequence op (higher index first).
+            block.ops.remove(candidate.unpack_idx);
+            stats.ops_removed += 1;
+
+            // Remove the BuildTuple op.
+            block.ops.remove(candidate.build_idx);
+            stats.ops_removed += 1;
+
+            // Insert the Copy ops at the BuildTuple's former position.
+            // After removing both ops, the insertion point is build_idx
+            // (the unpack was after the build, and removing build shifted
+            // everything down by 1, but we already removed the unpack which
+            // was at a higher index, so build_idx is still correct).
+            for (j, copy_op) in copy_ops.into_iter().enumerate() {
+                block.ops.insert(candidate.build_idx + j, copy_op);
+            }
+            stats.ops_added += n_copies;
+            stats.values_changed += 1;
+        }
+    }
+
+    stats
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -862,5 +1111,378 @@ mod tests {
     #[test]
     fn purity_check_empty_is_pure() {
         assert!(is_pure_body(&[]));
+    }
+
+    // ===================================================================
+    // Tuple Scalarization Tests
+    // ===================================================================
+
+    /// Helper: make an unpack_sequence op (Copy with _original_kind).
+    fn make_unpack_sequence(source: ValueId, results: Vec<ValueId>, count: i64) -> TirOp {
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str("unpack_sequence".into()),
+        );
+        attrs.insert("value".into(), AttrValue::Int(count));
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![source],
+            results,
+            attrs,
+            source_span: None,
+        }
+    }
+
+    /// Build a minimal function representing `a, b = b, a + b`:
+    ///
+    ///   bb0 (entry):
+    ///     %0 = param (b)
+    ///     %1 = param (a_plus_b)
+    ///     %2 = BuildTuple(%0, %1)
+    ///     (%3, %4) = unpack_sequence(%2, 2)
+    ///     → Return(%3, %4)
+    fn build_fib_swap_function() -> TirFunction {
+        let mut func =
+            TirFunction::new("fib_swap".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+
+        // params: ValueId(0)=b, ValueId(1)=a_plus_b
+        let tuple_val = func.fresh_value(); // 2
+        let new_a = func.fresh_value(); // 3
+        let new_b = func.fresh_value(); // 4
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+
+        // BuildTuple(%0, %1) -> %2
+        entry.ops.push(make_op(
+            OpCode::BuildTuple,
+            vec![ValueId(0), ValueId(1)],
+            vec![tuple_val],
+        ));
+
+        // (%3, %4) = unpack_sequence(%2)
+        entry
+            .ops
+            .push(make_unpack_sequence(tuple_val, vec![new_a, new_b], 2));
+
+        entry.terminator = Terminator::Return {
+            values: vec![new_a, new_b],
+        };
+
+        func
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Basic fib swap scalarization
+    // -----------------------------------------------------------------------
+    #[test]
+    fn tuple_scalarize_fib_swap() {
+        let mut func = build_fib_swap_function();
+        let stats = run_tuple_scalarize(&mut func);
+
+        assert_eq!(stats.values_changed, 1, "should scalarize one tuple");
+        assert_eq!(stats.ops_removed, 2, "should remove BuildTuple + unpack");
+        assert_eq!(stats.ops_added, 2, "should add 2 Copy ops");
+
+        // The entry block should now have exactly 2 Copy ops (no BuildTuple, no unpack).
+        let entry = &func.blocks[&func.entry_block];
+        assert_eq!(entry.ops.len(), 2);
+
+        // First Copy: %3 = Copy(%0)  (new_a = b)
+        assert_eq!(entry.ops[0].opcode, OpCode::Copy);
+        assert_eq!(entry.ops[0].operands, vec![ValueId(0)]);
+        assert_eq!(entry.ops[0].results, vec![ValueId(3)]);
+        // Should NOT have _original_kind (it's a real Copy, not a passthrough).
+        assert!(!entry.ops[0].attrs.contains_key("_original_kind"));
+
+        // Second Copy: %4 = Copy(%1)  (new_b = a_plus_b)
+        assert_eq!(entry.ops[1].opcode, OpCode::Copy);
+        assert_eq!(entry.ops[1].operands, vec![ValueId(1)]);
+        assert_eq!(entry.ops[1].results, vec![ValueId(4)]);
+        assert!(!entry.ops[1].attrs.contains_key("_original_kind"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Tuple used elsewhere -> NOT scalarized (escapes)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn tuple_scalarize_escaping_tuple_not_eliminated() {
+        let mut func =
+            TirFunction::new("escape".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+
+        let tuple_val = func.fresh_value(); // 2
+        let new_a = func.fresh_value(); // 3
+        let new_b = func.fresh_value(); // 4
+        let call_result = func.fresh_value(); // 5
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+
+        // BuildTuple
+        entry.ops.push(make_op(
+            OpCode::BuildTuple,
+            vec![ValueId(0), ValueId(1)],
+            vec![tuple_val],
+        ));
+
+        // Unpack
+        entry
+            .ops
+            .push(make_unpack_sequence(tuple_val, vec![new_a, new_b], 2));
+
+        // Also pass the tuple to a function call (second use -> escapes)
+        entry.ops.push(make_op(
+            OpCode::Call,
+            vec![tuple_val],
+            vec![call_result],
+        ));
+
+        entry.terminator = Terminator::Return {
+            values: vec![new_a],
+        };
+
+        let stats = run_tuple_scalarize(&mut func);
+
+        // Should NOT scalarize because tuple_val has 2 uses.
+        assert_eq!(stats.values_changed, 0);
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(stats.ops_added, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Element count mismatch -> NOT scalarized
+    // -----------------------------------------------------------------------
+    #[test]
+    fn tuple_scalarize_count_mismatch_not_eliminated() {
+        let mut func =
+            TirFunction::new("mismatch".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+
+        let tuple_val = func.fresh_value(); // 2
+        let out_a = func.fresh_value(); // 3
+        let out_b = func.fresh_value(); // 4
+        let out_c = func.fresh_value(); // 5
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+
+        // BuildTuple with 2 elements
+        entry.ops.push(make_op(
+            OpCode::BuildTuple,
+            vec![ValueId(0), ValueId(1)],
+            vec![tuple_val],
+        ));
+
+        // Unpack expecting 3 elements (mismatch!)
+        entry
+            .ops
+            .push(make_unpack_sequence(tuple_val, vec![out_a, out_b, out_c], 3));
+
+        entry.terminator = Terminator::Return {
+            values: vec![out_a],
+        };
+
+        let stats = run_tuple_scalarize(&mut func);
+
+        // Should NOT scalarize due to element count mismatch.
+        assert_eq!(stats.values_changed, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: No BuildTuple in function -> no changes
+    // -----------------------------------------------------------------------
+    #[test]
+    fn tuple_scalarize_no_tuples_no_changes() {
+        let mut func = TirFunction::new("noop".into(), vec![TirType::I64], TirType::I64);
+        let c = func.fresh_value();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry
+                .ops
+                .push(make_op(OpCode::ConstInt, vec![], vec![c]));
+            entry.terminator = Terminator::Return { values: vec![c] };
+        }
+
+        let stats = run_tuple_scalarize(&mut func);
+        assert_eq!(stats.values_changed, 0);
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(stats.ops_added, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: 3-element tuple scalarization
+    // -----------------------------------------------------------------------
+    #[test]
+    fn tuple_scalarize_three_elements() {
+        let mut func = TirFunction::new(
+            "triple".into(),
+            vec![TirType::I64, TirType::I64, TirType::I64],
+            TirType::I64,
+        );
+
+        let tuple_val = func.fresh_value(); // 3
+        let out_a = func.fresh_value(); // 4
+        let out_b = func.fresh_value(); // 5
+        let out_c = func.fresh_value(); // 6
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+
+        // BuildTuple(%0, %1, %2) -> %3
+        entry.ops.push(make_op(
+            OpCode::BuildTuple,
+            vec![ValueId(0), ValueId(1), ValueId(2)],
+            vec![tuple_val],
+        ));
+
+        // (%4, %5, %6) = unpack_sequence(%3, 3)
+        entry.ops.push(make_unpack_sequence(
+            tuple_val,
+            vec![out_a, out_b, out_c],
+            3,
+        ));
+
+        entry.terminator = Terminator::Return {
+            values: vec![out_a, out_b, out_c],
+        };
+
+        let stats = run_tuple_scalarize(&mut func);
+
+        assert_eq!(stats.values_changed, 1);
+        assert_eq!(stats.ops_removed, 2);
+        assert_eq!(stats.ops_added, 3, "should add 3 Copy ops for 3 elements");
+
+        let entry = &func.blocks[&func.entry_block];
+        assert_eq!(entry.ops.len(), 3);
+
+        // Verify each Copy connects the right element to the right target.
+        for i in 0..3 {
+            assert_eq!(entry.ops[i].opcode, OpCode::Copy);
+            assert_eq!(entry.ops[i].operands, vec![ValueId(i as u32)]);
+            assert_eq!(entry.ops[i].results, vec![ValueId(4 + i as u32)]);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Multiple scalarizations in the same block
+    // -----------------------------------------------------------------------
+    #[test]
+    fn tuple_scalarize_multiple_in_same_block() {
+        let mut func =
+            TirFunction::new("multi".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+
+        // First tuple: swap a,b
+        let tuple1 = func.fresh_value(); // 2
+        let out1_a = func.fresh_value(); // 3
+        let out1_b = func.fresh_value(); // 4
+
+        // Second tuple: swap again
+        let tuple2 = func.fresh_value(); // 5
+        let out2_a = func.fresh_value(); // 6
+        let out2_b = func.fresh_value(); // 7
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+
+        // First swap
+        entry.ops.push(make_op(
+            OpCode::BuildTuple,
+            vec![ValueId(0), ValueId(1)],
+            vec![tuple1],
+        ));
+        entry
+            .ops
+            .push(make_unpack_sequence(tuple1, vec![out1_a, out1_b], 2));
+
+        // Second swap (using outputs of first)
+        entry.ops.push(make_op(
+            OpCode::BuildTuple,
+            vec![out1_a, out1_b],
+            vec![tuple2],
+        ));
+        entry
+            .ops
+            .push(make_unpack_sequence(tuple2, vec![out2_a, out2_b], 2));
+
+        entry.terminator = Terminator::Return {
+            values: vec![out2_a, out2_b],
+        };
+
+        let stats = run_tuple_scalarize(&mut func);
+
+        assert_eq!(stats.values_changed, 2, "should scalarize 2 tuples");
+        assert_eq!(stats.ops_removed, 4, "should remove 2 BuildTuple + 2 unpack");
+        assert_eq!(stats.ops_added, 4, "should add 4 Copy ops total");
+
+        let entry = &func.blocks[&func.entry_block];
+        assert_eq!(entry.ops.len(), 4);
+        assert!(entry.ops.iter().all(|op| op.opcode == OpCode::Copy));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Tuple used in terminator -> NOT scalarized
+    // -----------------------------------------------------------------------
+    #[test]
+    fn tuple_scalarize_tuple_in_terminator_not_eliminated() {
+        let mut func =
+            TirFunction::new("term_use".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+
+        let tuple_val = func.fresh_value(); // 2
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+
+        // BuildTuple
+        entry.ops.push(make_op(
+            OpCode::BuildTuple,
+            vec![ValueId(0), ValueId(1)],
+            vec![tuple_val],
+        ));
+
+        // Return the tuple directly (use in terminator = use count > 0)
+        // No unpack_sequence at all.
+        entry.terminator = Terminator::Return {
+            values: vec![tuple_val],
+        };
+
+        let stats = run_tuple_scalarize(&mut func);
+
+        // No unpack_sequence found, so nothing to scalarize.
+        assert_eq!(stats.values_changed, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Single-element tuple scalarization
+    // -----------------------------------------------------------------------
+    #[test]
+    fn tuple_scalarize_single_element() {
+        let mut func =
+            TirFunction::new("single".into(), vec![TirType::I64], TirType::I64);
+
+        let tuple_val = func.fresh_value(); // 1
+        let out_a = func.fresh_value(); // 2
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+
+        entry.ops.push(make_op(
+            OpCode::BuildTuple,
+            vec![ValueId(0)],
+            vec![tuple_val],
+        ));
+
+        entry
+            .ops
+            .push(make_unpack_sequence(tuple_val, vec![out_a], 1));
+
+        entry.terminator = Terminator::Return {
+            values: vec![out_a],
+        };
+
+        let stats = run_tuple_scalarize(&mut func);
+
+        assert_eq!(stats.values_changed, 1);
+        assert_eq!(stats.ops_removed, 2);
+        assert_eq!(stats.ops_added, 1);
+
+        let entry = &func.blocks[&func.entry_block];
+        assert_eq!(entry.ops.len(), 1);
+        assert_eq!(entry.ops[0].opcode, OpCode::Copy);
+        assert_eq!(entry.ops[0].operands, vec![ValueId(0)]);
+        assert_eq!(entry.ops[0].results, vec![ValueId(2)]);
     }
 }

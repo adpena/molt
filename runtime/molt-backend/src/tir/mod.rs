@@ -32,6 +32,12 @@ pub mod wasm_streaming;
 /// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should
 /// be skipped during SSA conversion and type hint correlation.
 ///
+/// Exception-handling ops (check_exception, try_start, try_end,
+/// state_block_start, state_block_end) are NOT structural — they carry
+/// semantics that must be preserved as TirOps through SSA conversion and
+/// the round-trip pipeline.  Classifying them as structural causes SSA to
+/// silently drop them, breaking exception handling and round-trip tests.
+///
 /// Shared between `ssa.rs` and `lower_from_simple.rs` to ensure identical
 /// classification — divergence would silently misalign SSA ops with original ops.
 pub(crate) fn is_structural(kind: &str) -> bool {
@@ -39,11 +45,6 @@ pub(crate) fn is_structural(kind: &str) -> bool {
         kind,
         "label"
             | "state_label"
-            | "check_exception"
-            | "try_start"
-            | "try_end"
-            | "state_block_start"
-            | "state_block_end"
             | "if"
             | "else"
             | "end_if"
