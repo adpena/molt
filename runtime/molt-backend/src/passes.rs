@@ -1373,7 +1373,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         let is_args = match ops[i].args.as_ref() {
             Some(args) if args.len() == 2 => args,
             _ => {
-                i = base + 1;
+                    i = base + 1;
                 continue;
             }
         };
@@ -1389,8 +1389,59 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             }
         };
 
-        // [1] jump val=L1
+
+        // ── Variant B: is → if → tuple_new → exception_new → raise → end_if ──
+        // The frontend emits `if` directly (before TIR adds jump/label/br_if).
         let j1 = i + 1;
+        if j1 < len && ops[j1].kind == "if" {
+            let if_args = ops[j1].args.as_ref();
+            let if_matches = if_args.map_or(false, |a| !a.is_empty() && a[0] == is_out);
+            if if_matches {
+                // Scan forward for tuple_new → exception_new → raise → end_if
+                let mut k = j1 + 1;
+                let mut found_tuple_new = false;
+                let mut found_exc_new = false;
+                let mut found_raise = false;
+                let mut end_idx = 0usize;
+                let max_scan = (j1 + 8).min(len);
+                while k < max_scan {
+                    match ops[k].kind.as_str() {
+                        "tuple_new" if !found_tuple_new => found_tuple_new = true,
+                        "exception_new" if found_tuple_new && !found_exc_new => {
+                            if let Some(args) = ops[k].args.as_ref() {
+                                if !args.is_empty() && unbound_error_names.contains(args[0].as_str()) {
+                                    found_exc_new = true;
+                                }
+                            }
+                        }
+                        "raise" if found_exc_new && !found_raise => found_raise = true,
+                        "end_if" | "else" if found_raise => {
+                            end_idx = k;
+                            break;
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                if found_raise && end_idx > 0 {
+                    // Match confirmed.  Remove the entire is → if → ... → raise → end_if
+                    // sequence.  Both the `if` and `end_if`/`else` must be removed
+                    // together to keep structured control flow consistent.
+                    if base != i {
+                        remove[base] = true;
+                    }
+                    for idx in i..=end_idx {
+                        remove[idx] = true;
+                    }
+                    i = end_idx + 1;
+                    continue;
+                }
+            }
+            i = base + 1;
+            continue;
+        }
+
+        // ── Variant A: is → jump → label → br_if → jump → label → tuple_new → exception_new → raise → label ──
         if j1 >= len || ops[j1].kind != "jump" {
             i = base + 1;
             continue;
@@ -1520,6 +1571,12 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             }
         }
         func_ir.ops = new_ops;
+    }
+    if std::env::var("MOLT_TRACE_UNBOUND_ELIM").is_ok() {
+        let surviving_missing = func_ir.ops.iter().filter(|op| op.kind == "missing").count();
+        if surviving_missing > 0 {
+            eprintln!("UNBOUND_ELIM: {} removed={} surviving_missing={}", func_ir.name, count, surviving_missing);
+        }
     }
 }
 
