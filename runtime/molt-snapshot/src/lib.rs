@@ -7,6 +7,8 @@
 //! The serialization format uses a versioned wire protocol with SHA-256
 //! integrity checking, inspired by Monty's postcard-based snapshot system.
 
+pub mod native;
+
 use sha2::{Digest, Sha256};
 
 /// Wire format version. Increment on breaking changes.
