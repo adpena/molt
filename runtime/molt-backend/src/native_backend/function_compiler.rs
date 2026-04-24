@@ -3087,6 +3087,13 @@ impl SimpleBackend {
                 continue;
             }
             let op = ops[op_idx].clone();
+            // Trace every op for targeted function when MOLT_DEBUG_OP_TRACE is set.
+            if std::env::var("MOLT_DEBUG_OP_TRACE").as_deref() == Ok(func_ir.name.as_str()) {
+                eprintln!(
+                    "[OP_TRACE] func={} op_idx={} kind={} is_block_filled={} current_block={:?}",
+                    func_ir.name, op_idx, op.kind, is_block_filled, builder.current_block()
+                );
+            }
             // Reconcile the logical block-filled flag with Cranelift's actual
             // block state before emitting any per-op instrumentation. Some
             // control-flow paths terminate the current block indirectly; if we

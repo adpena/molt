@@ -4945,6 +4945,16 @@ pub extern "C" fn molt_getitem_method(obj_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { molt_index(obj_bits, key_bits) })
 }
 
+/// Same as `molt_getitem_method` but the caller guarantees the index is
+/// non-negative and within bounds (proven by the BCE pass).  Currently
+/// delegates to `molt_index` which already has type-dispatch fast paths;
+/// a future refinement can skip the bounds-check branch entirely for
+/// list types once the hot-path is profiled.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_getitem_unchecked(obj_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { molt_index(obj_bits, key_bits) })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_setitem_method(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
