@@ -2063,6 +2063,23 @@ impl SimpleBackend {
             while changed {
                 changed = false;
                 for op in &func_ir.ops {
+                    // Propagate int-valued classification through store_var:
+                    // when a store_var writes an int-valued source into a
+                    // variable, that variable becomes int-valued.  This is
+                    // essential for loop phi variables (e.g. _bb1_arg0) that
+                    // are only written via store_var and read via load_var.
+                    if op.kind == "store_var" {
+                        if let Some(target) = op.var.as_ref().or(op.out.as_ref()) {
+                            if let Some(src) = op.args.as_ref().and_then(|a| a.first()) {
+                                if int_valued_outputs.contains(src)
+                                    && int_valued_outputs.insert(target.clone())
+                                {
+                                    changed = true;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     let Some(ref out) = op.out else {
                         continue;
                     };
@@ -22229,9 +22246,24 @@ impl SimpleBackend {
                             let val = builder.ins().stack_load(types::I64, slot, 0);
                             emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
                             if let Some(ref out_name) = op.out {
-                                def_var_named(&mut builder, &vars, out_name, val);
+                                if float_primary_vars.contains(out_name) {
+                                    // Slot-backed join slots store NaN-boxed I64;
+                                    // output Variable is F64-typed.  Bitcast to
+                                    // extract raw f64.
+                                    let f64_val = builder.ins().bitcast(types::F64, MemFlags::new(), val);
+                                    def_var_named(&mut builder, &vars, out_name, f64_val);
+                                    raw_primary_float.insert(out_name.clone());
+                                    if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str()) {
+                                        builder.def_var(dst_var, f64_val);
+                                    }
+                                    raw_float_shadow_vals.insert(out_name.clone(), f64_val);
+                                } else {
+                                    def_var_named(&mut builder, &vars, out_name, val);
+                                }
                                 raw_int_shadow_vals.remove(out_name);
-                                raw_float_shadow_vals.remove(out_name);
+                                if !float_primary_vars.contains(out_name) {
+                                    raw_float_shadow_vals.remove(out_name);
+                                }
                             }
                             continue;
                         }
