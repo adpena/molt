@@ -24,6 +24,11 @@ members = [
 exclude = ["deploy/browser/simd-ops-rs"]
 resolver = "2"
 
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true
+
 [profile.release]
 opt-level = 3
 lto = "thin"
@@ -35,11 +40,20 @@ panic = "unwind"
 strip = "symbols"
 debug = 1
 
+# Dev per-package overrides: opt-level 1 for hot compilation dependencies
+# so that the backend and Cranelift pipeline are not painfully slow even in
+# debug builds. debug = 0 on large transitive deps to cut link time and
+# artifact size.
 [profile.dev.package.molt-backend]
 opt-level = 1
 debug = 0
 
 [profile.dev.package.cranelift-codegen]
+opt-level = 1
+debug = 0
+
+[profile.dev.package.regalloc2]
+opt-level = 1
 debug = 0
 
 [profile.dev.package.cranelift-frontend]
@@ -60,7 +74,10 @@ debug = 0
 [profile.dev.package.object]
 debug = 0
 
+# Runtime at opt-level 2 even in dev: this code runs inside compiled
+# output, so a sluggish runtime masks the actual perf of user programs.
 [profile.dev.package.molt-runtime]
+opt-level = 2
 debug = 0
 
 [profile.dev.package.aws-lc-rs]
@@ -152,6 +169,11 @@ opt-level = 1
 debug = 0
 
 [profile.dev-fast.package.cranelift-codegen]
+opt-level = 1
+debug = 0
+
+[profile.dev-fast.package.regalloc2]
+opt-level = 1
 debug = 0
 
 [profile.dev-fast.package.cranelift-frontend]
@@ -172,7 +194,9 @@ debug = 0
 [profile.dev-fast.package.object]
 debug = 0
 
+# Runtime at opt-level 2 even in dev-fast: same rationale as dev profile.
 [profile.dev-fast.package.molt-runtime]
+opt-level = 2
 debug = 0
 
 [profile.dev-fast.package.aws-lc-rs]
@@ -304,8 +328,25 @@ inherits = "release"
 lto = "thin"
 codegen-units = 4
 debug = 1
+strip = "none"  # keep symbols for dev-release debugging
 
-# Optimize runtime crates for SIZE — statically linked into output binaries.
+[profile.dev-release.package.cranelift-codegen]
+opt-level = 3
+
+[profile.dev-release.package.regalloc2]
+opt-level = 3
+
+# Hot-path dependency overrides for base release: ensure the register
+# allocator and codegen core are maximally optimized. These crates
+# dominate compile-time CPU in Cranelift's pipeline and benefit most
+# from O3 auto-vectorization.
+[profile.release.package.cranelift-codegen]
+opt-level = 3
+
+[profile.release.package.regalloc2]
+opt-level = 3
+
+# Optimize runtime crates — statically linked into output binaries.
 # Runtime packages: opt-level 3 for maximum native performance.
 # The WASM/size-optimized builds use profile.wasm-release (opt="z").
 # These are the hot-path functions called millions of times — every

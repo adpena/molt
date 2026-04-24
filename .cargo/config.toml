@@ -1,12 +1,19 @@
 # Molt Cargo configuration
 # Portable baseline: no target-cpu=native by default.
-# For host-tuned builds, use .cargo/config-native.toml or set MOLT_NATIVE_CPU=1.
+#
+# Opt-in to host-tuned builds (non-portable!):
+#   CARGO_BUILD_RUSTFLAGS="-C target-cpu=native" cargo build ...
+# Or copy .cargo/config-native.toml over this file for persistent opt-in.
 
 [target.'cfg(not(target_arch = "wasm32"))']
 rustflags = []
 
-# Keep the shared repo baseline portable. Fast Linux linkers should be opted into
-# locally instead of hard-coding a clang+mold requirement into every Cargo build.
+# Keep the shared repo baseline portable. Fast Linux linkers (mold, lld)
+# should be opted into locally rather than hard-coded here.
+# To opt-in to mold on Linux:
+#   [target.x86_64-unknown-linux-gnu]
+#   linker = "clang"
+#   rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 [target.x86_64-unknown-linux-gnu]
 rustflags = []
 
