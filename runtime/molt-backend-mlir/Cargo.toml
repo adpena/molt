@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "molt-backend-mlir"
 version = "0.1.0"
