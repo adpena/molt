@@ -1543,6 +1543,7 @@ fn var_get_boxed(
 
 /// Get raw value directly (for proven-type consumers that don't need NaN-box).
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn var_get_raw(
     builder: &mut FunctionBuilder,
     vars: &BTreeMap<String, Variable>,
@@ -1563,6 +1564,7 @@ fn var_get_raw(
 
 /// Store a raw value as the primary representation for a proven-type variable.
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn def_var_raw(
     builder: &mut FunctionBuilder,
     vars: &BTreeMap<String, Variable>,

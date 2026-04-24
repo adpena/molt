@@ -21813,6 +21813,15 @@ impl SimpleBackend {
                             if param_name_set.contains(name.as_str()) {
                                 continue;
                             }
+                            // Raw-primary variables hold unboxed primitives (raw
+                            // i64 or raw f64), not heap pointers. dec_ref is both
+                            // incorrect and dangerous: box_int_value_hoisted does
+                            // NOT handle overflow, so large ints produce invalid
+                            // NaN-boxed values that look like heap pointers to
+                            // dec_ref, causing segfaults during process shutdown.
+                            if raw_primary_int.contains(name) || raw_primary_float.contains(name) {
+                                continue;
+                            }
                             if let Some(val) = var_get_boxed(&mut builder, &vars, name, &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var) {
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
@@ -21822,6 +21831,9 @@ impl SimpleBackend {
                                 continue;
                             }
                             if param_name_set.contains(name.as_str()) {
+                                continue;
+                            }
+                            if raw_primary_int.contains(name) || raw_primary_float.contains(name) {
                                 continue;
                             }
                             if let Some(val) = var_get_boxed(&mut builder, &vars, name, &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var) {
@@ -21920,6 +21932,13 @@ impl SimpleBackend {
                         if param_name_set.contains(name.as_str()) {
                             continue;
                         }
+                        // Raw-primary variables hold unboxed primitives, not
+                        // heap pointers — skip dec_ref to avoid segfaults from
+                        // non-overflow-safe boxing producing invalid NaN-boxed
+                        // values that look like heap pointers.
+                        if raw_primary_int.contains(name) || raw_primary_float.contains(name) {
+                            continue;
+                        }
                         let val = entry_vars
                             .get(name)
                             .copied()
@@ -21933,6 +21952,9 @@ impl SimpleBackend {
                             continue;
                         }
                         if param_name_set.contains(name.as_str()) {
+                            continue;
+                        }
+                        if raw_primary_int.contains(name) || raw_primary_float.contains(name) {
                             continue;
                         }
                         let val = entry_vars
@@ -23306,14 +23328,43 @@ impl SimpleBackend {
                 eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
             }
         }
+        if let Ok(path) = std::env::var("MOLT_DUMP_CLIF_FILE") {
+            if let Ok(clif_filter) = std::env::var("MOLT_DUMP_CLIF_FILE_FILTER") {
+                if func_ir.name.contains(&clif_filter) {
+                    let clif_text = format!("CLIF {}:\n{}", func_ir.name, builder.func.display());
+                    let _ = std::fs::write(&path, &clif_text);
+                }
+            } else {
+                // Append function name to a manifest file so we can see all function names
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "FUNC: {}", func_ir.name)
+                    });
+            }
+        }
 
-        // Eliminate unreachable blocks BEFORE sealing.  Cranelift's SSA
+        // Seal all blocks first so Cranelift resolves SSA phi nodes and
+        // all block terminators are finalized.  The DFS below needs
+        // complete terminators to find successor blocks; running it
+        // before sealing misses blocks whose terminators are only
+        // wired up during phi resolution (e.g. check_exception
+        // fallthrough blocks in functions with exception handling).
+        builder.seal_all_blocks();
+
+        // Eliminate unreachable blocks AFTER sealing.  Cranelift's SSA
         // builder can create alias cycles (v1 -> v2 -> v1) when use_var is
         // called in blocks that form unreachable loops.  These cycles cause
         // remove_constant_phis to assert (mismatched formals/actuals) and
         // alias_analysis to crash on empty blocks.  DFS from the entry block
         // and remove any blocks not visited — the canonical fix endorsed by
         // Cranelift maintainers (bytecodealliance/wasmtime#5022).
+        //
+        // Now that all blocks are sealed, every block has a terminator
+        // and the DFS can follow all edges correctly.
         {
             let entry = builder.func.layout.entry_block().unwrap();
             let mut visited = BTreeSet::new();
@@ -23335,6 +23386,31 @@ impl SimpleBackend {
             }
             // Remove blocks not reachable from entry
             let all_blocks: Vec<_> = builder.func.layout.blocks().collect();
+            let unreachable_count = all_blocks.iter().filter(|b| !visited.contains(b)).count();
+            let total_count = all_blocks.len();
+            // Log when most blocks are unreachable — likely a CFG bug
+            if unreachable_count > 0
+                && std::env::var("MOLT_DEBUG_UNREACHABLE_BLOCKS").is_ok()
+            {
+                let _ = crate::debug_artifacts::append_debug_artifact(
+                    "native/unreachable_debug.txt",
+                    format!(
+                        "func={} total_blocks={} unreachable={} visited={} entry={:?}\n",
+                        func_ir.name,
+                        total_count,
+                        unreachable_count,
+                        visited.len(),
+                        entry,
+                    ),
+                );
+                // If more than half the blocks are unreachable, dump the full CLIF
+                if unreachable_count * 2 > total_count {
+                    let _ = crate::debug_artifacts::write_debug_artifact(
+                        format!("native/unreachable_clif_{}.txt", func_ir.name.replace(|c: char| !c.is_alphanumeric() && c != '_', "_")),
+                        format!("CLIF {} (before unreachable elim):\n{}", func_ir.name, builder.func.display()),
+                    );
+                }
+            }
             for block in all_blocks {
                 if !visited.contains(&block) {
                     // Switch to the block and insert a trap so it has a
@@ -23350,7 +23426,6 @@ impl SimpleBackend {
                 }
             }
         }
-        builder.seal_all_blocks();
         builder.finalize();
 
         if let Some(config) = should_dump_ir()

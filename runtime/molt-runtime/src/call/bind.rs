@@ -141,6 +141,30 @@ fn disable_call_bind_ic_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_DISABLE_CALL_BIND_IC").as_deref() == Ok("1"))
 }
 
+/// Cached trace mode for `molt_call_bind`.  The env var is read once;
+/// subsequent calls use the cached result — eliminates a
+/// `std::env::var` syscall on every function call.
+#[derive(Copy, Clone)]
+enum TraceCallBindMode {
+    Off,
+    Basic,
+    Verbose,
+}
+
+fn trace_call_bind_mode() -> TraceCallBindMode {
+    static MODE: OnceLock<TraceCallBindMode> = OnceLock::new();
+    *MODE.get_or_init(|| {
+        match std::env::var("MOLT_TRACE_CALL_BIND")
+            .ok()
+            .as_deref()
+        {
+            Some("all" | "verbose") => TraceCallBindMode::Verbose,
+            Some("1") => TraceCallBindMode::Basic,
+            _ => TraceCallBindMode::Off,
+        }
+    })
+}
+
 #[derive(Copy, Clone)]
 struct CallArgsPtr(*mut CallArgs);
 
@@ -2285,7 +2309,7 @@ unsafe fn try_call_bind_ic_fast(
 /// Caller must provide a call-site id in `site_bits` and a valid callargs builder in
 /// `builder_bits`.
 pub extern "C" fn molt_call_bind_ic(site_bits: u64, call_bits: u64, builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })
 }
@@ -2393,7 +2417,7 @@ pub extern "C" fn molt_invoke_ffi_ic(
     builder_bits: u64,
     require_bridge_cap_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if bool_flag_from_bits(require_bridge_cap_bits) && !is_trusted(_py) {
             let bridge_allowed = has_capability(_py, "python.bridge");
             audit_capability_decision(
@@ -2434,9 +2458,9 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             let builder_ptr = ptr_from_bits(builder_bits);
             let mut builder_guard = PtrDropGuard::new(builder_ptr);
             let call_obj = obj_from_bits(call_bits);
-            let trace_mode = std::env::var("MOLT_TRACE_CALL_BIND").ok();
-            let trace = matches!(trace_mode.as_deref(), Some("1" | "all" | "verbose"));
-            let trace_verbose = matches!(trace_mode.as_deref(), Some("all" | "verbose"));
+            let cached_mode = trace_call_bind_mode();
+            let trace = !matches!(cached_mode, TraceCallBindMode::Off);
+            let trace_verbose = matches!(cached_mode, TraceCallBindMode::Verbose);
             if trace_verbose {
                 let callee_type = type_name(_py, call_obj);
                 let (pos_len, kw_len, first_pos) = if !builder_ptr.is_null() {
