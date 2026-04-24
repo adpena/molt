@@ -31885,6 +31885,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and op.args[0].type_hint == "dict"
                 ):
                     si_entry["container_type"] = "dict"
+                elif (
+                    len(op.args) >= 1
+                    and isinstance(op.args[0], MoltValue)
+                    and op.args[0].type_hint == "list"
+                ):
+                    si_entry["container_type"] = "list"
                 json_ops.append(si_entry)
             elif op.kind == "DEL_INDEX":
                 json_ops.append(
