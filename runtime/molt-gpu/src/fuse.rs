@@ -236,6 +236,159 @@ fn constant_fold_kernel(kernel: &mut FusedKernel) -> usize {
     folded_count
 }
 
+/// Identity operation folding pass.
+///
+/// Eliminates no-op operations where a constant operand makes the op
+/// a pass-through of the other operand:
+///   - ADD(x, 0.0)  or ADD(0.0, x) -> x
+///   - SUB(x, 0.0)                 -> x
+///   - MUL(x, 1.0)  or MUL(1.0, x) -> x
+///   - MUL(x, 0.0)  or MUL(0.0, x) -> Const(0.0)
+///
+/// Replaces the op with a direct reference to the non-identity source,
+/// remapping all downstream Op references.
+///
+/// Returns the number of ops eliminated across all kernels.
+pub fn identity_fold(kernels: &mut [FusedKernel]) -> usize {
+    let mut total_folded = 0;
+    for kernel in kernels.iter_mut() {
+        total_folded += identity_fold_kernel(kernel);
+    }
+    total_folded
+}
+
+/// Identity-fold a single kernel's ops.
+fn identity_fold_kernel(kernel: &mut FusedKernel) -> usize {
+    let n_ops = kernel.ops.len();
+    if n_ops == 0 {
+        return 0;
+    }
+
+    // Phase 1: Identify ops that are identity operations.
+    // For each foldable op, store what it should be replaced by.
+    #[derive(Clone)]
+    enum Replacement {
+        /// Keep the op as-is.
+        Keep,
+        /// Replace with this source (pass-through the non-identity operand).
+        PassThrough(FusedSrc),
+        /// Replace with a constant value (e.g., MUL(x, 0) -> 0).
+        Const(f64, DType),
+    }
+
+    let mut replacements: Vec<Replacement> = vec![Replacement::Keep; n_ops];
+
+    for i in 0..n_ops {
+        let op = &kernel.ops[i];
+        match op.op {
+            PrimitiveOp::Add => {
+                // ADD(x, 0) -> x, ADD(0, x) -> x
+                if is_const_val(&op.srcs[1], 0.0) {
+                    replacements[i] = Replacement::PassThrough(op.srcs[0].clone());
+                } else if is_const_val(&op.srcs[0], 0.0) {
+                    replacements[i] = Replacement::PassThrough(op.srcs[1].clone());
+                }
+            }
+            PrimitiveOp::Sub => {
+                // SUB(x, 0) -> x
+                if is_const_val(&op.srcs[1], 0.0) {
+                    replacements[i] = Replacement::PassThrough(op.srcs[0].clone());
+                }
+            }
+            PrimitiveOp::Mul => {
+                // MUL(x, 1) -> x, MUL(1, x) -> x
+                if is_const_val(&op.srcs[1], 1.0) {
+                    replacements[i] = Replacement::PassThrough(op.srcs[0].clone());
+                } else if is_const_val(&op.srcs[0], 1.0) {
+                    replacements[i] = Replacement::PassThrough(op.srcs[1].clone());
+                }
+                // MUL(x, 0) -> 0, MUL(0, x) -> 0
+                else if is_const_val(&op.srcs[1], 0.0) {
+                    replacements[i] = Replacement::Const(0.0, op.dst_dtype);
+                } else if is_const_val(&op.srcs[0], 0.0) {
+                    replacements[i] = Replacement::Const(0.0, op.dst_dtype);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Phase 2: Rebuild ops, skipping replaced ones and remapping references.
+    let mut old_to_new: Vec<Option<usize>> = vec![None; n_ops];
+    // For replaced ops, store what downstream refs should use.
+    let mut replace_with: Vec<Option<FusedSrc>> = vec![None; n_ops];
+
+    let mut new_ops: Vec<FusedOp> = Vec::new();
+
+    for i in 0..n_ops {
+        match &replacements[i] {
+            Replacement::Keep => {
+                old_to_new[i] = Some(new_ops.len());
+                // Remap sources
+                let remapped_srcs: Vec<FusedSrc> = kernel.ops[i]
+                    .srcs
+                    .iter()
+                    .map(|src| remap_src(src, &old_to_new, &replace_with))
+                    .collect();
+                new_ops.push(FusedOp {
+                    op: kernel.ops[i].op,
+                    srcs: remapped_srcs,
+                    dst_dtype: kernel.ops[i].dst_dtype,
+                });
+            }
+            Replacement::PassThrough(src) => {
+                // This op is eliminated. Store the remapped source for downstream.
+                let remapped = remap_src(src, &old_to_new, &replace_with);
+                replace_with[i] = Some(remapped);
+            }
+            Replacement::Const(val, dtype) => {
+                replace_with[i] = Some(FusedSrc::Const {
+                    val: *val,
+                    dtype: *dtype,
+                });
+            }
+        }
+    }
+
+    let folded = n_ops - new_ops.len();
+    kernel.ops = new_ops;
+    folded
+}
+
+/// Check if a FusedSrc is a Const with the given value.
+fn is_const_val(src: &FusedSrc, val: f64) -> bool {
+    matches!(src, FusedSrc::Const { val: v, .. } if *v == val)
+}
+
+/// Remap a FusedSrc through the old-to-new index mapping and replacements.
+fn remap_src(
+    src: &FusedSrc,
+    old_to_new: &[Option<usize>],
+    replace_with: &[Option<FusedSrc>],
+) -> FusedSrc {
+    match src {
+        FusedSrc::Op(prior_idx) => {
+            if let Some(replacement) = &replace_with[*prior_idx] {
+                // The referenced op was folded, use its replacement.
+                // Need to recursively remap if the replacement is also an Op.
+                match replacement {
+                    FusedSrc::Op(p) => {
+                        if let Some(new_idx) = old_to_new[*p] {
+                            FusedSrc::Op(new_idx)
+                        } else {
+                            replacement.clone()
+                        }
+                    }
+                    other => other.clone(),
+                }
+            } else {
+                FusedSrc::Op(old_to_new[*prior_idx].expect("non-folded op must have new index"))
+            }
+        }
+        other => other.clone(),
+    }
+}
+
 /// Evaluate a primitive op on constant f64 inputs.
 ///
 /// Returns `Some(result)` if the op can be evaluated at compile time,

@@ -381,6 +381,10 @@ impl Renderer for WgslRenderer {
             .unwrap();
 
             if reduce_idx > 0 {
+                // Emit loop with optional unroll annotation for small reduces.
+                // WGSL does not have @unroll, but small constant-count loops
+                // are unrolled by the WGSL -> SPIR-V / MSL compiler when the
+                // trip count is known at compile time (which it always is here).
                 writeln!(
                     out,
                     "    for (var rid: u32 = 0u; rid < {}u; rid = rid + 1u) {{",
