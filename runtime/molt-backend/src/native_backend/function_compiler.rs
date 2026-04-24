@@ -3226,12 +3226,12 @@ impl SimpleBackend {
                         // invalidate Value-tier entries within a basic block.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        let lhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        let rhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -3243,7 +3243,12 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value_unchecked(&mut builder, result_f)
+                        if op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o)) {
+                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
+                            result_f
+                        } else {
+                            box_float_value_unchecked(&mut builder, result_f)
+                        }
                     } else if op_prefers_int_lane(&op) {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
                         // If both operands have raw i64 shadows, skip tag check + unbox.
@@ -3447,12 +3452,12 @@ impl SimpleBackend {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        let lhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        let rhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -3464,7 +3469,12 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value_unchecked(&mut builder, result_f)
+                        if op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o)) {
+                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
+                            result_f
+                        } else {
+                            box_float_value_unchecked(&mut builder, result_f)
+                        }
                     } else if (raw_int_shadow_vals.contains_key(&args[0])
                         || raw_int_shadow.contains_key(&args[0]))
                         && (raw_int_shadow_vals.contains_key(&args[1])
@@ -4092,14 +4102,14 @@ impl SimpleBackend {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        let lhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
                                 panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                             });
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        let rhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
                                 panic!("RHS not found in {} op {}", func_ir.name, op_idx)
@@ -4113,7 +4123,12 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value_unchecked(&mut builder, result_f)
+                        if op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o)) {
+                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
+                            result_f
+                        } else {
+                            box_float_value_unchecked(&mut builder, result_f)
+                        }
                     } else if op_prefers_int_lane(&op) {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
                         // If both operands have raw i64 shadows, skip tag check + unbox.
@@ -4306,14 +4321,14 @@ impl SimpleBackend {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        let lhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
                                 panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                             });
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        let rhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
                                 panic!("RHS not found in {} op {}", func_ir.name, op_idx)
@@ -4327,7 +4342,12 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value_unchecked(&mut builder, result_f)
+                        if op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o)) {
+                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
+                            result_f
+                        } else {
+                            box_float_value_unchecked(&mut builder, result_f)
+                        }
                     } else if (raw_int_shadow_vals.contains_key(&args[0])
                         || raw_int_shadow.contains_key(&args[0]))
                         && (raw_int_shadow_vals.contains_key(&args[1])
@@ -4507,12 +4527,12 @@ impl SimpleBackend {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        let lhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        let rhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -4524,7 +4544,12 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value_unchecked(&mut builder, result_f)
+                        if op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o)) {
+                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
+                            result_f
+                        } else {
+                            box_float_value_unchecked(&mut builder, result_f)
+                        }
                     } else if op_prefers_int_lane(&op) {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
                         // If both operands have raw i64 shadows, skip tag check + unbox.
@@ -4709,12 +4734,12 @@ impl SimpleBackend {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        let lhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        let rhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -4726,7 +4751,12 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value_unchecked(&mut builder, result_f)
+                        if op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o)) {
+                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
+                            result_f
+                        } else {
+                            box_float_value_unchecked(&mut builder, result_f)
+                        }
                     } else if (raw_int_shadow_vals.contains_key(&args[0])
                         || raw_int_shadow.contains_key(&args[0]))
                         && (raw_int_shadow_vals.contains_key(&args[1])
@@ -5514,12 +5544,13 @@ impl SimpleBackend {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
+                        let out_is_float_primary = op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o));
+                        let lhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let v = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *v)
                         });
-                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
+                        let rhs_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let v = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *v)
@@ -5530,11 +5561,13 @@ impl SimpleBackend {
                         let zero_block = builder.create_block();
                         builder.set_cold_block(zero_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        if !out_is_float_primary {
+                            builder.append_block_param(merge_block, types::I64);
+                        }
                         builder.append_block_param(merge_block, types::F64); // raw f64 shadow
                         builder.ins().brif(is_zero, zero_block, &[], ok_block, &[]);
-                        // Zero divisor → call runtime for ZeroDivisionError.
-                        // Defer var_get to cold path — only needed for runtime call.
+                        // Zero divisor -> call runtime for ZeroDivisionError.
+                        // Defer var_get to cold path -- only needed for runtime call.
                         switch_to_block_materialized(&mut builder, zero_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, zero_block);
                         let lhs_boxed = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
@@ -5550,23 +5583,43 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                         let slow_res = builder.inst_results(call)[0];
                         let slow_f = builder.ins().bitcast(types::F64, MemFlags::new(), slow_res);
-                        jump_block(&mut builder, merge_block, &[slow_res, slow_f]);
+                        if out_is_float_primary {
+                            jump_block(&mut builder, merge_block, &[slow_f]);
+                        } else {
+                            jump_block(&mut builder, merge_block, &[slow_res, slow_f]);
+                        }
                         // Non-zero -> fast fdiv.
                         switch_to_block_materialized(&mut builder, ok_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, ok_block);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
-                        let fast_res = box_float_value_unchecked(&mut builder, result_f);
-                        jump_block(&mut builder, merge_block, &[fast_res, result_f]);
+                        if out_is_float_primary {
+                            jump_block(&mut builder, merge_block, &[result_f]);
+                        } else {
+                            let fast_res = box_float_value_unchecked(&mut builder, result_f);
+                            jump_block(&mut builder, merge_block, &[fast_res, result_f]);
+                        }
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merged_raw_f = builder.block_params(merge_block)[1];
-                        if let Some(ref out__) = op.out {
-                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                builder.def_var(shadow_var, merged_raw_f);
+                        if out_is_float_primary {
+                            let merged_raw_f = builder.block_params(merge_block)[0];
+                            if let Some(ref out__) = op.out {
+                                if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                    builder.def_var(shadow_var, merged_raw_f);
+                                }
+                                raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                                raw_primary_float.insert(out__.clone());
                             }
-                            raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                            merged_raw_f
+                        } else {
+                            let merged_raw_f = builder.block_params(merge_block)[1];
+                            if let Some(ref out__) = op.out {
+                                if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                    builder.def_var(shadow_var, merged_raw_f);
+                                }
+                                raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                            }
+                            builder.block_params(merge_block)[0]
                         }
-                        builder.block_params(merge_block)[0]
                     } else if op_prefers_int_lane(&op) {
                         // Python true division: int / int always returns float.
                         // Convert to f64 and do fdiv.
@@ -11005,12 +11058,12 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
-                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                        let lf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                        let rf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11127,12 +11180,12 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
-                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                        let lf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                        let rf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11244,12 +11297,12 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
-                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                        let lf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                        let rf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11359,12 +11412,12 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
-                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                        let lf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                        let rf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11456,12 +11509,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
-                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                        let lf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                        let rf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11526,12 +11579,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
                         // Float shadows: both tiers safe inside loops (see add handler).
-                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                        let lf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                        let rf = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11678,7 +11731,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if op_prefers_float_lane(&op) {
                         // Float shadows: both tiers safe inside loops (see add handler).
-                        let src_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                        let src_f = float_value_for(&mut builder, &vars, &raw_primary_float, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *val)
@@ -11690,7 +11743,12 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), neg_f);
                         }
-                        box_float_value_unchecked(&mut builder, neg_f)
+                        if op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o)) {
+                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
+                            neg_f
+                        } else {
+                            box_float_value_unchecked(&mut builder, neg_f)
+                        }
                     } else if op_prefers_int_lane(&op) {
                         // -x == 0 - x; overflow only when x == INT_MIN of the
                         // inline payload range.
@@ -18254,8 +18312,13 @@ impl SimpleBackend {
                         // non-pointer NaN-boxed values).
                         if let Some(body_vars) = loop_body_init_vars.get(&op_idx) {
                             let none_val = builder.ins().iconst(types::I64, 0);
+                            let none_f64 = builder.ins().f64const(0.0);
                             for name in body_vars {
-                                def_var_named(&mut builder, &vars, name, none_val);
+                                if float_primary_vars.contains(name) {
+                                    def_var_named(&mut builder, &vars, name, none_f64);
+                                } else {
+                                    def_var_named(&mut builder, &vars, name, none_val);
+                                }
                             }
                         }
                         // ── Loop-invariant list pointer hoisting ──────────
@@ -18529,8 +18592,13 @@ impl SimpleBackend {
                             // linearized loops (same rationale as structured).
                             if let Some(body_vars) = loop_body_init_vars.get(&op_idx) {
                                 let none_val = builder.ins().iconst(types::I64, 0);
+                                let none_f64 = builder.ins().f64const(0.0);
                                 for name in body_vars {
-                                    def_var_named(&mut builder, &vars, name, none_val);
+                                    if float_primary_vars.contains(name) {
+                                        def_var_named(&mut builder, &vars, name, none_f64);
+                                    } else {
+                                        def_var_named(&mut builder, &vars, name, none_val);
+                                    }
                                 }
                             }
                             let dummy = builder.create_block();
@@ -18591,12 +18659,17 @@ impl SimpleBackend {
                             builder.def_var(shadow_var, raw_start);
                         }
                         // Initialize loop-body output variables to None (0)
-                        // before entering the loop header — see loop_start
+                        // before entering the loop header -- see loop_start
                         // for the full rationale.
                         if let Some(body_vars) = loop_body_init_vars.get(&op_idx) {
                             let none_val = builder.ins().iconst(types::I64, 0);
+                            let none_f64 = builder.ins().f64const(0.0);
                             for name in body_vars {
-                                def_var_named(&mut builder, &vars, name, none_val);
+                                if float_primary_vars.contains(name) {
+                                    def_var_named(&mut builder, &vars, name, none_f64);
+                                } else {
+                                    def_var_named(&mut builder, &vars, name, none_val);
+                                }
                             }
                         }
 
@@ -21386,7 +21459,42 @@ impl SimpleBackend {
                                 builder.def_var(dst_var, raw_val);
                             }
                             raw_int_shadow_vals.insert(name.to_string(), raw_val);
-                            // No refcount ops needed — raw i64 is not a heap pointer.
+                            // No refcount ops needed -- raw i64 is not a heap pointer.
+                            continue;
+                        }
+                        // --- Raw-primary float fast path ---
+                        // When destination is a float-primary variable, transfer
+                        // raw f64 directly with no boxing and no refcount ops.
+                        // Float values are always stack values, never heap pointers.
+                        if float_primary_vars.contains(name)
+                            && scalar_fast_paths_enabled
+                            && !slot_backed_join_slots.contains_key(name)
+                        {
+                            let raw_f64 = float_value_for(
+                                &mut builder,
+                                &vars,
+                                &raw_primary_float,
+                                &raw_float_shadow,
+                                &raw_float_shadow_vals,
+                                &args[0],
+                            )
+                            .unwrap_or_else(|| {
+                                // Source is NaN-boxed -- extract f64 bits.
+                                let boxed = var_get_boxed(
+                                    &mut builder, &vars, &args[0],
+                                    &raw_primary_int, &raw_primary_float,
+                                    box_int_mask_var, box_int_tag_var,
+                                ).expect("store_var: float src not found");
+                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                            });
+                            def_var_named(&mut builder, &vars, name, raw_f64);
+                            raw_primary_float.insert(name.to_string());
+                            // Propagate float shadow to destination.
+                            if let Some(&dst_var) = raw_float_shadow.get(name) {
+                                builder.def_var(dst_var, raw_f64);
+                            }
+                            raw_float_shadow_vals.insert(name.to_string(), raw_f64);
+                            // No refcount ops needed -- raw f64 is not a heap pointer.
                             continue;
                         }
                         // --- Slot-backed join slots ---
