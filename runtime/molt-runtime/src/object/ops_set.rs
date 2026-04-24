@@ -15,7 +15,7 @@ use super::ops_arith::{
 /// Specialized `in` for set/frozenset containers (hash lookup, no type dispatch).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let container = obj_from_bits(container_bits);
         if let Some(ptr) = container.as_ptr() {
             unsafe {
@@ -38,7 +38,7 @@ pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_add(set_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !ensure_hashable(_py, key_bits) {
             return MoltObject::none().bits();
         }
@@ -60,7 +60,7 @@ pub extern "C" fn molt_set_add(set_bits: u64, key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_add(set_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if !ensure_hashable(_py, key_bits) {
             return MoltObject::none().bits();
         }
@@ -82,7 +82,7 @@ pub extern "C" fn molt_frozenset_add(set_bits: u64, key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_discard(set_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
@@ -98,7 +98,7 @@ pub extern "C" fn molt_set_discard(set_bits: u64, key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_remove(set_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
@@ -116,7 +116,7 @@ pub extern "C" fn molt_set_remove(set_bits: u64, key_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_pop(set_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
@@ -141,7 +141,7 @@ pub extern "C" fn molt_set_pop(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_clear(set_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
@@ -156,7 +156,7 @@ pub extern "C" fn molt_set_clear(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_copy_method(set_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -176,7 +176,7 @@ pub extern "C" fn molt_set_copy_method(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let other = obj_from_bits(other_bits);
         let Some(set_ptr) = obj.as_ptr() else {
@@ -248,7 +248,7 @@ pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let other = obj_from_bits(other_bits);
         if let (Some(set_ptr), Some(other_ptr)) = (obj.as_ptr(), other.as_ptr()) {
@@ -336,7 +336,7 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let other = obj_from_bits(other_bits);
         if let (Some(set_ptr), Some(other_ptr)) = (obj.as_ptr(), other.as_ptr()) {
@@ -427,7 +427,7 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let other = obj_from_bits(other_bits);
         if let (Some(set_ptr), Some(other_ptr)) = (obj.as_ptr(), other.as_ptr()) {
@@ -553,7 +553,7 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_update_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -581,42 +581,42 @@ pub extern "C" fn molt_set_update_multi(set_bits: u64, others_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_union_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_set_union_multi(set_bits, others_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_set_union_multi(set_bits, others_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_intersection_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_set_intersection_multi(set_bits, others_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_set_intersection_multi(set_bits, others_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_difference_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_set_difference_multi(set_bits, others_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_set_difference_multi(set_bits, others_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_symmetric_difference(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_set_symmetric_difference(set_bits, other_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_set_symmetric_difference(set_bits, other_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_set_isdisjoint(set_bits, other_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_set_isdisjoint(set_bits, other_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_issubset(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_set_issubset(set_bits, other_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_set_issubset(set_bits, other_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_issuperset(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_set_issuperset(set_bits, other_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_set_issuperset(set_bits, other_bits) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_copy_method(set_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -633,7 +633,7 @@ pub extern "C" fn molt_frozenset_copy_method(set_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intersection_update_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -661,7 +661,7 @@ pub extern "C" fn molt_set_intersection_update_multi(set_bits: u64, others_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_difference_update_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -689,7 +689,7 @@ pub extern "C" fn molt_set_difference_update_multi(set_bits: u64, others_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_symmetric_difference_update(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let _ = molt_set_symdiff_update(set_bits, other_bits);
         MoltObject::none().bits()
     })
@@ -697,7 +697,7 @@ pub extern "C" fn molt_set_symmetric_difference_update(set_bits: u64, other_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_union_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -750,7 +750,7 @@ pub extern "C" fn molt_set_union_multi(set_bits: u64, others_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intersection_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -803,7 +803,7 @@ pub extern "C" fn molt_set_intersection_multi(set_bits: u64, others_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_difference_multi(set_bits: u64, others_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -856,7 +856,7 @@ pub extern "C" fn molt_set_difference_multi(set_bits: u64, others_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_symmetric_difference(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -881,7 +881,7 @@ pub extern "C" fn molt_set_symmetric_difference(set_bits: u64, other_bits: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -924,7 +924,7 @@ pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_issubset(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -963,7 +963,7 @@ pub extern "C" fn molt_set_issubset(set_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_issuperset(set_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(set_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();

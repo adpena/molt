@@ -195,7 +195,7 @@ pub(crate) fn ord_length_error(_py: &PyToken<'_>, len: usize) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ord(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {

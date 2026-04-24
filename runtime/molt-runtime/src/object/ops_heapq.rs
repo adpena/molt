@@ -77,7 +77,7 @@ unsafe fn heapq_siftup(_py: &PyToken<'_>, heap: &mut [u64], mut pos: usize) -> b
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_heapify(list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -103,7 +103,7 @@ pub extern "C" fn molt_heapq_heapify(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_heappush(list_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -126,7 +126,7 @@ pub extern "C" fn molt_heapq_heappush(list_bits: u64, item_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_heappop(list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -159,7 +159,7 @@ pub extern "C" fn molt_heapq_heappop(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_heapreplace(list_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -187,7 +187,7 @@ pub extern "C" fn molt_heapq_heapreplace(list_bits: u64, item_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_heappushpop(list_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -289,7 +289,7 @@ unsafe fn heapq_siftup_max(_py: &PyToken<'_>, heap: &mut [u64], mut pos: usize) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_heapify_max(list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -319,7 +319,7 @@ pub extern "C" fn molt_heapq_heapify_max(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_heappop_max(list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -368,7 +368,7 @@ pub extern "C" fn molt_heapq_heappop_max(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // --- extract n ---
         let n_raw = index_i64_from_obj(_py, n_bits, "nsmallest() argument 'n' must be an integer");
         if exception_pending(_py) {
@@ -797,7 +797,7 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let n_raw = index_i64_from_obj(_py, n_bits, "nlargest() argument 'n' must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1172,7 +1172,7 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iter_obj = obj_from_bits(iterables_bits);
         let Some(iter_ptr) = iter_obj.as_ptr() else {
             // Empty iterables argument → return empty list.
