@@ -27,6 +27,16 @@ fn debug_field_bounds_enabled() -> bool {
     })
 }
 
+fn debug_field_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_FIELD").is_ok())
+}
+
+fn debug_guard_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_GUARD").is_ok())
+}
+
 unsafe fn sync_materialized_instance_dict_for_field_offset(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -120,7 +130,7 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
         }
         let slot = obj_ptr.add(offset) as *const u64;
         let bits = *slot;
-        if std::env::var("MOLT_DEBUG_FIELD").is_ok() {
+        if debug_field_enabled() {
             eprintln!(
                 "[field_get_raw] ptr=0x{:x} offset={} slot=0x{:x} bits=0x{:x}",
                 obj_ptr as usize, offset, slot as usize, bits
@@ -156,7 +166,7 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
         profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
         let slot = obj_ptr.add(offset) as *mut u64;
         let old_val = *slot;
-        if std::env::var("MOLT_DEBUG_FIELD").is_ok() {
+        if debug_field_enabled() {
             eprintln!(
                 "[field_set_raw] ptr=0x{:x} offset={} slot=0x{:x} old=0x{:x} val=0x{:x}",
                 obj_ptr as usize, offset, slot as usize, old_val, val_bits
@@ -172,7 +182,7 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
             *slot = val_bits;
             // DEBUG: verify write persisted
             let readback = *slot;
-            if std::env::var("MOLT_DEBUG_FIELD").is_ok() && readback != val_bits {
+            if debug_field_enabled() && readback != val_bits {
                 eprintln!(
                     "[field_set_raw] WRITE FAILED! readback=0x{:x} expected=0x{:x}",
                     readback, val_bits
@@ -272,7 +282,7 @@ unsafe fn guard_layout_match(
 ) -> bool {
     unsafe {
         profile_hit(_py, &LAYOUT_GUARD_COUNT);
-        if std::env::var("MOLT_DEBUG_GUARD").is_ok() {
+        if debug_guard_enabled() {
             let header = header_from_obj_ptr(obj_ptr);
             let tid = (*header).type_id;
             let ocb = object_class_bits(obj_ptr);

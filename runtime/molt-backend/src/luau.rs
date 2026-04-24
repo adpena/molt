@@ -181,6 +181,7 @@ impl LuauBackend {
         }
 
         for func in &emit_funcs {
+            eprintln!("Luau: emitting function {}", func.name);
             self.emit_function_body(func);
             self.output.push('\n');
         }

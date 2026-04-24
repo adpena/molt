@@ -2103,8 +2103,17 @@ impl WasmBackend {
         // Trampolines now handle multi-value return callees by reconstructing
         // a tuple from the N return values (see compile_trampoline), so we no
         // longer need to exclude trampolined functions from the optimization.
-        let multi_return_candidates: BTreeMap<String, usize> =
-            multi_return_candidates.into_iter().collect();
+        //
+        // However, escaped callable targets (functions turned into function
+        // objects via func_new) MUST be excluded.  The runtime's
+        // molt_call_indirectN thunks use call_indirect with type
+        // (N x i64) -> i64.  A multi-return function whose type is
+        // (N x i64) -> (M x i64) would cause a call_indirect type mismatch
+        // trap when the user function table slot is resolved.
+        let multi_return_candidates: BTreeMap<String, usize> = multi_return_candidates
+            .into_iter()
+            .filter(|(name, _)| !escaped_callable_targets.contains(name))
+            .collect();
 
         // Type 0: () -> i64 (User functions)
         self.types
