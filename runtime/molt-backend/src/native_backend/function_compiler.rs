@@ -2263,8 +2263,14 @@ impl SimpleBackend {
         let bool_store_target_names: BTreeSet<String> = raw_bool_shadow_vars.keys().cloned().collect();
         // Only explicit store-backed join carriers and exception-fragile names
         // use stack slots. Structured phi joins must stay on the SSA path.
-        let slot_backed_join_names =
+        // Proven-int join slots that have raw_int_shadow Variables are excluded:
+        // their unboxed i64 values are carried correctly via SSA phi, and stack
+        // slot load/store + inc_ref/dec_ref is pure overhead for inline values.
+        let mut slot_backed_join_names =
             collect_slot_backed_join_names(&func_ir.ops, &exception_label_ids);
+        if scalar_fast_paths_enabled {
+            slot_backed_join_names.retain(|name| !raw_int_shadow.contains_key(name));
+        }
         let mut slot_backed_join_slots: BTreeMap<String, cranelift_codegen::ir::StackSlot> =
             BTreeMap::new();
         if !slot_backed_join_names.is_empty() {
@@ -20815,19 +20821,30 @@ impl SimpleBackend {
                 }
                 "guard_type" | "guard_tag" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val =
-                        var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Guard value not found");
-                    let expected = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var)
-                        .expect("Guard expected tag not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_guard_type",
-                        &[types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*val, *expected]);
+                    // When both the value and expected tag are proven-int
+                    // (raw-primary), the guard is statically satisfied:
+                    // an int value always matches an int tag.  Skip the
+                    // runtime call entirely.
+                    if scalar_fast_paths_enabled
+                        && raw_primary_int.contains(&args[0])
+                        && raw_primary_int.contains(&args[1])
+                    {
+                        // Static guard: int matches int.  No-op.
+                    } else {
+                        let val =
+                            var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Guard value not found");
+                        let expected = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var)
+                            .expect("Guard expected tag not found");
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_guard_type",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        builder.ins().call(local_callee, &[*val, *expected]);
+                    }
                 }
                 "guard_layout" | "guard_dict_shape" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

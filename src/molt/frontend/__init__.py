@@ -11396,10 +11396,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res_type = "float"
             elif complex_in:
                 res_type = "complex"
-            elif left.type_hint in {"list", "tuple"} and right.type_hint == "int":
+            elif left.type_hint in {"list", "tuple"}:
                 res_type = left.type_hint
                 hint_src = left
-            elif right.type_hint in {"list", "tuple"} and left.type_hint == "int":
+            elif right.type_hint in {"list", "tuple"}:
                 res_type = right.type_hint
                 hint_src = right
         elif isinstance(node.op, ast.Div):

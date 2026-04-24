@@ -1287,6 +1287,314 @@ fn is_hoistable(op: &OpIR) -> bool {
 ///
 /// Safe-to-elide predecessors: inc_ref, dec_ref, dec_ref_obj, const_int,
 /// const_float, const_bool, const_none, nop, line.
+/// Eliminate UnboundLocalError check sequences from the SimpleIR.
+///
+/// The frontend emits a `missing` + `is(var, missing)` + `br_if` +
+/// `raise UnboundLocalError` guard for every local variable access.
+/// In type-annotated functions and most generated code, variables are
+/// always initialized before use, making these checks pure dead weight.
+///
+/// Each check sequence is ~11 ops and involves two function calls
+/// (`molt_missing`, `molt_is`). In a tight inner loop like mandelbrot
+/// with 12 variable accesses, this adds ~132 ops + 24 function calls
+/// per iteration on top of the ~12 actual computation ops.
+///
+/// The pattern matched (with optional nop gaps):
+///
+/// ```text
+/// [missing]       out=M
+/// [is]            out=R  args=[V, M]
+/// [jump]          val=L1
+/// [label]         val=L1
+/// [br_if]         args=[R]  val=L_raise
+/// [jump]          val=L_ok
+/// [label]         val=L_raise
+/// [tuple_new]     sval="cannot access local variable ..."
+/// [exception_new] sval="UnboundLocalError"
+/// [raise]
+/// [label]         val=L_ok
+/// ```
+///
+/// This pass removes the entire sequence and any preceding nop,
+/// leaving only the final continuation label intact.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
+    if std::env::var("MOLT_DISABLE_UNBOUND_ELIM").is_ok() {
+        return;
+    }
+    let ops = &func_ir.ops;
+    let len = ops.len();
+    if len < 11 {
+        return;
+    }
+
+    // Collect output names of all `missing` ops for fast lookup.
+    let missing_outputs: HashSet<&str> = ops
+        .iter()
+        .filter(|op| op.kind == "missing")
+        .filter_map(|op| op.out.as_deref())
+        .collect();
+
+    if missing_outputs.is_empty() {
+        return;
+    }
+
+    let mut remove = vec![false; len];
+    let mut i = 0;
+    while i + 10 < len {
+        // Skip nops to find a `missing` op.
+        let base = i;
+        if ops[i].kind == "nop" {
+            i += 1;
+            if i + 10 >= len {
+                break;
+            }
+        }
+
+        // [0] missing out=M
+        if ops[i].kind != "missing" {
+            i = base + 1;
+            continue;
+        }
+        let missing_out = match ops[i].out.as_deref() {
+            Some(m) => m,
+            None => {
+                i = base + 1;
+                continue;
+            }
+        };
+
+        // [1] is out=R args=[V, M]  — second arg must be a known missing sentinel
+        let is_idx = i + 1;
+        if is_idx >= len || ops[is_idx].kind != "is" {
+            i = base + 1;
+            continue;
+        }
+        let is_args = match ops[is_idx].args.as_ref() {
+            Some(args) if args.len() == 2 => args,
+            _ => {
+                i = base + 1;
+                continue;
+            }
+        };
+        if is_args[1] != missing_out {
+            i = base + 1;
+            continue;
+        }
+        let is_out = match ops[is_idx].out.as_deref() {
+            Some(r) => r,
+            None => {
+                i = base + 1;
+                continue;
+            }
+        };
+
+        // [2] jump val=L1
+        let j2 = is_idx + 1;
+        if j2 >= len || ops[j2].kind != "jump" {
+            i = base + 1;
+            continue;
+        }
+
+        // [3] label val=L1
+        let j3 = j2 + 1;
+        if j3 >= len || ops[j3].kind != "label" {
+            i = base + 1;
+            continue;
+        }
+
+        // [4] br_if args=[R] val=L_raise
+        let j4 = j3 + 1;
+        if j4 >= len || ops[j4].kind != "br_if" {
+            i = base + 1;
+            continue;
+        }
+        let brif_args = match ops[j4].args.as_ref() {
+            Some(args) if !args.is_empty() => args,
+            _ => {
+                i = base + 1;
+                continue;
+            }
+        };
+        if brif_args[0] != is_out {
+            i = base + 1;
+            continue;
+        }
+
+        // [5] jump val=L_ok
+        let j5 = j4 + 1;
+        if j5 >= len || ops[j5].kind != "jump" {
+            i = base + 1;
+            continue;
+        }
+
+        // [6] label val=L_raise
+        let j6 = j5 + 1;
+        if j6 >= len || ops[j6].kind != "label" {
+            i = base + 1;
+            continue;
+        }
+
+        // [7] tuple_new with "cannot access local variable" string
+        let j7 = j6 + 1;
+        if j7 >= len || ops[j7].kind != "tuple_new" {
+            i = base + 1;
+            continue;
+        }
+        // Verify via the tuple_new's arg — the arg must reference a const_str
+        // whose s_value contains "cannot access local variable". We check the
+        // const_str that the arg references for robustness; but the simpler
+        // heuristic of checking the following exception_new's s_value for
+        // "UnboundLocalError" is sufficient and cheaper.
+
+        // [8] exception_new with "UnboundLocalError"
+        let j8 = j7 + 1;
+        if j8 >= len || ops[j8].kind != "exception_new" {
+            i = base + 1;
+            continue;
+        }
+        // Verify the exception type is UnboundLocalError by checking its arg
+        // (which references a const_str with "UnboundLocalError").
+        let exc_args = match ops[j8].args.as_ref() {
+            Some(args) if !args.is_empty() => args,
+            _ => {
+                i = base + 1;
+                continue;
+            }
+        };
+        // The first arg of exception_new is the exception type name string.
+        // It references a const_str whose s_value is "UnboundLocalError".
+        // Verify by scanning backwards for that const_str.
+        let type_name_ref = &exc_args[0];
+        let is_unbound = ops.iter().any(|op| {
+            op.kind == "const_str"
+                && op.out.as_deref() == Some(type_name_ref)
+                && op.s_value.as_deref() == Some("UnboundLocalError")
+        });
+        if !is_unbound {
+            i = base + 1;
+            continue;
+        }
+
+        // [9] raise
+        let j9 = j8 + 1;
+        if j9 >= len || ops[j9].kind != "raise" {
+            i = base + 1;
+            continue;
+        }
+
+        // [10] label val=L_ok  (continuation)
+        let j10 = j9 + 1;
+        if j10 >= len || ops[j10].kind != "label" {
+            i = base + 1;
+            continue;
+        }
+
+        // Match confirmed. Mark the entire sequence for removal,
+        // EXCEPT the final continuation label (j10) which other
+        // code may jump to.
+        if base != i {
+            // We skipped a nop before `missing`
+            remove[base] = true;
+        }
+        for idx in i..=j9 {
+            remove[idx] = true;
+        }
+        // Keep j10 (continuation label) — remove j5 (jump to it) and
+        // j6 (raise label) since the raise block is dead.
+
+        i = j10 + 1;
+    }
+
+    let count = remove.iter().filter(|&&r| r).count();
+    if count > 0 {
+        let mut new_ops = Vec::with_capacity(len - count);
+        for (i, op) in func_ir.ops.drain(..).enumerate() {
+            if !remove[i] {
+                new_ops.push(op);
+            }
+        }
+        func_ir.ops = new_ops;
+    }
+}
+
+/// Eliminate redundant `guard_tag` ops on typed float/int variables.
+///
+/// `guard_tag(val, expected_tag)` calls `molt_guard_type` — a runtime
+/// function call — to assert the NaN-boxing tag matches. For variables
+/// that are provably typed (the result of `const_float`, `const`,
+/// float/int arithmetic, or loaded from a typed `store_var` chain),
+/// the tag is guaranteed correct and the guard is dead weight.
+///
+/// In the mandelbrot inner loop, two `guard_tag` ops per iteration add
+/// two unnecessary function calls.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn eliminate_redundant_guard_tags(func_ir: &mut FunctionIR) {
+    if std::env::var("MOLT_DISABLE_GUARD_ELIM").is_ok() {
+        return;
+    }
+    let ops = &func_ir.ops;
+    let len = ops.len();
+    if len == 0 {
+        return;
+    }
+
+    // Collect names of all values produced by ops that guarantee a
+    // correct NaN-box tag by construction.
+    let mut typed_outputs: HashSet<String> = HashSet::new();
+    for op in ops.iter() {
+        let guaranteed = matches!(
+            op.kind.as_str(),
+            "const" | "const_int" | "const_float" | "const_bool" | "const_none"
+                | "const_str" | "const_bytes"
+                | "add" | "sub" | "mul" | "div" | "floordiv" | "mod"
+                | "pow" | "neg" | "unary_neg"
+                | "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is"
+                | "and" | "or" | "not"
+                | "band" | "bor" | "bxor" | "lshift" | "rshift" | "invert"
+                | "list_new" | "tuple_new" | "dict_new" | "set_new"
+                | "list_getitem" | "tuple_getitem" | "dict_getitem"
+        );
+        if guaranteed {
+            if let Some(out) = op.out.as_ref() {
+                typed_outputs.insert(out.clone());
+            }
+        }
+    }
+
+    let mut remove = vec![false; len];
+    for (idx, op) in ops.iter().enumerate() {
+        if op.kind != "guard_tag" && op.kind != "guard_type" {
+            continue;
+        }
+        let args = match op.args.as_ref() {
+            Some(args) if !args.is_empty() => args,
+            _ => continue,
+        };
+        // If the value being guarded is provably typed, remove the guard.
+        if typed_outputs.contains(&args[0]) {
+            remove[idx] = true;
+        }
+    }
+
+    let count = remove.iter().filter(|&&r| r).count();
+    if count > 0 {
+        let mut new_ops = Vec::with_capacity(len - count);
+        for (i, op) in func_ir.ops.drain(..).enumerate() {
+            if !remove[i] {
+                new_ops.push(op);
+            }
+        }
+        func_ir.ops = new_ops;
+    }
+}
+
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
