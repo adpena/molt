@@ -151,7 +151,7 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(list_bits);
         let index_obj = obj_from_bits(index_bits);
         if let Some(ptr) = obj.as_ptr() {
@@ -195,7 +195,7 @@ pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
@@ -322,7 +322,7 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
@@ -388,7 +388,7 @@ pub(crate) unsafe fn list_elem_at(list_ptr: *mut u8, idx: usize) -> Option<u64> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
@@ -432,7 +432,7 @@ pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
@@ -453,7 +453,7 @@ pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "list.__init__ expects list");
@@ -495,7 +495,7 @@ pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
@@ -546,7 +546,7 @@ pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_reverse(list_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
@@ -564,7 +564,7 @@ pub extern "C" fn molt_list_reverse(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
@@ -664,7 +664,7 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "list.__add__ expects list");
@@ -711,7 +711,7 @@ pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_mul_method(list_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "list.__mul__ expects list");
@@ -1005,7 +1005,7 @@ pub extern "C" fn molt_insort_left(
     hi_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut x_key_bits = x_bits;
         let mut x_key_owned = false;
         if !obj_from_bits(key_bits).is_none() {
@@ -1038,7 +1038,7 @@ pub extern "C" fn molt_insort_right(
     hi_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let mut x_key_bits = x_bits;
         let mut x_key_owned = false;
         if !obj_from_bits(key_bits).is_none() {
@@ -1065,7 +1065,7 @@ pub extern "C" fn molt_insort_right(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(ptr) = list_obj.as_ptr() {
             unsafe {
@@ -1104,7 +1104,7 @@ pub extern "C" fn molt_list_index_range(
     start_bits: u64,
     stop_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(ptr) = list_obj.as_ptr() {
             unsafe {
@@ -1176,7 +1176,7 @@ pub extern "C" fn molt_list_index_range(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_index(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         molt_list_index_range(list_bits, val_bits, missing, missing)
     })
@@ -1184,7 +1184,7 @@ pub extern "C" fn molt_list_index(list_bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_count(tuple_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let tuple_obj = obj_from_bits(tuple_bits);
         if let Some(ptr) = tuple_obj.as_ptr() {
             unsafe {
@@ -1210,7 +1210,7 @@ pub extern "C" fn molt_tuple_count(tuple_bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_index(tuple_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         molt_tuple_index_range(tuple_bits, val_bits, missing, missing)
     })
@@ -1223,7 +1223,7 @@ pub extern "C" fn molt_tuple_index_range(
     start_bits: u64,
     stop_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         let tuple_obj = obj_from_bits(tuple_bits);
         if let Some(ptr) = tuple_obj.as_ptr() {

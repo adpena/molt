@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_slice_obj(_py, start_bits, stop_bits, step_bits);
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -52,7 +52,7 @@ fn slice_reduce_tuple(_py: &PyToken<'_>, slice_ptr: *mut u8) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_indices(slice_bits: u64, length_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(slice_ptr) = obj_from_bits(slice_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -126,7 +126,7 @@ pub extern "C" fn molt_slice_indices(slice_bits: u64, length_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_hash(slice_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(slice_ptr) = obj_from_bits(slice_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -147,7 +147,7 @@ pub extern "C" fn molt_slice_hash(slice_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(slice_ptr) = obj_from_bits(slice_bits).as_ptr() else {
             return not_implemented_bits(_py);
         };
@@ -189,7 +189,7 @@ pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_reduce(slice_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let Some(slice_ptr) = obj_from_bits(slice_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -204,7 +204,7 @@ pub extern "C" fn molt_slice_reduce(slice_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_reduce_ex(slice_bits: u64, _protocol_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { molt_slice_reduce(slice_bits) })
+    crate::with_gil_entry_nopanic!(_py, { molt_slice_reduce(slice_bits) })
 }
 
 #[unsafe(no_mangle)]
@@ -214,7 +214,7 @@ pub extern "C" fn molt_dataclass_new(
     values_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let name = match string_obj_to_owned(name_obj) {
             Some(val) => val,
@@ -298,7 +298,7 @@ pub extern "C" fn molt_dataclass_new(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let idx = match obj_from_bits(index_bits).as_int() {
             Some(val) => val,
@@ -343,7 +343,7 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let idx = match obj_from_bits(index_bits).as_int() {
             Some(val) => val,
@@ -528,7 +528,7 @@ pub(crate) unsafe fn dataclass_set_class_raw(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclass_set_class(obj_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
