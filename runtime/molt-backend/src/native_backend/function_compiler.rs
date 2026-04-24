@@ -533,6 +533,27 @@ fn shadow_float_for(
         .or_else(|| raw_float_shadow.get(name).map(|&var| builder.use_var(var)))
 }
 
+/// Get a raw f64 value from a variable, checking float-primary Variables
+/// first (no bitcast needed), then falling back to the shadow system.
+/// This eliminates redundant bitcast(F64→I64)→bitcast(I64→F64) round-trips
+/// for variables whose Cranelift Variable is declared as F64.
+#[cfg(feature = "native-backend")]
+fn float_value_for(
+    builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    raw_primary_float: &std::collections::BTreeSet<String>,
+    raw_float_shadow: &BTreeMap<String, Variable>,
+    raw_float_shadow_vals: &BTreeMap<String, Value>,
+    name: &str,
+) -> Option<Value> {
+    // Float-primary: Variable is F64, use_var yields raw f64 directly.
+    if raw_primary_float.contains(name) {
+        return vars.get(name).map(|&var| builder.use_var(var));
+    }
+    // Fall back to two-tier shadow system.
+    shadow_float_for(builder, raw_float_shadow, raw_float_shadow_vals, name)
+}
+
 
 
 #[cfg(feature = "native-backend")]
@@ -21625,6 +21646,39 @@ impl SimpleBackend {
                                 raw_int_shadow_vals.remove(out_name);
                                 raw_float_shadow_vals.remove(out_name);
                             }
+                            continue;
+                        }
+                        // --- Raw-primary int fast path (args-based copy_var) ---
+                        if raw_primary_int.contains(&args[0])
+                            && scalar_fast_paths_enabled
+                            && op.out.as_ref().map_or(false, |o| int_like_vars.contains(o))
+                        {
+                            let in_loop = !loop_stack.is_empty();
+                            let raw_val = if in_loop {
+                                shadow_value_var_only(
+                                    &mut builder,
+                                    &raw_int_shadow,
+                                    &args[0],
+                                )
+                            } else {
+                                shadow_value_for(
+                                    &mut builder,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
+                                    &args[0],
+                                )
+                            }
+                            .unwrap_or_else(|| {
+                                let var = *vars.get(&args[0]).expect("copy_var: raw src var not found");
+                                builder.use_var(var)
+                            });
+                            let out_name = op.out.as_ref().unwrap();
+                            def_var_named(&mut builder, &vars, out_name, raw_val);
+                            raw_primary_int.insert(out_name.clone());
+                            if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
+                                builder.def_var(dst_var, raw_val);
+                            }
+                            raw_int_shadow_vals.insert(out_name.clone(), raw_val);
                             continue;
                         }
                         let val = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var)

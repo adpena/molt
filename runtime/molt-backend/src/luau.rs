@@ -9386,6 +9386,209 @@ mod tests {
     }
 
     #[test]
+    fn test_compile_checked_rejects_unsupported_matmul() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "matmul_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "matmul".to_string(),
+                    out: Some("v0".to_string()),
+                    args: Some(vec!["v1".to_string(), "v2".to_string()]),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("compile_checked must reject unsupported matmul");
+        assert!(
+            err.contains("unsupported marker"),
+            "error should mention unsupported marker, got: {err}"
+        );
+        assert!(
+            err.contains("[unsupported op: matmul]"),
+            "error should mention matmul op, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_rejects_async_marker() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "async_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "spawn".to_string(),
+                    out: Some("v0".to_string()),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("compile_checked must reject async stub markers");
+        assert!(
+            err.contains("semantic stub marker"),
+            "error should mention semantic stub marker, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_rejects_file_marker() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "file_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "file_open".to_string(),
+                    out: Some("v0".to_string()),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("compile_checked must reject file stub markers");
+        assert!(
+            err.contains("semantic stub marker"),
+            "error should mention semantic stub marker, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_rejects_context_marker() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "context_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "context_enter".to_string(),
+                    out: Some("v0".to_string()),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("compile_checked must reject context stub markers");
+        assert!(
+            err.contains("semantic stub marker"),
+            "error should mention semantic stub marker, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_rejects_stub_marker() {
+        // isinstance with only one arg falls through to stub path
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "stub_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "isinstance".to_string(),
+                    out: Some("v0".to_string()),
+                    args: Some(vec!["v1".to_string()]),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("compile_checked must reject stub markers");
+        assert!(
+            err.contains("semantic stub marker"),
+            "error should mention semantic stub marker, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_rejects_internal_marker() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "internal_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "frame_locals_set".to_string(),
+                    out: Some("v0".to_string()),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("compile_checked must reject internal stub markers");
+        assert!(
+            err.contains("semantic stub marker"),
+            "error should mention semantic stub marker, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_default_luau_dispatch_uses_checked_path() {
+        // Verify that both compile_via_ir and compile_checked reject the same ops.
+        // This ensures no fail-open path exists.
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "dispatch_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "matmul".to_string(),
+                    out: Some("v0".to_string()),
+                    args: Some(vec!["v1".to_string(), "v2".to_string()]),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend_ir = LuauBackend::new();
+        let mut backend_checked = LuauBackend::new();
+        let err_ir = backend_ir
+            .compile_via_ir(&ir)
+            .expect_err("compile_via_ir must reject unsupported ops");
+        let err_checked = backend_checked
+            .compile_checked(&ir)
+            .expect_err("compile_checked must reject unsupported ops");
+        assert_eq!(
+            err_ir, err_checked,
+            "compile_via_ir and compile_checked must produce identical errors"
+        );
+    }
+
+    #[test]
     fn test_param_type_hint_list_propagation() {
         // Bug 2 fix: list type hint on function parameters must propagate
         // so that .append() emits table.insert() instead of a method call.
