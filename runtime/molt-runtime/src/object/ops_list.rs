@@ -98,7 +98,7 @@ pub(crate) unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(list_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {

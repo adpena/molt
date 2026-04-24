@@ -1513,6 +1513,21 @@ impl SimpleBackend {
             String,
             (String, Value),
         > = std::collections::BTreeMap::new();
+        // Raw bool values from proven list_bool getitem or const_bool.
+        // Stores the raw 0/1 as an I64 Value so downstream `if`/`br_if`/
+        // `loop_break_if_{true,false}` can branch directly on the raw value
+        // without NaN-box extraction (band + icmp → just icmp).
+        // Also used by proven-bool setitem to skip NaN-box → u8 extraction.
+        // NOT cleared at block boundaries — the Value from a merge block
+        // parameter dominates all downstream consumers in the same linear
+        // scope.  For loop-carried values, prefer raw_bool_shadow_vars.
+        let mut raw_bool_values: std::collections::BTreeMap<String, Value> =
+            std::collections::BTreeMap::new();
+        // Variable-tier raw bool shadows for loop-carried phi correctness.
+        // Parallels raw_int_shadow: declared once, def'd at each definition
+        // site, use_var'd at each consumer.  Survives loop back-edges.
+        let raw_bool_shadow_vars: std::collections::BTreeMap<String, Variable> =
+            std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
         let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
         let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
@@ -2485,6 +2500,11 @@ impl SimpleBackend {
                             builder.def_var(shadow_var, raw);
                         }
                         raw_int_shadow_vals.insert(out__.clone(), raw);
+                        // Also store in raw_bool_values for proven-bool consumers.
+                        raw_bool_values.insert(out__.clone(), raw);
+                        if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                            builder.def_var(bvar, raw);
+                        }
                     }
                 }
                 "const_none" => {
@@ -7718,12 +7738,16 @@ impl SimpleBackend {
                                 seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                                 let out_is_bool = getitem_out_is_bool;
                                 let out_is_non_bool = getitem_out_is_non_bool;
-                                // For the "unknown" path, carry a raw-bool shadow through
-                                // the merge block.  When the list IS list_bool, this shadow
-                                // holds the raw byte (0 or 1) which lets downstream
-                                // `if`/`br_if` consumers skip NaN-box tag extraction.
-                                let has_raw_bool_shadow = !out_is_bool && !out_is_non_bool
+                                // Carry a raw-bool shadow through the merge block.
+                                // For the "unknown" path: when the list IS list_bool,
+                                // this shadow holds the raw byte (0 or 1) which lets
+                                // downstream `if`/`br_if` consumers skip NaN-box tag
+                                // extraction.
+                                // For the "proven bool" path: the shadow is always the
+                                // raw byte, enabling ZERO NaN-box overhead at consumers.
+                                let has_raw_bool_shadow_unknown = !out_is_bool && !out_is_non_bool
                                     && list_is_bool_cache.contains_key(&args[0]);
+                                let has_raw_bool_shadow = out_is_bool || has_raw_bool_shadow_unknown;
                                 if has_raw_bool_shadow {
                                     builder.append_block_param(merge_block, types::I64); // raw bool shadow
                                 }
@@ -7739,7 +7763,8 @@ impl SimpleBackend {
                                     let byte_ext = builder.ins().uextend(types::I64, byte_val);
                                     let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
                                     let bool_elem = builder.ins().bor(bool_tag, byte_ext);
-                                    jump_block(&mut builder, merge_block, &[bool_elem]);
+                                    // Pass raw 0/1 shadow for downstream consumers.
+                                    jump_block(&mut builder, merge_block, &[bool_elem, byte_ext]);
                                 } else if out_is_non_bool {
                                     // Proven non-bool list — emit u64-load directly, no branch.
                                     let byte_offset = builder.ins().imul_imm(raw_idx, 8);
@@ -7817,7 +7842,14 @@ impl SimpleBackend {
                                 let call = builder.ins().call(local_callee, &[*obj, *idx]);
                                 let slow_res = builder.inst_results(call)[0];
                                 if has_raw_bool_shadow {
-                                    jump_block(&mut builder, merge_block, &[slow_res, slow_res]);
+                                    if out_is_bool {
+                                        // Proven bool: extract raw 0/1 from NaN-boxed bool.
+                                        let raw_bit = builder.ins().band_imm(slow_res, 1);
+                                        jump_block(&mut builder, merge_block, &[slow_res, raw_bit]);
+                                    } else {
+                                        // Unknown path: shadow = NaN-boxed element when not bool.
+                                        jump_block(&mut builder, merge_block, &[slow_res, slow_res]);
+                                    }
                                 } else {
                                     jump_block(&mut builder, merge_block, &[slow_res]);
                                 }
@@ -7832,10 +7864,22 @@ impl SimpleBackend {
                                     // can skip NaN-box tag extraction for list_bool elements.
                                     if has_raw_bool_shadow {
                                         let raw_shadow = builder.block_params(merge_block)[1];
-                                        list_bool_raw_shadow.insert(
-                                            out__.to_string(),
-                                            (args[0].clone(), raw_shadow),
-                                        );
+                                        if out_is_bool {
+                                            // Proven bool: raw_shadow is always 0/1.
+                                            // Store directly — consumers can branch
+                                            // with zero NaN-box overhead.
+                                            raw_bool_values.insert(out__.to_string(), raw_shadow);
+                                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                                builder.def_var(bvar, raw_shadow);
+                                            }
+                                        } else {
+                                            // Unknown path: shadow is raw 0/1 when
+                                            // list is bool, NaN-boxed otherwise.
+                                            list_bool_raw_shadow.insert(
+                                                out__.to_string(),
+                                                (args[0].clone(), raw_shadow),
+                                            );
+                                        }
                                     }
                                 }
                             } else {
@@ -8169,13 +8213,19 @@ impl SimpleBackend {
                                 let vec_store_block = builder.create_block();
                                 builder.ins().brif(is_bool_check, bool_store_block, &[], vec_store_block, &[]);
 
-                                // Bool list path: extract low bit of NaN-boxed bool, store as u8.
+                                // Bool list path: store bool as u8.
                                 // No dec_ref/inc_ref needed — bools are inline values.
                                 switch_to_block_materialized(&mut builder, bool_store_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, bool_store_block);
                                 let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
-                                let low_bit = builder.ins().band_imm(*val, 1);
-                                let byte_val = builder.ins().ireduce(types::I8, low_bit);
+                                let byte_val = if let Some(&raw_val) = raw_bool_values.get(&args[2]) {
+                                    // Raw bool shadow available — skip NaN-box extraction.
+                                    builder.ins().ireduce(types::I8, raw_val)
+                                } else {
+                                    // Extract low bit from NaN-boxed bool.
+                                    let low_bit = builder.ins().band_imm(*val, 1);
+                                    builder.ins().ireduce(types::I8, low_bit)
+                                };
                                 builder.ins().store(MemFlags::trusted(), byte_val, bool_elem_addr, 0);
                                 jump_block(&mut builder, merge_block, &[]);
 
@@ -10635,16 +10685,38 @@ impl SimpleBackend {
                 "not" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_not",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*val]);
-                    let res = builder.inst_results(call)[0];
+                    let res = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                        // Raw bool: not(x) = bool(x == 0). Skip runtime call.
+                        let is_zero = builder.ins().icmp_imm(IntCC::Equal, raw_val, 0);
+                        let result = box_bool_value(&mut builder, is_zero, &nbc);
+                        // The result of `not` is also a bool — store raw shadow.
+                        let negated = builder.ins().bxor_imm(raw_val, 1);
+                        let negated_masked = builder.ins().band_imm(negated, 1);
+                        if let Some(ref out__) = op.out {
+                            raw_bool_values.insert(out__.clone(), negated_masked);
+                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
+                                builder.def_var(bvar, negated_masked);
+                            }
+                        }
+                        result
+                    } else if op_prefers_bool_lane(&op) {
+                        // NaN-boxed bool: extract bit 0 and flip.
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let bit0 = builder.ins().band(*val, one);
+                        let is_zero = builder.ins().icmp_imm(IntCC::Equal, bit0, 0);
+                        box_bool_value(&mut builder, is_zero, &nbc)
+                    } else {
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_not",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        builder.inst_results(call)[0]
+                    };
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
@@ -10795,7 +10867,12 @@ impl SimpleBackend {
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if op_prefers_int_lane(&op) {
+                    let res = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                        // Raw bool from proven list_bool getitem or const_bool.
+                        // bool(x) where x is already raw 0/1 — just re-box.
+                        let is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0);
+                        box_bool_value(&mut builder, is_nonzero, &nbc)
+                    } else if op_prefers_int_lane(&op) {
                         // For known ints, bool(x) is simply x != 0.
                         // Use raw shadow if available to skip unboxing.
                         let int_val = shadow_value_for(
@@ -10836,7 +10913,10 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let cond = if op_prefers_int_lane(&op) {
+                    let cond = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                        // Raw bool from proven list_bool getitem or const_bool.
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    } else if op_prefers_int_lane(&op) {
                         // Known int: inline unbox + compare, no function call.
                         let raw_val = shadow_value_for(
                             &mut builder,
@@ -10880,7 +10960,10 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let cond = if op_prefers_int_lane(&op) {
+                    let cond = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                        // Raw bool from proven list_bool getitem or const_bool.
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    } else if op_prefers_int_lane(&op) {
                         // Known int: inline unbox + compare, no function call.
                         let raw_val = shadow_value_for(
                             &mut builder,
@@ -15854,7 +15937,11 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     // Inline truthiness for bool/int types to avoid function call overhead.
-                    let cond_bool = if op_prefers_bool_lane(&op) {
+                    let cond_bool = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                        // Raw bool from proven list_bool getitem or const_bool.
+                        // Branch directly on raw 0/1 — ZERO NaN-box overhead.
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    } else if op_prefers_bool_lane(&op) {
                         // NaN-boxed bool: bit 0 is the boolean value.
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*cond, one);
@@ -17070,6 +17157,8 @@ impl SimpleBackend {
                     // back-edges.  Re-populate from use_var so the first
                     // iteration sees the pre-loop value, not the init zero.
                     raw_int_shadow_vals.clear();
+                    // Value-tier raw bools are stale across loop back-edges.
+                    raw_bool_values.clear();
                     // Remove aliases (entries that share a Variable with a store target)
                     // by keeping only entries that were in the original pre-declaration.
                     // The simplest correct approach: clear aliases, keep store targets.
@@ -17646,7 +17735,10 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if cond_is_bool_typed {
+                        let cond_bool = if let Some(&raw_val) = raw_bool_values.get(cond_name) {
+                            // Raw bool from proven list_bool getitem or const_bool.
+                            builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                        } else if cond_is_bool_typed {
                             // NaN-boxed bool: bit 0 is the boolean value.
                             let one = builder.ins().iconst(types::I64, 1);
                             let payload = builder.ins().band(*cond, one);
@@ -17816,7 +17908,10 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if cond_is_bool_typed {
+                        let cond_bool = if let Some(&raw_val) = raw_bool_values.get(cond_name) {
+                            // Raw bool from proven list_bool getitem or const_bool.
+                            builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                        } else if cond_is_bool_typed {
                             // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
                             let one = builder.ins().iconst(types::I64, 1);
                             let payload = builder.ins().band(*cond, one);
@@ -19589,7 +19684,11 @@ impl SimpleBackend {
                     // cond is NaN-boxed — dispatch based on type hint to avoid
                     // unnecessary GIL-wrapped molt_is_truthy calls.
                     let cond_name = &args[0];
-                    let cond_bool = if var_is_bool(cond_name) {
+                    let cond_bool = if let Some(&raw_val) = raw_bool_values.get(cond_name) {
+                        // Raw bool from proven list_bool getitem or const_bool.
+                        // Branch directly on raw 0/1 — ZERO NaN-box overhead.
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    } else if var_is_bool(cond_name) {
                         // NaN-boxed bool: bit 0 is the boolean value.
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*cond, one);

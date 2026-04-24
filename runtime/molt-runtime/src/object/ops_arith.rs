@@ -83,6 +83,18 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
             unsafe {
                 let ltype = object_type_id(lp);
                 let rtype = object_type_id(rp);
+                // BigInt fast path — most critical for tight arithmetic loops
+                // (e.g. fib(1_000_000)).  Uses references to avoid cloning both
+                // operands on every iteration.
+                if ltype == TYPE_ID_BIGINT && rtype == TYPE_ID_BIGINT {
+                    let l_ref = bigint_ref(lp);
+                    let r_ref = bigint_ref(rp);
+                    let res: BigInt = l_ref + r_ref;
+                    if let Some(i) = bigint_to_inline(&res) {
+                        return MoltObject::from_int(i).bits();
+                    }
+                    return bigint_bits(_py, res);
+                }
                 if ltype == TYPE_ID_STRING && rtype == TYPE_ID_STRING {
                     let l_len = string_len(lp);
                     let r_len = string_len(rp);
@@ -141,6 +153,27 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     return MoltObject::from_ptr(ptr).bits();
+                }
+                // Mixed BigInt + inline int: promote inline to BigInt ref-add
+                if ltype == TYPE_ID_BIGINT {
+                    if let Some(ri) = to_i64(rhs) {
+                        let l_ref = bigint_ref(lp);
+                        let res: BigInt = l_ref + BigInt::from(ri);
+                        if let Some(i) = bigint_to_inline(&res) {
+                            return MoltObject::from_int(i).bits();
+                        }
+                        return bigint_bits(_py, res);
+                    }
+                }
+                if rtype == TYPE_ID_BIGINT {
+                    if let Some(li) = to_i64(lhs) {
+                        let r_ref = bigint_ref(rp);
+                        let res: BigInt = BigInt::from(li) + r_ref;
+                        if let Some(i) = bigint_to_inline(&res) {
+                            return MoltObject::from_int(i).bits();
+                        }
+                        return bigint_bits(_py, res);
+                    }
                 }
             }
         }

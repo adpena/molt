@@ -4273,7 +4273,7 @@ pub extern "C" fn molt_bool_builtin(val_bits: u64) -> u64 {
 /// `str(object='')` — wraps `molt_str_from_obj`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_str_builtin(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if val_bits == missing {
             let ptr = alloc_string(_py, b"");
