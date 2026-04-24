@@ -154,6 +154,21 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Oscillation detection (GraalVM deopt cycle detection)
+    // ---------------------------------------------------------------------------
+    //
+    // Track type assignments per ValueId across fixpoint iterations. If a value
+    // oscillates (A -> B -> A), the fixpoint will never converge for that value.
+    // Fix it to DynBox (the most general type) and stop refining it.
+    //
+    // This prevents infinite loops in pathological cases where type inference
+    // bounces between two types due to control-flow joins with conflicting
+    // type information.
+    let mut type_history: HashMap<ValueId, Vec<TirType>> = HashMap::new();
+    // Values that have been frozen to DynBox due to oscillation.
+    let mut frozen: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
+
     // Fixpoint iteration.
     for _round in 0..MAX_ROUNDS {
         let mut changed = false;
@@ -188,6 +203,10 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 // For ops with a single result (the common case).
                 if results.len() == 1 {
                     let result_id = results[0];
+                    // Skip frozen values — they have been fixed to DynBox.
+                    if frozen.contains(&result_id) {
+                        continue;
+                    }
                     if let Some(new_ty) = inferred {
                         let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
                         if new_ty != current {
@@ -204,6 +223,11 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 let arg_count = func.blocks[&block_id].args.len();
                 for i in 0..arg_count {
                     let arg_id = func.blocks[&block_id].args[i].id;
+
+                    // Skip frozen values.
+                    if frozen.contains(&arg_id) {
+                        continue;
+                    }
 
                     // Exception handler block args must stay DynBox —
                     // the exception could come from any type context.
@@ -238,6 +262,43 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
 
         if !changed {
             break;
+        }
+
+        // --- Oscillation detection at end of each round ---
+        //
+        // After each fixpoint iteration, record the current type for every
+        // value and check for oscillation patterns. An oscillation is
+        // detected when a value's type history has length >= 3 and the
+        // current type equals the type from two iterations ago (A -> B -> A).
+        //
+        // When detected, freeze the value to DynBox — the most general type
+        // — so the fixpoint can converge. This is sound: DynBox is the top
+        // of the type lattice, so all meet operations will produce DynBox
+        // or a subtype.
+        for (&vid, ty) in &env {
+            let history = type_history.entry(vid).or_default();
+            if history.len() >= 2 && history[history.len() - 2] == *ty && history[history.len() - 1] != *ty {
+                // Oscillation detected: A -> B -> A.
+                // Fix to DynBox and freeze this value.
+                eprintln!(
+                    "[type_refine] oscillation detected for {:?}: {:?} -> {:?} -> {:?}, fixing to DynBox",
+                    vid,
+                    &history[history.len() - 2],
+                    &history[history.len() - 1],
+                    ty
+                );
+                frozen.insert(vid);
+            }
+            history.push(ty.clone());
+        }
+
+        // Apply DynBox fixup for all newly frozen values.
+        for &vid in &frozen {
+            if !matches!(env.get(&vid), Some(TirType::DynBox)) {
+                env.insert(vid, TirType::DynBox);
+                // No need to set changed=true here — if we froze values,
+                // the next round will skip them and converge faster.
+            }
         }
     }
 

@@ -4156,7 +4156,7 @@ mod tests {
             let repr_violations =
                 crate::tir::verify_lir_repr::verify_register_passable(&lir);
             if !repr_violations.is_empty() {
-                log::warn!(
+                eprintln!(
                     "[LIR-repr] {} register-passable violation(s) in '{}': {:?}",
                     repr_violations.len(),
                     func.name,

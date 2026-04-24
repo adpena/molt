@@ -277,6 +277,17 @@ BUILTIN_LAYOUT_MIN = {
     "dict": 16,
 }
 
+# Methods on built-in types that the native backend can fast-dispatch when the
+# callee's type_hint is "BoundMethod:<type>:<method>".  The value is the set of
+# method names supported per type.  Only methods that have a corresponding
+# fast-path implementation in function_compiler.rs (the `s_value` match arm)
+# should appear here.
+_BUILTIN_FAST_METHODS: dict[str, frozenset[str]] = {
+    "str": frozenset({"upper", "lower", "strip", "startswith", "join"}),
+    "list": frozenset({"append"}),
+    "dict": frozenset({"get"}),
+}
+
 BUILTIN_EXCEPTION_NAMES = {
     "BaseException",
     "BaseExceptionGroup",
@@ -21385,6 +21396,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 MoltOp(
                     kind="MODULE_GET_ATTR",
                     args=[obj, attr_name],
+                    result=res,
+                )
+            )
+            return res
+        # Fast-path BoundMethod hints for known built-in types.
+        # When the receiver type is statically known (e.g. type_hint="str")
+        # and the accessed attribute is in the fast-dispatch method table,
+        # annotate the result with "BoundMethod:<type>:<method>" so that
+        # _emit_dynamic_call emits CALL_METHOD and the native backend's
+        # s_value match arm can avoid callargs allocation + IC lookup.
+        _fast_methods = _BUILTIN_FAST_METHODS.get(obj.type_hint)
+        if _fast_methods is not None and node.attr in _fast_methods:
+            res = MoltValue(
+                self.next_var(),
+                type_hint=f"BoundMethod:{obj.type_hint}:{node.attr}",
+            )
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_OBJ",
+                    args=[obj, node.attr],
                     result=res,
                 )
             )

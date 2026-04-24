@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering as AtomicOrdering;
+
 use crate::PyToken;
 use crate::*;
 
@@ -20,6 +22,103 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
         }
         MoltObject::from_ptr(obj_ptr).bits()
     })
+}
+
+/// Perceus reuse token: probe whether a value being dropped has a unique
+/// reference (refcount == 1). If so, return the raw data pointer as a
+/// reuse token; the caller can reuse the underlying allocation instead of
+/// freeing and reallocating. Returns 0 if the object cannot be reused
+/// (shared reference, inline value, null, immortal, or nursery-allocated).
+///
+/// # Safety
+/// Called from compiler-generated code. `bits` must be a valid NaN-boxed
+/// value. The returned token (when non-zero) is a raw `*mut u8` data pointer
+/// whose memory remains valid because the caller has *not* dropped the
+/// refcount yet — the reuse replaces the drop.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_reuse_token(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = MoltObject::from_bits(bits);
+        let Some(ptr) = obj.as_ptr() else {
+            // Inline value (int, float, bool, None) — no heap allocation to reuse.
+            return 0;
+        };
+        if ptr.is_null() {
+            return 0;
+        }
+        unsafe {
+            let header = crate::object::header_from_obj_ptr(ptr);
+            // Immortal objects must never be reused.
+            if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) != 0 {
+                return 0;
+            }
+            // Nursery-allocated objects are bulk-reclaimed; individual reuse is
+            // unsafe because the nursery reset would invalidate the pointer.
+            if ((*header).flags & crate::object::HEADER_FLAG_NURSERY) != 0 {
+                return 0;
+            }
+            // Unique reference: refcount == 1 means the caller is the sole owner.
+            // Under the GIL, Relaxed ordering is sufficient (the GIL provides
+            // happens-before).
+            if (*header).ref_count.load(AtomicOrdering::Relaxed) == 1 {
+                // Return the data pointer as a reuse token. The caller will
+                // reinitialize the header in molt_reuse_alloc rather than freeing.
+                return ptr as u64;
+            }
+        }
+        0 // Shared reference — caller must allocate fresh.
+    })
+}
+
+/// Allocate using a Perceus reuse token or fall back to a fresh allocation.
+///
+/// When `token` is non-zero, it is a data pointer from `molt_reuse_token`
+/// whose underlying allocation can be reused. The header is re-initialized
+/// to represent a fresh `TYPE_ID_OBJECT` with refcount 1 so the caller gets
+/// a clean allocation without going through the global allocator.
+///
+/// When `token` is zero, this falls through to `molt_alloc` for a
+/// conventional allocation.
+///
+/// `size_bits` is the requested payload size in bytes (same contract as
+/// `molt_alloc`).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_reuse_alloc(token: u64, size_bits: u64) -> u64 {
+    if token != 0 {
+        crate::with_gil_entry!(_py, {
+            let ptr = token as *mut u8;
+            unsafe {
+                let header = crate::object::header_from_obj_ptr(ptr);
+                let existing_total =
+                    crate::object::total_size_from_header(&*header, ptr);
+                let requested_payload = usize_from_bits(size_bits);
+                let requested_total =
+                    requested_payload + std::mem::size_of::<MoltHeader>();
+                // Only reuse if the existing allocation is large enough for the
+                // requested payload. If the new allocation is larger, we must
+                // fall through to molt_alloc to get a correctly-sized block.
+                if existing_total >= requested_total {
+                    // Reinitialize the header: clear all flags except RAW_ALLOC,
+                    // reset refcount to 1, preserve size_class and cold_idx (the
+                    // allocation size has not changed).
+                    (*header).type_id = TYPE_ID_OBJECT;
+                    (*header).ref_count.store(1, AtomicOrdering::Relaxed);
+                    (*header).flags = crate::object::HEADER_FLAG_RAW_ALLOC;
+                    // Zero the payload region for safety (same guarantee as
+                    // alloc_object_zeroed_with_pool).
+                    std::ptr::write_bytes(ptr, 0, requested_payload);
+                    return MoltObject::from_ptr(ptr).bits();
+                }
+                // Existing allocation too small — drop the old one and allocate
+                // fresh. Decrement the refcount (it is 1, so this frees).
+                crate::object::dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            }
+            // Fall through to fresh allocation.
+            molt_alloc(size_bits)
+        })
+    } else {
+        molt_alloc(size_bits)
+    }
 }
 
 pub(crate) unsafe fn alloc_dataclass_for_class_ptr(

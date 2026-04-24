@@ -59,7 +59,7 @@ pub extern "C" fn molt_str_concat(lhs_bits: u64, rhs_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         // Note: exception_pending check removed — backends guarantee molt_add
         // is only called on non-exception paths, so the TLS + atomic overhead
         // of checking every arithmetic op is unnecessary.
@@ -328,7 +328,7 @@ pub extern "C" fn molt_inplace_concat(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // BigInt fast path — hoisted above inline int/float checks to avoid

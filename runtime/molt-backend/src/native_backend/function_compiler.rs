@@ -356,15 +356,7 @@ fn shadow_float_for(
         .or_else(|| raw_float_shadow.get(name).map(|&var| builder.use_var(var)))
 }
 
-#[cfg(feature = "native-backend")]
-#[inline]
-fn shadow_float_var_only(
-    builder: &mut FunctionBuilder<'_>,
-    raw_float_shadow: &BTreeMap<String, Variable>,
-    name: &str,
-) -> Option<Value> {
-    raw_float_shadow.get(name).map(|&var| builder.use_var(var))
-}
+
 
 #[cfg(feature = "native-backend")]
 fn collect_slot_backed_join_names(
@@ -531,6 +523,12 @@ struct FunctionPreanalysis {
     float_like_vars: BTreeSet<String>,
     str_like_vars: BTreeSet<String>,
     none_like_vars: BTreeSet<String>,
+    /// True when any op in this function is marked `arena_eligible`.
+    /// Triggers scope-arena lifecycle (molt_arena_new at entry,
+    /// molt_arena_alloc for eligible allocs, molt_arena_free at exit).
+    has_arena_eligible: bool,
+    /// Set of output variable names from arena-eligible alloc ops.
+    arena_eligible_outs: BTreeSet<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1106,6 +1104,18 @@ fn preanalyze_function_ir(
 
     let const_int_map = crate::build_const_int_map(&func_ir.ops);
 
+    // Scope arena eligibility: detect alloc ops marked arena_eligible.
+    let mut has_arena_eligible = false;
+    let mut arena_eligible_outs: BTreeSet<String> = BTreeSet::new();
+    for op in &func_ir.ops {
+        if op.arena_eligible == Some(true) {
+            has_arena_eligible = true;
+            if let Some(ref out) = op.out {
+                arena_eligible_outs.insert(out.clone());
+            }
+        }
+    }
+
     FunctionPreanalysis {
         has_ret,
         stateful,
@@ -1129,6 +1139,8 @@ fn preanalyze_function_ir(
         float_like_vars,
         str_like_vars,
         none_like_vars,
+        has_arena_eligible,
+        arena_eligible_outs,
     }
 }
 
@@ -1361,6 +1373,8 @@ impl SimpleBackend {
             float_like_vars,
             str_like_vars,
             none_like_vars,
+            has_arena_eligible,
+            arena_eligible_outs: _arena_eligible_outs,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
@@ -2497,6 +2511,30 @@ impl SimpleBackend {
         // 2. Implementation
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
 
+        // -----------------------------------------------------------------
+        // Scope arena lifecycle: MLKit/Cyclone region allocator integration.
+        //
+        // When escape analysis has marked any allocation in this function as
+        // NoEscape (arena_eligible), emit a scope arena at function entry.
+        // Arena-eligible allocs use molt_arena_alloc instead of molt_alloc,
+        // and the arena is freed once at function exit instead of individual
+        // per-object frees.
+        // -----------------------------------------------------------------
+        let scope_arena_ptr: Option<Value> = if has_arena_eligible {
+            let arena_new = Self::import_func_id_split(
+                &mut self.module,
+                &mut self.import_ids,
+                "molt_arena_new",
+                &[],
+                &[types::I64],
+            );
+            let local_arena_new = self.module.declare_func_in_func(arena_new, builder.func);
+            let call = builder.ins().call(local_arena_new, &[]);
+            Some(builder.inst_results(call)[0])
+        } else {
+            None
+        };
+
         // Scalarized tuples: keep element SSA Values in a side table so
         // `len`/`index` can fold without touching the runtime. The tuple
         // object itself must still use the canonical runtime layout.
@@ -2949,23 +2987,19 @@ impl SimpleBackend {
                         // Both operands known to be f64 — direct float arithmetic.
                         // Defer var_get past shadow check so Cranelift DCE can
                         // eliminate upstream NaN-boxing when shadow is available.
+                        // Float shadows use both tiers even inside loops:
+                        // raw_float_shadow_vals is cleared at loop_start, so any
+                        // entries present were created this iteration.  Float
+                        // arithmetic has no overflow-guard branches that could
+                        // invalidate Value-tier entries within a basic block.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
-                        }
+                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
-                        }
+                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -3176,25 +3210,15 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     } else if op_prefers_float_lane(&op) {
-                        // Defer var_get past shadow check so Cranelift DCE can
-                        // eliminate upstream NaN-boxing when shadow is available.
+                        // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
-                        }
+                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
-                        }
+                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -3831,27 +3855,17 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
-                        // Defer var_get past shadow check so Cranelift DCE can
-                        // eliminate upstream NaN-boxing when shadow is available.
+                        // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
-                        }
+                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                                 panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                             });
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
-                        }
+                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                                 panic!("RHS not found in {} op {}", func_ir.name, op_idx)
@@ -4082,27 +4096,17 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
-                        // Defer var_get past shadow check so Cranelift DCE can
-                        // eliminate upstream NaN-boxing when shadow is available.
+                        // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
-                        }
+                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                                 panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                             });
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
-                        }
+                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                                 panic!("RHS not found in {} op {}", func_ir.name, op_idx)
@@ -4333,25 +4337,15 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
-                        // Defer var_get past shadow check so Cranelift DCE can
-                        // eliminate upstream NaN-boxing when shadow is available.
+                        // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
-                        }
+                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
-                        }
+                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -4567,25 +4561,15 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
-                        // Defer var_get past shadow check so Cranelift DCE can
-                        // eliminate upstream NaN-boxing when shadow is available.
+                        // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
-                        }
+                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
-                        }
+                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -5410,34 +5394,15 @@ impl SimpleBackend {
                         // ZeroDivisionError for float division by zero, so
                         // we must check before using fdiv (which produces
                         // IEEE infinity/NaN instead of an exception).
-                        // Defer var_get past shadow check for DCE.
+                        // Float shadows: both tiers safe inside loops (see add handler).
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
-                        } else {
-                            shadow_float_for(
-                                &mut builder,
-                                &raw_float_shadow,
-                                &raw_float_shadow_vals,
-                                lhs_name,
-                            )
-                        }
+                        let lhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, lhs_name)
                         .unwrap_or_else(|| {
                             let v = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *v)
                         });
-                        let rhs_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
-                        } else {
-                            shadow_float_for(
-                                &mut builder,
-                                &raw_float_shadow,
-                                &raw_float_shadow_vals,
-                                rhs_name,
-                            )
-                        }
+                        let rhs_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, rhs_name)
                         .unwrap_or_else(|| {
                             let v = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *v)
@@ -10904,21 +10869,13 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
-                        // Defer var_get past shadow check for DCE.
-                        let lf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[0])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
-                        }
+                        // Float shadows: both tiers safe inside loops (see add handler).
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[1])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
-                        }
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11034,21 +10991,13 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
-                        // Defer var_get past shadow check for DCE.
-                        let lf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[0])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
-                        }
+                        // Float shadows: both tiers safe inside loops (see add handler).
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[1])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
-                        }
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11159,22 +11108,13 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
-                        // Defer var_get past shadow check so Cranelift DCE can
-                        // eliminate upstream NaN-boxing when shadow is available.
-                        let lf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[0])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
-                        }
+                        // Float shadows: both tiers safe inside loops (see add handler).
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[1])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
-                        }
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11283,21 +11223,13 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
-                        // Defer var_get past shadow check for DCE.
-                        let lf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[0])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
-                        }
+                        // Float shadows: both tiers safe inside loops (see add handler).
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[1])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
-                        }
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11387,24 +11319,14 @@ impl SimpleBackend {
                 }
                 "eq" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let in_active_loop = !loop_stack.is_empty();
                     let res = if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
-                        // Both operands known to be f64 -- direct float equality.
-                        // Defer var_get past shadow check for DCE.
-                        let lf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[0])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
-                        }
+                        // Float shadows: both tiers safe inside loops (see add handler).
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[1])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
-                        }
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11467,24 +11389,14 @@ impl SimpleBackend {
                 }
                 "ne" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let in_active_loop = !loop_stack.is_empty();
                     let res = if scalar_fast_paths_enabled && float_like_vars.contains(&args[0]) && float_like_vars.contains(&args[1]) {
-                        // Both operands known to be f64 -- direct float inequality.
-                        // Defer var_get past shadow check for DCE.
-                        let lf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[0])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
-                        }
+                        // Float shadows: both tiers safe inside loops (see add handler).
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *lhs)
                         });
-                        let rf = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[1])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
-                        }
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
                         .unwrap_or_else(|| {
                             let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *rhs)
@@ -11630,14 +11542,8 @@ impl SimpleBackend {
                 "neg" | "unary_neg" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if op_prefers_float_lane(&op) {
-                        // Proven float: negate using fneg, skip runtime call.
-                        // Defer var_get past shadow check for DCE.
-                        let in_active_loop = !loop_stack.is_empty();
-                        let src_f = if in_active_loop {
-                            shadow_float_var_only(&mut builder, &raw_float_shadow, &args[0])
-                        } else {
-                            shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
-                        }
+                        // Float shadows: both tiers safe inside loops (see add handler).
+                        let src_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
                         .unwrap_or_else(|| {
                             let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                             builder.ins().bitcast(types::F64, MemFlags::new(), *val)
@@ -19343,20 +19249,43 @@ impl SimpleBackend {
                         }
                     }
                 }
-                "alloc" => {
+                "alloc" | "stack_alloc" => {
                     let size = op.value.unwrap_or(0);
                     let iconst = builder.ins().iconst(types::I64, size);
 
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_alloc",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[iconst]);
-                    let res = builder.inst_results(call)[0];
+                    // Scope arena path: NoEscape allocs use the bump
+                    // allocator for O(1) allocation + O(1) bulk free.
+                    let is_arena = op.arena_eligible == Some(true)
+                        && scope_arena_ptr.is_some();
+                    let res = if is_arena {
+                        let arena_ptr = scope_arena_ptr.unwrap();
+                        let arena_alloc_id = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_arena_alloc",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_arena_alloc = self
+                            .module
+                            .declare_func_in_func(arena_alloc_id, builder.func);
+                        let call = builder
+                            .ins()
+                            .call(local_arena_alloc, &[arena_ptr, iconst]);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_alloc",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[iconst]);
+                        builder.inst_results(call)[0]
+                    };
                     let Some(out_name) = op.out else {
                         continue;
                     };
@@ -21677,6 +21606,22 @@ impl SimpleBackend {
         for slot in slot_backed_join_slots.values() {
             let val = builder.ins().stack_load(types::I64, *slot, 0);
             builder.ins().call(local_dec_ref_obj, &[val]);
+        }
+
+        // -----------------------------------------------------------------
+        // Scope arena teardown: free the arena before returning.
+        // All bump-allocated (NoEscape) values are released in O(1).
+        // -----------------------------------------------------------------
+        if let Some(arena_ptr) = scope_arena_ptr {
+            let arena_free = Self::import_func_id_split(
+                &mut self.module,
+                &mut self.import_ids,
+                "molt_arena_free",
+                &[types::I64],
+                &[],
+            );
+            let local_arena_free = self.module.declare_func_in_func(arena_free, builder.func);
+            builder.ins().call(local_arena_free, &[arena_ptr]);
         }
 
         let final_res = if has_ret {

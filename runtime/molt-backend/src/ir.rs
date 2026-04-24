@@ -59,6 +59,12 @@ pub struct OpIR {
     /// Not the canonical backend representation contract.
     pub fast_float: Option<bool>,
     pub stack_eligible: Option<bool>,
+    /// When true, this allocation should use the function-scoped
+    /// `ScopeArena` (bump allocator) instead of individual heap alloc/free.
+    /// Set by escape analysis when an `Alloc` is `NoEscape` and the arena
+    /// integration is active.
+    #[serde(default)]
+    pub arena_eligible: Option<bool>,
     pub task_kind: Option<String>,
     pub container_type: Option<String>,
     /// Transitional semantic hint preserved on the transport surface for
@@ -266,6 +272,7 @@ impl OpIR {
             col_offset: optional_i64(obj, "col_offset", ctx)?,
             end_col_offset: optional_i64(obj, "end_col_offset", ctx)?,
             bce_safe: optional_bool(obj, "bce_safe", ctx)?,
+            arena_eligible: optional_bool(obj, "arena_eligible", ctx)?,
         })
     }
 }

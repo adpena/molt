@@ -10,6 +10,7 @@ pub mod dce;
 pub mod deforestation;
 pub mod effects;
 pub mod escape_analysis;
+pub mod ownership;
 pub mod fast_math;
 pub mod interprocedural;
 pub mod iter_devirt;
