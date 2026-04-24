@@ -25,7 +25,7 @@ pub use pipeline::{
 use melior::{
     Context as MlirContext,
     dialect::DialectRegistry,
-    ir::{Location, Module as MlirModule, operation::OperationLike},
+    ir::{Module as MlirModule, operation::OperationLike},
     utility::{register_all_dialects, register_all_llvm_translations},
 };
 

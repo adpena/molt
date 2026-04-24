@@ -212,6 +212,11 @@ fn mlir_dialect(d: &Dialect) -> &'static str {
     }
 }
 
+/// Return the MLIR-compatible opcode name for a TIR OpCode.
+pub fn opcode_name(op: &OpCode) -> &'static str {
+    mlir_opcode(op)
+}
+
 fn mlir_opcode(op: &OpCode) -> &'static str {
     match op {
         OpCode::Add | OpCode::InplaceAdd => "add",

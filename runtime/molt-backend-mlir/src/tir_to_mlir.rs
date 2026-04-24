@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use melior::{
     Context as MlirContext,
     ir::{
-        Block, Identifier, Location, Module as MlirModule, Region, Type, Value,
+        Block, Identifier, Location, Module as MlirModule, Region, Type, Value, ValueLike,
         attribute::{
             FloatAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
             TypeAttribute,
@@ -263,7 +263,7 @@ fn emit_tir_op<'c, 'a>(
     block: &'a Block<'c>,
     op: &TirOp,
     value_map: &mut HashMap<ValueId, Value<'c, 'a>>,
-    tir_func: &TirFunction,
+    _tir_func: &TirFunction,
     i64_type: Type<'c>,
     f64_type: Type<'c>,
     i1_type: Type<'c>,
@@ -281,7 +281,7 @@ fn emit_tir_op<'c, 'a>(
         }
         (_, OpCode::ConstFloat) => {
             let val = extract_float_attr(&op.attrs, "value").unwrap_or(0.0);
-            let attr = FloatAttribute::new(ctx, val, f64_type).into();
+            let attr = FloatAttribute::new(ctx, f64_type, val).into();
             let mlir_op = block.append_operation(arith::constant(ctx, attr, location));
             if let Some(&result_id) = op.results.first() {
                 value_map.insert(result_id, mlir_op.result(0).unwrap().into());
@@ -348,9 +348,11 @@ fn emit_tir_op<'c, 'a>(
             }
         }
         (_, OpCode::Pos) => {
-            // Unary plus is identity.
+            // Unary plus is identity. Copy the MLIR Value directly.
             if !op.operands.is_empty() && !op.results.is_empty() {
-                let val = resolve_value(value_map, op.operands[0])?;
+                let val = *value_map
+                    .get(&op.operands[0])
+                    .ok_or_else(|| format!("TIR ValueId %{} not found in MLIR value map", op.operands[0].0))?;
                 value_map.insert(op.results[0], val);
             }
         }
@@ -462,7 +464,7 @@ fn emit_tir_op<'c, 'a>(
             // Truthiness test: compare operand != 0.
             let operand = resolve_value(value_map, op.operands[0])?;
             if operand_is_float(operand, ctx) {
-                let zero_attr = FloatAttribute::new(ctx, 0.0, f64_type).into();
+                let zero_attr = FloatAttribute::new(ctx, f64_type, 0.0).into();
                 let zero_op = block.append_operation(arith::constant(ctx, zero_attr, location));
                 let zero_val: Value<'c, '_> = zero_op.result(0).unwrap().into();
                 let mlir_op = block.append_operation(arith::cmpf(
@@ -494,8 +496,11 @@ fn emit_tir_op<'c, 'a>(
 
         // ---- Copy (SSA forwarding) ----
         (_, OpCode::Copy) => {
+            // Copy the MLIR Value directly without holding a borrow across the insert.
             if !op.operands.is_empty() && !op.results.is_empty() {
-                let val = resolve_value(value_map, op.operands[0])?;
+                let val = *value_map
+                    .get(&op.operands[0])
+                    .ok_or_else(|| format!("TIR ValueId %{} not found in MLIR value map", op.operands[0].0))?;
                 value_map.insert(op.results[0], val);
             }
         }
@@ -649,6 +654,13 @@ fn emit_tir_op<'c, 'a>(
         (_, OpCode::Deopt) => {
             emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
+
+        // ---- Catch-all for any dialect/opcode combination not handled above ----
+        // This covers cases like SCF ops appearing with non-Scf dialects,
+        // or future op additions. Emitted as opaque molt ops.
+        _ => {
+            emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
+        }
     }
 
     Ok(())
@@ -759,7 +771,7 @@ fn emit_comparison<'c, 'a>(
 /// standard MLIR dialect equivalent. These will be resolved by a later pass
 /// or by the runtime linker.
 fn emit_opaque_molt_op<'c, 'a>(
-    ctx: &'c MlirContext,
+    _ctx: &'c MlirContext,
     block: &'a Block<'c>,
     op: &TirOp,
     value_map: &mut HashMap<ValueId, Value<'c, 'a>>,
