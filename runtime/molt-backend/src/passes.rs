@@ -1342,49 +1342,46 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         return;
     }
 
+    // Pre-build a set of const_str names whose value is "UnboundLocalError"
+    // to avoid rescanning the entire ops array for every match.
+    let unbound_error_names: HashSet<&str> = ops
+        .iter()
+        .filter(|op| {
+            op.kind == "const_str"
+                && op.s_value.as_deref() == Some("UnboundLocalError")
+        })
+        .filter_map(|op| op.out.as_deref())
+        .collect();
+
     let mut remove = vec![false; len];
     let mut i = 0;
-    while i + 10 < len {
-        // Skip nops to find a `missing` op.
+    while i + 9 < len {
+        // Skip optional nop before the `is` op.
         let base = i;
         if ops[i].kind == "nop" {
             i += 1;
-            if i + 10 >= len {
+            if i + 9 >= len {
                 break;
             }
         }
 
-        // [0] missing out=M
-        if ops[i].kind != "missing" {
+        // [0] is out=R args=[V, M]  — second arg must be a known missing sentinel
+        if ops[i].kind != "is" {
             i = base + 1;
             continue;
         }
-        let missing_out = match ops[i].out.as_deref() {
-            Some(m) => m,
-            None => {
-                i = base + 1;
-                continue;
-            }
-        };
-
-        // [1] is out=R args=[V, M]  — second arg must be a known missing sentinel
-        let is_idx = i + 1;
-        if is_idx >= len || ops[is_idx].kind != "is" {
-            i = base + 1;
-            continue;
-        }
-        let is_args = match ops[is_idx].args.as_ref() {
+        let is_args = match ops[i].args.as_ref() {
             Some(args) if args.len() == 2 => args,
             _ => {
                 i = base + 1;
                 continue;
             }
         };
-        if is_args[1] != missing_out {
+        if !missing_outputs.contains(is_args[1].as_str()) {
             i = base + 1;
             continue;
         }
-        let is_out = match ops[is_idx].out.as_deref() {
+        let is_out = match ops[i].out.as_deref() {
             Some(r) => r,
             None => {
                 i = base + 1;
@@ -1392,27 +1389,27 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             }
         };
 
-        // [2] jump val=L1
-        let j2 = is_idx + 1;
-        if j2 >= len || ops[j2].kind != "jump" {
+        // [1] jump val=L1
+        let j1 = i + 1;
+        if j1 >= len || ops[j1].kind != "jump" {
             i = base + 1;
             continue;
         }
 
-        // [3] label val=L1
+        // [2] label val=L1
+        let j2 = j1 + 1;
+        if j2 >= len || ops[j2].kind != "label" {
+            i = base + 1;
+            continue;
+        }
+
+        // [3] br_if args=[R] val=L_raise
         let j3 = j2 + 1;
-        if j3 >= len || ops[j3].kind != "label" {
+        if j3 >= len || ops[j3].kind != "br_if" {
             i = base + 1;
             continue;
         }
-
-        // [4] br_if args=[R] val=L_raise
-        let j4 = j3 + 1;
-        if j4 >= len || ops[j4].kind != "br_if" {
-            i = base + 1;
-            continue;
-        }
-        let brif_args = match ops[j4].args.as_ref() {
+        let brif_args = match ops[j3].args.as_ref() {
             Some(args) if !args.is_empty() => args,
             _ => {
                 i = base + 1;
@@ -1424,89 +1421,94 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             continue;
         }
 
-        // [5] jump val=L_ok
+        // [4] jump val=L_ok
+        let j4 = j3 + 1;
+        if j4 >= len || ops[j4].kind != "jump" {
+            i = base + 1;
+            continue;
+        }
+
+        // [5] label val=L_raise
         let j5 = j4 + 1;
-        if j5 >= len || ops[j5].kind != "jump" {
+        if j5 >= len || ops[j5].kind != "label" {
             i = base + 1;
             continue;
         }
 
-        // [6] label val=L_raise
+        // [6] tuple_new (exception message)
         let j6 = j5 + 1;
-        if j6 >= len || ops[j6].kind != "label" {
+        if j6 >= len || ops[j6].kind != "tuple_new" {
             i = base + 1;
             continue;
         }
 
-        // [7] tuple_new with "cannot access local variable" string
+        // [7] exception_new with "UnboundLocalError"
         let j7 = j6 + 1;
-        if j7 >= len || ops[j7].kind != "tuple_new" {
+        if j7 >= len || ops[j7].kind != "exception_new" {
             i = base + 1;
             continue;
         }
-        // Verify via the tuple_new's arg — the arg must reference a const_str
-        // whose s_value contains "cannot access local variable". We check the
-        // const_str that the arg references for robustness; but the simpler
-        // heuristic of checking the following exception_new's s_value for
-        // "UnboundLocalError" is sufficient and cheaper.
-
-        // [8] exception_new with "UnboundLocalError"
-        let j8 = j7 + 1;
-        if j8 >= len || ops[j8].kind != "exception_new" {
-            i = base + 1;
-            continue;
-        }
-        // Verify the exception type is UnboundLocalError by checking its arg
-        // (which references a const_str with "UnboundLocalError").
-        let exc_args = match ops[j8].args.as_ref() {
+        let exc_args = match ops[j7].args.as_ref() {
             Some(args) if !args.is_empty() => args,
             _ => {
                 i = base + 1;
                 continue;
             }
         };
-        // The first arg of exception_new is the exception type name string.
-        // It references a const_str whose s_value is "UnboundLocalError".
-        // Verify by scanning backwards for that const_str.
-        let type_name_ref = &exc_args[0];
-        let is_unbound = ops.iter().any(|op| {
-            op.kind == "const_str"
-                && op.out.as_deref() == Some(type_name_ref)
-                && op.s_value.as_deref() == Some("UnboundLocalError")
-        });
-        if !is_unbound {
+        if !unbound_error_names.contains(exc_args[0].as_str()) {
             i = base + 1;
             continue;
         }
 
-        // [9] raise
+        // [8] raise
+        let j8 = j7 + 1;
+        if j8 >= len || ops[j8].kind != "raise" {
+            i = base + 1;
+            continue;
+        }
+
+        // [9] label val=L_ok  (continuation)
         let j9 = j8 + 1;
-        if j9 >= len || ops[j9].kind != "raise" {
-            i = base + 1;
-            continue;
-        }
-
-        // [10] label val=L_ok  (continuation)
-        let j10 = j9 + 1;
-        if j10 >= len || ops[j10].kind != "label" {
+        if j9 >= len || ops[j9].kind != "label" {
             i = base + 1;
             continue;
         }
 
         // Match confirmed. Mark the entire sequence for removal,
-        // EXCEPT the final continuation label (j10) which other
+        // EXCEPT the final continuation label (j9) which other
         // code may jump to.
         if base != i {
-            // We skipped a nop before `missing`
+            // We skipped a nop before the `is` op
             remove[base] = true;
         }
-        for idx in i..=j9 {
+        for idx in i..=j8 {
             remove[idx] = true;
         }
-        // Keep j10 (continuation label) — remove j5 (jump to it) and
-        // j6 (raise label) since the raise block is dead.
+        // Keep j9 (continuation label).
 
-        i = j10 + 1;
+        i = j9 + 1;
+    }
+
+    // Also remove orphaned `missing` ops whose outputs are no longer
+    // referenced after we stripped the `is` ops above.
+    if remove.iter().any(|&r| r) {
+        let surviving_args: HashSet<&str> = ops
+            .iter()
+            .enumerate()
+            .filter(|&(idx, _)| !remove[idx])
+            .flat_map(|(_, op)| {
+                op.args.as_ref().into_iter().flat_map(|a| a.iter().map(String::as_str))
+            })
+            .collect();
+        for (idx, op) in ops.iter().enumerate() {
+            if op.kind == "missing" {
+                if let Some(out) = op.out.as_deref() {
+                    if !surviving_args.contains(out) {
+                        remove[idx] = true;
+                    }
+                }
+            }
+        }
     }
 
     let count = remove.iter().filter(|&&r| r).count();
