@@ -31,6 +31,7 @@ molt build app.py                        # Build with default settings
 molt build app.py --release              # Optimized release build
 molt build app.py --target wasm          # Build for WebAssembly
 molt build app.py --target luau          # Build for Luau/Roblox
+molt build app.py --target mlir          # Emit MLIR text (requires LLVM 22)
 molt build --module mypackage            # Build a package by module name
 molt build app.py --output dist/app      # Custom output path
 molt build app.py --profile cloudflare   # Platform-optimized build
@@ -38,7 +39,7 @@ molt build app.py --profile cloudflare   # Platform-optimized build
 
 | Flag | Description |
 |------|-------------|
-| `--target TARGET` | Build target: `native` (default), `wasm`, `luau`, or a target triple (e.g. `aarch64-unknown-linux-gnu`). |
+| `--target TARGET` | Build target: `native` (default), `wasm`, `luau`, `mlir`, or a target triple (e.g. `aarch64-unknown-linux-gnu`). |
 | `--release` | Optimized release build (alias for `--build-profile release`). |
 | `--module MODULE` | Entry module name. Uses `pkg.__main__` when present. |
 | `--output PATH` | Output path for the artifact. Default final wasm/object outputs land under `dist/` when omitted. |
@@ -87,20 +88,21 @@ molt build app.py --profile cloudflare   # Platform-optimized build
 
 #### `molt run`
 
-Build and execute a Python program. Supports native, WASM (via wasmtime), and Luau (via lune) targets.
+Build and execute a Python program. Supports native, WASM (via wasmtime), Luau (via lune), and MLIR targets.
 
 ```bash
 molt run app.py                          # Build and run natively
 molt run app.py --release                # Optimized build and run
 molt run app.py --target wasm            # Build and run with wasmtime
 molt run app.py --target luau            # Build and run with lune
+molt run app.py --target mlir            # Build and emit MLIR text
 molt run app.py -- --arg1 val            # Pass args to your script
 molt run --module mypackage              # Run a package
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--target TARGET` | Build target: `native`, `wasm`, `luau`, or a target triple. |
+| `--target TARGET` | Build target: `native`, `wasm`, `luau`, `mlir`, or a target triple. |
 | `--release` | Optimized release build. |
 | `--module MODULE` | Entry module name. |
 | `--profile {dev,release}` | Build profile (default: `dev`). |
