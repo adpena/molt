@@ -1116,6 +1116,24 @@ fn box_int_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) 
     builder.ins().bor(tag, masked)
 }
 
+/// Like `box_int_value` but reads pre-hoisted constant Variables for the
+/// mask and tag.  Emits only 2 instructions (band + bor) instead of 4,
+/// because the iconst values are read from Variables that persist across
+/// loop iterations (Cranelift keeps them in registers).
+#[cfg(feature = "native-backend")]
+#[inline]
+fn box_int_value_hoisted(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    mask_var: Variable,
+    tag_var: Variable,
+) -> Value {
+    let int_mask_val = builder.use_var(mask_var);
+    let qnan_tag_int_val = builder.use_var(tag_var);
+    let masked = builder.ins().band(val, int_mask_val);
+    builder.ins().bor(qnan_tag_int_val, masked)
+}
+
 #[cfg(feature = "native-backend")]
 fn box_float_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     // Canonicalize NaN: if the f64 value is NaN, replace with CANONICAL_NAN_BITS
