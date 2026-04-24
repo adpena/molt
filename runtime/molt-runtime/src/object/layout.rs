@@ -93,8 +93,13 @@ impl ListIntSliceRef {
     }
 
     #[inline]
+    pub fn as_slice(&self) -> &[i64] {
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+
+    #[inline]
     pub fn iter(&self) -> std::slice::Iter<'_, i64> {
-        unsafe { std::slice::from_raw_parts(self.data, self.len).iter() }
+        self.as_slice().iter()
     }
 }
 

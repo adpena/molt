@@ -253,16 +253,29 @@ debug = 0
 [profile.dev-fast.package.zip]
 debug = 0
 
-# Fast iteration profile: O2 with single codegen unit for maximum
-# inlining and optimization. The daemon uses this for release builds.
+# Fast iteration profile: O3 with single codegen unit and fat LTO for
+# maximum cross-crate inlining and optimization. The daemon binary is
+# built infrequently, so the extra LTO link time (~30-60s) is acceptable
+# for the codegen quality win (fat LTO enables interprocedural
+# optimizations across crate boundaries that thin LTO cannot perform).
 # panic = "unwind" required — see [profile.release] comment above.
 [profile.release-fast]
 inherits = "release"
 opt-level = 3          # O3: auto-vectorization + aggressive inlining for daemon hot paths
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
 panic = "unwind"       # required for catch_unwind in Cranelift retry path
+
+# Hot-path dependency overrides for release-fast: ensure the register
+# allocator and codegen core are maximally optimized even if the overall
+# profile inherits a different default.  These crates dominate compile-time
+# CPU in Cranelift's pipeline and benefit most from O3 auto-vectorization.
+[profile.release-fast.package.cranelift-codegen]
+opt-level = 3
+
+[profile.release-fast.package.regalloc2]
+opt-level = 3
 
 # Size-optimized release profile for micro stdlib builds.
 # Uses opt-level "z" (minimize binary size) with fat LTO and single codegen
