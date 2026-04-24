@@ -290,18 +290,6 @@ fn shadow_float_var_only(
 }
 
 #[cfg(feature = "native-backend")]
-#[inline]
-fn shadow_float_pair_available(
-    raw_float_shadow: &BTreeMap<String, Variable>,
-    raw_float_shadow_vals: &BTreeMap<String, Value>,
-    lhs: &str,
-    rhs: &str,
-) -> bool {
-    (raw_float_shadow_vals.contains_key(lhs) || raw_float_shadow.contains_key(lhs))
-        && (raw_float_shadow_vals.contains_key(rhs) || raw_float_shadow.contains_key(rhs))
-}
-
-#[cfg(feature = "native-backend")]
 fn collect_slot_backed_join_names(
     ops: &[OpIR],
     exception_label_ids: &BTreeSet<i64>,
@@ -5282,8 +5270,32 @@ impl SimpleBackend {
                         // ZeroDivisionError for float division by zero, so
                         // we must check before using fdiv (which produces
                         // IEEE infinity/NaN instead of an exception).
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        // Use raw f64 shadows when available to skip bitcast unbox.
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, lhs_name)
+                        } else {
+                            shadow_float_for(
+                                &mut builder,
+                                &raw_float_shadow,
+                                &raw_float_shadow_vals,
+                                lhs_name,
+                            )
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rhs_f = if in_active_loop {
+                            shadow_float_var_only(&mut builder, &raw_float_shadow, rhs_name)
+                        } else {
+                            shadow_float_for(
+                                &mut builder,
+                                &raw_float_shadow,
+                                &raw_float_shadow_vals,
+                                rhs_name,
+                            )
+                        }
+                        .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
                         let zero_f = builder.ins().f64const(0.0);
                         let is_zero = builder.ins().fcmp(FloatCC::Equal, rhs_f, zero_f);
                         let ok_block = builder.create_block();
@@ -5291,6 +5303,7 @@ impl SimpleBackend {
                         builder.set_cold_block(zero_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::F64); // raw f64 shadow
                         builder.ins().brif(is_zero, zero_block, &[], ok_block, &[]);
                         // Zero divisor → call runtime for ZeroDivisionError.
                         switch_to_block_materialized(&mut builder, zero_block);
@@ -5305,15 +5318,23 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-                        // Non-zero → fast fdiv.
+                        let slow_f = builder.ins().bitcast(types::F64, MemFlags::new(), slow_res);
+                        jump_block(&mut builder, merge_block, &[slow_res, slow_f]);
+                        // Non-zero -> fast fdiv.
                         switch_to_block_materialized(&mut builder, ok_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, ok_block);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
                         let fast_res = box_float_value(&mut builder, result_f, &nbc);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        jump_block(&mut builder, merge_block, &[fast_res, result_f]);
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        let merged_raw_f = builder.block_params(merge_block)[1];
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, merged_raw_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                        }
                         builder.block_params(merge_block)[0]
                     } else if op_prefers_int_lane(&op) {
                         // Python true division: int / int always returns float.
@@ -8517,7 +8538,12 @@ impl SimpleBackend {
                                 switch_to_block_materialized(&mut builder, bool_store_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, bool_store_block);
                                 let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
-                                let byte_val = if let Some(&raw_val) = raw_bool_values.get(&args[2]) {
+                                let byte_val = if let Some(raw_val) = shadow_value_for(
+                                    &mut builder,
+                                    &raw_bool_shadow_vars,
+                                    &raw_bool_values,
+                                    &args[2],
+                                ) {
                                     // Raw bool shadow available — skip NaN-box extraction.
                                     builder.ins().ireduce(types::I8, raw_val)
                                 } else {
@@ -10428,9 +10454,11 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
-                        let cmp = builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f);
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
+                        let cmp = builder.ins().fcmp(FloatCC::LessThan, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -10533,9 +10561,11 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
-                        let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f);
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
+                        let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -10639,9 +10669,11 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
-                        let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lhs_f, rhs_f);
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
+                        let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -10743,11 +10775,13 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_float_lane(&op) {
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
                         let cmp = builder
                             .ins()
-                            .fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);
+                            .fcmp(FloatCC::GreaterThanOrEqual, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -10829,10 +10863,12 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op_prefers_float_lane(&op) {
-                        // Both operands known to be f64 — direct float equality.
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
-                        let cmp = builder.ins().fcmp(FloatCC::Equal, lhs_f, rhs_f);
+                        // Both operands known to be f64 -- direct float equality.
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
+                        let cmp = builder.ins().fcmp(FloatCC::Equal, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, direct unbox + compare.
@@ -10889,10 +10925,12 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op_prefers_float_lane(&op) {
-                        // Both operands known to be f64 — direct float inequality.
-                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
-                        let cmp = builder.ins().fcmp(FloatCC::NotEqual, lhs_f, rhs_f);
+                        // Both operands known to be f64 -- direct float inequality.
+                        let lf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *lhs));
+                        let rf = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[1])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *rhs));
+                        let cmp = builder.ins().fcmp(FloatCC::NotEqual, lf, rf);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, direct unbox + compare.
@@ -10984,7 +11022,12 @@ impl SimpleBackend {
                 "not" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                    let res = if let Some(raw_val) = shadow_value_for(
+                        &mut builder,
+                        &raw_bool_shadow_vars,
+                        &raw_bool_values,
+                        &args[0],
+                    ) {
                         // Raw bool: not(x) = bool(x == 0). Skip runtime call.
                         let is_zero = builder.ins().icmp_imm(IntCC::Equal, raw_val, 0);
                         let result = box_bool_value(&mut builder, is_zero, &nbc);
@@ -11023,7 +11066,19 @@ impl SimpleBackend {
                 "neg" | "unary_neg" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if op_prefers_int_lane(&op) {
+                    let res = if op_prefers_float_lane(&op) {
+                        // Proven float: negate using fneg, skip runtime call.
+                        let src_f = shadow_float_for(&mut builder, &raw_float_shadow, &raw_float_shadow_vals, &args[0])
+                            .unwrap_or_else(|| builder.ins().bitcast(types::F64, MemFlags::new(), *val));
+                        let neg_f = builder.ins().fneg(src_f);
+                        if let Some(ref out__) = op.out {
+                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
+                                builder.def_var(shadow_var, neg_f);
+                            }
+                            raw_float_shadow_vals.insert(out__.clone(), neg_f);
+                        }
+                        box_float_value(&mut builder, neg_f, &nbc)
+                    } else if op_prefers_int_lane(&op) {
                         // -x == 0 - x; overflow only when x == INT_MIN of the
                         // inline payload range.
                         let callee = Self::import_func_id_split(
@@ -11166,7 +11221,12 @@ impl SimpleBackend {
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                    let res = if let Some(raw_val) = shadow_value_for(
+                        &mut builder,
+                        &raw_bool_shadow_vars,
+                        &raw_bool_values,
+                        &args[0],
+                    ) {
                         // Raw bool from proven list_bool getitem or const_bool.
                         // bool(x) where x is already raw 0/1 — just re-box.
                         let is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0);
@@ -11212,7 +11272,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let cond = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                    let cond = if let Some(raw_val) = shadow_value_for(
+                        &mut builder,
+                        &raw_bool_shadow_vars,
+                        &raw_bool_values,
+                        &args[0],
+                    ) {
                         // Raw bool from proven list_bool getitem or const_bool.
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_int_lane(&op) {
@@ -11259,7 +11324,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let cond = if let Some(&raw_val) = raw_bool_values.get(&args[0]) {
+                    let cond = if let Some(raw_val) = shadow_value_for(
+                        &mut builder,
+                        &raw_bool_shadow_vars,
+                        &raw_bool_values,
+                        &args[0],
+                    ) {
                         // Raw bool from proven list_bool getitem or const_bool.
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_int_lane(&op) {
@@ -16233,6 +16303,7 @@ impl SimpleBackend {
                         is_block_filled = false;
                     }
                     raw_int_shadow_vals.clear();
+                    raw_float_shadow_vals.clear();
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     // Inline truthiness for bool/int types to avoid function call overhead.
@@ -16647,6 +16718,7 @@ impl SimpleBackend {
                     // Variable-backed shadows are phi-correct; value-tier raw
                     // snapshots must be cleared when switching branch blocks.
                     raw_int_shadow_vals.clear();
+                    raw_float_shadow_vals.clear();
                     let frame = if_stack.last_mut().expect("No if on stack");
                     frame.then_terminal = is_block_filled;
                     if frame.phi_ops.is_empty() {
@@ -16836,6 +16908,7 @@ impl SimpleBackend {
                     // Variable-backed shadows are phi-correct; value-tier raw
                     // snapshots must not survive the branch merge.
                     raw_int_shadow_vals.clear();
+                    raw_float_shadow_vals.clear();
                     let mut frame = if_stack.pop().expect("No if on stack");
                     if frame.phi_ops.is_empty() {
                         let mut phi_ops: Vec<(String, String, String)> = Vec::new();
@@ -17461,12 +17534,15 @@ impl SimpleBackend {
                     // back-edges.  Re-populate from use_var so the first
                     // iteration sees the pre-loop value, not the init zero.
                     raw_int_shadow_vals.clear();
+                    raw_float_shadow_vals.clear();
                     // Value-tier raw bools are stale across loop back-edges.
                     raw_bool_values.clear();
                     // Remove aliases (entries that share a Variable with a store target)
                     // by keeping only entries that were in the original pre-declaration.
                     // The simplest correct approach: clear aliases, keep store targets.
                     raw_int_shadow.retain(|k, _| int_store_target_names.contains(k));
+                    raw_float_shadow.retain(|k, _| float_store_target_names.contains(k));
+                    raw_bool_shadow_vars.retain(|k, _| bool_store_target_names.contains(k));
 
                     let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {
@@ -20348,6 +20424,7 @@ impl SimpleBackend {
                             builder.ins().stack_store(*val, slot, 0);
                             builder.ins().call(local_dec_ref_obj, &[old]);
                             raw_int_shadow_vals.remove(name);
+                            raw_float_shadow_vals.remove(name);
                             continue;
                         }
                         // Check if this store_var is inside a back-edge loop.
@@ -20413,6 +20490,32 @@ impl SimpleBackend {
                             }
                             raw_int_shadow_vals.insert(name.to_string(), raw_val);
                         }
+                        // Propagate raw_bool_shadow through store_var:
+                        // Same two-tier pattern as int shadows.
+                        if let Some(raw_val) = shadow_value_for(
+                            &mut builder,
+                            &raw_bool_shadow_vars,
+                            &raw_bool_values,
+                            &args[0],
+                        ) {
+                            if let Some(&dst_var) = raw_bool_shadow_vars.get(name) {
+                                builder.def_var(dst_var, raw_val);
+                            }
+                            raw_bool_values.insert(name.to_string(), raw_val);
+                        }
+                        // Propagate raw_float_shadow through store_var:
+                        // Same two-tier pattern as int shadows.
+                        if let Some(raw_val) = shadow_float_for(
+                            &mut builder,
+                            &raw_float_shadow,
+                            &raw_float_shadow_vals,
+                            &args[0],
+                        ) {
+                            if let Some(&dst_var) = raw_float_shadow.get(name) {
+                                builder.def_var(dst_var, raw_val);
+                            }
+                            raw_float_shadow_vals.insert(name.to_string(), raw_val);
+                        }
                     }
                 }
                 "load_var" | "copy_var" => {
@@ -20426,6 +20529,7 @@ impl SimpleBackend {
                             if let Some(ref out_name) = op.out {
                                 def_var_named(&mut builder, &vars, out_name, val);
                                 raw_int_shadow_vals.remove(out_name);
+                                raw_float_shadow_vals.remove(out_name);
                             }
                             continue;
                         }
@@ -20463,6 +20567,58 @@ impl SimpleBackend {
                                     raw_int_shadow_vals.insert(out_name.clone(), raw_val);
                                 }
                             }
+                            // Propagate bool shadow: same two-tier pattern.
+                            let src_bool_var = raw_bool_shadow_vars.get(var_name.as_str()).copied();
+                            let raw_bool_val = src_bool_var
+                                .map(|v| builder.use_var(v))
+                                .or_else(|| raw_bool_values.get(var_name.as_str()).copied());
+                            if let Some(raw_bv) = raw_bool_val {
+                                if src_bool_var.is_some() {
+                                    let dst_bvar = if let Some(&dst_var) =
+                                        raw_bool_shadow_vars.get(out_name.as_str())
+                                    {
+                                        dst_var
+                                    } else {
+                                        let dst_var = builder.declare_var(types::I64);
+                                        builder.def_var(dst_var, raw_bv);
+                                        raw_bool_shadow_vars.insert(out_name.clone(), dst_var);
+                                        dst_var
+                                    };
+                                    builder.def_var(dst_bvar, raw_bv);
+                                    raw_bool_values.remove(out_name);
+                                } else {
+                                    if let Some(&dst_var) = raw_bool_shadow_vars.get(out_name.as_str()) {
+                                        builder.def_var(dst_var, raw_bv);
+                                    }
+                                    raw_bool_values.insert(out_name.clone(), raw_bv);
+                                }
+                            }
+                            // Propagate float shadow: same two-tier pattern.
+                            let src_float_var = raw_float_shadow.get(var_name.as_str()).copied();
+                            let raw_float_val = src_float_var
+                                .map(|v| builder.use_var(v))
+                                .or_else(|| raw_float_shadow_vals.get(var_name.as_str()).copied());
+                            if let Some(raw_fv) = raw_float_val {
+                                if src_float_var.is_some() {
+                                    let dst_fvar = if let Some(&dst_var) =
+                                        raw_float_shadow.get(out_name.as_str())
+                                    {
+                                        dst_var
+                                    } else {
+                                        let dst_var = builder.declare_var(types::F64);
+                                        builder.def_var(dst_var, raw_fv);
+                                        raw_float_shadow.insert(out_name.clone(), dst_var);
+                                        dst_var
+                                    };
+                                    builder.def_var(dst_fvar, raw_fv);
+                                    raw_float_shadow_vals.remove(out_name);
+                                } else {
+                                    if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str()) {
+                                        builder.def_var(dst_var, raw_fv);
+                                    }
+                                    raw_float_shadow_vals.insert(out_name.clone(), raw_fv);
+                                }
+                            }
                         }
                     } else if let Some(ref args) = op.args
                         && !args.is_empty()
@@ -20473,6 +20629,7 @@ impl SimpleBackend {
                             if let Some(ref out_name) = op.out {
                                 def_var_named(&mut builder, &vars, out_name, val);
                                 raw_int_shadow_vals.remove(out_name);
+                                raw_float_shadow_vals.remove(out_name);
                             }
                             continue;
                         }
@@ -20509,6 +20666,58 @@ impl SimpleBackend {
                                         builder.def_var(dst_var, raw_val);
                                     }
                                     raw_int_shadow_vals.insert(out_name.clone(), raw_val);
+                                }
+                            }
+                            // Propagate bool shadow: same two-tier pattern.
+                            let src_bool_var = raw_bool_shadow_vars.get(&args[0]).copied();
+                            let raw_bool_val = src_bool_var
+                                .map(|v| builder.use_var(v))
+                                .or_else(|| raw_bool_values.get(&args[0]).copied());
+                            if let Some(raw_bv) = raw_bool_val {
+                                if src_bool_var.is_some() {
+                                    let dst_bvar = if let Some(&dst_var) =
+                                        raw_bool_shadow_vars.get(out_name.as_str())
+                                    {
+                                        dst_var
+                                    } else {
+                                        let dst_var = builder.declare_var(types::I64);
+                                        builder.def_var(dst_var, raw_bv);
+                                        raw_bool_shadow_vars.insert(out_name.clone(), dst_var);
+                                        dst_var
+                                    };
+                                    builder.def_var(dst_bvar, raw_bv);
+                                    raw_bool_values.remove(out_name);
+                                } else {
+                                    if let Some(&dst_var) = raw_bool_shadow_vars.get(out_name.as_str()) {
+                                        builder.def_var(dst_var, raw_bv);
+                                    }
+                                    raw_bool_values.insert(out_name.clone(), raw_bv);
+                                }
+                            }
+                            // Propagate float shadow: same two-tier pattern.
+                            let src_float_var = raw_float_shadow.get(&args[0]).copied();
+                            let raw_float_val = src_float_var
+                                .map(|v| builder.use_var(v))
+                                .or_else(|| raw_float_shadow_vals.get(&args[0]).copied());
+                            if let Some(raw_fv) = raw_float_val {
+                                if src_float_var.is_some() {
+                                    let dst_fvar = if let Some(&dst_var) =
+                                        raw_float_shadow.get(out_name.as_str())
+                                    {
+                                        dst_var
+                                    } else {
+                                        let dst_var = builder.declare_var(types::F64);
+                                        builder.def_var(dst_var, raw_fv);
+                                        raw_float_shadow.insert(out_name.clone(), dst_var);
+                                        dst_var
+                                    };
+                                    builder.def_var(dst_fvar, raw_fv);
+                                    raw_float_shadow_vals.remove(out_name);
+                                } else {
+                                    if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str()) {
+                                        builder.def_var(dst_var, raw_fv);
+                                    }
+                                    raw_float_shadow_vals.insert(out_name.clone(), raw_fv);
                                 }
                             }
                         }
