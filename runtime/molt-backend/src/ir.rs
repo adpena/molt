@@ -193,20 +193,39 @@ impl SimpleIR {
                 continue;
             };
             for op in &func.ops {
-                if op.kind != "call" {
+                // Follow direct call targets.
+                if op.kind == "call" {
+                    let Some(target) = op.s_value.as_deref() else {
+                        continue;
+                    };
+                    if matches!(target, "molt_runtime_init" | "molt_init_sys") {
+                        continue;
+                    }
+                    if !known_functions.contains(target) {
+                        continue;
+                    }
+                    if reachable.insert(target.to_string()) {
+                        worklist.push_back(target.to_string());
+                    }
                     continue;
                 }
-                let Some(target) = op.s_value.as_deref() else {
-                    continue;
-                };
-                if matches!(target, "molt_runtime_init" | "molt_init_sys") {
-                    continue;
-                }
-                if !known_functions.contains(target) {
-                    continue;
-                }
-                if reachable.insert(target.to_string()) {
-                    worklist.push_back(target.to_string());
+                // Follow function object creation ops — these reference
+                // user-defined function bodies by name in s_value.  Without
+                // this, tree_shake_luau prunes user functions that are only
+                // referenced through func_new (not direct calls).
+                if matches!(
+                    op.kind.as_str(),
+                    "func_new" | "func_new_closure" | "code_new" | "call_internal"
+                ) {
+                    let Some(target) = op.s_value.as_deref() else {
+                        continue;
+                    };
+                    if !known_functions.contains(target) {
+                        continue;
+                    }
+                    if reachable.insert(target.to_string()) {
+                        worklist.push_back(target.to_string());
+                    }
                 }
             }
         }
