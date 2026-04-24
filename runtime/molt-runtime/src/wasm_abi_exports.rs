@@ -10,6 +10,9 @@ use crate::{
     TYPE_TAG_TUPLE, bound_method_self_bits, molt_dict_get, molt_index, molt_list_append,
     molt_store_index, molt_string_join, obj_from_bits, object_type_id, raise_exception,
 };
+use crate::object::ops_string::{
+    molt_string_lower, molt_string_startswith, molt_string_strip, molt_string_upper,
+};
 use std::alloc::{Layout, alloc, dealloc};
 
 #[unsafe(no_mangle)]
@@ -114,6 +117,54 @@ pub extern "C" fn molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bi
             Err(bits) => return bits,
         };
         molt_dict_get(self_bits, key_bits, default_bits)
+    })
+}
+
+// --- Fast-path string method dispatchers ---
+// These extract the bound method's self and delegate directly to the
+// optimized string operation, bypassing callargs allocation + IC dispatch.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_fast_str_startswith(method_bits: u64, prefix_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        molt_string_startswith(self_bits, prefix_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_fast_str_upper(method_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        molt_string_upper(self_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_fast_str_lower(method_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        molt_string_lower(self_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_fast_str_strip(method_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        molt_string_strip(self_bits, MoltObject::none().bits())
     })
 }
 

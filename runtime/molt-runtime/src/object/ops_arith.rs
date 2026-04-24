@@ -331,6 +331,21 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        // BigInt fast path — hoisted above inline int/float checks to avoid
+        // wasted branch mispredictions when both operands are heap BigInts.
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            let ltype = unsafe { object_type_id(lp) };
+            let rtype = unsafe { object_type_id(rp) };
+            if ltype == TYPE_ID_BIGINT && rtype == TYPE_ID_BIGINT {
+                let l_ref = unsafe { bigint_ref(lp) };
+                let r_ref = unsafe { bigint_ref(rp) };
+                let res: BigInt = l_ref - r_ref;
+                if let Some(i) = bigint_to_inline(&res) {
+                    return MoltObject::from_int(i).bits();
+                }
+                return bigint_bits(_py, res);
+            }
+        }
         if !lhs.is_float()
             && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
@@ -906,6 +921,21 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        // BigInt fast path — hoisted to avoid wasted to_i64/is_float checks
+        // when both operands are heap BigInts.
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            let ltype = unsafe { object_type_id(lp) };
+            let rtype = unsafe { object_type_id(rp) };
+            if ltype == TYPE_ID_BIGINT && rtype == TYPE_ID_BIGINT {
+                let l_ref = unsafe { bigint_ref(lp) };
+                let r_ref = unsafe { bigint_ref(rp) };
+                let res: BigInt = l_ref * r_ref;
+                if let Some(i) = bigint_to_inline(&res) {
+                    return MoltObject::from_int(i).bits();
+                }
+                return bigint_bits(_py, res);
+            }
+        }
         if !lhs.is_float()
             && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
