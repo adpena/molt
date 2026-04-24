@@ -14486,14 +14486,9 @@ impl SimpleBackend {
                                  call will return None at runtime",
                                 target_name
                             );
-                            if let Some(ref out__) = op.out {
-                                if float_primary_vars.contains(out__) {
-                                    let zero_f = builder.ins().f64const(0.0);
-                                    def_var_named(&mut builder, &vars, out__, zero_f);
-                                } else {
-                                    let none_val = builder.ins().iconst(types::I64, box_none());
-                                    def_var_named(&mut builder, &vars, out__, none_val);
-                                }
+                            let none_val = builder.ins().iconst(types::I64, box_none());
+                            if let Some(out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, none_val);
                             }
                             continue;
                         }
@@ -18345,19 +18340,7 @@ impl SimpleBackend {
                                     frame.phi_params.get(idx).copied().unwrap_or_else(|| {
                                         panic!("phi param missing for {out} in {}", func_ir.name)
                                     });
-                                if float_primary_vars.contains(out) {
-                                    // Phi value is NaN-boxed I64; extract raw f64 for
-                                    // the F64-typed primary Variable.
-                                    let f64_val = builder.ins().bitcast(types::F64, MemFlags::new(), param);
-                                    def_var_named(&mut builder, &vars, out, f64_val);
-                                    raw_primary_float.insert(out.clone());
-                                    if let Some(&shadow_var) = raw_float_shadow.get(out.as_str()) {
-                                        builder.def_var(shadow_var, f64_val);
-                                    }
-                                    raw_float_shadow_vals.insert(out.clone(), f64_val);
-                                } else {
-                                    def_var_named(&mut builder, &vars, out, param);
-                                }
+                                def_var_named(&mut builder, &vars, out, param);
                                 if let Some(Some(join_name)) = phi_join_slot_names.get(idx) {
                                     def_var_named(&mut builder, &vars, join_name, param);
                                 }
