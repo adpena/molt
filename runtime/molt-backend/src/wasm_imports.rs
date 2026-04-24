@@ -113,9 +113,13 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("handle_resolve", 13),
     ("invoke_ffi_ic", 7),
     // ── INTERNAL: Fast-path method dispatch ──
-    ("fast_dict_get", 5),    // (method, key, default) -> i64
-    ("fast_list_append", 3), // (method, elem) -> i64
-    ("fast_str_join", 3),    // (method, iterable) -> i64
+    ("fast_dict_get", 5),        // (method, key, default) -> i64
+    ("fast_list_append", 3),     // (method, elem) -> i64
+    ("fast_str_join", 3),        // (method, iterable) -> i64
+    ("fast_str_startswith", 3),  // (method, prefix) -> i64
+    ("fast_str_upper", 1),       // (method) -> i64
+    ("fast_str_lower", 1),       // (method) -> i64
+    ("fast_str_strip", 1),       // (method) -> i64
     // ── INTERNAL: Guards and inline caches ──
     ("guard_layout_ptr", 17),
     ("guard_type", 3),
@@ -1235,6 +1239,10 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
             "fast_dict_get",
             "fast_list_append",
             "fast_str_join",
+            "fast_str_startswith",
+            "fast_str_upper",
+            "fast_str_lower",
+            "fast_str_strip",
         ],
     ),
     (
