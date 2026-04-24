@@ -89,7 +89,7 @@ fn bound_method_self_or_type_error(_py: &crate::PyToken<'_>, method_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fast_list_append(method_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
@@ -100,7 +100,7 @@ pub extern "C" fn molt_fast_list_append(method_bits: u64, value_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fast_str_join(method_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
@@ -111,7 +111,7 @@ pub extern "C" fn molt_fast_str_join(method_bits: u64, iterable_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,

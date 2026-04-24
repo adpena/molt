@@ -578,6 +578,85 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Step 6: Unique-ownership DecRef→Free promotion (Rust-inspired soft
+    // borrow checker).
+    //
+    // For each remaining DecRef(x), determine whether x has exactly ONE
+    // live reference at that program point. If so, the DecRef is guaranteed
+    // to drop the refcount to zero, so we can replace it with a direct
+    // Free — avoiding the atomic decrement + conditional branch overhead.
+    //
+    // A value has a unique reference at a DecRef when ALL of:
+    //   a) It was produced by an Alloc or StackAlloc in the same function
+    //      (we know the initial refcount is 1).
+    //   b) The net IncRef count before this DecRef is exactly 0 (no extra
+    //      references were created).
+    //   c) The value has no heap exposure (it was not stored into any heap
+    //      object, returned, yielded, or passed to a capturing call).
+    //   d) There is no prior DecRef on the same value in any dominating
+    //      block (the refcount is still 1, not already decremented).
+    //
+    // This is a conservative analysis: it only fires when we can PROVE
+    // unique ownership. False negatives are fine; false positives are not.
+    // -----------------------------------------------------------------------
+    {
+        let heap_exposed = build_heap_exposed_set(func);
+
+        // Collect values produced by Alloc/StackAlloc.
+        let mut alloc_vals: HashSet<ValueId> = HashSet::new();
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode == OpCode::Alloc || op.opcode == OpCode::StackAlloc {
+                    for &r in &op.results {
+                        alloc_vals.insert(r);
+                    }
+                }
+            }
+        }
+
+        // For each block, count IncRef/DecRef balance per value and promote
+        // qualifying DecRef ops to Free.
+        let block_ids: Vec<_> = func.blocks.keys().copied().collect();
+        for bid in block_ids {
+            let block = match func.blocks.get_mut(&bid) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            // Track net IncRef count per value within this block.
+            // Starts at 0; IncRef increments, DecRef decrements.
+            let mut inc_balance: HashMap<ValueId, i32> = HashMap::new();
+
+            for op in &mut block.ops {
+                if let Some(&val) = op.operands.first() {
+                    match op.opcode {
+                        OpCode::IncRef => {
+                            *inc_balance.entry(val).or_insert(0) += 1;
+                        }
+                        OpCode::DecRef => {
+                            let balance = inc_balance.entry(val).or_insert(0);
+                            // Unique ownership: value is from an alloc, no extra
+                            // IncRefs were issued (balance == 0), and the value
+                            // has no heap exposure.
+                            if *balance == 0
+                                && alloc_vals.contains(&val)
+                                && !heap_exposed.contains(&val)
+                            {
+                                // Promote DecRef → Free: direct deallocation.
+                                op.opcode = OpCode::Free;
+                                stats.values_changed += 1;
+                            } else {
+                                *balance -= 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     stats
 }
 

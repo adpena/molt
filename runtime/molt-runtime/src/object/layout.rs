@@ -59,6 +59,37 @@ impl ListIntStorage {
     pub unsafe fn into_vec(self) -> Vec<i64> {
         unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) }
     }
+
+    /// Append an i64 value to the storage, growing the buffer if needed.
+    ///
+    /// Uses the same growth strategy as `Vec<i64>::push`: doubles capacity
+    /// when full, amortizing allocation cost to O(1) per element.
+    ///
+    /// This avoids the full promote→NaN-box→push→re-wrap path that
+    /// `molt_list_append` would otherwise take, keeping the list in its
+    /// compact `TYPE_ID_LIST_INT` representation.
+    ///
+    /// # Safety
+    /// `self` must be a valid, heap-allocated `ListIntStorage` whose `data`
+    /// pointer owns its buffer (as established by `from_vec`).
+    pub unsafe fn push(&mut self, value: i64) {
+        if self.len == self.cap {
+            // Grow: reconstruct as Vec to use its reallocation logic,
+            // then steal the buffer back. This is zero-copy when the
+            // allocator can extend in-place.
+            let mut vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
+            vec.push(value);
+            self.data = vec.as_mut_ptr();
+            self.len = vec.len();
+            self.cap = vec.capacity();
+            std::mem::forget(vec);
+        } else {
+            unsafe {
+                std::ptr::write(self.data.add(self.len), value);
+            }
+            self.len += 1;
+        }
+    }
 }
 
 /// Read the `ListIntStorage` pointer from a `TYPE_ID_LIST_INT` object's data area.
