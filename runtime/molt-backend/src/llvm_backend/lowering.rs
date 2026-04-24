@@ -3505,31 +3505,49 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .cloned()
             .unwrap_or(TirType::DynBox);
         let fast_math = has_attr(op, "fast_math");
+        // When the `no_signed_wrap` attribute is set by a TIR analysis pass
+        // (e.g. loop_narrow for bounded loop counters), we emit nsw-flagged
+        // integer instructions.  This enables LLVM's:
+        //  - Strength reduction (e.g. `i * 4` → `i << 2` with guaranteed no wrap)
+        //  - SCEV (Scalar Evolution) for loop trip count analysis
+        //  - Loop vectorization with known induction variable ranges
+        let nsw = has_attr(op, "no_signed_wrap");
 
         let (val, out_ty) = match (&lhs_ty, &rhs_ty, name) {
-            // I64 + I64 -> I64 (direct machine instruction)
+            // I64 + I64 -> I64 (direct machine instruction).
+            // When `nsw` is set, use build_int_nsw_add to tell LLVM the
+            // result is guaranteed not to overflow as a signed i64.
             (TirType::I64, TirType::I64, "add") => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_int_add(lhs.into_int_value(), rhs.into_int_value(), "add")
-                    .unwrap();
+                let lhs_i = lhs.into_int_value();
+                let rhs_i = rhs.into_int_value();
+                let v = if nsw {
+                    self.backend.builder.build_int_nsw_add(lhs_i, rhs_i, "add")
+                } else {
+                    self.backend.builder.build_int_add(lhs_i, rhs_i, "add")
+                }
+                .unwrap();
                 (v.into(), TirType::I64)
             }
             (TirType::I64, TirType::I64, "sub") => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_int_sub(lhs.into_int_value(), rhs.into_int_value(), "sub")
-                    .unwrap();
+                let lhs_i = lhs.into_int_value();
+                let rhs_i = rhs.into_int_value();
+                let v = if nsw {
+                    self.backend.builder.build_int_nsw_sub(lhs_i, rhs_i, "sub")
+                } else {
+                    self.backend.builder.build_int_sub(lhs_i, rhs_i, "sub")
+                }
+                .unwrap();
                 (v.into(), TirType::I64)
             }
             (TirType::I64, TirType::I64, "mul") => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_int_mul(lhs.into_int_value(), rhs.into_int_value(), "mul")
-                    .unwrap();
+                let lhs_i = lhs.into_int_value();
+                let rhs_i = rhs.into_int_value();
+                let v = if nsw {
+                    self.backend.builder.build_int_nsw_mul(lhs_i, rhs_i, "mul")
+                } else {
+                    self.backend.builder.build_int_mul(lhs_i, rhs_i, "mul")
+                }
+                .unwrap();
                 (v.into(), TirType::I64)
             }
             (TirType::I64, TirType::I64, "div") => {
