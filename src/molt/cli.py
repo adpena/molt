@@ -16480,75 +16480,68 @@ def _build_native_link_command(
     _link_inputs = [str(stub_path), str(output_obj)]
     if stdlib_obj_path is not None and stdlib_obj_path.exists():
         _link_inputs.append(str(stdlib_obj_path))
-    # Use -force_load on macOS to ensure ALL objects from the static archive
-    # are included, resolving circular references between molt-runtime and
-    # molt-runtime-serial (e.g. serial bridge FFI symbols).
-    if sys.platform == "darwin":
-        _link_inputs.extend(
-            ["-Wl,-force_load," + str(runtime_lib), "-o", str(output_binary)]
-        )
+    # Link the runtime archive WITHOUT -force_load / --whole-archive.
+    # The linker only pulls in object files that satisfy undefined
+    # references, enabling -dead_strip / --gc-sections to remove the
+    # thousands of unused #[no_mangle] runtime symbols.
+    # The archive is listed TWICE to resolve circular references between
+    # molt-runtime and molt-runtime-serial (e.g. serial bridge FFI
+    # symbols) — the second pass resolves back-edges from the first.
+    _is_darwin = (
+        (target_triple and ("apple" in target_triple or "darwin" in target_triple))
+        or (not target_triple and sys.platform == "darwin")
+    )
+    _is_linux = (
+        (target_triple and "linux" in target_triple)
+        or (not target_triple and sys.platform.startswith("linux"))
+    )
+    _is_windows = (
+        (target_triple and ("windows" in target_triple or "msvc" in target_triple))
+        or (not target_triple and sys.platform == "win32")
+    )
+    _rt_lib = str(runtime_lib)
+    if _is_linux:
+        # GNU ld: use --start-group/--end-group for circular references.
+        _link_inputs.extend([
+            "-Wl,--start-group",
+            _rt_lib,
+            "-Wl,--end-group",
+            "-o",
+            str(output_binary),
+        ])
     else:
-        _link_inputs.extend(
-            [
-                "-Wl,--whole-archive",
-                str(runtime_lib),
-                "-Wl,--no-whole-archive",
-                "-o",
-                str(output_binary),
-            ]
-        )
+        # macOS ld64 / lld: list the archive twice to handle circular refs.
+        _link_inputs.extend([_rt_lib, _rt_lib, "-o", str(output_binary)])
     link_cmd.extend(_link_inputs)
     # Suppress non-actionable linker warnings (e.g. Xcode's hardcoded
     # -L/usr/local/lib, SDK version mismatches) unless the user opts in
     # to seeing them via MOLT_LINKER_WARNINGS=1.
     suppress_linker_warnings = os.environ.get("MOLT_LINKER_WARNINGS") != "1"
-    if target_triple:
-        if "apple" in target_triple or "darwin" in target_triple:
-            link_cmd.append("-Wl,-dead_strip")
-            # Do NOT use -exported_symbol,_main — the runtime uses dlsym()
-            # to resolve intrinsic functions at runtime. Restricting exports
-            # to _main makes all #[no_mangle] symbols invisible to dlsym,
-            # breaking intrinsic resolution (e.g. molt_sys_platform).
-            # -dead_strip already removes unreferenced code.
-            link_cmd.extend(["-Wl,-x", "-Wl,-S"])
-            if suppress_linker_warnings:
-                link_cmd.append("-Wl,-w")
-            link_cmd.append("-lc++")
-        elif "linux" in target_triple:
-            link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
-            link_cmd.append("-Wl,--gc-sections")
-            # Use --strip-debug instead of --strip-all: strip-all removes
-            # the dynamic symbol table, breaking dlsym resolution for
-            # runtime intrinsics. strip-debug removes only debug info.
-            link_cmd.append("-Wl,--strip-debug")
-            # Skip linking unused shared libraries.
-            link_cmd.append("-Wl,--as-needed")
-            # Identical code folding — deduplicates functions with same body.
-            link_cmd.append("-Wl,--icf=safe")
-            # Linker optimization level for layout and relaxation.
-            link_cmd.append("-Wl,-O2")
-            link_cmd.append("-lstdc++")
-            link_cmd.append("-lm")
-        elif "windows" in target_triple or "msvc" in target_triple:
-            link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
-    else:
-        if sys.platform == "darwin":
-            link_cmd.append("-Wl,-dead_strip")
-            link_cmd.extend(["-Wl,-x", "-Wl,-S"])
-            if suppress_linker_warnings:
-                link_cmd.append("-Wl,-w")
-            link_cmd.append("-lc++")
-        elif sys.platform.startswith("linux"):
-            link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
-            link_cmd.append("-Wl,--gc-sections")
-            link_cmd.append("-Wl,--strip-debug")
-            link_cmd.append("-Wl,--as-needed")
-            link_cmd.append("-Wl,--icf=safe")
-            link_cmd.append("-Wl,-O2")
-            link_cmd.append("-lstdc++")
-            link_cmd.append("-lm")
-        elif sys.platform == "win32":
-            link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
+    if _is_darwin:
+        link_cmd.append("-Wl,-dead_strip")
+        # Intrinsic resolution uses a static function-pointer table
+        # (resolve_symbol in generated.rs), NOT dlsym. Restrict exports
+        # to _main so the linker can aggressively strip unreachable code.
+        link_cmd.append("-Wl,-exported_symbol,_main")
+        link_cmd.extend(["-Wl,-x", "-Wl,-S"])
+        if suppress_linker_warnings:
+            link_cmd.append("-Wl,-w")
+        link_cmd.append("-lc++")
+    elif _is_linux:
+        link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
+        link_cmd.append("-Wl,--gc-sections")
+        # With no dlsym in the runtime, --strip-all is safe.
+        link_cmd.append("-Wl,--strip-all")
+        # Skip linking unused shared libraries.
+        link_cmd.append("-Wl,--as-needed")
+        # Identical code folding — deduplicates functions with same body.
+        link_cmd.append("-Wl,--icf=safe")
+        # Linker optimization level for layout and relaxation.
+        link_cmd.append("-Wl,-O2")
+        link_cmd.append("-lstdc++")
+        link_cmd.append("-lm")
+    elif _is_windows:
+        link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
     _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
     # Forward native library dependencies emitted by cargo build scripts
     # (e.g. lzma-sys emitting -llzma) so the custom link step succeeds.
@@ -16556,6 +16549,37 @@ def _build_native_link_command(
     link_cmd.extend(cargo_search)
     link_cmd.extend(cargo_libs)
     return link_cmd, linker_hint, normalized_target
+
+
+def _post_link_strip(binary: Path, target_triple: str | None) -> None:
+    """Run platform-appropriate post-link strip for maximum size reduction."""
+    _is_darwin = (
+        (target_triple and ("apple" in target_triple or "darwin" in target_triple))
+        or (not target_triple and sys.platform == "darwin")
+    )
+    _is_linux = (
+        (target_triple and "linux" in target_triple)
+        or (not target_triple and sys.platform.startswith("linux"))
+    )
+    if not binary.exists():
+        return
+    try:
+        if _is_darwin:
+            # -x: remove all local symbols (keeps only external/undefined).
+            # Catches Rust metadata and alignment padding the linker preserves.
+            subprocess.run(
+                ["strip", "-x", str(binary)],
+                capture_output=True,
+                timeout=30,
+            )
+        elif _is_linux:
+            subprocess.run(
+                ["strip", "--strip-all", str(binary)],
+                capture_output=True,
+                timeout=30,
+            )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass  # strip not available or timed out — binary is still valid
 
 
 def _run_native_link_command(
@@ -16814,6 +16838,11 @@ def _emit_native_link_result(
     resolved_diagnostics_verbosity: str,
 ) -> int:
     if link_process.returncode == 0:
+        # Post-link strip: remove all remaining local symbols for maximum
+        # binary size reduction. The linker's -x/-S flags strip most, but
+        # `strip -x` on macOS catches Rust metadata and alignment padding
+        # that the linker preserves.
+        _post_link_strip(output_binary, target_triple)
         _write_link_fingerprint_if_needed(
             link_skipped=link_skipped,
             link_fingerprint=link_fingerprint,
