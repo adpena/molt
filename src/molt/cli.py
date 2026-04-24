@@ -1268,6 +1268,7 @@ class _BuildOutputLayout:
     is_wasm_freestanding: bool
     is_rust_transpile: bool
     is_luau_transpile: bool
+    is_mlir_emit: bool
     split_runtime: bool
     linked: bool
     target_triple: str | None
@@ -17138,6 +17139,7 @@ def _resolve_build_output_layout(
     is_wasm_freestanding = target == "wasm-freestanding"
     is_rust_transpile = target in {"rust", "luau"}
     is_luau_transpile = target == "luau"
+    is_mlir_emit = target == "mlir"
     if trusted and is_wasm:
         raise ValueError("Trusted mode is not supported for wasm targets")
     if require_linked and not is_wasm:
@@ -17158,16 +17160,16 @@ def _resolve_build_output_layout(
             linked = True
     target_triple = (
         None
-        if target in {"native", "wasm", "wasm-freestanding", "rust", "luau"}
+        if target in {"native", "wasm", "wasm-freestanding", "rust", "luau", "mlir"}
         else target
     )
     is_transpile = is_rust_transpile or is_luau_transpile
-    emit_mode = "bin" if is_transpile else (emit or ("wasm" if is_wasm else "bin"))
-    if not is_transpile and emit_mode not in {"bin", "obj", "wasm"}:
+    emit_mode = "bin" if is_transpile or is_mlir_emit else (emit or ("wasm" if is_wasm else "bin"))
+    if not is_transpile and not is_mlir_emit and emit_mode not in {"bin", "obj", "wasm"}:
         raise ValueError(f"Invalid emit mode: {emit_mode}")
     if is_wasm and emit_mode != "wasm":
         raise ValueError(f"Invalid emit mode for wasm target: {emit_mode}")
-    if not is_wasm and not is_transpile and emit_mode == "wasm":
+    if not is_wasm and not is_transpile and not is_mlir_emit and emit_mode == "wasm":
         raise ValueError("emit=wasm requires --target wasm")
 
     output_binary: Path | None = None
@@ -17176,7 +17178,14 @@ def _resolve_build_output_layout(
     # module chunking (500 ops) to keep each function under ~150 locals.
     if is_luau_transpile and "MOLT_MODULE_CHUNK_OPS" not in os.environ:
         os.environ["MOLT_MODULE_CHUNK_OPS"] = "1500"
-    if is_luau_transpile:
+    if is_mlir_emit:
+        output_artifact = _resolve_output_path(
+            output,
+            output_root / f"{output_base}.mlir",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+    elif is_luau_transpile:
         output_artifact = _resolve_output_path(
             output,
             output_root / f"{output_base}.luau",
@@ -17244,6 +17253,7 @@ def _resolve_build_output_layout(
         is_wasm_freestanding=is_wasm_freestanding,
         is_rust_transpile=is_rust_transpile,
         is_luau_transpile=is_luau_transpile,
+        is_mlir_emit=is_mlir_emit,
         split_runtime=split_runtime,
         linked=linked,
         target_triple=target_triple,
@@ -20319,6 +20329,75 @@ def _run_build_pipeline(
     )
     if frontend_layer_error is not None:
         return frontend_layer_error
+
+    # MLIR target: run the frontend to produce TIR, then shell out to the
+    # standalone molt-backend-mlir binary. This bypasses the standard backend
+    # pipeline entirely because the MLIR crate is out-of-workspace.
+    output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle[5]
+    if output_layout.is_mlir_emit:
+        (
+            _frt,
+            module_graph,
+            explicit_imports,
+            stdlib_allowlist,
+            spawn_enabled,
+            _ol,
+            known_modules,
+            generated_module_source_paths,
+            known_func_defaults,
+            module_order,
+            type_facts,
+            known_classes,
+            enable_phi,
+            module_chunk_max_ops,
+            module_chunking,
+            integration_state,
+            diagnostics_state,
+            record_frontend_timing,
+            _build_diagnostics_payload,
+            artifacts_root,
+        ) = prepared_frontend_pipeline_bundle
+        prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
+            entry_module=resolved_build_entry.entry_module,
+            module_graph=module_graph,
+            explicit_imports=explicit_imports,
+            parse_codec=parse_codec,
+            type_hint_policy=type_hint_policy,
+            fallback_policy=fallback_policy,
+            type_facts=type_facts,
+            enable_phi=enable_phi,
+            known_modules=known_modules,
+            known_classes=known_classes,
+            stdlib_allowlist=stdlib_allowlist,
+            known_func_defaults=known_func_defaults,
+            module_chunking=module_chunking,
+            module_chunk_max_ops=module_chunk_max_ops,
+            optimization_profile=profile,
+            pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
+            frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
+            integration_state=integration_state,
+            diagnostics_state=diagnostics_state,
+            record_frontend_timing=record_frontend_timing,
+            fail=_fail,
+            json_output=json_output,
+            module_order=module_order,
+            generated_module_source_paths=generated_module_source_paths,
+            spawn_enabled=spawn_enabled,
+            pgo_profile_summary=prepared_build_config.pgo_profile_summary,
+            runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
+            emit_ir_path=output_layout.emit_ir_path,
+            stdlib_profile=stdlib_profile,
+        )
+        if prepared_backend_ir_error is not None:
+            return prepared_backend_ir_error
+        assert prepared_backend_ir is not None
+        return _run_mlir_backend_pipeline(
+            ir=prepared_backend_ir.ir,
+            output_artifact=output_layout.output_artifact,
+            project_root=prepared_build_roots.project_root,
+            json_output=json_output,
+            verbose=verbose,
+        )
 
     return _run_backend_pipeline(
         prepared_build_preamble=prepared_build_preamble,
@@ -26015,6 +26094,132 @@ def build(
     )
 
 
+def _find_mlir_backend_binary(project_root: Path) -> Path | None:
+    """Locate the ``molt-backend-mlir`` binary.
+
+    Search order:
+    1. ``target/<profile>/molt-backend-mlir`` under the MLIR crate directory
+       (for local dev builds with explicit ``cargo build -p molt-backend-mlir``).
+    2. ``$PATH`` (for installed binaries).
+    """
+    mlir_crate_dir = project_root / "runtime" / "molt-backend-mlir"
+    for profile in ("release", "debug"):
+        candidate = mlir_crate_dir / "target" / profile / "molt-backend-mlir"
+        if candidate.is_file():
+            return candidate
+    # Also check the workspace-level target directory (both session-scoped and
+    # default).
+    session_id = _molt_session_id()
+    target_dirs = []
+    if session_id:
+        target_dirs.append(project_root / f"target-{session_id}")
+    target_dirs.append(project_root / "target")
+    for tdir in target_dirs:
+        for profile in ("release", "release-fast", "debug"):
+            candidate = tdir / profile / "molt-backend-mlir"
+            if candidate.is_file():
+                return candidate
+    # Fall back to $PATH.
+    from_path = shutil.which("molt-backend-mlir")
+    if from_path is not None:
+        return Path(from_path)
+    return None
+
+
+def _run_mlir_backend_pipeline(
+    *,
+    ir: dict[str, Any],
+    output_artifact: Path,
+    project_root: Path,
+    json_output: bool,
+    verbose: bool,
+    emit_llvm: bool = False,
+) -> int:
+    """Run the standalone MLIR backend binary on the prepared IR.
+
+    Serializes the IR as JSON, pipes it to ``molt-backend-mlir``, and writes
+    the resulting MLIR text to *output_artifact*.
+    """
+    mlir_bin = _find_mlir_backend_binary(project_root)
+    if mlir_bin is None:
+        msg = (
+            "Error: MLIR backend binary not found.\n"
+            "\n"
+            "The MLIR backend requires LLVM 22 and is built separately:\n"
+            "\n"
+            "  1. Install LLVM:  brew install llvm\n"
+            "  2. Build the MLIR backend:\n"
+            "     cargo build --release -p molt-backend-mlir\n"
+            "\n"
+            "Then retry: molt build --target mlir <file>"
+        )
+        if json_output:
+            return _fail(msg, json_output, command="build")
+        print(msg, file=sys.stderr)
+        return 1
+
+    cmd: list[str] = [str(mlir_bin), "--output", str(output_artifact)]
+    if emit_llvm:
+        cmd.append("--emit-llvm")
+
+    ir_bytes = json.dumps(ir, separators=(",", ":"), default=_json_ir_default).encode(
+        "utf-8"
+    )
+
+    if verbose and not json_output:
+        print(f"MLIR backend: {shlex.join(cmd)}", file=sys.stderr)
+        print(
+            f"  IR size: {len(ir_bytes)} bytes, "
+            f"functions: {len(ir.get('functions', []))}",
+            file=sys.stderr,
+        )
+
+    try:
+        result = subprocess.run(
+            cmd,
+            input=ir_bytes,
+            capture_output=True,
+            timeout=120,
+        )
+    except FileNotFoundError:
+        return _fail(
+            f"MLIR backend binary not executable: {mlir_bin}",
+            json_output,
+            command="build",
+        )
+    except subprocess.TimeoutExpired:
+        return _fail(
+            "MLIR backend timed out after 120 seconds",
+            json_output,
+            command="build",
+        )
+
+    stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+    if stderr_text and (verbose or result.returncode != 0):
+        print(stderr_text, file=sys.stderr)
+
+    if result.returncode != 0:
+        return _fail(
+            f"MLIR backend failed (exit {result.returncode})",
+            json_output,
+            command="build",
+        )
+
+    if json_output:
+        data: dict[str, Any] = {
+            "target": "mlir",
+            "output": str(output_artifact),
+            "consumer_output": str(output_artifact),
+            "artifacts": {"mlir": str(output_artifact)},
+        }
+        payload = _json_payload("build", "ok", data=data)
+        _emit_json(payload, json_output)
+    else:
+        print(f"Wrote MLIR output: {output_artifact}", file=sys.stderr)
+
+    return 0
+
+
 def _run_script_cross(
     target: str,
     file_path: str | None,
@@ -26116,7 +26321,11 @@ def _run_script_cross(
         build_args.extend(["--capabilities", cap_arg])
 
     if not json_output:
-        target_label = "WASM" if target == "wasm" else "Luau"
+        target_label = (
+            "WASM" if target == "wasm"
+            else "MLIR" if target == "mlir"
+            else "Luau"
+        )
         print(f"Building for {target_label}...", file=sys.stderr)
     try:
         build_contract, t_build, build_error = _run_wrapper_build(
@@ -26179,6 +26388,26 @@ def _run_script_cross(
                 command="run",
             )
         run_cmd = [lune, "run", str(luau_artifact), "--", *script_args]
+    elif target == "mlir":
+        # MLIR target: the build phase produces .mlir text. There is no
+        # separate run phase -- the MLIR output is the artifact.
+        mlir_artifact = build_contract.consumer_output
+        if not mlir_artifact.exists():
+            return _fail(
+                f"MLIR artifact not found: {mlir_artifact}\n"
+                "Hint: the build may have succeeded but placed output elsewhere. "
+                "Try `molt build --target mlir --verbose` to see the output path.",
+                json_output,
+                command="run",
+            )
+        if not json_output:
+            print(f"MLIR output: {mlir_artifact}", file=sys.stderr)
+        if timing and not json_output:
+            print(
+                f"\n--- timing: build {t_build:.3f}s ---",
+                file=sys.stderr,
+            )
+        return 0
     else:
         return _fail(f"Unsupported cross target: {target}", json_output, command="run")
 
@@ -33159,7 +33388,7 @@ def main() -> int:
     build_parser = subparsers.add_parser(
         "build",
         help="Build a Python program",
-        description="Compile a Python file to a native binary, WASM module, or Luau script.",
+        description="Compile a Python file to a native binary, WASM module, Luau script, or MLIR text.",
         formatter_class=_BuildHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -33167,6 +33396,7 @@ def main() -> int:
             "  molt build app.py --release             Optimized release build\n"
             "  molt build app.py --target wasm         Build for WebAssembly\n"
             "  molt build app.py --target luau         Build for Luau/Roblox\n"
+            "  molt build app.py --target mlir         Emit MLIR text (requires LLVM 22)\n"
             "  molt build --module mypackage           Build a package by module name\n"
         ),
     )
@@ -33179,7 +33409,7 @@ def main() -> int:
         "--target",
         default=None,
         help=(
-            "Build target: native (default), wasm, luau, or a target triple "
+            "Build target: native (default), wasm, luau, mlir, or a target triple "
             "(e.g., aarch64-unknown-linux-gnu, x86_64-unknown-linux-musl)."
         ),
     )
@@ -33830,6 +34060,7 @@ def main() -> int:
             "  molt run app.py --release              Optimized build and run\n"
             "  molt run app.py --target wasm          Build and run with wasmtime\n"
             "  molt run app.py --target luau          Build and run with lune\n"
+            "  molt run app.py --target mlir          Build and JIT via MLIR\n"
             "  molt run app.py -- --arg1 val          Pass args to your script\n"
         ),
     )
@@ -33843,7 +34074,8 @@ def main() -> int:
         default=None,
         help=(
             "Build target: native (default), wasm (build + run with wasmtime), "
-            "luau (build + run with lune), or a target triple."
+            "luau (build + run with lune), mlir (build + JIT via MLIR), "
+            "or a target triple."
         ),
     )
     run_parser.add_argument(
@@ -35227,6 +35459,28 @@ def main() -> int:
             # Inject --target into build_args so run_script_cross handles it
             if not any(a.startswith("--target") for a in build_args):
                 build_args.extend(["--target", run_target])
+            return _run_script_cross(
+                run_target,
+                args.file,
+                args.module,
+                _strip_leading_double_dash(args.script_args),
+                args.json,
+                args.verbose,
+                args.timing,
+                trusted,
+                capabilities,
+                getattr(args, "capability_manifest", None),
+                getattr(args, "require_signed_manifest", False),
+                build_args,
+                cast(BuildProfile | None, run_profile),
+                audit_log=getattr(args, "audit_log", None),
+                io_mode=getattr(args, "io_mode", None),
+                type_gate=getattr(args, "type_gate", False),
+            )
+        if run_target == "mlir":
+            # MLIR target: build to get MLIR text (no JIT in run mode yet).
+            if not any(a.startswith("--target") for a in build_args):
+                build_args.extend(["--target", "mlir"])
             return _run_script_cross(
                 run_target,
                 args.file,
