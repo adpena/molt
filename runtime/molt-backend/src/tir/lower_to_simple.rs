@@ -2753,8 +2753,10 @@ fn successors_of(block: &TirBlock) -> Vec<BlockId> {
 fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId, TirType>) {
     // Propagate StackAlloc: if the TIR op is StackAlloc, mark the SimpleIR op
     // so the native backend can emit stack allocation instead of heap allocation.
+    // Also mark it as arena-eligible for the scope arena integration.
     if tir_op.opcode == OpCode::StackAlloc {
         opir.stack_eligible = Some(true);
+        opir.arena_eligible = Some(true);
     }
 
     // Restore col_offset/end_col_offset for traceback caret annotations.
@@ -4042,6 +4044,7 @@ mod tests {
                 col_offset: None,
                 end_col_offset: None,
                 bce_safe: None,
+                arena_eligible: None,
             },
             OpIR {
                 kind: "loop_end".into(),
@@ -4062,6 +4065,7 @@ mod tests {
                 col_offset: None,
                 end_col_offset: None,
                 bce_safe: None,
+                arena_eligible: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4082,6 +4086,7 @@ mod tests {
                 col_offset: None,
                 end_col_offset: None,
                 bce_safe: None,
+                arena_eligible: None,
             },
         ];
 
@@ -4115,6 +4120,7 @@ mod tests {
                 col_offset: None,
                 end_col_offset: None,
                 bce_safe: None,
+                arena_eligible: None,
             },
             OpIR {
                 kind: "jump".into(),
@@ -4135,6 +4141,7 @@ mod tests {
                 col_offset: None,
                 end_col_offset: None,
                 bce_safe: None,
+                arena_eligible: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4155,6 +4162,7 @@ mod tests {
                 col_offset: None,
                 end_col_offset: None,
                 bce_safe: None,
+                arena_eligible: None,
             },
         ];
 

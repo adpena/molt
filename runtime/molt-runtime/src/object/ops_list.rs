@@ -102,6 +102,24 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
         let obj = obj_from_bits(list_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
+                // Julia-inspired container monomorphization: if the list is
+                // currently TYPE_ID_LIST_INT and the appended value is a
+                // NaN-boxed int, keep the compact i64 representation instead
+                // of promoting to the generic TYPE_ID_LIST. This preserves
+                // the specialized layout for comprehension-built int lists
+                // that accumulate elements one at a time.
+                if object_type_id(ptr) == TYPE_ID_LIST_INT {
+                    let val_obj = obj_from_bits(val_bits);
+                    if let Some(int_val) = val_obj.as_int() {
+                        // Fast path: append directly to ListIntStorage.
+                        // No NaN-boxing, no promotion, no IncRef (i64 is
+                        // not a heap reference).
+                        let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
+                        storage.push(int_val);
+                        return MoltObject::none().bits();
+                    }
+                    // Value is not an int — fall through to promote + append.
+                }
                 promote_specialized_list_to_list(_py, ptr);
                 if object_type_id(ptr) == TYPE_ID_LIST {
                     let elems = seq_vec(ptr);

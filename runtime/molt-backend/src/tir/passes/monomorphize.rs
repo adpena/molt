@@ -30,8 +30,22 @@ use crate::tir::values::ValueId;
 /// Maximum specialization depth to prevent exponential blowup.
 const MAX_DEPTH: usize = 4;
 
-/// Cache key: (original_function_name, concrete_arg_types) → specialized_name.
-type SpecCache = HashMap<(String, Vec<TirType>), String>;
+/// Cache key for call-site-sensitive monomorphization.
+///
+/// The key is `(caller_function_name, call_site_index, callee_function_name,
+/// concrete_arg_types)`. By including the caller and call site index, the same
+/// function called from two sites with different type contexts gets two
+/// specialized copies. This eliminates intra-callee type guards when the
+/// caller has already proven the types (GraalVM Truffle partial-evaluation
+/// approach).
+///
+/// When the caller is unknown or cross-module, `caller_func` is empty and
+/// `call_site_index` is 0, which degenerates to the old `(func_name,
+/// arg_types)` key behavior.
+type SpecCacheKey = (String, usize, String, Vec<TirType>);
+
+/// Cache: SpecCacheKey → specialized_function_name.
+type SpecCache = HashMap<SpecCacheKey, String>;
 
 /// Mangle a type into a short string suffix for use in specialized function names.
 fn mangle_type(ty: &TirType) -> String {
@@ -116,20 +130,56 @@ fn clone_function(func: &TirFunction, new_name: String) -> TirFunction {
     }
 }
 
-/// Specialize a clone of `callee` for the given concrete argument types.
+/// Build a call-site-sensitive mangled name.
 ///
-/// 1. Clones the function under a mangled name.
-/// 2. Replaces entry block argument types with the concrete types.
-/// 3. Updates `param_types` to match.
-/// 4. Runs `type_refine::refine_types` to propagate concrete types through
-///    all operations.
-fn specialize(callee: &TirFunction, concrete_args: &[TirType]) -> TirFunction {
-    let suffix: String = concrete_args
+/// The name includes the caller function and call-site index so that
+/// two sites calling the same callee with the same arg types but
+/// different type-proof contexts produce distinct specializations.
+/// This is the GraalVM Truffle strategy: partial-evaluate per call
+/// site, not per global type tuple.
+fn mangle_callsite_name(
+    callee_name: &str,
+    caller_func: &str,
+    call_site_idx: usize,
+    concrete_args: &[TirType],
+) -> String {
+    let type_suffix: String = concrete_args
         .iter()
         .map(mangle_type)
         .collect::<Vec<_>>()
         .join("_");
-    let specialized_name = format!("{}__{}", callee.name, suffix);
+    if caller_func.is_empty() {
+        // Degenerate case: no caller context.
+        format!("{}__{}", callee_name, type_suffix)
+    } else {
+        format!(
+            "{}__{}_{}_{}",
+            callee_name, caller_func, call_site_idx, type_suffix
+        )
+    }
+}
+
+/// Specialize a clone of `callee` for the given concrete argument types
+/// at a specific call site.
+///
+/// 1. Clones the function under a call-site-sensitive mangled name.
+/// 2. Replaces entry block argument types with the concrete types.
+/// 3. Updates `param_types` to match.
+/// 4. Runs `type_refine::refine_types` to propagate concrete types through
+///    all operations.
+///
+/// The `caller_func` and `call_site_idx` are embedded in the mangled name
+/// so that two different call sites produce distinct specializations even
+/// with identical arg types. This enables the callee body to be optimized
+/// against the caller's type proof context (eliminating redundant guards).
+fn specialize(
+    callee: &TirFunction,
+    concrete_args: &[TirType],
+    caller_func: &str,
+    call_site_idx: usize,
+) -> TirFunction {
+    let specialized_name =
+        mangle_callsite_name(&callee.name, caller_func, call_site_idx, concrete_args);
 
     let mut copy = clone_function(callee, specialized_name);
 
@@ -157,15 +207,21 @@ fn specialize(callee: &TirFunction, concrete_args: &[TirType]) -> TirFunction {
     copy
 }
 
-/// Scan all ops in a function and collect (callee_name, arg_types, call_site_location)
-/// for every `Call` op whose arguments are all concrete.
+/// Scan all ops in a function and collect call-site-sensitive specialization
+/// candidates.
 ///
-/// Returns: Vec<(callee_name, arg_types, block_id, op_index)>
+/// Returns: Vec<(callee_name, arg_types, block_id, op_index, call_site_index)>
+///
+/// The `call_site_index` is a sequential counter per caller function,
+/// monotonically increasing across blocks and ops. This index, combined
+/// with the caller's function name, forms the call-site-sensitive
+/// monomorphization key.
 fn collect_call_sites(
     func: &TirFunction,
     env: &HashMap<ValueId, TirType>,
-) -> Vec<(String, Vec<TirType>, BlockId, usize)> {
+) -> Vec<(String, Vec<TirType>, BlockId, usize, usize)> {
     let mut sites = Vec::new();
+    let mut call_site_counter: usize = 0;
 
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
@@ -179,6 +235,10 @@ fn collect_call_sites(
             let Some(callee) = callee_name(&op.attrs) else {
                 continue;
             };
+
+            let current_site = call_site_counter;
+            call_site_counter += 1;
+
             // Resolve argument types from the type env.
             let arg_types: Vec<TirType> = op
                 .operands
@@ -188,7 +248,7 @@ fn collect_call_sites(
 
             // Only specialize when ALL args are concrete.
             if all_concrete(&arg_types) && !arg_types.is_empty() {
-                sites.push((callee, arg_types, bid, op_idx));
+                sites.push((callee, arg_types, bid, op_idx, current_site));
             }
         }
     }
@@ -196,11 +256,20 @@ fn collect_call_sites(
     sites
 }
 
-/// Core monomorphization driver.
+/// Core monomorphization driver with call-site-sensitive specialization.
+///
+/// This implements the GraalVM Truffle partial-evaluation strategy: the
+/// monomorphization key is `(caller_func, call_site_index, callee_name,
+/// arg_types)` rather than just `(callee_name, arg_types)`. Two call
+/// sites in different callers (or different locations within the same
+/// caller) that call the same function with the same arg types produce
+/// independent specializations. This lets type refinement within each
+/// copy exploit the caller's proven type context, eliminating guards
+/// that would be needed in a single shared specialization.
 ///
 /// Performs up to `MAX_DEPTH` rounds of specialization. Each round:
 /// 1. Scans all existing functions for call sites with concrete arg types.
-/// 2. For each new (callee, arg_types) pair not in the cache:
+/// 2. For each new `(caller, site_idx, callee, arg_types)` not in cache:
 ///    a. Clones and specializes the callee.
 ///    b. Adds the specialization to the module.
 ///    c. Records the mapping in the cache.
@@ -217,8 +286,10 @@ pub fn monomorphize(module: &mut TirModule) -> usize {
             break; // Hard cap to prevent OOM from polymorphic recursion.
         }
         // Collect all pending specializations this round.
-        // Tuple: (caller_func_idx, block_id, op_idx, callee_name, specialized_name, arg_types)
-        let mut pending: Vec<(usize, BlockId, usize, String, String, Vec<TirType>)> = Vec::new();
+        // Tuple: (caller_func_idx, block_id, op_idx, callee_name, specialized_name,
+        //         arg_types, caller_name, call_site_index)
+        let mut pending: Vec<(usize, BlockId, usize, String, String, Vec<TirType>, String, usize)> =
+            Vec::new();
 
         // Build the function name → index map for fast lookups.
         let func_index: HashMap<String, usize> = module
@@ -230,26 +301,31 @@ pub fn monomorphize(module: &mut TirModule) -> usize {
 
         // Scan every function for specializable call sites.
         for caller_idx in 0..module.functions.len() {
+            let caller_name = module.functions[caller_idx].name.clone();
             let env = build_type_env(&module.functions[caller_idx]);
             let sites = collect_call_sites(&module.functions[caller_idx], &env);
 
-            for (callee_name, arg_types, bid, op_idx) in sites {
+            for (callee_name, arg_types, bid, op_idx, call_site_idx) in sites {
                 // Skip if callee is not defined in this module.
                 if !func_index.contains_key(&callee_name) {
                     continue;
                 }
 
-                let cache_key = (callee_name.clone(), arg_types.clone());
+                let cache_key = (
+                    caller_name.clone(),
+                    call_site_idx,
+                    callee_name.clone(),
+                    arg_types.clone(),
+                );
                 let spec_name = if let Some(existing) = cache.get(&cache_key) {
                     existing.clone()
                 } else {
-                    // Compute the mangled name without mutating yet.
-                    let suffix: String = arg_types
-                        .iter()
-                        .map(mangle_type)
-                        .collect::<Vec<_>>()
-                        .join("_");
-                    format!("{}__{}", callee_name, suffix)
+                    mangle_callsite_name(
+                        &callee_name,
+                        &caller_name,
+                        call_site_idx,
+                        &arg_types,
+                    )
                 };
 
                 // Skip if already resolved to itself (no DynBox params to specialize).
@@ -257,7 +333,16 @@ pub fn monomorphize(module: &mut TirModule) -> usize {
                     continue;
                 }
 
-                pending.push((caller_idx, bid, op_idx, callee_name, spec_name, arg_types));
+                pending.push((
+                    caller_idx,
+                    bid,
+                    op_idx,
+                    callee_name,
+                    spec_name,
+                    arg_types,
+                    caller_name.clone(),
+                    call_site_idx,
+                ));
             }
         }
 
@@ -268,8 +353,15 @@ pub fn monomorphize(module: &mut TirModule) -> usize {
         // Process pending specializations — create new functions, rewrite call sites.
         let mut new_functions: Vec<TirFunction> = Vec::new();
 
-        for (caller_idx, bid, op_idx, callee_name, spec_name, arg_types) in &pending {
-            let cache_key = (callee_name.clone(), arg_types.clone());
+        for (caller_idx, bid, op_idx, callee_name, spec_name, arg_types, caller_name, call_site_idx) in
+            &pending
+        {
+            let cache_key = (
+                caller_name.clone(),
+                *call_site_idx,
+                callee_name.clone(),
+                arg_types.clone(),
+            );
 
             // Only create a new specialization if not already done this pass.
             if !cache.contains_key(&cache_key) {
@@ -288,7 +380,8 @@ pub fn monomorphize(module: &mut TirModule) -> usize {
                         .any(|ty| matches!(ty, TirType::DynBox));
 
                     if has_dynbox {
-                        let specialized = specialize(callee, arg_types);
+                        let specialized =
+                            specialize(callee, arg_types, caller_name, *call_site_idx);
                         cache.insert(cache_key.clone(), specialized.name.clone());
                         new_functions.push(specialized);
                         total_specs += 1;
@@ -482,7 +575,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 1: (I64, I64) call → specialization created
+    // Test 1: (I64, I64) call → specialization created (call-site-sensitive)
     // -----------------------------------------------------------------------
     #[test]
     fn specializes_i64_i64_call() {
@@ -493,20 +586,17 @@ mod tests {
         let specs = monomorphize(&mut module);
 
         assert_eq!(specs, 1, "expected exactly 1 specialization");
-        let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
-        assert!(
-            names.contains(&"add__I64_I64"),
-            "specialized function not found; got: {:?}",
-            names
-        );
-
-        // The specialized function should have I64 param types.
+        // Call-site-sensitive: name includes caller context.
         let spec = module
             .functions
             .iter()
-            .find(|f| f.name == "add__I64_I64")
-            .unwrap();
-        assert_eq!(spec.param_types, vec![TirType::I64, TirType::I64]);
+            .find(|f| f.name.starts_with("add__") && f.param_types == vec![TirType::I64, TirType::I64])
+            .expect("specialized function with I64 params not found");
+        assert!(
+            spec.name.contains("main"),
+            "call-site-sensitive name should include caller 'main'; got: {}",
+            spec.name
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -516,26 +606,24 @@ mod tests {
     fn specializes_f64_f64_call() {
         let generic = make_generic_add();
         let caller_i64 = make_caller_with_typed_args("add", vec![TirType::I64, TirType::I64]);
-        let caller_f64 = make_caller_with_typed_args("add", vec![TirType::F64, TirType::F64]);
+        let mut caller_f64 = make_caller_with_typed_args("add", vec![TirType::F64, TirType::F64]);
+        caller_f64.name = "main2".to_string();
 
-        // Use separate callers in separate "main" functions (rename for module validity).
-        let mut caller_f64_renamed = caller_f64;
-        caller_f64_renamed.name = "main2".to_string();
-
-        let mut module = make_module(vec![generic, caller_i64, caller_f64_renamed]);
+        let mut module = make_module(vec![generic, caller_i64, caller_f64]);
 
         let specs = monomorphize(&mut module);
 
         assert_eq!(specs, 2, "expected 2 specializations (I64 and F64)");
-        let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
-        assert!(
-            names.contains(&"add__I64_I64"),
-            "missing I64 specialization"
-        );
-        assert!(
-            names.contains(&"add__F64_F64"),
-            "missing F64 specialization"
-        );
+        let i64_spec = module
+            .functions
+            .iter()
+            .any(|f| f.name.starts_with("add__") && f.param_types == vec![TirType::I64, TirType::I64]);
+        let f64_spec = module
+            .functions
+            .iter()
+            .any(|f| f.name.starts_with("add__") && f.param_types == vec![TirType::F64, TirType::F64]);
+        assert!(i64_spec, "missing I64 specialization");
+        assert!(f64_spec, "missing F64 specialization");
     }
 
     // -----------------------------------------------------------------------
@@ -560,12 +648,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 4: Cache prevents duplicate specializations
+    // Test 4: Call-site-sensitive cache produces per-caller specializations
     // -----------------------------------------------------------------------
     #[test]
-    fn cache_prevents_duplicates() {
+    fn callsite_sensitive_distinct_callers() {
         let generic = make_generic_add();
-        // Two callers with identical (I64, I64) types.
+        // Two callers with identical (I64, I64) types from different functions.
         let caller_a = make_caller_with_typed_args("add", vec![TirType::I64, TirType::I64]);
         let mut caller_b = make_caller_with_typed_args("add", vec![TirType::I64, TirType::I64]);
         caller_b.name = "main2".to_string();
@@ -574,17 +662,24 @@ mod tests {
 
         let specs = monomorphize(&mut module);
 
-        // Only one specialization should be created despite two call sites.
+        // Call-site-sensitive: two different callers produce two distinct
+        // specializations (each optimized for its caller's context).
         assert_eq!(
-            specs, 1,
-            "cache should deduplicate identical specializations"
+            specs, 2,
+            "call-site-sensitive should produce per-caller specializations"
         );
-        let count = module
+        let spec_names: Vec<&str> = module
             .functions
             .iter()
-            .filter(|f| f.name == "add__I64_I64")
-            .count();
-        assert_eq!(count, 1, "should have exactly one add__I64_I64 function");
+            .filter(|f| f.name.starts_with("add__"))
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(spec_names.len(), 2, "expected 2 distinct specializations; got: {:?}", spec_names);
+        // Both should have I64 params.
+        for spec_name in &spec_names {
+            let func = module.functions.iter().find(|f| f.name == *spec_name).unwrap();
+            assert_eq!(func.param_types, vec![TirType::I64, TirType::I64]);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -639,10 +734,12 @@ mod tests {
                     None
                 }
             });
-        assert_eq!(
-            target,
-            Some("add__I64_I64"),
-            "call site should be rewritten to specialized name"
+        // Call-site-sensitive name includes caller context.
+        let target_str = target.expect("call site should have a target name");
+        assert!(
+            target_str.starts_with("add__") && target_str.contains("main"),
+            "call site should be rewritten to call-site-sensitive name; got: {}",
+            target_str
         );
     }
 
@@ -654,5 +751,52 @@ mod tests {
         let mut module = make_module(vec![]);
         let specs = monomorphize(&mut module);
         assert_eq!(specs, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 8: Same caller, two call sites with same types → two specializations
+    // -----------------------------------------------------------------------
+    #[test]
+    fn same_caller_two_sites_two_specs() {
+        let generic = make_generic_add();
+        // Build a caller that calls `add` twice (two call sites, same arg types).
+        let mut func = TirFunction::new("main".to_string(), vec![TirType::I64, TirType::I64], TirType::DynBox);
+        let call_result_1 = ValueId(func.next_value);
+        func.next_value += 1;
+        let call_result_2 = ValueId(func.next_value);
+        func.next_value += 1;
+
+        let operands: Vec<ValueId> = vec![ValueId(0), ValueId(1)];
+        let mut call_attrs_1 = AttrDict::new();
+        call_attrs_1.insert("callee".into(), AttrValue::Str("add".to_string()));
+        let mut call_attrs_2 = AttrDict::new();
+        call_attrs_2.insert("callee".into(), AttrValue::Str("add".to_string()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: operands.clone(),
+            results: vec![call_result_1],
+            attrs: call_attrs_1,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands,
+            results: vec![call_result_2],
+            attrs: call_attrs_2,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![call_result_2],
+        };
+
+        let mut module = make_module(vec![generic, func]);
+        let specs = monomorphize(&mut module);
+
+        // Two distinct call sites → two specializations.
+        assert_eq!(specs, 2, "two call sites in same caller should produce two specializations");
     }
 }

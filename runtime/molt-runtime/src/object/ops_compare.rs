@@ -711,7 +711,7 @@ pub(crate) fn compare_objects(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lt(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         match compare_builtin_bool(_py, lhs, rhs, CompareOp::Lt) {
@@ -732,7 +732,7 @@ pub extern "C" fn molt_lt(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_le(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         match compare_builtin_bool(_py, lhs, rhs, CompareOp::Le) {
@@ -753,7 +753,7 @@ pub extern "C" fn molt_le(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gt(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         match compare_builtin_bool(_py, lhs, rhs, CompareOp::Gt) {
@@ -774,7 +774,7 @@ pub extern "C" fn molt_gt(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         match compare_builtin_bool(_py, lhs, rhs, CompareOp::Ge) {
@@ -795,7 +795,7 @@ pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if std::env::var("MOLT_TRACE_EQ").is_ok() {
             eprintln!("molt_eq: a=0x{:016x} b=0x{:016x}", a, b);
         }
@@ -817,7 +817,7 @@ pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         match compare_objects_builtin(_py, lhs, rhs) {
@@ -907,7 +907,7 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_eq(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let Some(lp) = lhs.as_ptr() else {
@@ -935,5 +935,5 @@ pub extern "C" fn molt_string_eq(a: u64, b: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_is(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(a == b).bits() })
+    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(a == b).bits() })
 }

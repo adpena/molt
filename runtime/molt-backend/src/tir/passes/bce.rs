@@ -29,14 +29,25 @@
 //!      `CallBuiltin` with `name = "range"`.
 //!   3. The first argument to that `CallBuiltin` is the upper bound `N`.
 //!
+//! ### Phase 3 — while-loop guard analysis
+//!
+//! For `while i <= n` loops that index into a container of length `n+1`,
+//! the loop guard directly proves `i < len(container)`.  The pass detects:
+//!   1. Loop header with `CondBranch` whose condition is `Le(i, n)` or `Lt(i, n)`.
+//!   2. The TRUE successor (loop body) is bounded by `i <= n` (Le) or `i < n` (Lt).
+//!   3. Container length from `Mul(BuildList(elem), count)` = `count`.
+//!   4. When `len(container) = Add(n, 1)` and guard gives `i <= n`, the proof
+//!      completes: `i <= n < n+1 = len(container)`.
+//!
 //! Container length tracking:
 //!   - `BuildList` with `k` operands has length `k`.
+//!   - `Mul(BuildList_1_elem, count)` has length `count` (list repeat).
 //!   - `CallBuiltin("range", N)` followed by `Call("list", ...)` has length `N`.
 //!   - More patterns can be added as needed.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, LoopRole};
+use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
@@ -58,10 +69,31 @@ struct RangeFact {
 /// Known container length — either a compile-time constant or a dynamic
 /// `ValueId` that equals the length.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 enum KnownLength {
     Constant(i64),
     SameAs(ValueId),
+}
+
+/// A proven upper-bound fact from a while-loop guard.
+///
+/// When the loop header's CondBranch condition is `Le(var, bound)`, within
+/// the TRUE successor (loop body), `var <= bound` holds.  For `Lt(var, bound)`,
+/// `var < bound` holds.
+#[derive(Debug, Clone)]
+struct GuardFact {
+    /// The variable that is bounded (the index).
+    var: ValueId,
+    /// The bound value from the comparison.
+    bound: ValueId,
+    /// True if the comparison is `Le` (var <= bound), false if `Lt` (var < bound).
+    is_le: bool,
+}
+
+/// Decomposition of an `Add(a, const)` value.
+#[derive(Debug, Clone)]
+struct AddConst {
+    base: ValueId,
+    offset: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +105,8 @@ enum KnownLength {
 /// Phase 1: marks `Index` ops with constant non-negative in-range indices.
 /// Phase 2: marks `Index` ops inside `for i in range(N)` loops when the
 ///          container length is provably `>= N`.
+/// Phase 3: marks `Index`/`StoreIndex` ops inside `while i <= n` loops when
+///          the container was created via `[elem] * (n+1)` (list repeat).
 ///
 /// Returns [`PassStats`] describing how many ops were annotated
 /// (`values_changed`).
@@ -116,6 +150,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let mut container_length: HashMap<ValueId, KnownLength> = HashMap::new();
     // Map: induction ValueId → RangeFact (value in [0, upper_bound)).
     let mut range_facts: HashMap<ValueId, RangeFact> = HashMap::new();
+    // Map: ValueId → AddConst decomposition (result = base + offset).
+    let mut add_const_decomp: HashMap<ValueId, AddConst> = HashMap::new();
+    // Map: ValueId → the op that defines it (opcode, operands).
+    // Used to trace comparison ops from CondBranch conditions.
+    let mut value_def_op: HashMap<ValueId, (OpCode, Vec<ValueId>)> = HashMap::new();
+    // Map: loop header BlockId → GuardFact from while-loop condition.
+    let mut while_guard_facts: HashMap<BlockId, GuardFact> = HashMap::new();
 
     // First pass: collect definitions across all blocks.
     for bid in &block_ids {
@@ -151,7 +192,52 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             container_length.insert(result, KnownLength::Constant(len));
                         }
                     }
+                    OpCode::Mul => {
+                        // list_repeat: Mul(list_1_elem, count) -> container
+                        // of length `count`.  Only fires when one operand is a
+                        // BuildList with exactly 1 element.
+                        if op.operands.len() == 2 && !op.results.is_empty() {
+                            let (a, b) = (op.operands[0], op.operands[1]);
+                            let list_count_pair =
+                                if container_length.get(&a).is_some_and(|l| matches!(l, KnownLength::Constant(1))) {
+                                    Some(b)
+                                } else if container_length.get(&b).is_some_and(|l| matches!(l, KnownLength::Constant(1))) {
+                                    Some(a)
+                                } else {
+                                    None
+                                };
+                            if let Some(count_val) = list_count_pair {
+                                for &result in &op.results {
+                                    if let Some(&c) = const_int_value.get(&count_val) {
+                                        container_length.insert(result, KnownLength::Constant(c));
+                                    } else {
+                                        container_length.insert(result, KnownLength::SameAs(count_val));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    OpCode::Add => {
+                        // Track Add(base, const) decomposition for matching
+                        // container length = n+1 with loop guard i <= n.
+                        if op.operands.len() == 2 && !op.results.is_empty() {
+                            let (a, b) = (op.operands[0], op.operands[1]);
+                            if let Some(&cv) = const_int_value.get(&b) {
+                                for &result in &op.results {
+                                    add_const_decomp.insert(result, AddConst { base: a, offset: cv });
+                                }
+                            } else if let Some(&cv) = const_int_value.get(&a) {
+                                for &result in &op.results {
+                                    add_const_decomp.insert(result, AddConst { base: b, offset: cv });
+                                }
+                            }
+                        }
+                    }
                     _ => {}
+                }
+                // Record all value definitions for tracing comparison ops.
+                for &result in &op.results {
+                    value_def_op.insert(result, (op.opcode, op.operands.clone()));
                 }
             }
         }
@@ -272,6 +358,46 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     }
 
     // -----------------------------------------------------------------------
+    // Analysis Phase 4: while-loop guard facts
+    // -----------------------------------------------------------------------
+    // For each loop header with a CondBranch terminator, trace the condition
+    // back to a comparison op (Le or Lt).  In the TRUE successor (loop body),
+    // the comparison is known to hold:
+    //   Le(i, n) → i <= n → i < n+1
+    //   Lt(i, n) → i < n
+
+    for &header in &loop_headers {
+        if let Some(block) = func.blocks.get(&header) {
+            let cond_val = match &block.terminator {
+                Terminator::CondBranch { cond, .. } => *cond,
+                _ => continue,
+            };
+            // Trace the condition to a comparison op.
+            if let Some((opcode, operands)) = value_def_op.get(&cond_val) {
+                if operands.len() == 2 {
+                    match opcode {
+                        OpCode::Le => {
+                            while_guard_facts.insert(header, GuardFact {
+                                var: operands[0],
+                                bound: operands[1],
+                                is_le: true,
+                            });
+                        }
+                        OpCode::Lt => {
+                            while_guard_facts.insert(header, GuardFact {
+                                var: operands[0],
+                                bound: operands[1],
+                                is_le: false,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Transform Phase: annotate Index ops
     // -----------------------------------------------------------------------
 
@@ -319,43 +445,63 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
                 // --- Inductive range BCE (Phase 2 logic) ---
                 // Check if the index has a range fact from a for-range loop.
-                let fact = match range_facts.get(&index_operand) {
-                    Some(f) => f,
-                    None => continue,
-                };
-
-                // Verify this Index op is inside the loop that established the fact.
-                let in_loop = block_to_loop
-                    .get(bid)
-                    .map(|headers| !headers.is_empty())
-                    .unwrap_or(false);
-                if !in_loop {
-                    continue;
+                let mut proven = false;
+                if let Some(fact) = range_facts.get(&index_operand) {
+                    let in_loop = block_to_loop
+                        .get(bid)
+                        .map(|headers| !headers.is_empty())
+                        .unwrap_or(false);
+                    if in_loop {
+                        // Prove: len(container) >= upper_bound.
+                        let upper_bound = fact.upper_bound;
+                        proven = match container_length.get(&container_operand) {
+                            Some(KnownLength::Constant(len)) => {
+                                if let Some(&bound_const) = const_int_value.get(&upper_bound) {
+                                    *len >= bound_const
+                                } else {
+                                    false
+                                }
+                            }
+                            Some(KnownLength::SameAs(len_val)) => {
+                                *len_val == upper_bound
+                            }
+                            None => false,
+                        };
+                    }
                 }
 
-                // Prove: len(container) >= upper_bound.
-                let upper_bound = fact.upper_bound;
-                let proven = match container_length.get(&container_operand) {
-                    Some(KnownLength::Constant(len)) => {
-                        // Container has constant length.  Upper bound may be
-                        // constant or dynamic.
-                        if let Some(&bound_const) = const_int_value.get(&upper_bound) {
-                            *len >= bound_const
-                        } else {
-                            false
+                // --- While-loop guard BCE (Phase 3 logic) ---
+                // Check if the index is bounded by a while-loop condition
+                // (Le or Lt) and the container length matches.
+                if !proven {
+                    if let Some(headers) = block_to_loop.get(bid) {
+                        for &header in headers {
+                            if let Some(guard) = while_guard_facts.get(&header) {
+                                if guard.var != index_operand {
+                                    continue;
+                                }
+                                // guard.var <= guard.bound (Le) or
+                                // guard.var < guard.bound (Lt)
+                                // We need: index < len(container).
+                                //
+                                // For Le(i, n): i <= n, so i < n+1.
+                                //   Proven if len(container) >= n+1.
+                                // For Lt(i, n): i < n.
+                                //   Proven if len(container) >= n.
+                                proven = prove_guard_bound(
+                                    guard,
+                                    container_operand,
+                                    &container_length,
+                                    &const_int_value,
+                                    &add_const_decomp,
+                                );
+                                if proven {
+                                    break;
+                                }
+                            }
                         }
                     }
-                    Some(KnownLength::SameAs(len_val)) => {
-                        // Container length equals some ValueId.
-                        // Proven if len_val == upper_bound (same SSA value).
-                        *len_val == upper_bound
-                    }
-                    None => {
-                        // Check if container and range share the same bound.
-                        // e.g., both constructed from the same N.
-                        false
-                    }
-                };
+                }
 
                 if proven {
                     op.attrs
@@ -369,10 +515,66 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     stats
 }
 
+/// Prove that a while-loop guard fact implies the index is in bounds.
+///
+/// For `Le(i, n)`: we need `len(container) > n`, i.e. `len >= n+1`.
+/// For `Lt(i, n)`: we need `len(container) > i`, i.e. `len >= n`.
+///
+/// Matching strategies:
+///   1. `len = SameAs(v)` where `v = Add(guard.bound, 1)` and guard is Le.
+///   2. `len = Constant(c)` where `c > guard.bound` (const bound).
+///   3. `len = SameAs(v)` where `v == guard.bound` and guard is Lt.
+fn prove_guard_bound(
+    guard: &GuardFact,
+    container_operand: ValueId,
+    container_length: &HashMap<ValueId, KnownLength>,
+    const_int_value: &HashMap<ValueId, i64>,
+    add_const_decomp: &HashMap<ValueId, AddConst>,
+) -> bool {
+    let len = match container_length.get(&container_operand) {
+        Some(l) => l,
+        None => return false,
+    };
+
+    match len {
+        KnownLength::Constant(len_const) => {
+            // Container has a known constant length.
+            if let Some(&bound_const) = const_int_value.get(&guard.bound) {
+                if guard.is_le {
+                    // i <= bound, need len > bound, i.e. len >= bound + 1.
+                    *len_const >= bound_const + 1
+                } else {
+                    // i < bound, need len >= bound.
+                    *len_const >= bound_const
+                }
+            } else {
+                false
+            }
+        }
+        KnownLength::SameAs(len_val) => {
+            if guard.is_le {
+                // Guard: i <= n.  Need: len(container) >= n+1.
+                // Check if len_val = Add(n, 1) where n = guard.bound.
+                if let Some(decomp) = add_const_decomp.get(len_val) {
+                    decomp.base == guard.bound && decomp.offset >= 1
+                } else if *len_val == guard.bound {
+                    // len == n, but we need len > n for Le. Not proven.
+                    false
+                } else {
+                    false
+                }
+            } else {
+                // Guard: i < n.  Need: len(container) >= n.
+                // Proven if len_val == guard.bound (same SSA value).
+                *len_val == guard.bound
+            }
+        }
+    }
+}
+
 /// Collect all blocks that belong to a loop body rooted at `header`.
 /// Uses the same logic as `loop_narrow::collect_loop_body`.
 fn collect_loop_body(func: &TirFunction, header: BlockId) -> Vec<BlockId> {
-    use crate::tir::blocks::Terminator;
 
     let mut ordered_blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
     ordered_blocks.sort_by_key(|bid| bid.0);
@@ -1013,6 +1215,303 @@ mod tests {
             index_op.attrs.get("bce_safe"),
             Some(&AttrValue::Bool(true)),
             "Index in range loop with oversized container must be bce_safe"
+        );
+        assert!(stats.values_changed >= 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Test 12: while-loop guard BCE for sieve pattern (StoreIndex)
+    // ------------------------------------------------------------------
+    #[test]
+    fn while_loop_guard_le_store_index_marked_safe() {
+        let mut func = TirFunction::new("sieve".into(), vec![], TirType::None);
+
+        let n = func.fresh_value();
+        let const_1 = func.fresh_value();
+        let n_plus_1 = func.fresh_value();
+        let true_val = func.fresh_value();
+        let list_1 = func.fresh_value();
+        let is_prime = func.fresh_value();
+        let false_val = func.fresh_value();
+        let i_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        let i_next = func.fresh_value();
+
+        let entry_block = func.entry_block;
+        let header_id = func.fresh_block();
+        let body_id = func.fresh_block();
+        let exit_id = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&entry_block).unwrap();
+            entry.ops = vec![
+                make_const_int(n, 100000),
+                make_const_int(const_1, 1),
+                make_op(OpCode::Add, vec![n, const_1], vec![n_plus_1]),
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_op(OpCode::Mul, vec![list_1, n_plus_1], vec![is_prime]),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header_id,
+                args: vec![],
+            };
+        }
+
+        {
+            let header_block = TirBlock {
+                id: header_id,
+                args: vec![],
+                ops: vec![make_op(OpCode::Le, vec![i_phi, n], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: exit_id,
+                    else_args: vec![],
+                },
+            };
+            func.blocks.insert(header_id, header_block);
+            func.loop_roles.insert(header_id, LoopRole::LoopHeader);
+        }
+
+        {
+            let body_block = TirBlock {
+                id: body_id,
+                args: vec![],
+                ops: vec![
+                    make_const_int(false_val, 0),
+                    make_op(
+                        OpCode::StoreIndex,
+                        vec![is_prime, i_phi, false_val],
+                        vec![],
+                    ),
+                    make_op(OpCode::Add, vec![i_phi, const_1], vec![i_next]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header_id,
+                    args: vec![],
+                },
+            };
+            func.blocks.insert(body_id, body_block);
+        }
+
+        {
+            let exit_block = TirBlock {
+                id: exit_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            };
+            func.blocks.insert(exit_id, exit_block);
+            func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
+        }
+
+        let stats = run(&mut func);
+
+        let store_op = func.blocks[&body_id]
+            .ops
+            .iter()
+            .find(|o| o.opcode == OpCode::StoreIndex)
+            .expect("StoreIndex op must be present");
+        assert_eq!(
+            store_op.attrs.get("bce_safe"),
+            Some(&AttrValue::Bool(true)),
+            "StoreIndex in while(i<=n) with is_prime=[True]*(n+1) must be bce_safe"
+        );
+        assert!(stats.values_changed >= 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Test 13: while-loop guard BCE for Index (getitem)
+    // ------------------------------------------------------------------
+    #[test]
+    fn while_loop_guard_le_index_marked_safe() {
+        let mut func = TirFunction::new("sieve_get".into(), vec![], TirType::None);
+
+        let n = func.fresh_value();
+        let const_1 = func.fresh_value();
+        let n_plus_1 = func.fresh_value();
+        let true_val = func.fresh_value();
+        let list_1 = func.fresh_value();
+        let is_prime = func.fresh_value();
+        let i_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        let elem = func.fresh_value();
+        let i_next = func.fresh_value();
+
+        let entry_block = func.entry_block;
+        let header_id = func.fresh_block();
+        let body_id = func.fresh_block();
+        let exit_id = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&entry_block).unwrap();
+            entry.ops = vec![
+                make_const_int(n, 100000),
+                make_const_int(const_1, 1),
+                make_op(OpCode::Add, vec![n, const_1], vec![n_plus_1]),
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_op(OpCode::Mul, vec![list_1, n_plus_1], vec![is_prime]),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header_id,
+                args: vec![],
+            };
+        }
+
+        {
+            let header_block = TirBlock {
+                id: header_id,
+                args: vec![],
+                ops: vec![make_op(OpCode::Le, vec![i_phi, n], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: exit_id,
+                    else_args: vec![],
+                },
+            };
+            func.blocks.insert(header_id, header_block);
+            func.loop_roles.insert(header_id, LoopRole::LoopHeader);
+        }
+
+        {
+            let body_block = TirBlock {
+                id: body_id,
+                args: vec![],
+                ops: vec![
+                    make_op(OpCode::Index, vec![is_prime, i_phi], vec![elem]),
+                    make_op(OpCode::Add, vec![i_phi, const_1], vec![i_next]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header_id,
+                    args: vec![],
+                },
+            };
+            func.blocks.insert(body_id, body_block);
+        }
+
+        {
+            let exit_block = TirBlock {
+                id: exit_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            };
+            func.blocks.insert(exit_id, exit_block);
+            func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
+        }
+
+        let stats = run(&mut func);
+
+        let index_op = func.blocks[&body_id]
+            .ops
+            .iter()
+            .find(|o| o.opcode == OpCode::Index)
+            .expect("Index op must be present");
+        assert_eq!(
+            index_op.attrs.get("bce_safe"),
+            Some(&AttrValue::Bool(true)),
+            "Index in while(i<=n) with container=[True]*(n+1) must be bce_safe"
+        );
+        assert!(stats.values_changed >= 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Test 14: Lt guard with matching container length
+    // ------------------------------------------------------------------
+    #[test]
+    fn while_loop_guard_lt_index_marked_safe() {
+        let mut func = TirFunction::new("lt_test".into(), vec![], TirType::None);
+
+        let n = func.fresh_value();
+        let true_val = func.fresh_value();
+        let list_1 = func.fresh_value();
+        let container = func.fresh_value();
+        let i_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        let elem = func.fresh_value();
+        let const_1 = func.fresh_value();
+        let i_next = func.fresh_value();
+
+        let entry_block = func.entry_block;
+        let header_id = func.fresh_block();
+        let body_id = func.fresh_block();
+        let exit_id = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&entry_block).unwrap();
+            entry.ops = vec![
+                make_const_int(n, 100),
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_op(OpCode::Mul, vec![list_1, n], vec![container]),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header_id,
+                args: vec![],
+            };
+        }
+
+        {
+            let header_block = TirBlock {
+                id: header_id,
+                args: vec![],
+                ops: vec![make_op(OpCode::Lt, vec![i_phi, n], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: exit_id,
+                    else_args: vec![],
+                },
+            };
+            func.blocks.insert(header_id, header_block);
+            func.loop_roles.insert(header_id, LoopRole::LoopHeader);
+        }
+
+        {
+            let body_block = TirBlock {
+                id: body_id,
+                args: vec![],
+                ops: vec![
+                    make_op(OpCode::Index, vec![container, i_phi], vec![elem]),
+                    make_const_int(const_1, 1),
+                    make_op(OpCode::Add, vec![i_phi, const_1], vec![i_next]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header_id,
+                    args: vec![],
+                },
+            };
+            func.blocks.insert(body_id, body_block);
+        }
+
+        {
+            let exit_block = TirBlock {
+                id: exit_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            };
+            func.blocks.insert(exit_id, exit_block);
+            func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
+        }
+
+        let stats = run(&mut func);
+
+        let index_op = func.blocks[&body_id]
+            .ops
+            .iter()
+            .find(|o| o.opcode == OpCode::Index)
+            .expect("Index op must be present");
+        assert_eq!(
+            index_op.attrs.get("bce_safe"),
+            Some(&AttrValue::Bool(true)),
+            "Index in while(i<n) with container of length n must be bce_safe"
         );
         assert!(stats.values_changed >= 1);
     }

@@ -199,11 +199,31 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 // CallBuiltin: check if the builtin only borrows its arguments.
                 // A builtin with known effect_free semantics never stores its
                 // arguments, so the alloc'd value doesn't escape through the call.
+                //
+                // PLDI 2024 ArgEscape→NoEscape downgrade: when the callee is
+                // known to be effect_free, it cannot store references (storing
+                // is a side effect). An ArgEscape classification through such
+                // a callee is safe to leave as NoEscape rather than escalating
+                // to GlobalEscape. This is strictly more precise than the
+                // original analysis which only checked `is_borrowing_builtin`.
                 OpCode::CallBuiltin => {
-                    let borrows =
-                        attr_str(&use_info.attrs, "name").is_some_and(is_borrowing_builtin);
+                    let name = attr_str(&use_info.attrs, "name");
+                    let borrows = name.is_some_and(is_borrowing_builtin);
                     if !borrows {
-                        escapes.insert(val, EscapeState::GlobalEscape);
+                        // Before escalating to GlobalEscape, check if the
+                        // callee is effect_free. An effect_free function
+                        // cannot store its arguments (storing is a side
+                        // effect), so the value stays at its current escape
+                        // level (NoEscape or ArgEscape) rather than jumping
+                        // to GlobalEscape.
+                        let callee_effect_free = name
+                            .and_then(effects::builtin_effects)
+                            .is_some_and(|fx| fx.effect_free);
+                        if !callee_effect_free {
+                            escapes.insert(val, EscapeState::GlobalEscape);
+                        }
+                        // else: effect_free callee doesn't store references.
+                        // ArgEscape → NoEscape (or stays NoEscape). Don't escalate.
                     }
                 }
                 // CallMethod: check if the method is known non-storing.
@@ -729,5 +749,47 @@ mod tests {
         let func = TirFunction::new("empty".into(), vec![], TirType::None);
         let escapes = analyze(&func);
         assert!(escapes.is_empty());
+    }
+
+    /// Test 7: effect_free builtin (e.g. `sorted`) does not cause GlobalEscape.
+    /// This tests the PLDI 2024 ArgEscape→NoEscape downgrade: an effect_free
+    /// callee cannot store its arguments, so passing an alloc'd value to it
+    /// should NOT escalate the escape state to GlobalEscape.
+    #[test]
+    fn effect_free_builtin_does_not_escalate_escape() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let alloc_val = func.fresh_value();
+        let call_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        // `sorted` is effect_free (per effects.rs) but NOT in the
+        // explicit is_borrowing_builtin list. The ArgEscape→NoEscape
+        // downgrade should catch this.
+        attrs.insert("name".into(), AttrValue::Str("sorted".into()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry.ops.push(make_op_with_attrs(
+            OpCode::CallBuiltin,
+            vec![alloc_val],
+            vec![call_result],
+            attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&alloc_val],
+            EscapeState::NoEscape,
+            "effect_free builtin (sorted) should not escalate escape state"
+        );
     }
 }
