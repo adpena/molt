@@ -1503,6 +1503,83 @@ fn var_get(
     vars.get(name).map(|var| VarValue(builder.use_var(*var)))
 }
 
+/// Get a variable's NaN-boxed value, boxing a raw-primary value on demand.
+///
+/// When a variable is in `raw_primary_int`, its Cranelift Variable holds a raw
+/// i64 value (not NaN-boxed). This function boxes it lazily using the hoisted
+/// boxing constants, ensuring all 620+ runtime-call sites get a properly
+/// NaN-boxed value without any code changes at the call site.
+///
+/// This is the core of the typed IR redesign: proven-type variables store raw
+/// values as their primary representation. Boxing happens only when a generic
+/// consumer (runtime FFI call) needs the NaN-boxed form.
+#[cfg(feature = "native-backend")]
+fn var_get_boxed(
+    builder: &mut FunctionBuilder,
+    vars: &BTreeMap<String, Variable>,
+    name: &str,
+    raw_primary_int: &std::collections::BTreeSet<String>,
+    raw_primary_float: &std::collections::BTreeSet<String>,
+    box_int_mask_var: Variable,
+    box_int_tag_var: Variable,
+) -> Option<VarValue> {
+    let var = *vars.get(name)?;
+    let val = builder.use_var(var);
+
+    if raw_primary_int.contains(name) {
+        // Variable holds raw i64 — box it for the runtime call
+        let boxed = box_int_value_hoisted(builder, val, box_int_mask_var, box_int_tag_var);
+        Some(VarValue(boxed))
+    } else if raw_primary_float.contains(name) {
+        // Variable holds raw f64 — box it for the runtime call
+        let bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
+        Some(VarValue(bits))
+    } else {
+        // Variable already holds NaN-boxed value
+        Some(VarValue(val))
+    }
+}
+
+/// Get raw value directly (for proven-type consumers that don't need NaN-box).
+#[cfg(feature = "native-backend")]
+fn var_get_raw(
+    builder: &mut FunctionBuilder,
+    vars: &BTreeMap<String, Variable>,
+    name: &str,
+    raw_primary_int: &std::collections::BTreeSet<String>,
+    raw_primary_float: &std::collections::BTreeSet<String>,
+) -> Option<(VarValue, bool)> {
+    let var = *vars.get(name)?;
+    let val = builder.use_var(var);
+    if raw_primary_int.contains(name) {
+        Some((VarValue(val), true)) // raw i64
+    } else if raw_primary_float.contains(name) {
+        Some((VarValue(val), true)) // raw f64
+    } else {
+        Some((VarValue(val), false)) // NaN-boxed
+    }
+}
+
+/// Store a raw value as the primary representation for a proven-type variable.
+#[cfg(feature = "native-backend")]
+fn def_var_raw(
+    builder: &mut FunctionBuilder,
+    vars: &BTreeMap<String, Variable>,
+    name: impl AsRef<str>,
+    raw_val: Value,
+    raw_primary_int: &mut std::collections::BTreeSet<String>,
+) {
+    let name_ref = name.as_ref();
+    if name_ref == "none" {
+        return;
+    }
+    let var = *vars
+        .get(name_ref)
+        .unwrap_or_else(|| panic!("Var not found: {name_ref}"));
+    builder.def_var(var, raw_val);
+    raw_primary_int.insert(name_ref.to_string());
+}
+
 #[cfg(feature = "native-backend")]
 fn def_var_named(
     builder: &mut FunctionBuilder,
