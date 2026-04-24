@@ -33352,6 +33352,26 @@ def main() -> int:
         help="Additional directories to search for Python packages (repeatable).",
     )
     build_parser.add_argument(
+        "--bolt",
+        action="store_true",
+        default=False,
+        help=(
+            "Run BOLT post-link optimization on the output binary. "
+            "Instruments, profiles with a training run, and reorders "
+            "functions/basic blocks for optimal icache utilization. "
+            "Requires llvm-bolt (brew install llvm / apt install llvm-bolt). "
+            "Native targets only."
+        ),
+    )
+    build_parser.add_argument(
+        "--bolt-training-cmd",
+        default=None,
+        help=(
+            "Custom training command for BOLT profiling (default: run the "
+            "output binary with no arguments). Only used with --bolt."
+        ),
+    )
+    build_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     build_parser.add_argument(
@@ -34886,7 +34906,7 @@ def main() -> int:
             effective_backend = "cranelift"
         os.environ["MOLT_BACKEND"] = effective_backend
 
-        return build(
+        build_rc = build(
             args.file,
             target,
             codec,
@@ -34932,6 +34952,20 @@ def main() -> int:
             io_mode=getattr(args, "io_mode", None),
             type_gate=getattr(args, "type_gate", False),
         )
+
+        # --bolt: post-link BOLT optimization for native targets.
+        bolt_requested = getattr(args, "bolt", False)
+        if bolt_rc := _run_bolt_post_link(
+            bolt_requested=bolt_requested,
+            bolt_training_cmd=getattr(args, "bolt_training_cmd", None),
+            target=target,
+            output=output,
+            out_dir=out_dir,
+            build_rc=build_rc,
+            json_output=args.json,
+        ):
+            return bolt_rc
+        return build_rc
     if args.command == "extension":
         if args.extension_command == "build":
             deterministic = (
