@@ -81,6 +81,178 @@ fn scan_loop_hoistable_lists(
     (list_int_accessed, list_generic_accessed)
 }
 
+/// Describes a recognized integer sum-reduction loop eligible for 4x unrolling.
+///
+/// Pattern:
+/// ```text
+/// loop_index_start  (idx)
+///   ...
+///   index  list_name[idx]  container_type="list_int"  bce_safe=true  -> elem
+///   add/inplace_add  [acc, elem] -> acc_next   (or [elem, acc])
+///   store_var  acc_slot = acc_next
+///   ...
+///   loop_index_next
+///   loop_continue / loop_end
+/// ```
+///
+/// When detected, the native backend emits a 4x-unrolled main loop
+/// (4 scalar loads + 4 scalar adds per iteration, index advances by 4)
+/// followed by a scalar epilogue for the remaining 0-3 elements.
+/// This reduces loop overhead (branch, compare, increment) by 4x.
+#[cfg(feature = "native-backend")]
+#[derive(Debug, Clone)]
+struct SumReductionCandidate {
+    /// The list variable name being iterated.
+    list_name: String,
+    /// The accumulator variable name (the store_var target).
+    acc_store_slot: String,
+    /// The add/inplace_add output name (feeds into the store_var).
+    add_out_name: String,
+    /// The element variable name (output of the index op).
+    /// Retained for diagnostic/debug logging; not consumed by codegen.
+    #[allow(dead_code)]
+    elem_name: String,
+    /// The accumulator operand name in the add op (the other operand besides elem).
+    acc_operand_name: String,
+    /// Op index of the loop_end (exclusive bound for skipping body ops).
+    loop_end_idx: usize,
+}
+
+/// Scan the loop body from `loop_index_start_idx` to the matching `loop_end`
+/// and detect a simple integer sum-reduction pattern over a `list_int`.
+///
+/// Returns `Some(candidate)` only when ALL of the following hold:
+///   1. The loop body contains exactly one `index` op with `container_type="list_int"`
+///      and `bce_safe=true`.
+///   2. The loop body contains exactly one `add` or `inplace_add` op whose operands
+///      include the element from (1) and an accumulator, and whose output feeds
+///      into a single `store_var`.
+///   3. No other side-effecting ops exist in the body (calls, other stores, etc.).
+///   4. The loop is not nested (no inner `loop_start`/`loop_index_start`).
+#[cfg(feature = "native-backend")]
+fn scan_loop_int_sum_reduction(
+    ops: &[OpIR],
+    loop_index_start_idx: usize,
+    index_var_name: &str,
+) -> Option<SumReductionCandidate> {
+    // Find the matching loop_end.
+    let mut depth = 0i32;
+    let mut loop_end_idx = None;
+    for i in (loop_index_start_idx + 1)..ops.len() {
+        match ops[i].kind.as_str() {
+            "loop_start" | "loop_index_start" => depth += 1,
+            "loop_end" if depth > 0 => depth -= 1,
+            "loop_end" => {
+                loop_end_idx = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let loop_end_idx = loop_end_idx?;
+
+    // Scan the body for the pattern components.
+    let mut index_op: Option<(usize, String, String)> = None; // (idx, list_name, elem_out)
+    let mut add_op: Option<(String, String, String)> = None; // (acc_operand, elem_operand, add_out)
+    let mut store_var_op: Option<(String, String)> = None; // (slot_name, source_name)
+    let mut has_nested_loop = false;
+    let mut has_side_effects = false;
+
+    for i in (loop_index_start_idx + 1)..loop_end_idx {
+        let op = &ops[i];
+        match op.kind.as_str() {
+            "loop_start" | "loop_index_start" => {
+                has_nested_loop = true;
+                break;
+            }
+            "index" => {
+                if op.container_type.as_deref() != Some("list_int") {
+                    return None; // non-list_int index disqualifies
+                }
+                if op.bce_safe != Some(true) {
+                    return None; // bounds check needed — can't safely unroll
+                }
+                if index_op.is_some() {
+                    return None; // multiple index ops — too complex
+                }
+                let args = op.args.as_ref()?;
+                if args.len() < 2 {
+                    return None;
+                }
+                // args[0] = list name, args[1] = index var
+                // The index must be the loop induction variable.
+                if args[1] != index_var_name {
+                    return None;
+                }
+                let out = op.out.as_ref()?;
+                index_op = Some((i, args[0].clone(), out.clone()));
+            }
+            "add" | "inplace_add" => {
+                if add_op.is_some() {
+                    return None; // multiple adds — too complex
+                }
+                let args = op.args.as_ref()?;
+                if args.len() < 2 {
+                    return None;
+                }
+                let out = op.out.as_ref()?;
+                add_op = Some((args[0].clone(), args[1].clone(), out.clone()));
+            }
+            "store_var" => {
+                if store_var_op.is_some() {
+                    return None; // multiple store_vars — too complex
+                }
+                let slot = op.var.as_ref()?;
+                let args = op.args.as_ref()?;
+                if args.is_empty() {
+                    return None;
+                }
+                store_var_op = Some((slot.clone(), args[0].clone()));
+            }
+            // Structural ops that don't affect correctness:
+            "loop_index_next" | "loop_continue" | "loop_break_if_true"
+            | "loop_break_if_false" | "loop_break" | "const" | "const_bool"
+            | "const_float" | "const_str" | "copy" | "copy_var" | "load_var"
+            | "lt" | "le" | "gt" | "ge" | "not" | "line" | "label" | "phi" => {}
+            // Anything else (calls, other stores, etc.) disqualifies.
+            _ => {
+                has_side_effects = true;
+            }
+        }
+    }
+
+    if has_nested_loop || has_side_effects {
+        return None;
+    }
+
+    let (_, list_name, elem_name) = index_op?;
+    let (add_arg0, add_arg1, add_out) = add_op?;
+    let (store_slot, store_source) = store_var_op?;
+
+    // The store_var must store the add output.
+    if store_source != add_out {
+        return None;
+    }
+
+    // One of the add operands must be the element, the other is the accumulator.
+    let acc_operand = if add_arg0 == elem_name {
+        add_arg1.clone()
+    } else if add_arg1 == elem_name {
+        add_arg0.clone()
+    } else {
+        return None; // neither add operand is the element
+    };
+
+    Some(SumReductionCandidate {
+        list_name,
+        acc_store_slot: store_slot,
+        add_out_name: add_out,
+        elem_name,
+        acc_operand_name: acc_operand,
+        loop_end_idx,
+    })
+}
+
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScalarLane {
@@ -263,18 +435,6 @@ fn shadow_value_var_only(
     name: &str,
 ) -> Option<Value> {
     raw_int_shadow.get(name).map(|&var| builder.use_var(var))
-}
-
-#[cfg(feature = "native-backend")]
-#[inline]
-fn shadow_pair_available(
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    raw_int_shadow_vals: &BTreeMap<String, Value>,
-    lhs: &str,
-    rhs: &str,
-) -> bool {
-    (raw_int_shadow_vals.contains_key(lhs) || raw_int_shadow.contains_key(lhs))
-        && (raw_int_shadow_vals.contains_key(rhs) || raw_int_shadow.contains_key(rhs))
 }
 
 /// Produce a correctly NaN-boxed value for a variable that may carry a
@@ -3910,106 +4070,38 @@ impl SimpleBackend {
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
                         box_float_value_unchecked(&mut builder, result_f)
-                    } else if shadow_pair_available(
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
-                        &args[0],
-                        &args[1],
-                    ) && op_prefers_int_lane(&op)
-                    {
-                        // Raw chain: both operands already unboxed + overflow guard.
-                        // Propagate raw shadow via second merge phi.
-                        // Inside loops, use Variable-only shadows (phi-correct).
-                        let in_loop = !loop_stack.is_empty();
-                        let lhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
-                        } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[0],
-                            )
-                        }
-                        .unwrap();
-                        let rhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
-                        } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            )
-                        }
-                        .unwrap();
-                        let raw_result = builder.ins().isub(lhs_val, rhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, raw_result);
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_sub",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64); // boxed
-                        builder.append_block_param(merge_block, types::I64); // raw shadow
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[boxed, raw_result]);
-
-                        // Slow path: overflow-safe boxing for raw-primary operands.
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let lhs_boxed = ensure_boxed_overflow_safe(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, &mut sealed_blocks,
-                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
-                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[0],
-                        );
-                        let rhs_boxed = ensure_boxed_overflow_safe(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, &mut sealed_blocks,
-                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
-                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[1],
-                        );
-                        let call = builder.ins().call(local_callee, &[lhs_boxed, rhs_boxed]);
-                        let slow_res = builder.inst_results(call)[0];
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
-                        if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, merge_res);
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, merge_raw);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
-                        }
-                        continue;
                     } else if op_prefers_int_lane(&op) {
-                        // Proven-int path: skip tag check, unbox directly.
-                        // Overflow guard retained for BigInt fallback.
-                        // Propagate raw shadow so downstream ops skip unbox.
-                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
-                            panic!("LHS not found in {} op {}", func_ir.name, op_idx)
-                        });
-                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
-                            panic!("RHS not found in {} op {}", func_ir.name, op_idx)
-                        });
+                        // LuaJIT-style unboxed arithmetic chain with overflow guard.
+                        // If both operands have raw i64 shadows, skip tag check + unbox.
+                        // If result overflows 47-bit inline range, fall to slow path.
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            // Inside loops, only use Variable-backed shadows
+                            // (phi-correct across back-edges). Value-tier
+                            // shadows may hold stale SSA values from a
+                            // previous block/iteration.
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(
+                                &mut builder,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
+                                lhs_name,
+                            )
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(
+                                &mut builder,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
+                                rhs_name,
+                            )
+                        };
+
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4018,41 +4110,74 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64); // boxed
-                        builder.append_block_param(merge_block, types::I64); // raw shadow
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(&mut builder, diff, box_int_mask_var, box_int_tag_var);
-                        let fits_inline = int_value_fits_inline(&mut builder, diff);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res, diff]);
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
-                        if let Some(ref out_name) = op.out {
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, merge_raw);
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Typed IR: raw i64 is PRIMARY.  Branchless isub
+                            // with deferred overflow — the 47-bit inline range
+                            // check is deferred to boxing escape points
+                            // (return_value, call args) via var_get_boxed /
+                            // ensure_boxed_overflow_safe.  No boxing instruction
+                            // is emitted here; the raw difference flows through
+                            // Cranelift Variables directly.
+                            let diff = builder.ins().isub(lhs_raw, rhs_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, diff);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, diff);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), diff);
                             }
-                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
+                            continue;
+                        } else {
+                            // Proven-int path: op_prefers_int_lane guarantees both
+                            // operands are int-like. Skip tag check, unbox directly.
+                            // Overflow guard retained for BigInt fallback.
+                            // Propagate raw shadow so downstream ops skip unbox.
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
+                                panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                            });
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
+                                panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                            });
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64); // boxed
+                            builder.append_block_param(merge_block, types::I64); // raw shadow
+                            let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
+                            let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                            let diff = builder.ins().isub(lhs_val, rhs_val);
+                            let fast_res = box_int_value_hoisted(&mut builder, diff, box_int_mask_var, box_int_tag_var);
+                            let fits_inline = int_value_fits_inline(&mut builder, diff);
+                            builder
+                                .ins()
+                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            jump_block(&mut builder, merge_block, &[fast_res, diff]);
+
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            jump_block(&mut builder, merge_block, &[slow_res, zero]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            let merged_boxed = builder.block_params(merge_block)[0];
+                            let merged_raw = builder.block_params(merge_block)[1];
+                            if let Some(ref out__) = op.out {
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, merged_raw);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), merged_raw);
+                            }
+                            merged_boxed
                         }
-                        merge_res
                     } else {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                         let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
@@ -4124,8 +4249,10 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Subtraction can overflow into heap bigints on some
-                        // paths, so its merged result cannot carry a raw-int shadow.
+                        // raw_int_shadow propagation is handled inside the
+                        // both-shadow path above (via merge phi).  Other paths
+                        // (tag-check, generic) don't shadow because the output
+                        // representation is unknown.
                     }
                 }
                 "inplace_sub" => {
@@ -4157,12 +4284,11 @@ impl SimpleBackend {
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
                         box_float_value_unchecked(&mut builder, result_f)
-                    } else if shadow_pair_available(
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
-                        &args[0],
-                        &args[1],
-                    ) && op_prefers_int_lane(&op)
+                    } else if (raw_int_shadow_vals.contains_key(&args[0])
+                        || raw_int_shadow.contains_key(&args[0]))
+                        && (raw_int_shadow_vals.contains_key(&args[1])
+                            || raw_int_shadow.contains_key(&args[1]))
+                        && op_prefers_int_lane(&op)
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
@@ -4190,66 +4316,19 @@ impl SimpleBackend {
                             )
                         }
                         .unwrap();
+                        // Typed IR: raw i64 is PRIMARY.  Branchless isub
+                        // with deferred overflow — no boxing emitted here.
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, raw_result);
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_sub",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64); // boxed
-                        builder.append_block_param(merge_block, types::I64); // raw shadow
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[boxed, raw_result]);
-
-                        // Slow path: overflow-safe boxing for raw-primary operands.
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let lhs_boxed = ensure_boxed_overflow_safe(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, &mut sealed_blocks,
-                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
-                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[0],
-                        );
-                        let rhs_boxed = ensure_boxed_overflow_safe(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, &mut sealed_blocks,
-                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
-                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[1],
-                        );
-                        let call = builder.ins().call(local_callee, &[lhs_boxed, rhs_boxed]);
-                        let slow_res = builder.inst_results(call)[0];
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, merge_res);
+                            def_var_named(&mut builder, &vars, out_name, raw_result);
+                            raw_primary_int.insert(out_name.clone());
                             if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, merge_raw);
+                                builder.def_var(shadow_var, raw_result);
                             }
-                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
+                            raw_int_shadow_vals.insert(out_name.clone(), raw_result);
                         }
                         continue;
                     } else if op_prefers_int_lane(&op) {
-                        // Proven-int path: skip tag check, unbox directly.
-                        // Overflow guard retained for BigInt fallback.
                         // Propagate raw shadow so downstream ops skip unbox.
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).unwrap_or_else(|| {
                             panic!("LHS not found in {} op {}", func_ir.name, op_idx)
@@ -4260,7 +4339,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_sub",
+                            "molt_inplace_sub",
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -4271,24 +4350,26 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64); // boxed
                         builder.append_block_param(merge_block, types::I64); // raw shadow
-
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                        let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
+                        let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
                         let fast_res = box_int_value_hoisted(&mut builder, diff, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
                         builder
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         jump_block(&mut builder, merge_block, &[fast_res, diff]);
+
                         switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
+
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
@@ -4400,98 +4481,38 @@ impl SimpleBackend {
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
                         box_float_value_unchecked(&mut builder, result_f)
-                    } else if shadow_pair_available(
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
-                        &args[0],
-                        &args[1],
-                    ) && op_prefers_int_lane(&op)
-                    {
-                        // Raw chain: both operands already unboxed + overflow guard.
-                        // Propagate raw shadow via second merge phi.
-                        // Inside loops, use Variable-only shadows (phi-correct).
-                        let in_loop = !loop_stack.is_empty();
-                        let lhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
-                        } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[0],
-                            )
-                        }
-                        .unwrap();
-                        let rhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
-                        } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            )
-                        }
-                        .unwrap();
-                        let (raw_result, fits) =
-                            imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_mul",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64); // boxed result
-                        builder.append_block_param(merge_block, types::I64); // raw shadow
-                        builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[boxed, raw_result]);
-
-                        // Slow path: overflow-safe boxing for raw-primary operands.
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let lhs_boxed = ensure_boxed_overflow_safe(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, &mut sealed_blocks,
-                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
-                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[0],
-                        );
-                        let rhs_boxed = ensure_boxed_overflow_safe(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, &mut sealed_blocks,
-                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
-                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[1],
-                        );
-                        let call = builder.ins().call(local_callee, &[lhs_boxed, rhs_boxed]);
-                        let slow_res = builder.inst_results(call)[0];
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
-                        if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, merge_res);
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, merge_raw);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
-                        }
-                        continue;
                     } else if op_prefers_int_lane(&op) {
-                        // Propagate raw shadow so downstream ops skip unbox.
-                        let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
-                        let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                        // LuaJIT-style unboxed arithmetic chain with overflow guard.
+                        // If both operands have raw i64 shadows, skip tag check + unbox.
+                        // If result overflows 47-bit inline range, fall to slow path.
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let in_active_loop = !loop_stack.is_empty();
+                        let lhs_raw = if in_active_loop {
+                            // Inside loops, only use Variable-backed shadows
+                            // (phi-correct across back-edges). Value-tier
+                            // shadows may hold stale SSA values from a
+                            // previous block/iteration.
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                        } else {
+                            shadow_value_for(
+                                &mut builder,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
+                                lhs_name,
+                            )
+                        };
+                        let rhs_raw = if in_active_loop {
+                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                        } else {
+                            shadow_value_for(
+                                &mut builder,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
+                                rhs_name,
+                            )
+                        };
+
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4500,41 +4521,67 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64); // boxed
-                        builder.append_block_param(merge_block, types::I64); // raw shadow
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(&mut builder, prod, box_int_mask_var, box_int_tag_var);
-                        builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res, prod]);
-
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
-                        if let Some(ref out_name) = op.out {
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, merge_raw);
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                            // Typed IR: raw i64 is PRIMARY.  Branchless imul
+                            // with deferred overflow — the 47-bit inline range
+                            // check is deferred to boxing escape points
+                            // (return_value, call args) via var_get_boxed /
+                            // ensure_boxed_overflow_safe.  No boxing instruction
+                            // is emitted here; the raw product flows through
+                            // Cranelift Variables directly.
+                            let prod = builder.ins().imul(lhs_raw, rhs_raw);
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, prod);
+                                raw_primary_int.insert(out__.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, prod);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), prod);
                             }
-                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
+                            continue;
+                        } else {
+                            // Proven-int path: op_prefers_int_lane guarantees both
+                            // operands are int-like. Skip tag check, unbox directly.
+                            // Overflow guard retained for BigInt fallback.
+                            // Propagate raw shadow so downstream ops skip unbox.
+                            let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
+                            let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64); // boxed
+                            builder.append_block_param(merge_block, types::I64); // raw shadow
+                            let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
+                            let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                            let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
+                            let fast_res = box_int_value_hoisted(&mut builder, prod, box_int_mask_var, box_int_tag_var);
+                            builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            jump_block(&mut builder, merge_block, &[fast_res, prod]);
+
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            jump_block(&mut builder, merge_block, &[slow_res, zero]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            let merged_boxed = builder.block_params(merge_block)[0];
+                            let merged_raw = builder.block_params(merge_block)[1];
+                            if let Some(ref out__) = op.out {
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, merged_raw);
+                                }
+                                raw_int_shadow_vals.insert(out__.clone(), merged_raw);
+                            }
+                            merged_boxed
                         }
-                        merge_res
                     } else {
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                         let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
@@ -4605,8 +4652,10 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Multiplication can overflow into heap bigints on some
-                        // paths, so its merged result cannot carry a raw-int shadow.
+                        // raw_int_shadow propagation is handled inside the
+                        // both-shadow path above (via merge phi).  Other paths
+                        // (tag-check, generic) don't shadow because the output
+                        // representation is unknown.
                     }
                 }
                 "inplace_mul" => {
@@ -4634,12 +4683,11 @@ impl SimpleBackend {
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
                         box_float_value_unchecked(&mut builder, result_f)
-                    } else if shadow_pair_available(
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
-                        &args[0],
-                        &args[1],
-                    ) && op_prefers_int_lane(&op)
+                    } else if (raw_int_shadow_vals.contains_key(&args[0])
+                        || raw_int_shadow.contains_key(&args[0]))
+                        && (raw_int_shadow_vals.contains_key(&args[1])
+                            || raw_int_shadow.contains_key(&args[1]))
+                        && op_prefers_int_lane(&op)
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Inside loops, use Variable-only shadows (phi-correct).
@@ -4666,52 +4714,16 @@ impl SimpleBackend {
                             )
                         }
                         .unwrap();
-                        let (raw_result, fits) =
-                            imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_inplace_mul",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-                        builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
-                        jump_block(&mut builder, merge_block, &[boxed]);
-
-                        // Slow path: overflow-safe boxing for raw-primary operands.
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let lhs_boxed = ensure_boxed_overflow_safe(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, &mut sealed_blocks,
-                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
-                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[0],
-                        );
-                        let rhs_boxed = ensure_boxed_overflow_safe(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, &mut sealed_blocks,
-                            &raw_int_shadow, &raw_int_shadow_vals, &vars,
-                            box_int_mask_var, box_int_tag_var, &raw_primary_int, &args[1],
-                        );
-                        let call = builder.ins().call(local_callee, &[lhs_boxed, rhs_boxed]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
+                        // Typed IR: raw i64 is PRIMARY.  Branchless imul
+                        // with deferred overflow — no boxing emitted here.
+                        let raw_result = builder.ins().imul(lhs_val, rhs_val);
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, merge_res);
+                            def_var_named(&mut builder, &vars, out_name, raw_result);
+                            raw_primary_int.insert(out_name.clone());
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, raw_result);
+                            }
+                            raw_int_shadow_vals.insert(out_name.clone(), raw_result);
                         }
                         continue;
                     } else if op_prefers_int_lane(&op) {
@@ -4732,9 +4744,8 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64); // boxed
                         builder.append_block_param(merge_block, types::I64); // raw shadow
-
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                        let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
+                        let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value_hoisted(&mut builder, prod, box_int_mask_var, box_int_tag_var);
                         builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
@@ -18658,6 +18669,195 @@ impl SimpleBackend {
                             }
                         }
 
+                        // ── 4x Loop Unrolling for sum reductions ─────────
+                        // Before emitting the standard structured loop, check
+                        // if the loop body is a simple sum reduction over a
+                        // list_int.  If so, emit a 4x-unrolled main loop +
+                        // scalar epilogue and skip all body ops.
+                        if let Some(reduction) = scan_loop_int_sum_reduction(
+                            &func_ir.ops, op_idx, &out_name,
+                        ) {
+                            // We need:
+                            //   - data_ptr from list_int_data_cache (hoisted above)
+                            //   - len from list_int_len_cache (hoisted above)
+                            //   - initial accumulator value from the acc_operand_name
+                            //   - start index (already in out_name / start variable)
+                            let data_ptr_var = list_int_data_cache.get(&reduction.list_name);
+                            let len_var = list_int_len_cache.get(&reduction.list_name);
+                            if let (Some(&dp_var), Some(&ln_var)) = (data_ptr_var, len_var) {
+                                let data_ptr = builder.use_var(dp_var);
+                                let len_val = builder.use_var(ln_var);
+
+                                // Get the initial accumulator value (raw i64).
+                                let init_acc = {
+                                    let raw = shadow_value_var_only(
+                                        &mut builder, &raw_int_shadow, &reduction.acc_operand_name,
+                                    ).or_else(|| {
+                                        raw_int_shadow_vals.get(&reduction.acc_operand_name).copied()
+                                    });
+                                    raw.unwrap_or_else(|| {
+                                        let boxed = var_get_boxed(
+                                            &mut builder, &vars, &reduction.acc_operand_name,
+                                            &raw_primary_int, &raw_primary_float,
+                                            box_int_mask_var, box_int_tag_var,
+                                        ).expect("Sum reduction accumulator not found");
+                                        unbox_int(&mut builder, *boxed, &nbc)
+                                    })
+                                };
+
+                                // Compute unrolled_len = len & ~3  (round down to multiple of 4)
+                                let unrolled_len = builder.ins().band_imm(len_val, !3i64);
+
+                                // Get raw start index (i64). For list iteration
+                                // this is typically 0, produced by iter_devirt.
+                                let raw_start_idx = start_raw.unwrap_or_else(|| {
+                                    unbox_int(&mut builder, start, &nbc)
+                                });
+
+                                // Declare Cranelift Variables for the loop-carried state.
+                                let idx_loop_var = builder.declare_var(types::I64);
+                                let acc_loop_var = builder.declare_var(types::I64);
+                                builder.def_var(idx_loop_var, raw_start_idx);
+                                builder.def_var(acc_loop_var, init_acc);
+
+                                // ── Unrolled main loop (4 elements per iteration) ──
+                                let unroll_header = builder.create_block();
+                                let unroll_body = builder.create_block();
+                                let epilogue_header = builder.create_block();
+                                let epilogue_body = builder.create_block();
+                                let after_all = after_block; // reuse the after_block created above
+
+                                ensure_block_in_layout(&mut builder, unroll_header);
+                                reachable_blocks.insert(unroll_header);
+                                jump_block(&mut builder, unroll_header, &[]);
+
+                                // Unroll header: check idx < unrolled_len
+                                switch_to_block_materialized(&mut builder, unroll_header);
+                                let idx_u = builder.use_var(idx_loop_var);
+                                let cmp_u = builder.ins().icmp(
+                                    IntCC::SignedLessThan, idx_u, unrolled_len,
+                                );
+                                builder.ins().brif(
+                                    cmp_u, unroll_body, &[], epilogue_header, &[],
+                                );
+
+                                // Unroll body: load 4 elements, add them to accumulator
+                                ensure_block_in_layout(&mut builder, unroll_body);
+                                switch_to_block_materialized(&mut builder, unroll_body);
+                                seal_block_once(&mut builder, &mut sealed_blocks, unroll_body);
+                                let cur_idx = builder.use_var(idx_loop_var);
+                                let cur_acc = builder.use_var(acc_loop_var);
+
+                                // Element 0: data_ptr[idx * 8]
+                                let off0 = builder.ins().ishl_imm(cur_idx, 3);
+                                let addr0 = builder.ins().iadd(data_ptr, off0);
+                                let e0 = builder.ins().load(types::I64, MemFlags::trusted(), addr0, 0);
+                                let acc1 = builder.ins().iadd(cur_acc, e0);
+
+                                // Element 1: data_ptr[(idx+1) * 8]
+                                let e1 = builder.ins().load(types::I64, MemFlags::trusted(), addr0, 8);
+                                let acc2 = builder.ins().iadd(acc1, e1);
+
+                                // Element 2: data_ptr[(idx+2) * 8]
+                                let e2 = builder.ins().load(types::I64, MemFlags::trusted(), addr0, 16);
+                                let acc3 = builder.ins().iadd(acc2, e2);
+
+                                // Element 3: data_ptr[(idx+3) * 8]
+                                let e3 = builder.ins().load(types::I64, MemFlags::trusted(), addr0, 24);
+                                let acc4 = builder.ins().iadd(acc3, e3);
+
+                                // Advance index by 4
+                                let next_idx_u = builder.ins().iadd_imm(cur_idx, 4);
+                                builder.def_var(idx_loop_var, next_idx_u);
+                                builder.def_var(acc_loop_var, acc4);
+                                jump_block(&mut builder, unroll_header, &[]);
+
+                                // ── Scalar epilogue (0-3 remaining elements) ──
+                                // epilogue_header is a loop header (back-edge from
+                                // epilogue_body) — do NOT seal it here; seal_all_blocks
+                                // handles it after all predecessors are wired.
+                                ensure_block_in_layout(&mut builder, epilogue_header);
+                                switch_to_block_materialized(&mut builder, epilogue_header);
+                                let idx_e = builder.use_var(idx_loop_var);
+                                let cmp_e = builder.ins().icmp(
+                                    IntCC::SignedLessThan, idx_e, len_val,
+                                );
+                                builder.ins().brif(
+                                    cmp_e, epilogue_body, &[], after_all, &[],
+                                );
+
+                                // Epilogue body: load 1 element, add, advance by 1
+                                ensure_block_in_layout(&mut builder, epilogue_body);
+                                switch_to_block_materialized(&mut builder, epilogue_body);
+                                seal_block_once(&mut builder, &mut sealed_blocks, epilogue_body);
+                                let idx_eb = builder.use_var(idx_loop_var);
+                                let acc_eb = builder.use_var(acc_loop_var);
+                                let off_e = builder.ins().ishl_imm(idx_eb, 3);
+                                let addr_e = builder.ins().iadd(data_ptr, off_e);
+                                let elem_e = builder.ins().load(
+                                    types::I64, MemFlags::trusted(), addr_e, 0,
+                                );
+                                let acc_e_next = builder.ins().iadd(acc_eb, elem_e);
+                                let next_idx_e = builder.ins().iadd_imm(idx_eb, 1);
+                                builder.def_var(idx_loop_var, next_idx_e);
+                                builder.def_var(acc_loop_var, acc_e_next);
+                                jump_block(&mut builder, epilogue_header, &[]);
+
+                                // ── After block: write final accumulator to variables ──
+                                ensure_block_in_layout(&mut builder, after_all);
+                                switch_to_block_materialized(&mut builder, after_all);
+                                seal_block_once(&mut builder, &mut sealed_blocks, after_all);
+                                let final_acc = builder.use_var(acc_loop_var);
+
+                                // Box the result and store into the accumulator variables.
+                                let boxed_acc = box_int_value_hoisted(
+                                    &mut builder, final_acc, box_int_mask_var, box_int_tag_var,
+                                );
+                                // Update the add output variable.
+                                def_var_named(&mut builder, &vars, &reduction.add_out_name, boxed_acc);
+                                if let Some(&sv) = raw_int_shadow.get(&reduction.add_out_name) {
+                                    builder.def_var(sv, final_acc);
+                                }
+                                raw_int_shadow_vals.insert(reduction.add_out_name.clone(), final_acc);
+                                raw_primary_int.insert(reduction.add_out_name.clone());
+
+                                // Update the store slot variable.
+                                def_var_named(&mut builder, &vars, &reduction.acc_store_slot, boxed_acc);
+                                if let Some(&sv) = raw_int_shadow.get(&reduction.acc_store_slot) {
+                                    builder.def_var(sv, final_acc);
+                                }
+                                raw_int_shadow_vals.insert(reduction.acc_store_slot.clone(), final_acc);
+                                raw_primary_int.insert(reduction.acc_store_slot.clone());
+
+                                // Also update the accumulator operand variable (the live-in
+                                // accumulator that the next use after the loop will read).
+                                def_var_named(&mut builder, &vars, &reduction.acc_operand_name, boxed_acc);
+                                if let Some(&sv) = raw_int_shadow.get(&reduction.acc_operand_name) {
+                                    builder.def_var(sv, final_acc);
+                                }
+                                raw_int_shadow_vals.insert(reduction.acc_operand_name.clone(), final_acc);
+                                raw_primary_int.insert(reduction.acc_operand_name.clone());
+
+                                // Skip all ops from (op_idx+1) through loop_end_idx.
+                                for skip_i in (op_idx + 1)..=reduction.loop_end_idx {
+                                    skip_ops.insert(skip_i);
+                                }
+
+                                is_block_filled = false;
+
+                                if debug_loop_cfg.is_some() {
+                                    eprintln!(
+                                        "LOOP_CFG {} op{} UNROLLED_4X list={} acc={}",
+                                        func_ir.name, op_idx,
+                                        reduction.list_name, reduction.acc_store_slot,
+                                    );
+                                }
+                                continue;
+                            }
+                            // Fall through to standard structured loop if data_ptr/len
+                            // are not in the cache (should not happen since we hoisted).
+                        }
+
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
                         jump_block(&mut builder, loop_block, &[]);
@@ -21877,7 +22077,8 @@ mod tests {
     use super::{
         alias_root_name, cleanup_roots_for_names, collect_slot_backed_join_names,
         is_cold_module_chunk_function, live_exception_rebind_vars_for_op, materialize_label_block,
-        preanalyze_function_ir, switch_to_block_materialized, switch_to_block_with_rebind,
+        preanalyze_function_ir, scan_loop_int_sum_reduction, switch_to_block_materialized,
+        switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
     use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
@@ -22598,6 +22799,433 @@ mod tests {
         assert!(
             !is_block_filled,
             "materialized label block must be open for emission"
+        );
+    }
+
+    // ── scan_loop_int_sum_reduction tests ──────────────────────────
+
+    #[test]
+    fn sum_reduction_detects_canonical_pattern() {
+        // Simulates the IR for:
+        //   total = 0
+        //   for x in list_of_ints:
+        //       total += x
+        let ops = vec![
+            // 0: loop_start
+            OpIR {
+                kind: "loop_start".to_string(),
+                ..OpIR::default()
+            },
+            // 1: loop_index_start  (idx)
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("idx".to_string()),
+                args: Some(vec!["start_val".to_string()]),
+                ..OpIR::default()
+            },
+            // 2: index  list[idx]  -> elem
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["my_list".to_string(), "idx".to_string()]),
+                out: Some("elem".to_string()),
+                container_type: Some("list_int".to_string()),
+                bce_safe: Some(true),
+                ..OpIR::default()
+            },
+            // 3: add  [total, elem]  -> sum_result
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["total".to_string(), "elem".to_string()]),
+                out: Some("sum_result".to_string()),
+                ..OpIR::default()
+            },
+            // 4: store_var  total = sum_result
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("total".to_string()),
+                args: Some(vec!["sum_result".to_string()]),
+                ..OpIR::default()
+            },
+            // 5: loop_index_next
+            OpIR {
+                kind: "loop_index_next".to_string(),
+                args: Some(vec!["next_idx".to_string()]),
+                out: Some("idx_next".to_string()),
+                ..OpIR::default()
+            },
+            // 6: loop_continue
+            OpIR {
+                kind: "loop_continue".to_string(),
+                ..OpIR::default()
+            },
+            // 7: loop_end
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        let result = scan_loop_int_sum_reduction(&ops, 1, "idx");
+        assert!(result.is_some(), "canonical sum reduction must be detected");
+        let candidate = result.unwrap();
+        assert_eq!(candidate.list_name, "my_list");
+        assert_eq!(candidate.acc_store_slot, "total");
+        assert_eq!(candidate.add_out_name, "sum_result");
+        assert_eq!(candidate.acc_operand_name, "total");
+        assert_eq!(candidate.loop_end_idx, 7);
+    }
+
+    #[test]
+    fn sum_reduction_detects_reversed_add_operands() {
+        // add [elem, total] instead of [total, elem]
+        let ops = vec![
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("i".to_string()),
+                args: Some(vec!["zero".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "i".to_string()]),
+                out: Some("e".to_string()),
+                container_type: Some("list_int".to_string()),
+                bce_safe: Some(true),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "inplace_add".to_string(),
+                args: Some(vec!["e".to_string(), "acc".to_string()]),
+                out: Some("new_acc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("acc".to_string()),
+                args: Some(vec!["new_acc".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        let result = scan_loop_int_sum_reduction(&ops, 0, "i");
+        assert!(result.is_some(), "reversed operand sum reduction must be detected");
+        let c = result.unwrap();
+        assert_eq!(c.acc_operand_name, "acc");
+        assert_eq!(c.list_name, "lst");
+    }
+
+    #[test]
+    fn sum_reduction_rejects_non_bce_safe() {
+        let ops = vec![
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("i".to_string()),
+                args: Some(vec!["zero".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "i".to_string()]),
+                out: Some("e".to_string()),
+                container_type: Some("list_int".to_string()),
+                bce_safe: None, // NOT bce_safe
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["acc".to_string(), "e".to_string()]),
+                out: Some("new_acc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("acc".to_string()),
+                args: Some(vec!["new_acc".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        assert!(
+            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            "non-bce_safe index must disqualify sum reduction"
+        );
+    }
+
+    #[test]
+    fn sum_reduction_rejects_call_in_body() {
+        let ops = vec![
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("i".to_string()),
+                args: Some(vec!["zero".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "i".to_string()]),
+                out: Some("e".to_string()),
+                container_type: Some("list_int".to_string()),
+                bce_safe: Some(true),
+                ..OpIR::default()
+            },
+            // Side-effecting call in loop body — disqualifies
+            OpIR {
+                kind: "call".to_string(),
+                args: Some(vec!["e".to_string()]),
+                out: Some("result".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["acc".to_string(), "result".to_string()]),
+                out: Some("new_acc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("acc".to_string()),
+                args: Some(vec!["new_acc".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        assert!(
+            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            "call in loop body must disqualify sum reduction"
+        );
+    }
+
+    #[test]
+    fn sum_reduction_rejects_nested_loop() {
+        let ops = vec![
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("i".to_string()),
+                args: Some(vec!["zero".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "i".to_string()]),
+                out: Some("e".to_string()),
+                container_type: Some("list_int".to_string()),
+                bce_safe: Some(true),
+                ..OpIR::default()
+            },
+            // Nested loop
+            OpIR {
+                kind: "loop_start".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["acc".to_string(), "e".to_string()]),
+                out: Some("new_acc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("acc".to_string()),
+                args: Some(vec!["new_acc".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        assert!(
+            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            "nested loop must disqualify sum reduction"
+        );
+    }
+
+    #[test]
+    fn sum_reduction_rejects_wrong_index_var() {
+        // Index uses a different variable than the loop induction variable
+        let ops = vec![
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("i".to_string()),
+                args: Some(vec!["zero".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "other_var".to_string()]),
+                out: Some("e".to_string()),
+                container_type: Some("list_int".to_string()),
+                bce_safe: Some(true),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["acc".to_string(), "e".to_string()]),
+                out: Some("new_acc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("acc".to_string()),
+                args: Some(vec!["new_acc".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        assert!(
+            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            "index with non-induction variable must disqualify"
+        );
+    }
+
+    #[test]
+    fn sum_reduction_rejects_non_list_int() {
+        let ops = vec![
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("i".to_string()),
+                args: Some(vec!["zero".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "i".to_string()]),
+                out: Some("e".to_string()),
+                container_type: Some("list".to_string()), // generic list, not list_int
+                bce_safe: Some(true),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["acc".to_string(), "e".to_string()]),
+                out: Some("new_acc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("acc".to_string()),
+                args: Some(vec!["new_acc".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        assert!(
+            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            "non-list_int container must disqualify"
+        );
+    }
+
+    #[test]
+    fn sum_reduction_rejects_multiple_stores() {
+        let ops = vec![
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("i".to_string()),
+                args: Some(vec!["zero".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "i".to_string()]),
+                out: Some("e".to_string()),
+                container_type: Some("list_int".to_string()),
+                bce_safe: Some(true),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["acc".to_string(), "e".to_string()]),
+                out: Some("new_acc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("acc".to_string()),
+                args: Some(vec!["new_acc".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("other".to_string()),
+                args: Some(vec!["e".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        assert!(
+            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            "multiple store_var ops must disqualify"
+        );
+    }
+
+    #[test]
+    fn sum_reduction_rejects_add_elem_mismatch() {
+        // add operands don't include the index element
+        let ops = vec![
+            OpIR {
+                kind: "loop_index_start".to_string(),
+                out: Some("i".to_string()),
+                args: Some(vec!["zero".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "i".to_string()]),
+                out: Some("e".to_string()),
+                container_type: Some("list_int".to_string()),
+                bce_safe: Some(true),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["acc".to_string(), "other_val".to_string()]),
+                out: Some("new_acc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("acc".to_string()),
+                args: Some(vec!["new_acc".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        assert!(
+            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            "add operand mismatch must disqualify"
         );
     }
 }
