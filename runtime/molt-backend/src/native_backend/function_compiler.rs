@@ -26,6 +26,61 @@ fn loop_start_has_index_prelude(ops: &[OpIR], start_idx: usize) -> bool {
     false
 }
 
+/// Scan a loop body (from `start_idx+1` to the matching `loop_end`) and return
+/// the set of list variable names whose data_ptr/len can be hoisted before the
+/// loop.  A variable is hoistable when it is accessed (via `index` or
+/// `store_index`) and NOT mutated (by `list_append`, `list_pop`, `list_extend`,
+/// `list_insert`, `list_remove`, or `list_clear`) anywhere in the loop body.
+///
+/// Returns `(list_int_hoistable, list_generic_hoistable)`.
+#[cfg(feature = "native-backend")]
+fn scan_loop_hoistable_lists(
+    ops: &[OpIR],
+    start_idx: usize,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut list_int_accessed: BTreeSet<String> = BTreeSet::new();
+    let mut list_generic_accessed: BTreeSet<String> = BTreeSet::new();
+    let mut mutated: BTreeSet<String> = BTreeSet::new();
+
+    let mut depth = 0i32;
+    for idx in (start_idx + 1)..ops.len() {
+        let op = &ops[idx];
+        match op.kind.as_str() {
+            "loop_start" | "loop_index_start" => depth += 1,
+            "loop_end" if depth > 0 => depth -= 1,
+            "loop_end" => break,
+            _ => {}
+        }
+        // Only consider ops at the current loop nesting level (depth == 0).
+        // Inner loop accesses get their own hoisting when their loop_start is
+        // processed.
+        if depth != 0 {
+            continue;
+        }
+        let args = match op.args.as_ref() {
+            Some(a) if !a.is_empty() => a,
+            _ => continue,
+        };
+        match op.kind.as_str() {
+            "index" | "store_index" => {
+                match op.container_type.as_deref() {
+                    Some("list_int") => { list_int_accessed.insert(args[0].clone()); }
+                    Some("list") => { list_generic_accessed.insert(args[0].clone()); }
+                    _ => {}
+                }
+            }
+            "list_append" | "list_pop" | "list_extend" | "list_insert"
+            | "list_remove" | "list_clear" => {
+                mutated.insert(args[0].clone());
+            }
+            _ => {}
+        }
+    }
+    list_int_accessed.retain(|v| !mutated.contains(v));
+    list_generic_accessed.retain(|v| !mutated.contains(v));
+    (list_int_accessed, list_generic_accessed)
+}
+
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScalarLane {
@@ -16868,6 +16923,126 @@ impl SimpleBackend {
                                 def_var_named(&mut builder, &vars, name, none_val);
                             }
                         }
+                        // ── Loop-invariant list pointer hoisting ──────────
+                        // Scan the loop body to find list variables that are
+                        // accessed (index/store_index) but never mutated
+                        // (append/pop/etc).  For those, emit the NaN-unbox +
+                        // data_ptr/len loads HERE (in the pre-loop block) so
+                        // the results live in Cranelift Variables that persist
+                        // across iterations via phi nodes.  The in-loop cache
+                        // lookup will then hit on every iteration.
+                        {
+                            let (li_hoist, lg_hoist) =
+                                scan_loop_hoistable_lists(&func_ir.ops, op_idx);
+                            for list_name in &li_hoist {
+                                if list_int_data_cache.contains_key(list_name) {
+                                    continue; // already cached from an outer scope
+                                }
+                                let Some(obj) = var_get(&mut builder, &vars, list_name) else {
+                                    continue;
+                                };
+                                let masked =
+                                    builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                let shifted = builder.ins().ishl_imm(masked, 16);
+                                let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                let storage_ptr = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    obj_ptr,
+                                    0,
+                                );
+                                let dp = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    LIST_INT_STORAGE_DATA_OFFSET,
+                                );
+                                let len = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    LIST_INT_STORAGE_LEN_OFFSET,
+                                );
+                                let dvar = builder.declare_var(types::I64);
+                                builder.def_var(dvar, dp);
+                                list_int_data_cache.insert(list_name.clone(), dvar);
+                                let lvar = builder.declare_var(types::I64);
+                                builder.def_var(lvar, len);
+                                list_int_len_cache.insert(list_name.clone(), lvar);
+                            }
+                            for list_name in &lg_hoist {
+                                if list_data_cache.contains_key(list_name) {
+                                    continue;
+                                }
+                                let Some(obj) = var_get(&mut builder, &vars, list_name) else {
+                                    continue;
+                                };
+                                let masked =
+                                    builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                let shifted = builder.ins().ishl_imm(masked, 16);
+                                let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                // Load type_id to distinguish list vs list_bool.
+                                let tid = builder.ins().load(
+                                    types::I32,
+                                    MemFlags::trusted(),
+                                    obj_ptr,
+                                    HEADER_TYPE_ID_OFFSET,
+                                );
+                                let bool_tid = builder
+                                    .ins()
+                                    .iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                                let is_bool =
+                                    builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                                let ibvar = builder.declare_var(types::I8);
+                                builder.def_var(ibvar, is_bool);
+                                list_is_bool_cache
+                                    .insert(list_name.clone(), ibvar);
+                                let storage_ptr = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    obj_ptr,
+                                    0,
+                                );
+                                let vec_layout = vec_u64_layout();
+                                // ListBoolStorage (repr(C)): data@0, len@8
+                                let dp_bool = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    0i32,
+                                );
+                                let len_bool = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    8i32,
+                                );
+                                // Vec<u64> (repr(Rust), probed offsets)
+                                let dp_vec = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    vec_layout.data_offset,
+                                );
+                                let len_vec = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    vec_layout.len_offset,
+                                );
+                                let dp =
+                                    builder.ins().select(is_bool, dp_bool, dp_vec);
+                                let len =
+                                    builder.ins().select(is_bool, len_bool, len_vec);
+                                let dvar = builder.declare_var(types::I64);
+                                builder.def_var(dvar, dp);
+                                list_data_cache.insert(list_name.clone(), dvar);
+                                let lvar = builder.declare_var(types::I64);
+                                builder.def_var(lvar, len);
+                                list_len_cache.insert(list_name.clone(), lvar);
+                            }
+                        }
+
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
                         jump_block(&mut builder, loop_block, &[]);
@@ -17089,6 +17264,120 @@ impl SimpleBackend {
                                 def_var_named(&mut builder, &vars, name, none_val);
                             }
                         }
+
+                        // ── Loop-invariant list pointer hoisting (indexed) ──
+                        // Same as the loop_start hoisting — emit data_ptr/len
+                        // loads in the pre-loop block so the in-loop cache hits
+                        // on every iteration.
+                        {
+                            let (li_hoist, lg_hoist) =
+                                scan_loop_hoistable_lists(&func_ir.ops, op_idx);
+                            for list_name in &li_hoist {
+                                if list_int_data_cache.contains_key(list_name) {
+                                    continue;
+                                }
+                                let Some(obj) = var_get(&mut builder, &vars, list_name) else {
+                                    continue;
+                                };
+                                let masked =
+                                    builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                let shifted = builder.ins().ishl_imm(masked, 16);
+                                let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                let storage_ptr = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    obj_ptr,
+                                    0,
+                                );
+                                let dp = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    LIST_INT_STORAGE_DATA_OFFSET,
+                                );
+                                let len = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    LIST_INT_STORAGE_LEN_OFFSET,
+                                );
+                                let dvar = builder.declare_var(types::I64);
+                                builder.def_var(dvar, dp);
+                                list_int_data_cache.insert(list_name.clone(), dvar);
+                                let lvar = builder.declare_var(types::I64);
+                                builder.def_var(lvar, len);
+                                list_int_len_cache.insert(list_name.clone(), lvar);
+                            }
+                            for list_name in &lg_hoist {
+                                if list_data_cache.contains_key(list_name) {
+                                    continue;
+                                }
+                                let Some(obj) = var_get(&mut builder, &vars, list_name) else {
+                                    continue;
+                                };
+                                let masked =
+                                    builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                let shifted = builder.ins().ishl_imm(masked, 16);
+                                let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                let tid = builder.ins().load(
+                                    types::I32,
+                                    MemFlags::trusted(),
+                                    obj_ptr,
+                                    HEADER_TYPE_ID_OFFSET,
+                                );
+                                let bool_tid = builder
+                                    .ins()
+                                    .iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                                let is_bool =
+                                    builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                                let ibvar = builder.declare_var(types::I8);
+                                builder.def_var(ibvar, is_bool);
+                                list_is_bool_cache
+                                    .insert(list_name.clone(), ibvar);
+                                let storage_ptr = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    obj_ptr,
+                                    0,
+                                );
+                                let vec_layout = vec_u64_layout();
+                                let dp_bool = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    0i32,
+                                );
+                                let len_bool = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    8i32,
+                                );
+                                let dp_vec = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    vec_layout.data_offset,
+                                );
+                                let len_vec = builder.ins().load(
+                                    types::I64,
+                                    MemFlags::trusted(),
+                                    storage_ptr,
+                                    vec_layout.len_offset,
+                                );
+                                let dp =
+                                    builder.ins().select(is_bool, dp_bool, dp_vec);
+                                let len =
+                                    builder.ins().select(is_bool, len_bool, len_vec);
+                                let dvar = builder.declare_var(types::I64);
+                                builder.def_var(dvar, dp);
+                                list_data_cache.insert(list_name.clone(), dvar);
+                                let lvar = builder.declare_var(types::I64);
+                                builder.def_var(lvar, len);
+                                list_len_cache.insert(list_name.clone(), lvar);
+                            }
+                        }
+
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
                         jump_block(&mut builder, loop_block, &[]);
