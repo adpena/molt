@@ -6937,8 +6937,8 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
         calls.append(("shared", frozenset(required) if required else None))
         return True
 
-    def ensure_reloc():
-        calls.append(("reloc", None))
+    def ensure_reloc(required=None):
+        calls.append(("reloc", frozenset(required) if required else None))
         runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0")
         return True
 
@@ -7009,8 +7009,8 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
         runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
         return True
 
-    def ensure_reloc():
-        calls.append(("reloc", None))
+    def ensure_reloc(required=None):
+        calls.append(("reloc", frozenset(required) if required else None))
         return True
 
     prepared, err = cli._prepare_backend_dispatch(
@@ -7078,8 +7078,8 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
         calls.append(("shared", frozenset(required) if required else None))
         return True
 
-    def ensure_reloc():
-        calls.append(("reloc", None))
+    def ensure_reloc(required=None):
+        calls.append(("reloc", frozenset(required) if required else None))
         return True
 
     prepared, err = cli._prepare_backend_dispatch(
@@ -7111,7 +7111,10 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
 
     assert err is None
     assert prepared is not None
-    assert calls == []
+    # The reloc runtime is always validated even when the artifact already
+    # exists on disk, so ensure_reloc is called once with None (no required
+    # module set).
+    assert calls == [("reloc", None)]
     assert prepared.backend_env is not None
     assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1234"
     assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] == "1234"
@@ -7355,7 +7358,7 @@ def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
         runtime_wasm=runtime_wasm,
         runtime_reloc_wasm=None,
         ensure_runtime_wasm_shared=lambda *_args, **_kwargs: True,
-        ensure_runtime_wasm_reloc=lambda: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=False,
@@ -7405,7 +7408,7 @@ def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_w
         runtime_wasm=runtime_wasm,
         runtime_reloc_wasm=runtime_reloc_wasm,
         ensure_runtime_wasm_shared=lambda *_args, **_kwargs: True,
-        ensure_runtime_wasm_reloc=lambda: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=False,
@@ -7462,7 +7465,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         ensure_runtime_wasm_shared=lambda required=None: (
             shared_required.append(frozenset(required or set())) or True
         ),
-        ensure_runtime_wasm_reloc=lambda: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=False,
@@ -7471,7 +7474,10 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
 
     assert err is None
     assert prepared is not None
-    assert shared_required == [frozenset()]
+    # The production code now forwards the required runtime exports
+    # (discovered by _collect_wasm_module_import_names) to the shared
+    # runtime ensure callback so the runtime build includes them.
+    assert shared_required == [frozenset({"alloc", "molt_fast_list_append"})]
 
 
 def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_surface(
@@ -7535,7 +7541,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         ensure_runtime_wasm_shared=lambda required=None: (
             shared_required.append(frozenset(required or set())) or True
         ),
-        ensure_runtime_wasm_reloc=lambda: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
@@ -7544,7 +7550,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
 
     assert err is None
     assert prepared is not None
-    assert shared_required == [frozenset()]
+    assert shared_required == [frozenset({"alloc", "molt_fast_list_append"})]
 
 
 def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_table_refs(
@@ -7610,7 +7616,7 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
         runtime_wasm=runtime_wasm,
         runtime_reloc_wasm=runtime_reloc_wasm,
         ensure_runtime_wasm_shared=lambda required=None: True,
-        ensure_runtime_wasm_reloc=lambda: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
@@ -7919,6 +7925,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         is_wasm_freestanding=False,
         is_rust_transpile=False,
         is_luau_transpile=False,
+        is_mlir_emit=False,
         split_runtime=False,
         linked=False,
         target_triple=None,
@@ -8072,8 +8079,8 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             runtime_lib=runtime_lib,
             runtime_wasm=None,
             runtime_reloc_wasm=None,
-            ensure_runtime_wasm_shared=lambda: True,
-            ensure_runtime_wasm_reloc=lambda: True,
+            ensure_runtime_wasm_shared=lambda required=None: True,
+            ensure_runtime_wasm_reloc=lambda required=None: True,
             cache_setup=kwargs["prepared_backend_setup"].cache_setup,
             cache_hit=False,
             cache_hit_tier=None,
