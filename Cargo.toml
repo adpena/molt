@@ -308,17 +308,25 @@ opt-level = 3
 opt-level = 3
 
 # Output-binary profile: used when building the runtime staticlib that gets
-# linked into user output binaries. Inherits release-fast optimization but
-# uses panic = "abort" — output binaries do not need the backend's
-# catch_unwind retry mechanism, and abort eliminates ~750KB of exception
-# tables (__eh_frame + __gcc_except_tab + __unwind_info).
-# opt-level "z" minimises code size in the runtime; the user's hot paths are
-# in compiled Python code (optimized by Cranelift), not runtime glue.
+# linked into user output binaries. Key differences from release-fast:
+#
+# panic = "abort"    — output binaries do not need the backend's catch_unwind
+#                      retry mechanism. Eliminates ~750KB of exception tables.
+# opt-level "z"      — minimises code size; user hot paths are in compiled
+#                      Python code (optimized by Cranelift), not runtime glue.
+# lto = "thin"       — cross-crate optimization without LLVM bitcode overhead.
+#                      Fat LTO with codegen-units=1 produces a single monolithic
+#                      object file that the system linker cannot split, defeating
+#                      -dead_strip / --gc-sections entirely.
+# codegen-units = 16 — splits the runtime into multiple object files so the
+#                      linker only pulls in objects containing referenced symbols.
+#                      Combined with -dead_strip, this enables function-level
+#                      dead code elimination across the runtime.
 [profile.release-output]
 inherits = "release"
 opt-level = "z"
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 panic = "abort"
 strip = true
 
