@@ -2888,7 +2888,7 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value(&mut builder, result_f, &nbc)
+                        box_float_value_unchecked(&mut builder, result_f)
                     } else if op_prefers_int_lane(&op) {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
                         // If both operands have raw i64 shadows, skip tag check + unbox.
@@ -3809,7 +3809,7 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value(&mut builder, result_f, &nbc)
+                        box_float_value_unchecked(&mut builder, result_f)
                     } else if shadow_pair_available(
                         &raw_int_shadow,
                         &raw_int_shadow_vals,
@@ -4263,7 +4263,11 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out__.clone(), result_f);
                         }
-                        box_float_value(&mut builder, result_f, &nbc)
+                        // When both operands came from float shadows (not bitcast
+                        // fallback), the result of fmul with non-NaN finite inputs
+                        // cannot produce a NaN that collides with the QNAN tag.
+                        // Skip the NaN canonicalization for the hot path.
+                        box_float_value_unchecked(&mut builder, result_f)
                     } else if shadow_pair_available(
                         &raw_int_shadow,
                         &raw_int_shadow_vals,
@@ -5343,7 +5347,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, ok_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, ok_block);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
-                        let fast_res = box_float_value(&mut builder, result_f, &nbc);
+                        let fast_res = box_float_value_unchecked(&mut builder, result_f);
                         jump_block(&mut builder, merge_block, &[fast_res, result_f]);
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
@@ -7415,6 +7419,79 @@ impl SimpleBackend {
                     let val_name = op.var.clone().unwrap_or_default();
                     let done_name = op.out.clone().unwrap_or_default();
 
+                    // Peephole: check if the value output feeds directly into
+                    // an unpack_sequence with count=2 (e.g., `for k, v in d.items()`).
+                    // When it does, use molt_iter_next_dict_items to write key
+                    // and value directly to stack slots — zero tuple allocation.
+                    let mut unpack_idx_ub = None;
+                    if !val_name.is_empty() && val_name != "none" {
+                        let ub_limit = (op_idx + 24).min(ops.len());
+                        for peek in (op_idx + 1)..ub_limit {
+                            if skip_ops.contains(&peek) {
+                                continue;
+                            }
+                            let peek_op = &ops[peek];
+                            if peek_op.kind == "unpack_sequence"
+                                && peek_op.value == Some(2)
+                                && let Some(ref pargs) = peek_op.args
+                                && !pargs.is_empty()
+                                && pargs[0] == val_name
+                            {
+                                unpack_idx_ub = Some(peek);
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some(ui) = unpack_idx_ub {
+                        // === Dict items zero-alloc fast path ===
+                        let key_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let value_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let key_ptr = builder.ins().stack_addr(types::I64, key_slot, 0);
+                        let value_ptr = builder.ins().stack_addr(types::I64, value_slot, 0);
+
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_iter_next_dict_items",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*iter, key_ptr, value_ptr]);
+                        let done_bits = builder.inst_results(call)[0];
+
+                        let loaded_key =
+                            builder.ins().load(types::I64, MemFlags::trusted(), key_ptr, 0);
+                        let loaded_value =
+                            builder.ins().load(types::I64, MemFlags::trusted(), value_ptr, 0);
+
+                        if !done_name.is_empty() && done_name != "none" {
+                            def_var_named(&mut builder, &vars, done_name, done_bits);
+                        }
+                        // Define val_name for SSA completeness (as key).
+                        if !val_name.is_empty() && val_name != "none" {
+                            def_var_named(&mut builder, &vars, &val_name, loaded_key);
+                        }
+
+                        // Define unpack outputs directly.
+                        let unpack_args = ops[ui].args.as_ref().unwrap();
+                        if unpack_args.len() >= 3 {
+                            def_var_named(&mut builder, &vars, &unpack_args[1], loaded_key);
+                            def_var_named(&mut builder, &vars, &unpack_args[2], loaded_value);
+                        }
+
+                        skip_ops.insert(ui);
+                    } else {
+                    // === Standard unboxed path ===
                     let val_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         8,
@@ -7441,6 +7518,7 @@ impl SimpleBackend {
                     }
                     if !val_name.is_empty() && val_name != "none" {
                         def_var_named(&mut builder, &vars, val_name, loaded_val);
+                    }
                     }
                 }
                 "iter_next" => {
@@ -14762,6 +14840,59 @@ impl SimpleBackend {
                                 let call = builder
                                     .ins()
                                     .call(local, &[*method_bits, extra_args[0], extra_args[1]]);
+                                Some(builder.inst_results(call)[0])
+                            }
+                            // str.startswith(prefix) — 1 extra arg
+                            "BoundMethod:str:startswith" if extra_args.len() == 1 => {
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_fast_str_startswith",
+                                    &[types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local = self.module.declare_func_in_func(callee, builder.func);
+                                let call =
+                                    builder.ins().call(local, &[*method_bits, extra_args[0]]);
+                                Some(builder.inst_results(call)[0])
+                            }
+                            // str.upper() — 0 extra args
+                            "BoundMethod:str:upper" if extra_args.is_empty() => {
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_fast_str_upper",
+                                    &[types::I64],
+                                    &[types::I64],
+                                );
+                                let local = self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(local, &[*method_bits]);
+                                Some(builder.inst_results(call)[0])
+                            }
+                            // str.lower() — 0 extra args
+                            "BoundMethod:str:lower" if extra_args.is_empty() => {
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_fast_str_lower",
+                                    &[types::I64],
+                                    &[types::I64],
+                                );
+                                let local = self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(local, &[*method_bits]);
+                                Some(builder.inst_results(call)[0])
+                            }
+                            // str.strip() — 0 extra args (no-arg form)
+                            "BoundMethod:str:strip" if extra_args.is_empty() => {
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_fast_str_strip",
+                                    &[types::I64],
+                                    &[types::I64],
+                                );
+                                let local = self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(local, &[*method_bits]);
                                 Some(builder.inst_results(call)[0])
                             }
                             _ => None,

@@ -1126,6 +1126,17 @@ fn box_float_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts
     builder.ins().select(is_nan, canonical, raw_bits)
 }
 
+/// Box a float value WITHOUT NaN canonicalization.  Only valid when the
+/// caller can prove the value is not NaN (e.g. results of fadd/fmul/fsub
+/// where both operands were obtained from float shadows — known finite
+/// values cannot produce NaN through add/sub/mul).  Saves 3 instructions
+/// (fcmp + iconst + select) per call in hot loops.
+#[cfg(feature = "native-backend")]
+#[inline]
+fn box_float_value_unchecked(builder: &mut FunctionBuilder, val: Value) -> Value {
+    builder.ins().bitcast(types::I64, MemFlags::new(), val)
+}
+
 #[cfg(feature = "native-backend")]
 fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
     // Inline ints are 47-bit signed payloads: range [-(1<<46), (1<<46)-1].

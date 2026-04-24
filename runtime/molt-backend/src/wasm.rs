@@ -11904,6 +11904,28 @@ impl WasmBackend {
                                     emit_call(func, reloc_enabled, import_ids["fast_dict_get"]);
                                     true
                                 }
+                                "BoundMethod:str:startswith" if arity == 1 => {
+                                    let arg = locals[&args_names[1]];
+                                    func.instruction(&Instruction::LocalGet(method_bits));
+                                    func.instruction(&Instruction::LocalGet(arg));
+                                    emit_call(func, reloc_enabled, import_ids["fast_str_startswith"]);
+                                    true
+                                }
+                                "BoundMethod:str:upper" if arity == 0 => {
+                                    func.instruction(&Instruction::LocalGet(method_bits));
+                                    emit_call(func, reloc_enabled, import_ids["fast_str_upper"]);
+                                    true
+                                }
+                                "BoundMethod:str:lower" if arity == 0 => {
+                                    func.instruction(&Instruction::LocalGet(method_bits));
+                                    emit_call(func, reloc_enabled, import_ids["fast_str_lower"]);
+                                    true
+                                }
+                                "BoundMethod:str:strip" if arity == 0 => {
+                                    func.instruction(&Instruction::LocalGet(method_bits));
+                                    emit_call(func, reloc_enabled, import_ids["fast_str_strip"]);
+                                    true
+                                }
                                 _ => false,
                             }
                         } else {

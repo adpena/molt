@@ -270,7 +270,8 @@ pub(crate) use crate::concurrency::{
 pub(crate) use crate::state::RuntimeState;
 pub use crate::wasm_abi_exports::{
     molt_dict_getitem, molt_dict_setitem, molt_fast_dict_get, molt_fast_list_append,
-    molt_fast_str_join, molt_resource_on_allocate, molt_resource_on_free, molt_scratch_alloc,
+    molt_fast_str_join, molt_fast_str_lower, molt_fast_str_startswith, molt_fast_str_strip,
+    molt_fast_str_upper, molt_resource_on_allocate, molt_resource_on_free, molt_scratch_alloc,
     molt_scratch_free, molt_tuple_getitem, molt_type_tag_of_bits,
 };
 #[allow(unused_imports)]
