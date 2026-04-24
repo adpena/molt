@@ -22296,10 +22296,25 @@ impl SimpleBackend {
                             let out_name = op.out.as_ref().unwrap();
                             def_var_named(&mut builder, &vars, out_name, raw_val);
                             raw_primary_int.insert(out_name.clone());
-                            if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
+                            // Propagate Variable-backed shadow so loop bodies
+                            // (which use shadow_value_var_only) can access the
+                            // raw value without falling back to boxed codegen.
+                            let dst_shadow_var = if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
+                                dst_var
+                            } else if raw_int_shadow.contains_key(var_name.as_str()) {
+                                // Source has a Variable-backed shadow (loop phi)
+                                // but output does not yet — create one.
+                                let dst_var = builder.declare_var(types::I64);
                                 builder.def_var(dst_var, raw_val);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), raw_val);
+                                raw_int_shadow.insert(out_name.clone(), dst_var);
+                                dst_var
+                            } else {
+                                // No Variable-backed shadow needed; use value-tier.
+                                raw_int_shadow_vals.insert(out_name.clone(), raw_val);
+                                continue;
+                            };
+                            builder.def_var(dst_shadow_var, raw_val);
+                            raw_int_shadow_vals.remove(out_name);
                             continue;
                         }
                         // --- Raw-primary float fast path ---
