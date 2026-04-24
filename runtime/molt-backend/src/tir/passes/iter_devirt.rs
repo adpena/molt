@@ -68,6 +68,10 @@ struct ListLoopCandidate {
     exit_block: BlockId,
     /// The body block (where done=false branches to).
     body_block: BlockId,
+    /// Container type from the GetIter or source (e.g. "list", "list_int").
+    /// Propagated to the synthesized Index op so the backend can emit
+    /// inline list access instead of a generic runtime call.
+    container_type: Option<String>,
 }
 
 pub fn run(func: &mut TirFunction) -> PassStats {
@@ -101,6 +105,14 @@ fn is_list_source(func: &TirFunction, source_val: ValueId, block_ids: &[BlockId]
             // BuildList always produces a list.
             if op.opcode == OpCode::BuildList {
                 return true;
+            }
+            // Mul(BuildList, count) is a list repeat — still a list.
+            // Pattern: `[x] * n` produces Mul where one operand is a BuildList result.
+            if op.opcode == OpCode::Mul && op.operands.len() == 2 {
+                let (a, b) = (op.operands[0], op.operands[1]);
+                if is_list_source(func, a, block_ids) || is_list_source(func, b, block_ids) {
+                    return true;
+                }
             }
             // Check container_type attr on the source op.
             if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type") {
@@ -169,21 +181,32 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
             // Check if source is known to be a list.
             // Strategy 1: Check container_type on the GetIter op itself.
             let get_iter_op = &func.blocks[&setup_block].ops[get_iter_idx];
-            let get_iter_is_list =
+            let get_iter_container_type =
                 if let Some(AttrValue::Str(ct)) = get_iter_op.attrs.get("container_type") {
-                    ct.starts_with("list")
+                    if ct.starts_with("list") {
+                        Some(ct.clone())
+                    } else {
+                        None
+                    }
                 } else {
-                    false
+                    None
                 };
 
             // Strategy 2: Check the source value's defining op.
             let source_is_list = is_list_source(func, source_val, &block_ids);
 
-            if !get_iter_is_list && !source_is_list {
+            if get_iter_container_type.is_none() && !source_is_list {
                 // Not a list — skip. This avoids transforming dict/set/generator
                 // iteration which has different semantics.
                 continue;
             }
+
+            // Determine the container_type for the synthesized Index op.
+            // Prefer the GetIter's explicit container_type; fall back to
+            // inferring from the source defining op.
+            let container_type = get_iter_container_type.or_else(|| {
+                infer_container_type(func, source_val, &block_ids)
+            });
 
             // Reject if source_val is defined INSIDE the loop (mutation risk).
             // The list must be defined before the loop header.
@@ -242,6 +265,7 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
                 done_val,
                 exit_block,
                 body_block,
+                container_type,
             });
 
             // Only process the first IterNextUnboxed per header.
