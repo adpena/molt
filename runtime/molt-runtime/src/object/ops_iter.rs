@@ -18,7 +18,7 @@ use super::ops::{
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_range_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let start_type = class_name_for_error(type_of_bits(_py, start_bits));
         let start_err = format!("'{start_type}' object cannot be interpreted as an integer");
         let Some(start) = index_bigint_from_obj(_py, start_bits, &start_err) else {
@@ -43,7 +43,7 @@ pub extern "C" fn molt_range_new(start_bits: u64, stop_bits: u64, step_bits: u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_from_range(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let range_bits = molt_range_new(start_bits, stop_bits, step_bits);
         if obj_from_bits(range_bits).is_none() {
             return MoltObject::none().bits();
@@ -103,7 +103,7 @@ pub extern "C" fn molt_list_from_range(start_bits: u64, stop_bits: u64, step_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_range_count(range_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let range_obj = obj_from_bits(range_bits);
         let Some(range_ptr) = range_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "count() argument must be range");
@@ -152,7 +152,7 @@ pub extern "C" fn molt_range_count(range_bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_range_index(range_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let range_obj = obj_from_bits(range_bits);
         let Some(range_ptr) = range_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "index() argument must be range");
@@ -201,7 +201,7 @@ pub extern "C" fn molt_range_index(range_bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enumerate_builtin(iter_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         let has_start = start_bits != missing;
         let start = if has_start {
@@ -216,7 +216,7 @@ pub extern "C" fn molt_enumerate_builtin(iter_bits: u64, start_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         let pair_bits = molt_iter_next(iter_bits);
         let pair_obj = obj_from_bits(pair_bits);
@@ -289,7 +289,7 @@ pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_map_builtin(func_bits: u64, iterables_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let iterables_obj = obj_from_bits(iterables_bits);
         let Some(iterables_ptr) = iterables_obj.as_ptr() else {
             let single = [iterables_bits];
@@ -327,7 +327,7 @@ pub(crate) unsafe fn filter_new_impl(_py: &PyToken<'_>, func_bits: u64, iterable
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_filter_builtin(func_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { filter_new_impl(_py, func_bits, iterable_bits) }
     })
 }
@@ -363,7 +363,7 @@ pub(crate) unsafe fn zip_new_impl(_py: &PyToken<'_>, iterables: &[u64], strict: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zip_builtin(iterables_bits: u64, strict_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let strict = is_truthy(_py, obj_from_bits(strict_bits));
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -390,7 +390,7 @@ pub extern "C" fn molt_zip_builtin(iterables_bits: u64, strict_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_reversed_builtin(seq_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { unsafe { reversed_new_impl(_py, seq_bits) } })
+    crate::with_gil_entry_nopanic!(_py, { unsafe { reversed_new_impl(_py, seq_bits) } })
 }
 
 pub(crate) unsafe fn reversed_new_impl(_py: &PyToken<'_>, seq_bits: u64) -> u64 {
@@ -496,7 +496,7 @@ pub(crate) unsafe fn reversed_new_impl(_py: &PyToken<'_>, seq_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let missing = missing_bits(_py);
         if default_bits == missing {
             return molt_anext(iter_bits);
@@ -521,7 +521,7 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enumerate(iterable_bits: u64, start_bits: u64, has_start_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let has_start = is_truthy(_py, obj_from_bits(has_start_bits));
         let start_opt = if has_start { Some(start_bits) } else { None };
         unsafe { enumerate_new_impl(_py, iterable_bits, start_opt) }
@@ -566,7 +566,7 @@ pub(crate) unsafe fn enumerate_new_impl(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if matches!(
             std::env::var("MOLT_TRACE_ITER_ARG").ok().as_deref(),
             Some("1")
@@ -735,7 +735,7 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(iter_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -760,7 +760,7 @@ pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(callable_bits)));
         if !callable_ok {
             return raise_exception::<_>(_py, "TypeError", "iter(v, w): v must be callable");
@@ -782,7 +782,7 @@ pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let obj = obj_from_bits(obj_bits);
             let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__aiter__") else {
@@ -888,7 +888,7 @@ unsafe fn iter_return_cached(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         if let Some(ptr) = maybe_ptr_from_bits(iter_bits) {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_GENERATOR {
@@ -1730,7 +1730,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
 /// `value_out` must point to writable storage for one `u64`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let done_true = MoltObject::from_bool(true).bits();
         let done_false = MoltObject::from_bool(false).bits();
 
@@ -1950,7 +1950,7 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
     key_out: *mut u64,
     value_out: *mut u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let done_true = MoltObject::from_bool(true).bits();
         let done_false = MoltObject::from_bool(false).bits();
 
@@ -2027,7 +2027,7 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let obj = obj_from_bits(obj_bits);
             let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__anext__") else {

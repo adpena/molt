@@ -536,7 +536,7 @@ fn max_ints_trusted(elems: &[u64], acc: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -573,7 +573,7 @@ pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -607,7 +607,7 @@ pub extern "C" fn molt_vec_sum_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_prod_int(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -640,7 +640,7 @@ pub extern "C" fn molt_vec_prod_int(seq_bits: u64, acc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_prod_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -671,7 +671,7 @@ pub extern "C" fn molt_vec_prod_int_trusted(seq_bits: u64, acc_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_min_int(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -699,7 +699,7 @@ pub extern "C" fn molt_vec_min_int(seq_bits: u64, acc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_min_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -725,7 +725,7 @@ pub extern "C" fn molt_vec_min_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_max_int(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -753,7 +753,7 @@ pub extern "C" fn molt_vec_max_int(seq_bits: u64, acc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_max_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -794,7 +794,7 @@ fn sum_int_range_arith_checked(start: i64, stop: i64, step: i64, acc: i64) -> Op
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -836,7 +836,7 @@ pub extern "C" fn molt_vec_sum_int_range_trusted(
     acc_bits: u64,
     start_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -872,7 +872,7 @@ pub extern "C" fn molt_vec_sum_int_range_trusted(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_int_range_iter(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc = match obj_from_bits(acc_bits).as_int() {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
@@ -898,7 +898,7 @@ pub extern "C" fn molt_vec_sum_int_range_iter(seq_bits: u64, acc_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_int_range_iter_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc = match obj_from_bits(acc_bits).as_int() {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
@@ -924,7 +924,7 @@ pub extern "C" fn molt_vec_sum_int_range_iter_trusted(seq_bits: u64, acc_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_float(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc = match number_as_f64(obj_from_bits(acc_bits)) {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
@@ -959,7 +959,7 @@ pub extern "C" fn molt_vec_sum_float(seq_bits: u64, acc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_float_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc = match number_as_f64(obj_from_bits(acc_bits)) {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
@@ -994,7 +994,7 @@ pub extern "C" fn molt_vec_sum_float_trusted(seq_bits: u64, acc_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_float_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc = match number_as_f64(obj_from_bits(acc_bits)) {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
@@ -1033,7 +1033,7 @@ pub extern "C" fn molt_vec_sum_float_range_trusted(
     acc_bits: u64,
     start_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc = match number_as_f64(obj_from_bits(acc_bits)) {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
@@ -1068,7 +1068,7 @@ pub extern "C" fn molt_vec_sum_float_range_trusted(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_float_range_iter(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc = match number_as_f64(obj_from_bits(acc_bits)) {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
@@ -1094,7 +1094,7 @@ pub extern "C" fn molt_vec_sum_float_range_iter(seq_bits: u64, acc_bits: u64) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_float_range_iter_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc = match number_as_f64(obj_from_bits(acc_bits)) {
             Some(val) => val,
             None => return vec_sum_result(_py, MoltObject::none().bits(), false),
@@ -1120,7 +1120,7 @@ pub extern "C" fn molt_vec_sum_float_range_iter_trusted(seq_bits: u64, acc_bits:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_prod_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -1169,7 +1169,7 @@ pub extern "C" fn molt_vec_prod_int_range_trusted(
     acc_bits: u64,
     start_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -1212,7 +1212,7 @@ pub extern "C" fn molt_vec_prod_int_range_trusted(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_min_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -1254,7 +1254,7 @@ pub extern "C" fn molt_vec_min_int_range_trusted(
     acc_bits: u64,
     start_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -1290,7 +1290,7 @@ pub extern "C" fn molt_vec_min_int_range_trusted(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_max_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
@@ -1332,7 +1332,7 @@ pub extern "C" fn molt_vec_max_int_range_trusted(
     acc_bits: u64,
     start_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let acc_obj = obj_from_bits(acc_bits);
         let acc = match acc_obj.as_int() {
             Some(val) => val,
