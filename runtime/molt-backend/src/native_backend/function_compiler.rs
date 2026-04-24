@@ -2031,6 +2031,19 @@ impl SimpleBackend {
 
         let nbc = NanBoxConsts::new(&mut builder);
 
+        // Pre-hoisted boxing constants: these Cranelift Variables hold the
+        // INT_MASK and QNAN|TAG_INT constants used by box_int_value_hoisted.
+        // Declared once at function entry, they persist across loop iterations
+        // as register-allocated values, eliminating redundant iconst
+        // instructions from the both-shadow arithmetic fast paths (saving
+        // 2 instructions per proven-int arithmetic op in tight loops).
+        let box_int_mask_var = builder.declare_var(types::I64);
+        let box_int_tag_var = builder.declare_var(types::I64);
+        let mask_init = builder.ins().iconst(types::I64, nbc.int_mask);
+        let tag_init = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
+        builder.def_var(box_int_mask_var, mask_init);
+        builder.def_var(box_int_tag_var, tag_init);
+
         if let Some((data_id, name_len_i64)) = trace_data {
             let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
             let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
@@ -2950,7 +2963,7 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            let fast_res = box_int_value(&mut builder, sum, &nbc);
+                            let fast_res = box_int_value_hoisted(&mut builder, sum, box_int_mask_var, box_int_tag_var);
                             jump_block(&mut builder, merge_block, &[fast_res, sum]);
 
                             switch_to_block_materialized(&mut builder, slow_block);
@@ -2985,7 +2998,7 @@ impl SimpleBackend {
                             let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
                             let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                             let sum = builder.ins().iadd(lhs_val, rhs_val);
-                            let fast_res = box_int_value(&mut builder, sum, &nbc);
+                            let fast_res = box_int_value_hoisted(&mut builder, sum, box_int_mask_var, box_int_tag_var);
                             let fits_inline = int_value_fits_inline(&mut builder, sum);
                             builder
                                 .ins()
@@ -3041,7 +3054,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, sum, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, sum, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
                         brif_block(
                             &mut builder,
@@ -3184,7 +3197,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -3225,7 +3238,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, sum, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, sum, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
                         builder
                             .ins()
@@ -3280,7 +3293,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, sum, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, sum, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
                         brif_block(
                             &mut builder,
@@ -3865,7 +3878,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -3909,7 +3922,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, diff, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, diff, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
                         builder
                             .ins()
@@ -3953,7 +3966,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, diff, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, diff, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
                         brif_block(
                             &mut builder,
@@ -4094,7 +4107,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -4138,7 +4151,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, diff, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, diff, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
                         builder
                             .ins()
@@ -4182,7 +4195,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, diff, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, diff, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
                         brif_block(
                             &mut builder,
@@ -4321,7 +4334,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -4363,7 +4376,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, prod, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, prod, box_int_mask_var, box_int_tag_var);
                         builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, fast_block);
@@ -4415,7 +4428,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, prod, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, prod, box_int_mask_var, box_int_tag_var);
                         brif_block(
                             &mut builder,
                             fits,
@@ -4539,7 +4552,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        let boxed = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[boxed]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -4575,7 +4588,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, prod, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, prod, box_int_mask_var, box_int_tag_var);
                         builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, fast_block);
@@ -4627,7 +4640,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, prod, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, prod, box_int_mask_var, box_int_tag_var);
                         brif_block(
                             &mut builder,
                             fits,
@@ -4701,7 +4714,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -4740,7 +4753,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bor(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -4794,7 +4807,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -4833,7 +4846,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bor(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -4887,7 +4900,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -4926,7 +4939,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().band(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -4980,7 +4993,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -5019,7 +5032,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().band(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -5073,7 +5086,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -5112,7 +5125,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bxor(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -5166,7 +5179,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -5205,7 +5218,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bxor(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, raw, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, raw, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -5540,7 +5553,7 @@ impl SimpleBackend {
                         let adjust = builder.ins().band(rem_nonzero, sign_diff);
                         let quot_minus_one = builder.ins().isub(quot, one);
                         let floor_quot = builder.ins().select(adjust, quot_minus_one, quot);
-                        let fast_res = box_int_value(&mut builder, floor_quot, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, floor_quot, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, floor_quot);
                         brif_block(
                             &mut builder,
@@ -5609,7 +5622,7 @@ impl SimpleBackend {
                         let adjust = builder.ins().band(rem_nonzero, sign_diff);
                         let quot_minus_one = builder.ins().isub(quot, one);
                         let floor_quot = builder.ins().select(adjust, quot_minus_one, quot);
-                        let fast_res = box_int_value(&mut builder, floor_quot, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, floor_quot, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, floor_quot);
                         brif_block(
                             &mut builder,
@@ -5671,7 +5684,7 @@ impl SimpleBackend {
                         let adjust = builder.ins().band(rem_nonzero, sign_diff);
                         let rem_adjusted = builder.ins().iadd(rem, rhs_val);
                         let mod_val = builder.ins().select(adjust, rem_adjusted, rem);
-                        let fast_res = box_int_value(&mut builder, mod_val, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, mod_val, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, mod_val);
                         brif_block(
                             &mut builder,
@@ -5734,7 +5747,7 @@ impl SimpleBackend {
                         let adjust = builder.ins().band(rem_nonzero, sign_diff);
                         let rem_adjusted = builder.ins().iadd(rem, rhs_val);
                         let mod_val = builder.ins().select(adjust, rem_adjusted, rem);
-                        let fast_res = box_int_value(&mut builder, mod_val, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, mod_val, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, mod_val);
                         brif_block(
                             &mut builder,
@@ -5802,7 +5815,7 @@ impl SimpleBackend {
                         let one = builder.ins().iconst(types::I64, 1);
                         let quot_adjusted = builder.ins().isub(quot, one);
                         let floor_val = builder.ins().select(adjust, quot_adjusted, quot);
-                        let fast_res = box_int_value(&mut builder, floor_val, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, floor_val, box_int_mask_var, box_int_tag_var);
                         let fits_inline = int_value_fits_inline(&mut builder, floor_val);
                         brif_block(
                             &mut builder,
@@ -5876,7 +5889,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, exp0_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp0_block);
                         let one = builder.ins().iconst(types::I64, 1);
-                        let res_one = box_int_value(&mut builder, one, &nbc);
+                        let res_one = box_int_value_hoisted(&mut builder, one, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[res_one]);
 
                         // Check exp == 1 → result is base (return lhs as-is)
@@ -5904,7 +5917,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, exp2_fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp2_fast_block);
                         let (sq, fits) = imul_checked_inline(&mut builder, base_val, base_val);
-                        let sq_res = box_int_value(&mut builder, sq, &nbc);
+                        let sq_res = box_int_value_hoisted(&mut builder, sq, box_int_mask_var, box_int_tag_var);
                         brif_block(&mut builder, fits, merge_block, &[sq_res], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -7980,7 +7993,7 @@ impl SimpleBackend {
                                     elem_addr,
                                     0,
                                 );
-                                let boxed_res = box_int_value(&mut builder, raw_result, &nbc);
+                                let boxed_res = box_int_value_hoisted(&mut builder, raw_result, box_int_mask_var, box_int_tag_var);
                                 jump_block(&mut builder, merge_block, &[boxed_res, raw_result]);
 
                                 // Slow path: safe runtime call (handles negative index, IndexError)
@@ -11280,7 +11293,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value(&mut builder, negated, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, negated, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -11339,7 +11352,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value(&mut builder, abs_val, &nbc);
+                        let fast_res = box_int_value_hoisted(&mut builder, abs_val, box_int_mask_var, box_int_tag_var);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -11376,7 +11389,7 @@ impl SimpleBackend {
                         let int_val = unbox_int(&mut builder, *val, &nbc);
                         let minus_one = builder.ins().iconst(types::I64, -1i64);
                         let inverted = builder.ins().bxor(int_val, minus_one);
-                        box_int_value(&mut builder, inverted, &nbc)
+                        box_int_value_hoisted(&mut builder, inverted, box_int_mask_var, box_int_tag_var)
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
