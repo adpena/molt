@@ -20,8 +20,8 @@ use wtf8::{CodePoint, Wtf8};
 use std::sync::Arc;
 
 use super::ops::{
-    bytes_ascii_capitalize, bytes_ascii_lower, bytes_ascii_swapcase, bytes_ascii_title,
-    bytes_ascii_upper, dict_like_bits_from_ptr, format_with_spec, parse_codec_arg,
+    bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title,
+    dict_like_bits_from_ptr, format_with_spec, parse_codec_arg,
     parse_format_spec, repeat_sequence, simd_has_any_ascii_lower, simd_has_any_ascii_upper,
     simd_is_all_ascii_alnum, simd_is_all_ascii_alpha, simd_is_all_ascii_digit,
     simd_is_all_ascii_printable, simd_is_all_ascii_whitespace, slice_bounds_from_args, slice_match,
@@ -3552,40 +3552,44 @@ fn is_ascii_whitespace(b: u8) -> bool {
 /// Write ASCII-lowered bytes from `src` into `dst` using SIMD when available.
 /// `dst` must have the same length as `src`. All bytes in `src` must be ASCII.
 #[inline]
-unsafe fn ascii_lower_into(src: &[u8], dst: &mut [u8]) {
+fn ascii_lower_into(src: &[u8], dst: &mut [u8]) {
     debug_assert_eq!(src.len(), dst.len());
     let mut i = 0usize;
     #[cfg(target_arch = "aarch64")]
     {
         if src.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
-            use std::arch::aarch64::*;
-            let upper_a = vdupq_n_u8(b'A');
-            let upper_z = vdupq_n_u8(b'Z');
-            let case_bit = vdupq_n_u8(0x20);
-            while i + 16 <= src.len() {
-                let v = vld1q_u8(src.as_ptr().add(i));
-                let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
-                let to_lower = vandq_u8(is_upper, case_bit);
-                let result = vorrq_u8(v, to_lower);
-                vst1q_u8(dst.as_mut_ptr().add(i), result);
-                i += 16;
+            unsafe {
+                use std::arch::aarch64::*;
+                let upper_a = vdupq_n_u8(b'A');
+                let upper_z = vdupq_n_u8(b'Z');
+                let case_bit = vdupq_n_u8(0x20);
+                while i + 16 <= src.len() {
+                    let v = vld1q_u8(src.as_ptr().add(i));
+                    let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                    let to_lower = vandq_u8(is_upper, case_bit);
+                    let result = vorrq_u8(v, to_lower);
+                    vst1q_u8(dst.as_mut_ptr().add(i), result);
+                    i += 16;
+                }
             }
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if src.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
-            use std::arch::x86_64::*;
-            let case_bit = _mm_set1_epi8(0x20);
-            while i + 16 <= src.len() {
-                let v = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
-                let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'A' as i8 - 1));
-                let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'Z' as i8 + 1), v);
-                let is_upper = _mm_and_si128(ge_a, le_z);
-                let to_lower = _mm_and_si128(is_upper, case_bit);
-                let result = _mm_or_si128(v, to_lower);
-                _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, result);
-                i += 16;
+            unsafe {
+                use std::arch::x86_64::*;
+                let case_bit = _mm_set1_epi8(0x20);
+                while i + 16 <= src.len() {
+                    let v = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
+                    let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'A' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'Z' as i8 + 1), v);
+                    let is_upper = _mm_and_si128(ge_a, le_z);
+                    let to_lower = _mm_and_si128(is_upper, case_bit);
+                    let result = _mm_or_si128(v, to_lower);
+                    _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, result);
+                    i += 16;
+                }
             }
         }
     }
@@ -3601,40 +3605,44 @@ unsafe fn ascii_lower_into(src: &[u8], dst: &mut [u8]) {
 /// Write ASCII-uppered bytes from `src` into `dst` using SIMD when available.
 /// `dst` must have the same length as `src`. All bytes in `src` must be ASCII.
 #[inline]
-unsafe fn ascii_upper_into(src: &[u8], dst: &mut [u8]) {
+fn ascii_upper_into(src: &[u8], dst: &mut [u8]) {
     debug_assert_eq!(src.len(), dst.len());
     let mut i = 0usize;
     #[cfg(target_arch = "aarch64")]
     {
         if src.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
-            use std::arch::aarch64::*;
-            let lower_a = vdupq_n_u8(b'a');
-            let lower_z = vdupq_n_u8(b'z');
-            let case_bit = vdupq_n_u8(0x20);
-            while i + 16 <= src.len() {
-                let v = vld1q_u8(src.as_ptr().add(i));
-                let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
-                let clear = vandq_u8(is_lower, case_bit);
-                let result = veorq_u8(v, clear);
-                vst1q_u8(dst.as_mut_ptr().add(i), result);
-                i += 16;
+            unsafe {
+                use std::arch::aarch64::*;
+                let lower_a = vdupq_n_u8(b'a');
+                let lower_z = vdupq_n_u8(b'z');
+                let case_bit = vdupq_n_u8(0x20);
+                while i + 16 <= src.len() {
+                    let v = vld1q_u8(src.as_ptr().add(i));
+                    let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
+                    let clear = vandq_u8(is_lower, case_bit);
+                    let result = veorq_u8(v, clear);
+                    vst1q_u8(dst.as_mut_ptr().add(i), result);
+                    i += 16;
+                }
             }
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if src.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
-            use std::arch::x86_64::*;
-            let case_bit = _mm_set1_epi8(0x20);
-            while i + 16 <= src.len() {
-                let v = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
-                let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'a' as i8 - 1));
-                let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'z' as i8 + 1), v);
-                let is_lower = _mm_and_si128(ge_a, le_z);
-                let clear = _mm_and_si128(is_lower, case_bit);
-                let result = _mm_xor_si128(v, clear);
-                _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, result);
-                i += 16;
+            unsafe {
+                use std::arch::x86_64::*;
+                let case_bit = _mm_set1_epi8(0x20);
+                while i + 16 <= src.len() {
+                    let v = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
+                    let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'a' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'z' as i8 + 1), v);
+                    let is_lower = _mm_and_si128(ge_a, le_z);
+                    let clear = _mm_and_si128(is_lower, case_bit);
+                    let result = _mm_xor_si128(v, clear);
+                    _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, result);
+                    i += 16;
+                }
             }
         }
     }
