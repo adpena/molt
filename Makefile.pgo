@@ -1,21 +1,55 @@
-.PHONY: pgo-build pgo-train pgo-optimize pgo-full
+.PHONY: pgo-clean pgo-build pgo-train pgo-merge pgo-optimize pgo-full pgo-bench
 
-# Step 1: Build with PGO instrumentation
-pgo-build:
-	RUSTFLAGS="-Cprofile-generate=/tmp/molt-pgo-data" \
-	cargo build --profile release-fast -p molt-backend --features native-backend
+PGO_DIR       := /tmp/molt-pgo
+PGO_TARGET    := /tmp/molt-pgo-target
+PGO_PROFDATA  := $(PGO_DIR)/merged.profdata
+PGO_TRAIN_OUT := /tmp/pgo_train
 
-# Step 2: Train on representative workloads
+# Use xcrun on macOS for llvm-profdata (Xcode toolchain)
+LLVM_PROFDATA := $(shell which llvm-profdata 2>/dev/null || xcrun --find llvm-profdata 2>/dev/null)
+
+# Step 0: Clean previous PGO artifacts
+pgo-clean:
+	rm -rf $(PGO_DIR) $(PGO_TRAIN_OUT)
+	@echo "Cleaned PGO artifacts"
+
+# Step 1: Build with PGO instrumentation (release profile for faster compile)
+pgo-build: pgo-clean
+	CARGO_TARGET_DIR=$(PGO_TARGET) \
+	RUSTFLAGS="-Cprofile-generate=$(PGO_DIR) -Awarnings" \
+	cargo build --release -p molt-backend --features native-backend
+
+# Step 2: Train on comprehensive workload via molt compiler
 pgo-train: pgo-build
-	/tmp/molt-pgo-data/molt-backend < tests/harness/corpus/sieve.py || true
-	/tmp/molt-pgo-data/molt-backend < tests/harness/corpus/fib.py || true
-	llvm-profdata merge -o /tmp/molt-pgo-data/merged.profdata /tmp/molt-pgo-data/
+	pkill -9 -f "molt-backend" 2>/dev/null || true
+	CARGO_TARGET_DIR=$(PGO_TARGET) \
+	MOLT_BACKEND_PROFILE=release \
+	MOLT_BACKEND_DAEMON=0 \
+	python3 -m molt build --target native --output $(PGO_TRAIN_OUT) bench/pgo_training.py --rebuild
+	@echo "Training binary output:"
+	$(PGO_TRAIN_OUT)
 
-# Step 3: Rebuild with PGO data
-pgo-optimize: pgo-train
-	RUSTFLAGS="-Cprofile-use=/tmp/molt-pgo-data/merged.profdata" \
+# Step 3: Merge profile data
+pgo-merge: pgo-train
+	$(LLVM_PROFDATA) merge -o $(PGO_PROFDATA) $(PGO_DIR)/*.profraw
+	@echo "Merged profile: $(PGO_PROFDATA) ($$(du -h $(PGO_PROFDATA) | cut -f1))"
+
+# Step 4: Rebuild with PGO data (release-fast for production)
+pgo-optimize: pgo-merge
+	CARGO_TARGET_DIR=$(PGO_TARGET) \
+	RUSTFLAGS="-Cprofile-use=$(PGO_PROFDATA) -Awarnings" \
 	cargo build --profile release-fast -p molt-backend --features native-backend
 
 # All-in-one
 pgo-full: pgo-optimize
-	@echo "PGO build complete"
+	@echo "PGO build complete: $(PGO_TARGET)/release-fast/molt-backend"
+
+# Benchmark: compare PGO vs non-PGO compilation time
+pgo-bench:
+	@echo "=== Benchmarking PGO-optimized backend ==="
+	CARGO_TARGET_DIR=$(PGO_TARGET) \
+	MOLT_BACKEND_PROFILE=release-fast \
+	MOLT_BACKEND_DAEMON=0 \
+	python3 -m molt build --target native --output /tmp/pgo_bench bench/pgo_training.py --rebuild
+	@echo "=== Running compiled binary ==="
+	/tmp/pgo_bench
