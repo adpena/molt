@@ -1,7 +1,10 @@
+use crate::builtins::exceptions::{frame_stack_pop, frame_stack_push};
 use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
     resolved_new_is_default_object_new,
 };
+use crate::object::layout::ensure_function_code_bits;
+use crate::state::recursion::{recursion_guard_enter, recursion_guard_exit};
 use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT,
@@ -299,6 +302,7 @@ const CALL_BIND_IC_KIND_DIRECT_FUNC: u8 = 1;
 const CALL_BIND_IC_KIND_LIST_APPEND: u8 = 2;
 const CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC: u8 = 3;
 const CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC: u8 = 4;
+const CALL_BIND_IC_KIND_TYPE_CALL: u8 = 5;
 
 // Thread-local direct-mapped inline cache for call_bind dispatch.
 // Each slot stores (site_id, entry). On lookup, we check if the stored site_id
@@ -1948,6 +1952,52 @@ unsafe fn call_bind_ic_entry_for_call(
                     None
                 }
             }
+            TYPE_ID_TYPE => {
+                let class_bits = MoltObject::from_ptr(call_ptr).bits();
+                // Builtin types have dedicated fast paths in call_type_with_builder;
+                // the IC is for user-defined classes only.
+                if is_builtin_class_bits(_py, class_bits) {
+                    return None;
+                }
+                // Only cacheable when __new__ is the default object.__new__.
+                let new_name_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.new_name,
+                    b"__new__",
+                );
+                let new_bits = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
+                if !resolved_new_is_default_object_new(new_bits) {
+                    return None;
+                }
+                // Resolve __init__ and ensure it is a simple direct-callable function.
+                let init_name_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.init_name,
+                    b"__init__",
+                );
+                let init_bits = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)?;
+                let init_ptr = obj_from_bits(init_bits).as_ptr()?;
+                if object_type_id(init_ptr) != TYPE_ID_FUNCTION {
+                    return None;
+                }
+                if function_requires_full_binding(_py, init_ptr) {
+                    return None;
+                }
+                let init_arity = function_arity(init_ptr);
+                // __init__ arity includes `self`, so cacheable range is 1..=5
+                // (0 args up to 4 user args).
+                if !(1..=5).contains(&init_arity) {
+                    return None;
+                }
+                Some(CallBindIcEntry {
+                    fn_ptr: function_fn_ptr(init_ptr) as u64,
+                    target_bits: init_bits,
+                    class_bits,
+                    class_version: class_layout_version_bits(call_ptr),
+                    arity: (init_arity - 1) as u8,
+                    kind: CALL_BIND_IC_KIND_TYPE_CALL,
+                })
+            }
             TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
                 let call_attr_bits = lookup_call_attr(_py, call_ptr)?;
                 let call_attr_ptr = obj_from_bits(call_attr_bits).as_ptr()?;
@@ -2097,6 +2147,135 @@ unsafe fn try_call_bind_ic_fast(
             ));
         }
 
+        // IC fast path for user-class instantiation: TYPE_ID_TYPE with default
+        // __new__ and a known simple __init__.  Skips the entire
+        // call_type_with_builder resolution (intern __new__/__init__, MRO
+        // lookup, abstractmethod check, init-arg policy) and goes straight to
+        // alloc + direct __init__ call.
+        if entry.kind == CALL_BIND_IC_KIND_TYPE_CALL {
+            if object_type_id(call_ptr) != TYPE_ID_TYPE {
+                return None;
+            }
+            let class_bits = MoltObject::from_ptr(call_ptr).bits();
+            if class_bits != entry.class_bits {
+                return None;
+            }
+            if class_layout_version_bits(call_ptr) != entry.class_version {
+                return None;
+            }
+            if args.pos.len() != entry.arity as usize {
+                return None;
+            }
+            // Verify the cached __init__ function pointer is still valid.
+            let init_ptr = obj_from_bits(entry.target_bits).as_ptr()?;
+            if object_type_id(init_ptr) != TYPE_ID_FUNCTION {
+                return None;
+            }
+            if function_fn_ptr(init_ptr) as u64 != entry.fn_ptr {
+                return None;
+            }
+            // Allocate instance (default object.__new__ path).
+            let inst_bits = alloc_instance_for_default_object_new(_py, call_ptr);
+            if exception_pending(_py) {
+                return Some(MoltObject::none().bits());
+            }
+            // Fast-path __init__ call: bypass call_function_obj_vec to skip
+            // profiling, exception baseline, trampoline probe, arity check,
+            // and double enforce_no_pending.  We already validated fn_ptr,
+            // arity, and no-full-binding in call_bind_ic_entry_for_call.
+            let fn_ptr = entry.fn_ptr;
+            let closure_bits = function_closure_bits(init_ptr);
+            let code_bits = ensure_function_code_bits(_py, init_ptr);
+            if !recursion_guard_enter() {
+                dec_ref_bits(_py, inst_bits);
+                return Some(raise_exception::<_>(
+                    _py,
+                    "RecursionError",
+                    "maximum recursion depth exceeded",
+                ));
+            }
+            frame_stack_push(_py, code_bits);
+            let _init_result = if closure_bits != 0 {
+                match args.pos.len() {
+                    0 => {
+                        let f: extern "C" fn(u64, u64) -> i64 =
+                            std::mem::transmute(fn_ptr as usize);
+                        f(closure_bits, inst_bits) as u64
+                    }
+                    1 => {
+                        let f: extern "C" fn(u64, u64, u64) -> i64 =
+                            std::mem::transmute(fn_ptr as usize);
+                        f(closure_bits, inst_bits, args.pos[0]) as u64
+                    }
+                    2 => {
+                        let f: extern "C" fn(u64, u64, u64, u64) -> i64 =
+                            std::mem::transmute(fn_ptr as usize);
+                        f(closure_bits, inst_bits, args.pos[0], args.pos[1]) as u64
+                    }
+                    3 => {
+                        let f: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
+                            std::mem::transmute(fn_ptr as usize);
+                        f(closure_bits, inst_bits, args.pos[0], args.pos[1], args.pos[2])
+                            as u64
+                    }
+                    _ => {
+                        let mut argv = [0u64; 5];
+                        argv[0] = inst_bits;
+                        for (idx, arg) in args.pos.iter().copied().enumerate() {
+                            argv[idx + 1] = arg;
+                        }
+                        call_function_obj_vec(
+                            _py,
+                            entry.target_bits,
+                            &argv[..args.pos.len() + 1],
+                        )
+                    }
+                }
+            } else {
+                match args.pos.len() {
+                    0 => {
+                        let f: extern "C" fn(u64) -> i64 =
+                            std::mem::transmute(fn_ptr as usize);
+                        f(inst_bits) as u64
+                    }
+                    1 => {
+                        let f: extern "C" fn(u64, u64) -> i64 =
+                            std::mem::transmute(fn_ptr as usize);
+                        f(inst_bits, args.pos[0]) as u64
+                    }
+                    2 => {
+                        let f: extern "C" fn(u64, u64, u64) -> i64 =
+                            std::mem::transmute(fn_ptr as usize);
+                        f(inst_bits, args.pos[0], args.pos[1]) as u64
+                    }
+                    3 => {
+                        let f: extern "C" fn(u64, u64, u64, u64) -> i64 =
+                            std::mem::transmute(fn_ptr as usize);
+                        f(inst_bits, args.pos[0], args.pos[1], args.pos[2]) as u64
+                    }
+                    _ => {
+                        let mut argv = [0u64; 5];
+                        argv[0] = inst_bits;
+                        for (idx, arg) in args.pos.iter().copied().enumerate() {
+                            argv[idx + 1] = arg;
+                        }
+                        call_function_obj_vec(
+                            _py,
+                            entry.target_bits,
+                            &argv[..args.pos.len() + 1],
+                        )
+                    }
+                }
+            };
+            frame_stack_pop(_py);
+            recursion_guard_exit();
+            if exception_pending(_py) {
+                dec_ref_bits(_py, inst_bits);
+                return Some(MoltObject::none().bits());
+            }
+            return Some(inst_bits);
+        }
+
         None
     }
 }
@@ -2152,6 +2331,7 @@ unsafe fn call_bind_ic_dispatch(
                         CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC => {
                             "object_call_simple_bound_func"
                         }
+                        CALL_BIND_IC_KIND_TYPE_CALL => "type_call",
                         _ => "unknown",
                     };
                     eprintln!(
@@ -2240,7 +2420,7 @@ pub extern "C" fn molt_invoke_ffi_ic(
 /// Caller must provide a call-site id in `site_bits` and a valid callargs builder in
 /// `builder_bits`.
 pub extern "C" fn molt_call_indirect_ic(site_bits: u64, call_bits: u64, builder_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })
 }
