@@ -31787,6 +31787,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and op.args[0].name in json_list_int_containers
                 ):
                     index_entry["container_type"] = "list_int"
+                elif (
+                    len(op.args) >= 1
+                    and isinstance(op.args[0], MoltValue)
+                    and op.args[0].type_hint == "dict"
+                ):
+                    index_entry["container_type"] = "dict"
                 json_ops.append(index_entry)
             elif op.kind == "UNPACK_SEQUENCE":
                 # args[0] is the sequence, args[1:] are output variable names
@@ -31824,6 +31830,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         json_list_int_containers.discard(op.args[0].name)
                         if op.result.name != "none":
                             json_list_int_containers.discard(op.result.name)
+                elif (
+                    len(op.args) >= 1
+                    and isinstance(op.args[0], MoltValue)
+                    and op.args[0].type_hint == "dict"
+                ):
+                    si_entry["container_type"] = "dict"
                 json_ops.append(si_entry)
             elif op.kind == "DEL_INDEX":
                 json_ops.append(

@@ -2761,18 +2761,22 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
                     inc_ref_bits(_py, hay_bits);
                     return hay_bits;
                 }
-                let lowered = bytes_ascii_lower(hay_bytes);
-                let ptr = alloc_string(_py, &lowered);
+                // Allocate string object directly, then write SIMD-lowered
+                // bytes into the data buffer -- avoids intermediate Vec alloc.
+                let ptr = alloc_bytes_like_with_len(_py, hay_bytes.len(), TYPE_ID_STRING);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }
+                let data_ptr = ptr.add(std::mem::size_of::<usize>());
+                let out = std::slice::from_raw_parts_mut(data_ptr, hay_bytes.len());
+                ascii_lower_into(hay_bytes, out);
                 return MoltObject::from_ptr(ptr).bits();
             }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::none().bits();
             };
             let lowered = hay_str.to_lowercase();
-            let ptr = alloc_string(_py, lowered.as_bytes());
+            let ptr = alloc_string_nointern(_py, lowered.as_bytes());
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -2837,18 +2841,22 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
                     inc_ref_bits(_py, hay_bits);
                     return hay_bits;
                 }
-                let uppered = bytes_ascii_upper(hay_bytes);
-                let ptr = alloc_string(_py, &uppered);
+                // Allocate string object directly, then write SIMD-uppered
+                // bytes into the data buffer -- avoids intermediate Vec alloc.
+                let ptr = alloc_bytes_like_with_len(_py, hay_bytes.len(), TYPE_ID_STRING);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }
+                let data_ptr = ptr.add(std::mem::size_of::<usize>());
+                let out = std::slice::from_raw_parts_mut(data_ptr, hay_bytes.len());
+                ascii_upper_into(hay_bytes, out);
                 return MoltObject::from_ptr(ptr).bits();
             }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::none().bits();
             };
             let uppered = hay_str.to_uppercase();
-            let ptr = alloc_string(_py, uppered.as_bytes());
+            let ptr = alloc_string_nointern(_py, uppered.as_bytes());
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -3460,7 +3468,7 @@ pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
                         return hay_bits;
                     }
                     let trimmed = &hay_bytes[start..end];
-                    let ptr = alloc_string(_py, trimmed);
+                    let ptr = alloc_string_nointern(_py, trimmed);
                     if ptr.is_null() {
                         return MoltObject::none().bits();
                     }
@@ -3475,7 +3483,7 @@ pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
                     inc_ref_bits(_py, hay_bits);
                     return hay_bits;
                 }
-                let ptr = alloc_string(_py, trimmed.as_bytes());
+                let ptr = alloc_string_nointern(_py, trimmed.as_bytes());
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }
@@ -3526,7 +3534,7 @@ pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
                     }
                 }
             };
-            let ptr = alloc_string(_py, trimmed.as_bytes());
+            let ptr = alloc_string_nointern(_py, trimmed.as_bytes());
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -3539,6 +3547,104 @@ pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
 #[inline(always)]
 fn is_ascii_whitespace(b: u8) -> bool {
     b == b' ' || (b >= 0x09 && b <= 0x0D)
+}
+
+/// Write ASCII-lowered bytes from `src` into `dst` using SIMD when available.
+/// `dst` must have the same length as `src`. All bytes in `src` must be ASCII.
+#[inline]
+unsafe fn ascii_lower_into(src: &[u8], dst: &mut [u8]) {
+    debug_assert_eq!(src.len(), dst.len());
+    let mut i = 0usize;
+    #[cfg(target_arch = "aarch64")]
+    {
+        if src.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            use std::arch::aarch64::*;
+            let upper_a = vdupq_n_u8(b'A');
+            let upper_z = vdupq_n_u8(b'Z');
+            let case_bit = vdupq_n_u8(0x20);
+            while i + 16 <= src.len() {
+                let v = vld1q_u8(src.as_ptr().add(i));
+                let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                let to_lower = vandq_u8(is_upper, case_bit);
+                let result = vorrq_u8(v, to_lower);
+                vst1q_u8(dst.as_mut_ptr().add(i), result);
+                i += 16;
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if src.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            use std::arch::x86_64::*;
+            let case_bit = _mm_set1_epi8(0x20);
+            while i + 16 <= src.len() {
+                let v = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
+                let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'A' as i8 - 1));
+                let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'Z' as i8 + 1), v);
+                let is_upper = _mm_and_si128(ge_a, le_z);
+                let to_lower = _mm_and_si128(is_upper, case_bit);
+                let result = _mm_or_si128(v, to_lower);
+                _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, result);
+                i += 16;
+            }
+        }
+    }
+    for j in i..src.len() {
+        dst[j] = if src[j].is_ascii_uppercase() {
+            src[j].to_ascii_lowercase()
+        } else {
+            src[j]
+        };
+    }
+}
+
+/// Write ASCII-uppered bytes from `src` into `dst` using SIMD when available.
+/// `dst` must have the same length as `src`. All bytes in `src` must be ASCII.
+#[inline]
+unsafe fn ascii_upper_into(src: &[u8], dst: &mut [u8]) {
+    debug_assert_eq!(src.len(), dst.len());
+    let mut i = 0usize;
+    #[cfg(target_arch = "aarch64")]
+    {
+        if src.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            use std::arch::aarch64::*;
+            let lower_a = vdupq_n_u8(b'a');
+            let lower_z = vdupq_n_u8(b'z');
+            let case_bit = vdupq_n_u8(0x20);
+            while i + 16 <= src.len() {
+                let v = vld1q_u8(src.as_ptr().add(i));
+                let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
+                let clear = vandq_u8(is_lower, case_bit);
+                let result = veorq_u8(v, clear);
+                vst1q_u8(dst.as_mut_ptr().add(i), result);
+                i += 16;
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if src.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            use std::arch::x86_64::*;
+            let case_bit = _mm_set1_epi8(0x20);
+            while i + 16 <= src.len() {
+                let v = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
+                let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'a' as i8 - 1));
+                let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'z' as i8 + 1), v);
+                let is_lower = _mm_and_si128(ge_a, le_z);
+                let clear = _mm_and_si128(is_lower, case_bit);
+                let result = _mm_xor_si128(v, clear);
+                _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, result);
+                i += 16;
+            }
+        }
+    }
+    for j in i..src.len() {
+        dst[j] = if src[j].is_ascii_lowercase() {
+            src[j].to_ascii_uppercase()
+        } else {
+            src[j]
+        };
+    }
 }
 
 fn string_lstrip_chars<'a>(hay_str: &'a str, chars_str: &str) -> &'a str {
@@ -3576,7 +3682,7 @@ fn string_rstrip_chars<'a>(hay_str: &'a str, chars_str: &str) -> &'a str {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let chars = obj_from_bits(chars_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -3614,7 +3720,7 @@ pub extern "C" fn molt_string_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
                 };
                 string_lstrip_chars(hay_str, chars_str)
             };
-            let ptr = alloc_string(_py, trimmed.as_bytes());
+            let ptr = alloc_string_nointern(_py, trimmed.as_bytes());
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -3625,7 +3731,7 @@ pub extern "C" fn molt_string_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    crate::with_gil_entry_nopanic!(_py, {
         let hay = obj_from_bits(hay_bits);
         let chars = obj_from_bits(chars_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -3663,7 +3769,7 @@ pub extern "C" fn molt_string_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
                 };
                 string_rstrip_chars(hay_str, chars_str)
             };
-            let ptr = alloc_string(_py, trimmed.as_bytes());
+            let ptr = alloc_string_nointern(_py, trimmed.as_bytes());
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
