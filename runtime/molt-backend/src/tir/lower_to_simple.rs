@@ -1292,6 +1292,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // Restore container_type (e.g., "list_int") from the preserved attr
             // so the backend can emit inline list access.
             opir.container_type = attr_str(&op.attrs, "container_type");
+            // Propagate BCE proof so codegen can skip bounds checks.
+            opir.bce_safe = attr_bool(&op.attrs, "bce_safe");
             Some(opir)
         }
         OpCode::StoreIndex => {
@@ -1302,6 +1304,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 args: Some(operand_args(op)),
                 out: out_var,
                 container_type: attr_str(&op.attrs, "container_type"),
+                // Propagate BCE proof so codegen can skip bounds checks.
+                bce_safe: attr_bool(&op.attrs, "bce_safe"),
                 ..OpIR::default()
             })
         }
@@ -2930,6 +2934,13 @@ fn attr_str(attrs: &super::ops::AttrDict, key: &str) -> Option<String> {
     }
 }
 
+fn attr_bool(attrs: &super::ops::AttrDict, key: &str) -> Option<bool> {
+    match attrs.get(key) {
+        Some(AttrValue::Bool(b)) => Some(*b),
+        _ => None,
+    }
+}
+
 fn attr_bytes(attrs: &super::ops::AttrDict, key: &str) -> Option<Vec<u8>> {
     match attrs.get(key) {
         Some(AttrValue::Bytes(b)) => Some(b.clone()),
@@ -4030,6 +4041,7 @@ mod tests {
                 ic_index: None,
                 col_offset: None,
                 end_col_offset: None,
+                bce_safe: None,
             },
             OpIR {
                 kind: "loop_end".into(),
@@ -4049,6 +4061,7 @@ mod tests {
                 ic_index: None,
                 col_offset: None,
                 end_col_offset: None,
+                bce_safe: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4068,6 +4081,7 @@ mod tests {
                 ic_index: None,
                 col_offset: None,
                 end_col_offset: None,
+                bce_safe: None,
             },
         ];
 
@@ -4100,6 +4114,7 @@ mod tests {
                 ic_index: None,
                 col_offset: None,
                 end_col_offset: None,
+                bce_safe: None,
             },
             OpIR {
                 kind: "jump".into(),
@@ -4119,6 +4134,7 @@ mod tests {
                 ic_index: None,
                 col_offset: None,
                 end_col_offset: None,
+                bce_safe: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4138,6 +4154,7 @@ mod tests {
                 ic_index: None,
                 col_offset: None,
                 end_col_offset: None,
+                bce_safe: None,
             },
         ];
 

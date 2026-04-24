@@ -73,6 +73,10 @@ pub struct OpIR {
     pub col_offset: Option<i64>,
     /// End column offset (0-based) for traceback caret annotations.
     pub end_col_offset: Option<i64>,
+    /// When true, the bounds-check elimination pass has proven this index
+    /// operation is in-range.  Codegen can skip the runtime bounds check
+    /// and emit a straight-line element access.
+    pub bce_safe: Option<bool>,
 }
 
 impl PgoProfileIR {
@@ -261,6 +265,7 @@ impl OpIR {
             ic_index,
             col_offset: optional_i64(obj, "col_offset", ctx)?,
             end_col_offset: optional_i64(obj, "end_col_offset", ctx)?,
+            bce_safe: optional_bool(obj, "bce_safe", ctx)?,
         })
     }
 }
