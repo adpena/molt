@@ -826,6 +826,14 @@ struct FunctionPreanalysis {
     has_arena_eligible: bool,
     /// Set of output variable names from arena-eligible alloc ops.
     arena_eligible_outs: BTreeSet<String>,
+    /// Scalar-like variables (int/bool/float) that MUST stay slot-backed
+    /// because they escape the local scalar fast-path scope.  A variable
+    /// is unsafe to exclude when ANY of:
+    ///   - it is passed as an argument to a function call
+    ///   - it is stored to the heap (store_attr, store_index on non-inline containers)
+    ///   - it is returned from the function (ret)
+    ///   - it has explicit inc_ref/dec_ref ops in the IR
+    scalar_slot_exclusion_unsafe: BTreeSet<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1441,6 +1449,103 @@ fn preanalyze_function_ir(
         }
     }
 
+    // Escape analysis for slot exclusion safety.
+    // A scalar-like variable (int/bool/float) must STAY slot-backed when it
+    // escapes the local scope via: function call args, heap stores, returns,
+    // or explicit refcount ops.  The slot mechanism handles refcount correctness
+    // at phi-join boundaries; excluding a variable that escapes causes the
+    // boxed representation to go stale → use-after-free / segfault.
+    let scalar_slot_exclusion_unsafe: BTreeSet<String> = {
+        let mut unsafe_set = BTreeSet::new();
+        let is_scalar = |name: &str| {
+            int_like_vars.contains(name)
+                || bool_like_vars.contains(name)
+                || float_like_vars.contains(name)
+        };
+        for op in &func_ir.ops {
+            match op.kind.as_str() {
+                // Condition 2: passed to any function call as an argument
+                "call" | "call_method" | "call_builtin" | "call_function_value"
+                | "call_super" | "call_kw" | "call_star" | "call_ex" => {
+                    if let Some(args) = &op.args {
+                        for arg in args {
+                            if is_scalar(arg) {
+                                unsafe_set.insert(arg.clone());
+                            }
+                        }
+                    }
+                }
+                // Condition 3: stored to heap
+                "store_attr" | "store_global" | "store_name" => {
+                    if let Some(args) = &op.args {
+                        for arg in args {
+                            if is_scalar(arg) {
+                                unsafe_set.insert(arg.clone());
+                            }
+                        }
+                    }
+                }
+                "store_index" => {
+                    // store_index on list_int is fine (raw i64 storage), but
+                    // anything else needs the boxed value to be refcount-correct.
+                    let is_list_int = op.container_type.as_deref() == Some("list_int");
+                    if !is_list_int {
+                        if let Some(args) = &op.args {
+                            // args[2] is the value being stored
+                            if let Some(val_name) = args.get(2) {
+                                if is_scalar(val_name) {
+                                    unsafe_set.insert(val_name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Condition 4: returned from the function
+                "ret" => {
+                    if let Some(var) = &op.var {
+                        if is_scalar(var) {
+                            unsafe_set.insert(var.clone());
+                        }
+                    }
+                    if let Some(args) = &op.args {
+                        for arg in args {
+                            if is_scalar(arg) {
+                                unsafe_set.insert(arg.clone());
+                            }
+                        }
+                    }
+                }
+                // Condition 5: has explicit refcount ops
+                "inc_ref" | "dec_ref" | "borrow" | "release" => {
+                    if let Some(args) = &op.args {
+                        for arg in args {
+                            if is_scalar(arg) {
+                                unsafe_set.insert(arg.clone());
+                            }
+                        }
+                    }
+                }
+                // yield/send_yield escape the variable across suspension points
+                "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
+                    if let Some(args) = &op.args {
+                        for arg in args {
+                            if is_scalar(arg) {
+                                unsafe_set.insert(arg.clone());
+                            }
+                        }
+                    }
+                    if let Some(var) = &op.var {
+                        if is_scalar(var) {
+                            unsafe_set.insert(var.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        unsafe_set
+    };
+
     FunctionPreanalysis {
         has_ret,
         stateful,
@@ -1466,6 +1571,7 @@ fn preanalyze_function_ir(
         none_like_vars,
         has_arena_eligible,
         arena_eligible_outs,
+        scalar_slot_exclusion_unsafe,
     }
 }
 
@@ -1700,6 +1806,7 @@ impl SimpleBackend {
             none_like_vars,
             has_arena_eligible,
             arena_eligible_outs: _arena_eligible_outs,
+            scalar_slot_exclusion_unsafe,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
@@ -2358,14 +2465,22 @@ impl SimpleBackend {
         // Proven-int join slots that have raw_int_shadow Variables are excluded:
         // their unboxed i64 values are carried correctly via SSA phi, and stack
         // slot load/store + inc_ref/dec_ref is pure overhead for inline values.
+        //
+        // CONSERVATIVE: a scalar-like variable is only safe to exclude when it
+        // does NOT escape the local scope.  If it is passed to function calls,
+        // stored to heap, returned, or has explicit refcount ops, the slot
+        // mechanism is needed for refcount correctness at phi-join boundaries.
         let mut slot_backed_join_names =
             collect_slot_backed_join_names(&func_ir.ops, &exception_label_ids);
         if scalar_fast_paths_enabled {
             slot_backed_join_names.retain(|name| {
-                !raw_int_shadow.contains_key(name)
-                    && !int_like_vars.contains(name)
-                    && !float_like_vars.contains(name)
-                    && !bool_like_vars.contains(name)
+                let is_scalar = raw_int_shadow.contains_key(name)
+                    || int_like_vars.contains(name)
+                    || float_like_vars.contains(name)
+                    || bool_like_vars.contains(name);
+                let is_safe_to_exclude =
+                    is_scalar && !scalar_slot_exclusion_unsafe.contains(name);
+                !is_safe_to_exclude
             });
         }
         let mut slot_backed_join_slots: BTreeMap<String, cranelift_codegen::ir::StackSlot> =
@@ -2972,8 +3087,10 @@ impl SimpleBackend {
             sync_block_filled(&builder, &mut is_block_filled);
             // Update frame stack column offsets for traceback carets.
             // Only emit for module chunks and only when the op carries col info.
+            // Skip inside active loops — same rationale as line tracking elision.
             if is_module_chunk
                 && !is_block_filled
+                && loop_stack.is_empty()
                 && let (Some(col_offset), Some(end_col_offset)) = (op.col_offset, op.end_col_offset)
             {
                 let col_val = builder.ins().iconst(types::I64, col_offset);
@@ -14293,6 +14410,14 @@ impl SimpleBackend {
                     let _ = builder.ins().call(local_callee, &[dict_bits]);
                 }
                 "line" => {
+                    // Inside active loops, skip line tracking entirely.
+                    // These are debug-info calls (~3ns each) that dominate
+                    // inner-loop cost when inlining arithmetic and stores.
+                    // Exception tracebacks still get correct line info from
+                    // the last line op before the loop or at loop entry.
+                    if !loop_stack.is_empty() {
+                        continue;
+                    }
                     let line = op.value.unwrap_or(0);
                     let line_val = builder.ins().iconst(types::I64, line);
                     let callee = Self::import_func_id_split(
@@ -24210,6 +24335,314 @@ mod tests {
         assert!(
             scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
             "add operand mismatch must disqualify"
+        );
+    }
+
+    // ── scalar_slot_exclusion_unsafe tests ──────────────────────────
+
+    #[test]
+    fn slot_exclusion_marks_call_arg_as_unsafe() {
+        let func = FunctionIR {
+            name: "call_escape".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("x".to_string()),
+                    value: Some(42),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call".to_string(),
+                    args: Some(vec!["x".to_string()]),
+                    out: Some("result".to_string()),
+                    s_value: Some("some_fn".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            analysis.scalar_slot_exclusion_unsafe.contains("x"),
+            "int variable passed to call must be marked unsafe for slot exclusion"
+        );
+    }
+
+    #[test]
+    fn slot_exclusion_marks_returned_var_as_unsafe() {
+        let func = FunctionIR {
+            name: "ret_escape".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("x".to_string()),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("x".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            analysis.scalar_slot_exclusion_unsafe.contains("x"),
+            "int variable in ret must be marked unsafe for slot exclusion"
+        );
+    }
+
+    #[test]
+    fn slot_exclusion_marks_store_attr_value_as_unsafe() {
+        let func = FunctionIR {
+            name: "heap_escape".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("val".to_string()),
+                    value: Some(99),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_attr".to_string(),
+                    args: Some(vec!["obj".to_string(), "val".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            analysis.scalar_slot_exclusion_unsafe.contains("val"),
+            "int variable in store_attr must be marked unsafe for slot exclusion"
+        );
+    }
+
+    #[test]
+    fn slot_exclusion_marks_refcount_ops_as_unsafe() {
+        let func = FunctionIR {
+            name: "refcount_escape".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("x".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "inc_ref".to_string(),
+                    args: Some(vec!["x".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            analysis.scalar_slot_exclusion_unsafe.contains("x"),
+            "int variable with inc_ref must be marked unsafe for slot exclusion"
+        );
+    }
+
+    #[test]
+    fn slot_exclusion_safe_for_pure_arithmetic_loop() {
+        // Pure arithmetic: x = const, loop { x += 1 } -- no escape
+        let func = FunctionIR {
+            name: "safe_arith".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("x".to_string()),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("_bb1_arg0".to_string()),
+                    args: Some(vec!["x".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_start".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_var".to_string(),
+                    var: Some("_bb1_arg0".to_string()),
+                    out: Some("cur".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("one".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "inplace_add".to_string(),
+                    args: Some(vec!["cur".to_string(), "one".to_string()]),
+                    out: Some("next".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("_bb1_arg0".to_string()),
+                    args: Some(vec!["next".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_end".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            !analysis.scalar_slot_exclusion_unsafe.contains("x"),
+            "pure arithmetic loop var must NOT be marked unsafe"
+        );
+        assert!(
+            !analysis.scalar_slot_exclusion_unsafe.contains("_bb1_arg0"),
+            "join slot for pure arithmetic loop must NOT be marked unsafe"
+        );
+        assert!(
+            !analysis.scalar_slot_exclusion_unsafe.contains("cur"),
+            "loaded loop var must NOT be marked unsafe"
+        );
+    }
+
+    #[test]
+    fn slot_exclusion_marks_store_index_on_generic_list() {
+        // Storing int to a generic list requires boxing correctness
+        let func = FunctionIR {
+            name: "list_store_escape".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("idx".to_string()),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("val".to_string()),
+                    value: Some(42),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_index".to_string(),
+                    args: Some(vec![
+                        "lst".to_string(),
+                        "idx".to_string(),
+                        "val".to_string(),
+                    ]),
+                    container_type: Some("list".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            analysis.scalar_slot_exclusion_unsafe.contains("val"),
+            "int value stored to generic list must be marked unsafe"
+        );
+    }
+
+    #[test]
+    fn slot_exclusion_allows_store_index_on_list_int() {
+        // Storing int to list_int is safe (flat i64 storage, no boxing)
+        let func = FunctionIR {
+            name: "list_int_store_safe".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("idx".to_string()),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("val".to_string()),
+                    value: Some(42),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_index".to_string(),
+                    args: Some(vec![
+                        "lst".to_string(),
+                        "idx".to_string(),
+                        "val".to_string(),
+                    ]),
+                    container_type: Some("list_int".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            !analysis.scalar_slot_exclusion_unsafe.contains("val"),
+            "int value stored to list_int must NOT be marked unsafe"
         );
     }
 }
