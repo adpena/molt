@@ -1543,4 +1543,108 @@ mod tests {
         );
         assert!(stats.values_changed >= 1);
     }
+
+    // ------------------------------------------------------------------
+    // Test 15: len(container) as guard bound (post-iter_devirt pattern)
+    // ------------------------------------------------------------------
+    #[test]
+    fn while_lt_len_container_index_marked_safe() {
+        // After iter_devirt, `for x in lst` becomes:
+        //   len_val = CallBuiltin("len", lst)
+        //   header(i): cond = Lt(i, len_val), CondBranch(cond, body, exit)
+        //   body: x = Index(lst, i)
+        //
+        // BCE should recognize that i < len(lst) makes lst[i] safe.
+        let mut func = TirFunction::new("post_devirt".into(), vec![], TirType::None);
+
+        let true_val = func.fresh_value();
+        let list_1 = func.fresh_value();
+        let n = func.fresh_value();
+        let lst = func.fresh_value();
+        let len_val = func.fresh_value();
+        let i_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        let elem = func.fresh_value();
+        let const_1 = func.fresh_value();
+        let i_next = func.fresh_value();
+
+        let entry_block = func.entry_block;
+        let header_id = func.fresh_block();
+        let body_id = func.fresh_block();
+        let exit_id = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&entry_block).unwrap();
+            entry.ops = vec![
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_const_int(n, 100),
+                make_op(OpCode::Mul, vec![list_1, n], vec![lst]),
+                make_call_builtin("len", vec![lst], vec![len_val]),
+                make_const_int(const_1, 1),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header_id,
+                args: vec![],
+            };
+        }
+
+        {
+            let header_block = TirBlock {
+                id: header_id,
+                args: vec![],
+                ops: vec![make_op(OpCode::Lt, vec![i_phi, len_val], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: exit_id,
+                    else_args: vec![],
+                },
+            };
+            func.blocks.insert(header_id, header_block);
+            func.loop_roles.insert(header_id, LoopRole::LoopHeader);
+        }
+
+        {
+            let body_block = TirBlock {
+                id: body_id,
+                args: vec![],
+                ops: vec![
+                    make_op(OpCode::Index, vec![lst, i_phi], vec![elem]),
+                    make_op(OpCode::Add, vec![i_phi, const_1], vec![i_next]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header_id,
+                    args: vec![],
+                },
+            };
+            func.blocks.insert(body_id, body_block);
+        }
+
+        {
+            let exit_block = TirBlock {
+                id: exit_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            };
+            func.blocks.insert(exit_id, exit_block);
+            func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
+        }
+
+        let stats = run(&mut func);
+
+        let index_op = func.blocks[&body_id]
+            .ops
+            .iter()
+            .find(|o| o.opcode == OpCode::Index)
+            .expect("Index op must be present");
+        assert_eq!(
+            index_op.attrs.get("bce_safe"),
+            Some(&AttrValue::Bool(true)),
+            "Index in while(i<len(lst)) must be bce_safe (len-of-container strategy)"
+        );
+        assert!(stats.values_changed >= 1);
+    }
 }
