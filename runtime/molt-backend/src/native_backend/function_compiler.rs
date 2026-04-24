@@ -201,6 +201,20 @@ fn infer_scalar_lane(
                 None
             }
         }
+        // Python true division (`/`) always returns float.  For the codegen
+        // fast-path we return Float only when both operands are already proven
+        // float (so the handler can use raw f64 shadows directly).  When
+        // operands are int the handler takes the int→f64 conversion path
+        // instead, which is also correct but uses a different code sequence.
+        "div" => {
+            if args_all(&is_float)
+                || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
+            {
+                Some(ScalarLane::Float)
+            } else {
+                None
+            }
+        }
         "lshift" | "rshift" | "shl" | "shr" => None,
         "neg" | "pos" | "abs" | "builtin_abs" => first_source().and_then(|src| {
             if float_like_vars.contains(src) {
@@ -980,6 +994,11 @@ fn preanalyze_function_ir(
                 }
                 "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "bool" | "cast_bool" | "builtin_bool"
                 | "is_truthy" | "is" | "not" => bool_like_vars.insert(out.clone()),
+                // Python true division always returns float, regardless of
+                // operand types (int/int → float, float/float → float).
+                "div" => {
+                    float_like_vars.insert(out.clone())
+                }
                 "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
                 | "floordiv" | "mod" | "inplace_floordiv" | "inplace_mod" | "bit_and"
                 | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"

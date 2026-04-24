@@ -1931,6 +1931,100 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut 
     })
 }
 
+/// Zero-allocation dict items iterator.
+///
+/// For `for k, v in dict.items()` loops, this writes the key and value
+/// directly to caller-provided stack slots, completely avoiding the
+/// intermediate `(k, v)` tuple allocation that `molt_iter_next_unboxed`
+/// requires for dict items views.
+///
+/// Returns `false`-bits when a pair is available (key/value written),
+/// `true`-bits when the iterator is exhausted.
+///
+/// # Safety
+///
+/// `key_out` and `value_out` must point to writable storage for one `u64` each.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_iter_next_dict_items(
+    iter_bits: u64,
+    key_out: *mut u64,
+    value_out: *mut u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let done_true = MoltObject::from_bool(true).bits();
+        let done_false = MoltObject::from_bool(false).bits();
+
+        let Some(ptr) = maybe_ptr_from_bits(iter_bits) else {
+            return MoltObject::none().bits();
+        };
+
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_ITER {
+                let target_bits = iter_target_bits(ptr);
+                let target_obj = obj_from_bits(target_bits);
+                let idx = iter_index(ptr);
+
+                if let Some(target_ptr) = target_obj.as_ptr() {
+                    let target_type = object_type_id(target_ptr);
+
+                    if target_type == TYPE_ID_DICT_ITEMS_VIEW {
+                        let len = dict_view_len(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= len {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return done_true;
+                        }
+                        if let Some((kb, vb)) = dict_view_entry(target_ptr, idx) {
+                            // Write key and value directly — zero allocation.
+                            if crate::object::refcount_opt::is_heap_ref(kb) {
+                                inc_ref_bits(_py, kb);
+                            }
+                            if crate::object::refcount_opt::is_heap_ref(vb) {
+                                inc_ref_bits(_py, vb);
+                            }
+                            *key_out = kb;
+                            *value_out = vb;
+                            iter_set_index(ptr, idx + 1);
+                            return done_false;
+                        }
+                        iter_set_index(ptr, ITER_EXHAUSTED);
+                        return done_true;
+                    }
+                }
+            }
+
+            // Fallback: use molt_iter_next_unboxed and unpack the tuple.
+            let mut pair_bits: u64 = 0;
+            let done = molt_iter_next_unboxed(iter_bits, &mut pair_bits as *mut u64);
+            if done == done_true || done == MoltObject::none().bits() {
+                return done;
+            }
+            // pair_bits should be a 2-tuple: (key, value).
+            let pair_obj = obj_from_bits(pair_bits);
+            if let Some(pair_ptr) = pair_obj.as_ptr() {
+                if object_type_id(pair_ptr) == TYPE_ID_TUPLE {
+                    let elems = seq_vec_ref(pair_ptr);
+                    if elems.len() >= 2 {
+                        let kb = elems[0];
+                        let vb = elems[1];
+                        if crate::object::refcount_opt::is_heap_ref(kb) {
+                            inc_ref_bits(_py, kb);
+                        }
+                        if crate::object::refcount_opt::is_heap_ref(vb) {
+                            inc_ref_bits(_py, vb);
+                        }
+                        *key_out = kb;
+                        *value_out = vb;
+                        dec_ref_bits(_py, pair_bits);
+                        return done_false;
+                    }
+                }
+            }
+            dec_ref_bits(_py, pair_bits);
+            done_true
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {

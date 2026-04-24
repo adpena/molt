@@ -1265,6 +1265,28 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     ptr
 }
 
+/// Allocate a string without any interning/caching lookups.
+///
+/// This is the fast path for string method results (upper, lower, strip, etc.)
+/// where we know the result is a freshly-computed string that is unlikely to
+/// benefit from interning (it's typically discarded immediately). Skips the
+/// ASCII check, identifier check, and intern pool lock that `alloc_string`
+/// performs on every call.
+pub(crate) fn alloc_string_nointern(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
+    if bytes.is_empty() {
+        return alloc_string(_py, bytes);
+    }
+    let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let data_ptr = ptr.add(std::mem::size_of::<usize>());
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+    }
+    ptr
+}
+
 pub(crate) fn alloc_bytes_like(_py: &PyToken<'_>, bytes: &[u8], type_id: u32) -> *mut u8 {
     let ptr = alloc_bytes_like_with_len(_py, bytes.len(), type_id);
     if ptr.is_null() {
