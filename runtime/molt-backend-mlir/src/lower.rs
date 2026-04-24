@@ -58,6 +58,7 @@ pub fn lower_to_llvm_dialect(
 ///
 /// This gives finer control over the lowering order and is useful when
 /// debugging which specific conversion step fails.
+#[allow(dead_code)]
 pub fn lower_to_llvm_dialect_stepwise(
     module: &mut MlirModule<'_>,
     ctx: &MlirContext,

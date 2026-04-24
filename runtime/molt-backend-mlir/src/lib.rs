@@ -69,7 +69,7 @@ pub fn module_to_string(module: &MlirModule<'_>) -> String {
 mod tests {
     use super::*;
     use molt_backend::tir::{
-        blocks::{BlockId, Terminator, TirBlock},
+        blocks::{Terminator, TirBlock},
         function::TirFunction,
         ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp},
         types::TirType,
