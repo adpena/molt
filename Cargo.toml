@@ -307,6 +307,21 @@ opt-level = 3
 [profile.release-fast.package.regalloc2]
 opt-level = 3
 
+# Output-binary profile: used when building the runtime staticlib that gets
+# linked into user output binaries. Inherits release-fast optimization but
+# uses panic = "abort" — output binaries do not need the backend's
+# catch_unwind retry mechanism, and abort eliminates ~750KB of exception
+# tables (__eh_frame + __gcc_except_tab + __unwind_info).
+# opt-level "z" minimises code size in the runtime; the user's hot paths are
+# in compiled Python code (optimized by Cranelift), not runtime glue.
+[profile.release-output]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
 # Size-optimized release profile for micro stdlib builds.
 # Uses opt-level "z" (minimize binary size) with fat LTO and single codegen
 # unit for maximum cross-crate inlining and dead code elimination.
