@@ -20,7 +20,9 @@
 //!
 //! TIR is register-based SSA; WASM is a stack machine. We allocate one WASM local
 //! per SSA value and emit explicit local.get/local.set around each operation.
-//! A later peephole pass (not in this module) could eliminate redundant get/set pairs.
+//! A peephole pass (`peephole_set_get_to_tee`) runs after emission to collapse
+//! `local.set X; local.get X` pairs into `local.tee X`, eliminating redundant
+//! stack traffic.
 
 #[cfg(feature = "wasm-backend")]
 use wasm_encoder::{BlockType, Ieee64, Instruction, ValType};
@@ -102,6 +104,9 @@ struct LirLowerCtx<'a> {
     func: &'a LirFunction,
     value_locals: HashMap<ValueId, u32>,
     value_reprs: HashMap<ValueId, LirRepr>,
+    /// Reverse map: local index -> ValType. Built during allocation so the
+    /// locals vector can be constructed in O(N) instead of O(N^2).
+    local_types: HashMap<u32, ValType>,
     next_local: u32,
     instructions: Vec<Instruction<'static>>,
     rpo: Vec<BlockId>,
@@ -121,6 +126,7 @@ impl<'a> LirLowerCtx<'a> {
             func,
             value_locals: HashMap::new(),
             value_reprs: HashMap::new(),
+            local_types: HashMap::new(),
             next_local: local_base,
             instructions: Vec::new(),
             rpo,
@@ -136,6 +142,7 @@ impl<'a> LirLowerCtx<'a> {
         self.next_local += 1;
         self.value_locals.insert(value.id, idx);
         self.value_reprs.insert(value.id, value.repr);
+        self.local_types.insert(idx, lir_repr_to_val(value.repr));
         idx
     }
 
@@ -248,16 +255,9 @@ pub fn lower_lir_to_wasm(func: &LirFunction) -> WasmFunctionOutput {
 
     let num_params = param_types.len() as u32;
     let total_locals = ctx.next_local;
-    let mut locals = Vec::new();
+    let mut locals = Vec::with_capacity((total_locals - num_params) as usize);
     for idx in num_params..total_locals {
-        let ty = ctx
-            .value_locals
-            .iter()
-            .find(|&(_, &local_idx)| local_idx == idx)
-            .and_then(|(vid, _)| ctx.value_reprs.get(vid))
-            .copied()
-            .map(lir_repr_to_val)
-            .unwrap_or(ValType::I64);
+        let ty = ctx.local_types.get(&idx).copied().unwrap_or(ValType::I64);
         locals.push(ty);
     }
 
@@ -307,11 +307,12 @@ pub fn lower_lir_to_wasm(func: &LirFunction) -> WasmFunctionOutput {
     }
 
     ctx.instructions.push(Instruction::End);
+    let instructions = peephole_set_get_to_tee(ctx.instructions);
     WasmFunctionOutput {
         param_types,
         result_types,
         locals,
-        instructions: ctx.instructions,
+        instructions,
     }
 }
 
@@ -432,11 +433,12 @@ pub fn lower_lir_to_wasm_boxed_i64_abi(func: &LirFunction) -> Option<WasmFunctio
     }
 
     ctx.instructions.push(Instruction::End);
+    let instructions = peephole_set_get_to_tee(ctx.instructions);
     Some(WasmFunctionOutput {
         param_types,
         result_types,
         locals,
-        instructions: ctx.instructions,
+        instructions,
     })
 }
 
@@ -1057,6 +1059,52 @@ fn store_lir_block_args(ctx: &mut LirLowerCtx, target: BlockId, args: &[ValueId]
 }
 
 // ---------------------------------------------------------------------------
+// Peephole: local.set X; local.get X → local.tee X
+// ---------------------------------------------------------------------------
+//
+// The SSA→stack-machine lowering emits an explicit local.set after every op
+// result and a local.get before every operand read. This creates abundant
+// `local.set X; local.get X` pairs where the value is stored AND immediately
+// reloaded. WASM's `local.tee` instruction does both in one shot: it stores
+// the value in the local AND leaves a copy on the stack, eliminating the
+// redundant get.
+//
+// This is a single linear pass over the instruction vector: O(N) time, O(N)
+// space (new vec). No control-flow analysis needed because the pattern is
+// purely sequential and the semantics are identical.
+//
+// Additionally, when the tee'd value is never read again after the
+// immediately following instruction, the entire set can sometimes be
+// eliminated — but that requires liveness analysis beyond this peephole's
+// scope. wasm-opt handles that downstream.
+
+#[cfg(feature = "wasm-backend")]
+fn peephole_set_get_to_tee(instructions: Vec<Instruction<'static>>) -> Vec<Instruction<'static>> {
+    if instructions.len() < 2 {
+        return instructions;
+    }
+    let mut out = Vec::with_capacity(instructions.len());
+    let mut i = 0;
+    while i < instructions.len() {
+        if i + 1 < instructions.len() {
+            if let (Instruction::LocalSet(set_idx), Instruction::LocalGet(get_idx)) =
+                (&instructions[i], &instructions[i + 1])
+            {
+                if set_idx == get_idx {
+                    // Replace set+get with tee: stores to local AND keeps value on stack.
+                    out.push(Instruction::LocalTee(*set_idx));
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        out.push(instructions[i].clone());
+        i += 1;
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1378,5 +1426,98 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Instruction::Call(_)));
         assert!(has_call, "expected runtime call for state_switch");
+    }
+
+    // -----------------------------------------------------------------------
+    // Peephole pass tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn peephole_collapses_set_get_to_tee() {
+        let input = vec![
+            Instruction::I64Const(42),
+            Instruction::LocalSet(3),
+            Instruction::LocalGet(3),
+            Instruction::End,
+        ];
+        let output = peephole_set_get_to_tee(input);
+        assert_eq!(output.len(), 3);
+        assert!(
+            matches!(output[0], Instruction::I64Const(42)),
+            "const preserved"
+        );
+        assert!(
+            matches!(output[1], Instruction::LocalTee(3)),
+            "set+get collapsed to tee"
+        );
+        assert!(matches!(output[2], Instruction::End), "end preserved");
+    }
+
+    #[test]
+    fn peephole_preserves_mismatched_set_get() {
+        let input = vec![
+            Instruction::LocalSet(1),
+            Instruction::LocalGet(2), // different local
+            Instruction::End,
+        ];
+        let output = peephole_set_get_to_tee(input);
+        assert_eq!(output.len(), 3);
+        assert!(
+            matches!(output[0], Instruction::LocalSet(1)),
+            "set preserved"
+        );
+        assert!(
+            matches!(output[1], Instruction::LocalGet(2)),
+            "get preserved"
+        );
+    }
+
+    #[test]
+    fn peephole_handles_consecutive_tee_chains() {
+        // Pattern: set(1) get(1) set(2) get(2) → tee(1) tee(2)
+        let input = vec![
+            Instruction::I64Const(10),
+            Instruction::LocalSet(1),
+            Instruction::LocalGet(1),
+            Instruction::LocalSet(2),
+            Instruction::LocalGet(2),
+            Instruction::End,
+        ];
+        let output = peephole_set_get_to_tee(input);
+        assert_eq!(output.len(), 4);
+        assert!(matches!(output[1], Instruction::LocalTee(1)));
+        assert!(matches!(output[2], Instruction::LocalTee(2)));
+    }
+
+    #[test]
+    fn peephole_empty_and_single() {
+        assert!(peephole_set_get_to_tee(vec![]).is_empty());
+        let single = vec![Instruction::End];
+        assert_eq!(peephole_set_get_to_tee(single).len(), 1);
+    }
+
+    #[test]
+    fn peephole_applied_in_const_return() {
+        // A const-return function should have tee instead of set+get.
+        let func = make_const_return_func(99);
+        let output = lower_tir_to_wasm(&func);
+
+        // After peephole, the pattern: i64.const 99; local.set X; local.get X; return
+        // becomes: i64.const 99; local.tee X; return
+        let has_tee = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalTee(_)));
+        assert!(has_tee, "expected local.tee from peephole optimization");
+
+        // Should have no set+get pairs for the same local.
+        for window in output.instructions.windows(2) {
+            if let (Instruction::LocalSet(s), Instruction::LocalGet(g)) = (&window[0], &window[1]) {
+                assert_ne!(
+                    s, g,
+                    "found redundant set+get pair for local {s} that peephole should have eliminated"
+                );
+            }
+        }
     }
 }
