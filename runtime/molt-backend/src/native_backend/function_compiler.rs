@@ -1515,13 +1515,22 @@ fn preanalyze_function_ir(
                         }
                     }
                 }
-                // Condition 5: has explicit refcount ops
+                // Condition 5: has explicit refcount ops.
+                // Check both args AND var — the target variable of a
+                // dec_ref/release must stay slot-backed so the boxed
+                // representation is refcount-correct when the runtime
+                // decrements it.
                 "inc_ref" | "dec_ref" | "borrow" | "release" => {
                     if let Some(args) = &op.args {
                         for arg in args {
                             if is_scalar(arg) {
                                 unsafe_set.insert(arg.clone());
                             }
+                        }
+                    }
+                    if let Some(var) = &op.var {
+                        if is_scalar(var) {
+                            unsafe_set.insert(var.clone());
                         }
                     }
                 }
@@ -23202,8 +23211,10 @@ impl SimpleBackend {
                 eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
             }
         }
-        if std::env::var("MOLT_DUMP_CLIF_FUNC").as_deref() == Ok(func_ir.name.as_str()) {
-            eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
+        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF_FUNC") {
+            if func_ir.name == filter || func_ir.name.contains(&filter) {
+                eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
+            }
         }
 
         // Eliminate unreachable blocks BEFORE sealing.  Cranelift's SSA
@@ -24633,6 +24644,79 @@ mod tests {
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("x"),
             "int variable with inc_ref must be marked unsafe for slot exclusion"
+        );
+    }
+
+    #[test]
+    fn slot_exclusion_marks_refcount_var_field_as_unsafe() {
+        // A dec_ref op that references a scalar via op.var must also
+        // mark it unsafe -- the runtime will dec_ref the boxed value
+        // and needs the slot-backed refcount-correct representation.
+        let func = FunctionIR {
+            name: "refcount_var_escape".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("x".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dec_ref".to_string(),
+                    var: Some("x".to_string()),
+                    args: Some(vec!["x".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            analysis.scalar_slot_exclusion_unsafe.contains("x"),
+            "int variable in dec_ref var field must be marked unsafe for slot exclusion"
+        );
+    }
+
+    #[test]
+    fn slot_exclusion_marks_release_var_field_as_unsafe() {
+        // release op referencing a scalar via op.var
+        let func = FunctionIR {
+            name: "release_var_escape".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("y".to_string()),
+                    value: Some(42),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "release".to_string(),
+                    var: Some("y".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        assert!(
+            analysis.scalar_slot_exclusion_unsafe.contains("y"),
+            "int variable in release var field must be marked unsafe for slot exclusion"
         );
     }
 
