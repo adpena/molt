@@ -157,6 +157,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let mut value_def_op: HashMap<ValueId, (OpCode, Vec<ValueId>)> = HashMap::new();
     // Map: loop header BlockId → GuardFact from while-loop condition.
     let mut while_guard_facts: HashMap<BlockId, GuardFact> = HashMap::new();
+    // Map: ValueId → container ValueId for CallBuiltin("len", container).
+    // Used to prove: when a guard bound equals len(container) and the Index
+    // targets the same container, the access is trivially in-bounds.
+    let mut len_of_container: HashMap<ValueId, ValueId> = HashMap::new();
 
     // First pass: collect definitions across all blocks.
     for bid in &block_ids {
@@ -183,6 +187,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         let first_arg = op.operands.first().copied();
                         for &result in &op.results {
                             call_builtin_info.insert(result, (name.clone(), first_arg));
+                        }
+                        // Track len(container) so we can link guard bounds to containers.
+                        if name == "len" && op.operands.len() == 1 && !op.results.is_empty() {
+                            let container = op.operands[0];
+                            for &result in &op.results {
+                                len_of_container.insert(result, container);
+                            }
                         }
                     }
                     OpCode::BuildList => {
@@ -488,13 +499,30 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                                 //   Proven if len(container) >= n+1.
                                 // For Lt(i, n): i < n.
                                 //   Proven if len(container) >= n.
-                                proven = prove_guard_bound(
-                                    guard,
-                                    container_operand,
-                                    &container_length,
-                                    &const_int_value,
-                                    &add_const_decomp,
-                                );
+
+                                // Strategy 0: guard bound IS len(container).
+                                // When the guard is Lt(i, len(container)) and the
+                                // len call targets the same container, the access
+                                // is trivially in-bounds: i < len(container).
+                                // This is the common case after iter_devirt rewrites
+                                // `for x in lst` into `while i < len(lst): lst[i]`.
+                                if !guard.is_le {
+                                    if let Some(&bound_container) = len_of_container.get(&guard.bound) {
+                                        if bound_container == container_operand {
+                                            proven = true;
+                                        }
+                                    }
+                                }
+
+                                if !proven {
+                                    proven = prove_guard_bound(
+                                        guard,
+                                        container_operand,
+                                        &container_length,
+                                        &const_int_value,
+                                        &add_const_decomp,
+                                    );
+                                }
                                 if proven {
                                     break;
                                 }
