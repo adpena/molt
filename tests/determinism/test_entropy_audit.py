@@ -138,6 +138,9 @@ class TestEntropySourceAudit:
             "src/molt/net.py",  # network request IDs
             "src/molt/asgi.py",  # request handling
             "src/molt/gpu/generate.py",  # sampling for text generation
+            "src/molt/stdlib/tinygrad/nl_template_filler.py",  # invoice ID generation
+            "src/molt/stdlib/tinygrad/speculative.py",  # sampling in speculative decoding
+            "src/molt/stdlib/tinygrad/template_extractor.py",  # unique template IDs
         }
 
         all_findings: list[tuple[str, int, str]] = []
