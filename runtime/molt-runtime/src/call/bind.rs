@@ -452,6 +452,58 @@ unsafe fn call_type_with_builder(
                     kw_values,
                 );
             }
+            // Custom metaclass (subclass of type) with 3 args:
+            // Meta(name, bases, namespace). Chain type.__new__ → Meta.__init__
+            // so the metaclass __init__ can set class attributes.
+            if pos_args.len() == 3 && issubclass_bits(class_bits, builtins.type_obj) {
+                // Call type.__new__(Meta, name, bases, namespace) to create the class.
+                let kwargs_bits = if kw_names.is_empty() {
+                    MoltObject::none().bits()
+                } else {
+                    let mut pairs = Vec::with_capacity(kw_names.len() * 2);
+                    for (k, v) in kw_names.iter().zip(kw_values.iter()) {
+                        pairs.push(*k);
+                        pairs.push(*v);
+                    }
+                    let ptr = alloc_dict_with_pairs(_py, &pairs);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    MoltObject::from_ptr(ptr).bits()
+                };
+                let new_class_bits = molt_type_new(
+                    class_bits,
+                    pos_args[0],
+                    pos_args[1],
+                    pos_args[2],
+                    kwargs_bits,
+                );
+                if !kw_names.is_empty() {
+                    dec_ref_bits(_py, kwargs_bits);
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                // Call Meta.__init__(new_class, name, bases, namespace).
+                let init_name_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.init_name,
+                    b"__init__",
+                );
+                if let Some(init_bits) =
+                    class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)
+                {
+                    let init_builder = molt_callargs_new(5, 0);
+                    if init_builder != 0 {
+                        let _ = molt_callargs_push_pos(init_builder, new_class_bits);
+                        let _ = molt_callargs_push_pos(init_builder, pos_args[0]);
+                        let _ = molt_callargs_push_pos(init_builder, pos_args[1]);
+                        let _ = molt_callargs_push_pos(init_builder, pos_args[2]);
+                        let _init_result = molt_call_bind(init_bits, init_builder);
+                    }
+                }
+                return new_class_bits;
+            }
             if class_bits == builtins.type_obj && pos_args.len() == 1 && kw_names.is_empty() {
                 let bits = type_of_bits(_py, pos_args[0]);
                 inc_ref_bits(_py, bits);
