@@ -54,7 +54,8 @@ pub use crate::passes::{
     elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_imports,
     eliminate_dead_ops, eliminate_redundant_guard_tags, eliminate_unbound_local_checks,
     escape_analysis, fold_constants, fold_constants_cross_block, hoist_loop_invariants,
-    inline_functions, rc_coalescing, rewrite_stateful_loops, split_megafunctions,
+    inject_runtime_exit, inline_functions, rc_coalescing, rewrite_stateful_loops,
+    split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]

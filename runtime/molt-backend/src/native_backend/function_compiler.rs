@@ -23446,6 +23446,32 @@ impl SimpleBackend {
             None
         };
 
+        // For molt_main: call _exit(0) to skip global destructors that
+        // cause intermittent SIGSEGV. Same approach as CPython.
+        if func_ir.name == "molt_main" {
+            // Flush stdio
+            let fflush = Self::import_func_id_split(
+                &mut self.module,
+                &mut self.import_ids,
+                "fflush",
+                &[types::I64],
+                &[types::I32],
+            );
+            let local_fflush = self.module.declare_func_in_func(fflush, builder.func);
+            let null = builder.ins().iconst(types::I64, 0);
+            builder.ins().call(local_fflush, &[null]);
+            // _exit(0)
+            let exit_fn = Self::import_func_id_split(
+                &mut self.module,
+                &mut self.import_ids,
+                "_exit",
+                &[types::I32],
+                &[],
+            );
+            let local_exit = self.module.declare_func_in_func(exit_fn, builder.func);
+            let zero = builder.ins().iconst(types::I32, 0);
+            builder.ins().call(local_exit, &[zero]);
+        }
         if let Some(res) = final_res {
             builder.ins().return_(&[res]);
         } else {
