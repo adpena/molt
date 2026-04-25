@@ -36,7 +36,25 @@ struct ValueKey {
 }
 
 /// Returns `true` if the opcode is pure and eligible for value numbering.
-fn is_numberable(opcode: OpCode) -> bool {
+/// Returns `true` if the opcode MIGHT be numberable (if operands are typed).
+/// Constants are always numberable. Arithmetic is only numberable when
+/// operands are proven primitive types (I64/F64/Bool), not DynBox.
+fn is_always_numberable(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        OpCode::ConstInt
+            | OpCode::ConstFloat
+            | OpCode::ConstStr
+            | OpCode::ConstBool
+            | OpCode::ConstNone
+            | OpCode::ConstBytes
+            | OpCode::BoxVal
+            | OpCode::UnboxVal
+    )
+}
+
+/// Returns `true` if the opcode is numberable when operands are proven typed.
+fn is_typed_numberable(opcode: OpCode) -> bool {
     matches!(
         opcode,
         OpCode::Add
@@ -56,8 +74,6 @@ fn is_numberable(opcode: OpCode) -> bool {
             | OpCode::Ge
             | OpCode::Is
             | OpCode::IsNot
-            | OpCode::In
-            | OpCode::NotIn
             | OpCode::BitAnd
             | OpCode::BitOr
             | OpCode::BitXor
@@ -68,20 +84,14 @@ fn is_numberable(opcode: OpCode) -> bool {
             | OpCode::Or
             | OpCode::Not
             | OpCode::Bool
-            | OpCode::ConstInt
-            | OpCode::ConstFloat
-            | OpCode::ConstStr
-            | OpCode::ConstBool
-            | OpCode::ConstNone
-            | OpCode::ConstBytes
-            | OpCode::Copy
-            | OpCode::BuildSlice
-            | OpCode::Index
-            | OpCode::LoadAttr
-            | OpCode::BoxVal
-            | OpCode::UnboxVal
             | OpCode::TypeGuard
     )
+}
+
+/// A type is "primitive" when arithmetic on it is provably side-effect-free.
+fn is_primitive_type(ty: &crate::tir::types::TirType) -> bool {
+    use crate::tir::types::TirType;
+    matches!(ty, TirType::I64 | TirType::F64 | TirType::Bool | TirType::None)
 }
 
 /// Extract constant keys for deduplicating constants by exact value.
@@ -110,10 +120,15 @@ fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>) {
             (k, None)
         }
         OpCode::ConstStr | OpCode::ConstBytes => {
-            let s = op.attrs.get("value").and_then(|v| match v {
-                AttrValue::Str(s) => Some(s.clone()),
-                _ => None,
-            });
+            // TIR ConstStr stores the string in "s_value", not "value".
+            let s = op
+                .attrs
+                .get("s_value")
+                .or_else(|| op.attrs.get("value"))
+                .and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.clone()),
+                    _ => None,
+                });
             (None, s)
         }
         _ => (None, None),
@@ -300,19 +315,53 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     dfs_rpo(func.entry_block, func, &mut visited, &mut rpo);
     rpo.reverse();
 
+    // Build a value→type map from STRUCTURALLY GUARANTEED sources only:
+    // block args (set by type_refine), constants, and function params.
+    // NO speculative type inference — if a value's type isn't provably
+    // known, it's treated as DynBox (not primitive, not safe to number).
+    let mut value_type: HashMap<ValueId, crate::tir::types::TirType> = HashMap::new();
+    {
+        use crate::tir::types::TirType;
+        // Block arguments carry types from type_refine.
+        for block in func.blocks.values() {
+            for arg in &block.args {
+                value_type.insert(arg.id, arg.ty.clone());
+            }
+        }
+        // Function parameters.
+        for (i, ty) in func.param_types.iter().enumerate() {
+            value_type.insert(ValueId(i as u32), ty.clone());
+        }
+        // Constants have known types.
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                let ty = match op.opcode {
+                    OpCode::ConstInt => Some(TirType::I64),
+                    OpCode::ConstFloat => Some(TirType::F64),
+                    OpCode::ConstBool => Some(TirType::Bool),
+                    OpCode::ConstNone => Some(TirType::None),
+                    OpCode::ConstStr => Some(TirType::Str),
+                    OpCode::ConstBytes => Some(TirType::Bytes),
+                    _ => None,
+                };
+                if let Some(t) = ty {
+                    for &res in &op.results {
+                        value_type.insert(res, t.clone());
+                    }
+                }
+            }
+        }
+    }
+
     // Phase 1: Number all values in RPO order.
-    // value_number[v] = canonical ValueId for the computation producing v.
     let mut value_number: HashMap<ValueId, ValueId> = HashMap::new();
-    // key_to_leader[key] = first ValueId that computed this key.
     let mut key_to_leader: HashMap<ValueKey, ValueId> = HashMap::new();
 
-    // Seed block arguments (they are unique, not numberable).
     for block in func.blocks.values() {
         for arg in &block.args {
             value_number.insert(arg.id, arg.id);
         }
     }
-    // Seed function parameters.
     for i in 0..func.param_types.len() {
         let v = ValueId(i as u32);
         value_number.insert(v, v);
@@ -364,6 +413,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             None => continue,
         };
 
+        // Reset the leader table per block. Cross-block dedup requires
+        // proven dominance AND safe phi interaction — restrict to
+        // intra-block dedup until full dominator-scoped tables are
+        // implemented (LLVM's GVN uses scoped hash tables that inherit
+        // from the immediate dominator and are popped on scope exit).
+        key_to_leader.clear();
+
         for (i, op) in block.ops.iter().enumerate() {
             if op.results.is_empty() {
                 continue;
@@ -371,17 +427,36 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
             let result = op.results[0];
 
-            if !is_numberable(op.opcode) {
-                // Side-effecting or non-numberable: assign self as value number.
+            // Determine if this op is safe to number.
+            let numberable = if is_always_numberable(op.opcode) {
+                true
+            } else if is_typed_numberable(op.opcode) {
+                // Arithmetic/comparison/boolean ops are only numberable
+                // when ALL operands are proven primitive types. On DynBox
+                // operands, these ops may trigger dunder methods with side
+                // effects (__add__, __eq__, etc.).
+                op.operands.iter().all(|v| {
+                    value_type
+                        .get(v)
+                        .map_or(false, |ty| is_primitive_type(ty))
+                })
+            } else {
+                false
+            };
+
+            if !numberable {
                 value_number.insert(result, result);
                 continue;
             }
 
-            // Build the value key using numbered operands.
+            // Build the value key using RAW operand ValueIds (not numbered).
+            // Using value numbers across loop iterations is unsound: block
+            // args represent phi nodes whose values change per iteration.
+            // Intra-block dedup uses raw ValueIds which ARE unique per SSA def.
             let numbered_operands: Vec<ValueId> = op
                 .operands
                 .iter()
-                .map(|&v| value_number.get(&v).copied().unwrap_or(v))
+                .map(|&v| v)
                 .collect();
 
             let (const_int_key, const_str_key) = const_keys(op);
