@@ -17,11 +17,24 @@
 //!     result += x * i
 //! ```
 //!
+//! Multi-level hoisting: nested loops are processed innermost-first. An
+//! op invariant w.r.t. the inner loop is hoisted to the inner preheader
+//! (which still lives inside the outer loop). When the outer loop is
+//! processed, that op now sits in a block belonging to the outer loop's
+//! body and may itself be invariant w.r.t. the outer loop, in which case
+//! it is hoisted again — to the outer preheader. This is a fixpoint
+//! traversal of the loop nesting tree.
+//!
 //! Safety conditions:
 //! 1. The op must be pure (no side effects).
 //! 2. All operands must be defined outside the loop (or be other invariants).
 //! 3. The op must dominate all loop exits (guaranteed by hoisting to preheader).
 //! 4. Exception-handling regions are conservatively excluded.
+//! 5. The op's result must not appear as a branch argument (phi value).
+//!    Such uses cross block boundaries via terminators; excluding them is
+//!    sufficient to ensure the only escapes from a loop go through phi
+//!    nodes, so direct uses of any hoist candidate are dominated by the
+//!    chosen preheader.
 //!
 //! Reference: Muchnick, "Advanced Compiler Design and Implementation" ch. 13.
 
@@ -29,6 +42,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::PassStats;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
+use crate::tir::dominators::{build_pred_map, compute_idoms, dominates};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
@@ -74,107 +88,59 @@ fn is_hoistable(opcode: OpCode) -> bool {
     )
 }
 
-/// Identify all blocks that belong to a loop whose header is `header_bid`.
-fn collect_loop_blocks(func: &TirFunction, header_bid: BlockId) -> HashSet<BlockId> {
+/// Identify all blocks that belong to the natural loop whose header is
+/// `header_bid`.
+///
+/// Standard textbook construction (Muchnick §13.4): a back edge is an edge
+/// `tail → header` where `header` dominates `tail`. The natural loop of a
+/// back edge is `{header} ∪ {nodes that can reach tail without passing
+/// through header}`. The natural loop of a header is the union over all
+/// back edges to that header. Using *dominance* (rather than mere
+/// reachability from the header) is what cleanly distinguishes inner-loop
+/// bodies from outer-loop bodies in nested CFGs: an inner-loop preheader
+/// is reachable from the inner header (via the outer iteration cycle) but
+/// is not dominated by it, so the inner-loop preheader is correctly
+/// excluded from the inner loop's body.
+fn collect_loop_blocks(
+    func: &TirFunction,
+    pred_map: &HashMap<BlockId, Vec<BlockId>>,
+    idoms: &HashMap<BlockId, Option<BlockId>>,
+    header_bid: BlockId,
+) -> HashSet<BlockId> {
     let mut loop_blocks = HashSet::new();
     loop_blocks.insert(header_bid);
 
-    // Build predecessor map.
-    let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for (&bid, block) in &func.blocks {
-        let succs = match &block.terminator {
-            Terminator::Branch { target, .. } => vec![*target],
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => vec![*then_block, *else_block],
-            Terminator::Switch {
-                cases,
-                default: default_bid,
-                ..
-            } => {
-                let mut s: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
-                s.push(*default_bid);
-                s
-            }
-            _ => vec![],
-        };
-        for s in succs {
-            preds.entry(s).or_default().push(bid);
-        }
-    }
+    // Back-edge tails: predecessors of header dominated by header.
+    let header_preds: &[BlockId] = pred_map
+        .get(&header_bid)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
 
-    // Find back-edge sources: predecessors of the header that are
-    // reachable from the header (i.e., there's a forward path from
-    // header → ... → predecessor). These form back edges.
-    // First, compute the set of blocks reachable from the header
-    // (excluding the header itself to avoid trivially including
-    // the entry edge).
-    let mut reachable_from_header: HashSet<BlockId> = HashSet::new();
-    {
-        let mut stack = Vec::new();
-        if let Some(header_block) = func.blocks.get(&header_bid) {
-            let succs = match &header_block.terminator {
-                Terminator::Branch { target, .. } => vec![*target],
-                Terminator::CondBranch {
-                    then_block,
-                    else_block,
-                    ..
-                } => vec![*then_block, *else_block],
-                _ => vec![],
-            };
-            for s in succs {
-                if s != header_bid {
-                    stack.push(s);
-                }
-            }
-        }
-        while let Some(bid) = stack.pop() {
-            if !reachable_from_header.insert(bid) {
-                continue;
-            }
-            if let Some(block) = func.blocks.get(&bid) {
-                let succs = match &block.terminator {
-                    Terminator::Branch { target, .. } => vec![*target],
-                    Terminator::CondBranch {
-                        then_block,
-                        else_block,
-                        ..
-                    } => vec![*then_block, *else_block],
-                    _ => vec![],
-                };
-                for s in succs {
-                    if s != header_bid && !reachable_from_header.contains(&s) {
-                        stack.push(s);
-                    }
-                }
-            }
-        }
-    }
-
-    // Now find back edges: predecessors of header that are reachable from it.
     let mut worklist: Vec<BlockId> = Vec::new();
-    if let Some(header_preds) = preds.get(&header_bid) {
-        for &p in header_preds {
-            if reachable_from_header.contains(&p) && !loop_blocks.contains(&p) {
-                loop_blocks.insert(p);
-                worklist.push(p);
-            }
+    for &p in header_preds {
+        if dominates(header_bid, p, idoms) && loop_blocks.insert(p) {
+            worklist.push(p);
         }
     }
 
+    // Walk predecessors backwards from each back-edge tail, never crossing
+    // the header. The header acts as the loop's single entry, so any node
+    // reaching a tail without going through the header belongs to the loop.
     while let Some(bid) = worklist.pop() {
-        if let Some(block_preds) = preds.get(&bid) {
+        if let Some(block_preds) = pred_map.get(&bid) {
             for &p in block_preds {
-                if !loop_blocks.contains(&p) {
-                    loop_blocks.insert(p);
+                if p == header_bid {
+                    continue;
+                }
+                if loop_blocks.insert(p) {
                     worklist.push(p);
                 }
             }
         }
     }
 
+    // Defensive: only retain blocks that actually exist in the function.
+    loop_blocks.retain(|bid| func.blocks.contains_key(bid));
     loop_blocks
 }
 
@@ -219,8 +185,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         return stats;
     }
 
-    // Find loop headers from loop_roles metadata.
-    let loop_headers: Vec<BlockId> = func
+    // Find loop headers from loop_roles metadata. Sort by id so that
+    // tie-breaking in the post-order traversal below is deterministic
+    // regardless of the underlying HashMap iteration order.
+    let mut loop_headers: Vec<BlockId> = func
         .loop_roles
         .iter()
         .filter_map(|(bid, role)| {
@@ -231,30 +199,48 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             }
         })
         .collect();
+    loop_headers.sort_unstable_by_key(|b| b.0);
 
     if loop_headers.is_empty() {
         return stats;
     }
 
-    // Only process OUTERMOST loops. An inner loop header is inside
-    // another loop's block set — hoisting from inner loops to their
-    // preheader can break dominance for values used in the outer loop.
-    // Collect all loop block sets first, then filter.
+    // Process all loops, innermost first, so ops hoisted from an inner
+    // loop's body into the inner preheader become visible to the
+    // enclosing loop and can be hoisted further out if invariant there.
+    //
+    // Step 0: compute dominators once. Used both for natural-loop body
+    // construction (back-edge identification) and for cheaply ordering
+    // the loop forest.
+    let pred_map = build_pred_map(func);
+    let idoms = compute_idoms(func, &pred_map);
+
+    // Step 1: compute each loop's block set using dominator-based natural
+    // loop construction. Natural loops nest properly: an inner loop's body
+    // is a strict subset of its enclosing outer loop's body.
     let loop_block_sets: Vec<(BlockId, HashSet<BlockId>)> = loop_headers
         .iter()
-        .map(|&h| (h, collect_loop_blocks(func, h)))
+        .map(|&h| (h, collect_loop_blocks(func, &pred_map, &idoms, h)))
         .collect();
-    let outermost_headers: Vec<BlockId> = loop_headers
+
+    // Step 2: nesting depth = number of OTHER loops whose block set
+    // contains this loop's header. A header at depth k is inside k
+    // enclosing loops. Sorting by descending depth yields a post-order
+    // over the loop forest: every inner loop is processed before its
+    // enclosing loop.
+    let mut headers_with_depth: Vec<(BlockId, usize)> = loop_block_sets
         .iter()
-        .copied()
-        .filter(|&h| {
-            // A header is "outermost" if it is NOT contained in ANY other loop's block set.
-            !loop_block_sets.iter().any(|(other_h, other_blocks)| {
-                *other_h != h && other_blocks.contains(&h)
-            })
+        .map(|(h, _)| {
+            let depth = loop_block_sets
+                .iter()
+                .filter(|(other_h, other_blocks)| *other_h != *h && other_blocks.contains(h))
+                .count();
+            (*h, depth)
         })
         .collect();
-    let loop_headers = outermost_headers;
+    // Descending depth → innermost first. Stable across ties.
+    headers_with_depth.sort_by(|a, b| b.1.cmp(&a.1));
+    let loop_headers: Vec<BlockId> = headers_with_depth.into_iter().map(|(h, _)| h).collect();
 
     // Build a set of all values defined in each block for quick lookup.
     let mut value_def_block: HashMap<ValueId, BlockId> = HashMap::new();
@@ -297,13 +283,26 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         }
     }
 
-    for header_bid in &loop_headers {
-        let loop_blocks = collect_loop_blocks(func, *header_bid);
+    // Index the precomputed loop block sets by header for cheap lookup.
+    let loop_blocks_by_header: HashMap<BlockId, HashSet<BlockId>> =
+        loop_block_sets.into_iter().collect();
 
-        let preheader = match find_preheader(func, *header_bid, &loop_blocks) {
+    for header_bid in &loop_headers {
+        let loop_blocks = match loop_blocks_by_header.get(header_bid) {
+            Some(set) => set,
+            None => continue,
+        };
+
+        let preheader = match find_preheader(func, *header_bid, loop_blocks) {
             Some(p) => p,
             None => continue, // No unique preheader — can't hoist.
         };
+
+        // Stable iteration order over loop blocks: keeps hoisted-op
+        // ordering deterministic for golden-file diffs and for downstream
+        // passes that depend on textual TIR equivalence.
+        let mut sorted_loop_blocks: Vec<BlockId> = loop_blocks.iter().copied().collect();
+        sorted_loop_blocks.sort_unstable_by_key(|b| b.0);
 
         // Collect invariant ops: ops in loop blocks whose operands are
         // all defined outside the loop.
@@ -311,7 +310,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         for _round in 0..10 {
             let mut hoisted_this_round = 0usize;
 
-            for &loop_bid in &loop_blocks {
+            for &loop_bid in &sorted_loop_blocks {
                 let block = match func.blocks.get(&loop_bid) {
                     Some(b) => b,
                     None => continue,
@@ -534,6 +533,422 @@ mod tests {
         );
 
         assert!(stats.ops_removed > 0 || stats.ops_added > 0);
+    }
+
+    /// Layout of a canonical 2-level nested loop CFG:
+    /// ```text
+    /// entry → outer_ph → outer_h ⇄ outer_b → inner_ph → inner_h ⇄ inner_b
+    ///                       ↓                                  ↘
+    ///                    outer_exit ← inner_exit ← inner_h
+    /// ```
+    /// Back edges: inner_b → inner_h (inner loop), inner_exit → outer_h (outer loop).
+    /// outer_ph is the outer-loop preheader; inner_ph is the inner-loop preheader.
+    /// inner_ph lives *inside* the outer loop body, but *outside* the inner loop body.
+    struct NestedLoop {
+        outer_ph: BlockId,
+        outer_h: BlockId,
+        outer_b: BlockId,
+        inner_ph: BlockId,
+        inner_h: BlockId,
+        inner_b: BlockId,
+        inner_exit: BlockId,
+        outer_exit: BlockId,
+        outer_var: ValueId,
+        inner_var: ValueId,
+        cond_outer: ValueId,
+        cond_inner: ValueId,
+        result: ValueId,
+    }
+
+    /// Build the canonical 2-level nested-loop CFG with empty bodies.
+    /// The caller fills in the inner_b ops and any extra preheader/header ops.
+    fn build_nested_loop(func: &mut TirFunction) -> NestedLoop {
+        let outer_ph = func.fresh_block();
+        let outer_h = func.fresh_block();
+        let outer_b = func.fresh_block();
+        let inner_ph = func.fresh_block();
+        let inner_h = func.fresh_block();
+        let inner_b = func.fresh_block();
+        let inner_exit = func.fresh_block();
+        let outer_exit = func.fresh_block();
+
+        let outer_var = func.fresh_value();
+        let inner_var = func.fresh_value();
+        let cond_outer = func.fresh_value();
+        let cond_inner = func.fresh_value();
+        let result = func.fresh_value();
+        let outer_init = func.fresh_value();
+        let outer_ph_arg = func.fresh_value();
+        let inner_init = func.fresh_value();
+        let inner_ph_arg = func.fresh_value();
+        let outer_next = func.fresh_value();
+        let inner_next = func.fresh_value();
+
+        // entry: → outer_ph (with outer_init)
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(make_const_int(0, outer_init));
+            entry.terminator = Terminator::Branch {
+                target: outer_ph,
+                args: vec![outer_init],
+            };
+        }
+
+        // outer_ph: takes the outer-loop seed; → outer_h
+        func.blocks.insert(
+            outer_ph,
+            TirBlock {
+                id: outer_ph,
+                args: vec![TirValue {
+                    id: outer_ph_arg,
+                    ty: TirType::I64,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: outer_h,
+                    args: vec![outer_ph_arg],
+                },
+            },
+        );
+
+        // outer_h: outer-loop header; CondBranch → outer_b or outer_exit
+        func.blocks.insert(
+            outer_h,
+            TirBlock {
+                id: outer_h,
+                args: vec![TirValue {
+                    id: outer_var,
+                    ty: TirType::I64,
+                }],
+                ops: vec![make_const_int(1, cond_outer)],
+                terminator: Terminator::CondBranch {
+                    cond: cond_outer,
+                    then_block: outer_b,
+                    then_args: vec![],
+                    else_block: outer_exit,
+                    else_args: vec![outer_var],
+                },
+            },
+        );
+
+        // outer_b: → inner_ph (no ops by default)
+        func.blocks.insert(
+            outer_b,
+            TirBlock {
+                id: outer_b,
+                args: vec![],
+                ops: vec![make_const_int(0, inner_init)],
+                terminator: Terminator::Branch {
+                    target: inner_ph,
+                    args: vec![inner_init],
+                },
+            },
+        );
+
+        // inner_ph: takes the inner-loop seed; → inner_h
+        func.blocks.insert(
+            inner_ph,
+            TirBlock {
+                id: inner_ph,
+                args: vec![TirValue {
+                    id: inner_ph_arg,
+                    ty: TirType::I64,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: inner_h,
+                    args: vec![inner_ph_arg],
+                },
+            },
+        );
+
+        // inner_h: inner-loop header; CondBranch → inner_b or inner_exit
+        func.blocks.insert(
+            inner_h,
+            TirBlock {
+                id: inner_h,
+                args: vec![TirValue {
+                    id: inner_var,
+                    ty: TirType::I64,
+                }],
+                ops: vec![make_const_int(1, cond_inner)],
+                terminator: Terminator::CondBranch {
+                    cond: cond_inner,
+                    then_block: inner_b,
+                    then_args: vec![],
+                    else_block: inner_exit,
+                    else_args: vec![],
+                },
+            },
+        );
+
+        // inner_b: → inner_h (back-edge). Caller fills in ops.
+        func.blocks.insert(
+            inner_b,
+            TirBlock {
+                id: inner_b,
+                args: vec![],
+                ops: vec![make_const_int(1, inner_next)],
+                terminator: Terminator::Branch {
+                    target: inner_h,
+                    args: vec![inner_next],
+                },
+            },
+        );
+
+        // inner_exit: → outer_h (outer back-edge), advancing outer_var.
+        func.blocks.insert(
+            inner_exit,
+            TirBlock {
+                id: inner_exit,
+                args: vec![],
+                ops: vec![make_const_int(1, outer_next)],
+                terminator: Terminator::Branch {
+                    target: outer_h,
+                    args: vec![outer_next],
+                },
+            },
+        );
+
+        // outer_exit: Return.
+        func.blocks.insert(
+            outer_exit,
+            TirBlock {
+                id: outer_exit,
+                args: vec![TirValue {
+                    id: result,
+                    ty: TirType::I64,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![result],
+                },
+            },
+        );
+
+        // Mark both headers as loop headers.
+        func.loop_roles.insert(outer_h, LoopRole::LoopHeader);
+        func.loop_roles.insert(inner_h, LoopRole::LoopHeader);
+
+        NestedLoop {
+            outer_ph,
+            outer_h,
+            outer_b,
+            inner_ph,
+            inner_h,
+            inner_b,
+            inner_exit,
+            outer_exit,
+            outer_var,
+            inner_var,
+            cond_outer,
+            cond_inner,
+            result,
+            // Suppress unused-field warnings; these are kept on the struct
+            // for documentation and for richer assertions in future tests.
+        }
+    }
+
+    /// `for i: for j: y = a + b` where `a`, `b` are function params.
+    /// Both operands are free w.r.t. the inner loop, so the Add is hoisted
+    /// to the inner preheader on the inner pass; on the outer pass both
+    /// operands are still free w.r.t. the outer loop, so the Add is
+    /// hoisted again — into the outer preheader. End state: the Add lives
+    /// in the outer preheader; the inner preheader and inner body no
+    /// longer contain it.
+    #[test]
+    fn nested_loop_inner_invariant_hoisted_to_outer_preheader() {
+        let mut func =
+            TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let a = ValueId(0);
+        let b = ValueId(1);
+
+        let nl = build_nested_loop(&mut func);
+
+        // Place y = a + b inside the inner body.
+        let y = func.fresh_value();
+        {
+            let inner_b = func.blocks.get_mut(&nl.inner_b).unwrap();
+            inner_b.ops.insert(0, make_binop(OpCode::Add, a, b, y));
+        }
+        // Suppress dead-code warnings on documentation-only struct fields.
+        let _ = (
+            nl.outer_var,
+            nl.inner_var,
+            nl.cond_outer,
+            nl.cond_inner,
+            nl.result,
+            nl.outer_exit,
+            nl.inner_exit,
+            nl.outer_b,
+            nl.inner_h,
+            nl.outer_h,
+        );
+
+        let stats = run(&mut func);
+
+        // The inner body must NOT still contain the Add(a, b).
+        let inner_body_ops = &func.blocks[&nl.inner_b].ops;
+        let in_inner_body = inner_body_ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Add && op.operands == vec![a, b]);
+        assert!(
+            !in_inner_body,
+            "Add(a, b) must have been hoisted out of the inner body"
+        );
+
+        // The inner preheader must NOT still contain the Add (it should
+        // have been hoisted further to the outer preheader).
+        let inner_ph_ops = &func.blocks[&nl.inner_ph].ops;
+        let in_inner_ph = inner_ph_ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Add && op.operands == vec![a, b]);
+        assert!(
+            !in_inner_ph,
+            "Add(a, b) is outer-invariant — it should not stop in the inner preheader"
+        );
+
+        // The Add must end up in the outer preheader.
+        let outer_ph_ops = &func.blocks[&nl.outer_ph].ops;
+        let in_outer_ph = outer_ph_ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Add && op.operands == vec![a, b]);
+        assert!(
+            in_outer_ph,
+            "Add(a, b) should end up in the outer preheader (multi-level hoist)"
+        );
+
+        // Multi-level hoist accounts for two move events on the same op.
+        assert!(
+            stats.ops_removed >= 2 && stats.ops_added >= 2,
+            "expected at least 2 hoist events (inner→inner_ph, inner_ph→outer_ph), got removed={} added={}",
+            stats.ops_removed,
+            stats.ops_added,
+        );
+    }
+
+    /// Force the multi-level hoist to be observable: an inner-body op
+    /// `t = a + b` followed by `y = t + a` chains through the inner
+    /// preheader on round 1 and again to the outer preheader on round 2,
+    /// once `t` has migrated outward. Verifies that both ops follow the
+    /// invariant transitively across both preheaders.
+    #[test]
+    fn nested_loop_outer_invariant_hoisted_via_inner() {
+        let mut func =
+            TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let a = ValueId(0);
+        let b = ValueId(1);
+
+        let nl = build_nested_loop(&mut func);
+
+        let t = func.fresh_value();
+        let y = func.fresh_value();
+        {
+            let inner_b = func.blocks.get_mut(&nl.inner_b).unwrap();
+            // Two chained invariants. Both end up in outer preheader.
+            inner_b.ops.insert(0, make_binop(OpCode::Add, a, b, t));
+            inner_b.ops.insert(1, make_binop(OpCode::Mul, t, a, y));
+        }
+        let _ = nl.outer_exit; // doc-only field
+
+        let _stats = run(&mut func);
+
+        let outer_ph_ops = &func.blocks[&nl.outer_ph].ops;
+        let inner_ph_ops = &func.blocks[&nl.inner_ph].ops;
+        let inner_body_ops = &func.blocks[&nl.inner_b].ops;
+
+        // Neither op should remain in the inner body.
+        assert!(
+            !inner_body_ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Add && op.operands == vec![a, b]),
+            "Add(a, b) must leave the inner body"
+        );
+        assert!(
+            !inner_body_ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Mul && op.operands == vec![t, a]),
+            "Mul(t, a) must leave the inner body once t becomes outer-invariant"
+        );
+
+        // Neither op should rest in the inner preheader — both are
+        // outer-invariant after t is hoisted out.
+        assert!(
+            !inner_ph_ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Add && op.operands == vec![a, b]),
+            "Add(a, b) must not stop in the inner preheader"
+        );
+        assert!(
+            !inner_ph_ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Mul && op.operands == vec![t, a]),
+            "Mul(t, a) must not stop in the inner preheader"
+        );
+
+        // Both ops must reach the outer preheader, in dependency order.
+        let add_pos = outer_ph_ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Add && op.operands == vec![a, b]);
+        let mul_pos = outer_ph_ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Mul && op.operands == vec![t, a]);
+        assert!(add_pos.is_some(), "Add(a, b) must land in outer preheader");
+        assert!(mul_pos.is_some(), "Mul(t, a) must land in outer preheader");
+        assert!(
+            add_pos.unwrap() < mul_pos.unwrap(),
+            "Add(a, b) must precede Mul(t, a) in the outer preheader (dependency order)"
+        );
+    }
+
+    /// Partially invariant: `for i: for j: y = i + a`. `a` is a function
+    /// param (free everywhere). `i` is the outer-loop induction variable
+    /// — invariant w.r.t. the inner loop only. The Add must therefore
+    /// land in the *inner* preheader (not the outer preheader, since `i`
+    /// changes per outer iteration).
+    #[test]
+    fn nested_loop_partially_invariant_hoists_to_inner_preheader() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
+        let a = ValueId(0);
+
+        let nl = build_nested_loop(&mut func);
+        let i = nl.outer_var; // outer-loop induction variable
+
+        let y = func.fresh_value();
+        {
+            let inner_b = func.blocks.get_mut(&nl.inner_b).unwrap();
+            inner_b.ops.insert(0, make_binop(OpCode::Add, i, a, y));
+        }
+        let _ = nl.outer_exit;
+
+        let _stats = run(&mut func);
+
+        // Op must leave the inner body.
+        let inner_body_ops = &func.blocks[&nl.inner_b].ops;
+        assert!(
+            !inner_body_ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Add && op.operands == vec![i, a]),
+            "Add(i, a) must leave the inner body — invariant w.r.t. the inner loop"
+        );
+
+        // Op must land in the inner preheader.
+        let inner_ph_ops = &func.blocks[&nl.inner_ph].ops;
+        assert!(
+            inner_ph_ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Add && op.operands == vec![i, a]),
+            "Add(i, a) should land in the inner preheader (i changes per outer iter)"
+        );
+
+        // Op must NOT escape to the outer preheader — `i` is not outer-invariant.
+        let outer_ph_ops = &func.blocks[&nl.outer_ph].ops;
+        assert!(
+            !outer_ph_ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Add && op.operands == vec![i, a]),
+            "Add(i, a) must NOT reach the outer preheader — i is the outer induction var"
+        );
     }
 
     #[test]

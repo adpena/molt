@@ -767,6 +767,14 @@ pub use molt_runtime_text::unicodedata_mod::*;
 pub use molt_runtime_xml::xml_etree::*;
 #[cfg(feature = "stdlib_xml")]
 pub use molt_runtime_xml::xml_sax::*;
+// When stdlib_xml is OFF the in-crate `builtins::xml_etree` / `builtins::xml_sax`
+// modules are compiled instead.  Re-export their `extern "C"` intrinsics at the
+// crate root so the generated symbol resolver in `intrinsics::generated` can
+// reach them via `crate::molt_xml_*` paths.
+#[cfg(not(feature = "stdlib_xml"))]
+pub use crate::builtins::xml_etree::*;
+#[cfg(not(feature = "stdlib_xml"))]
+pub use crate::builtins::xml_sax::*;
 #[cfg(feature = "stdlib_zoneinfo")]
 pub use molt_runtime_zoneinfo::zoneinfo::*;
 // The extern "C" profiling entrypoints only exist on non-wasm32 targets.
