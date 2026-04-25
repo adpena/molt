@@ -1587,7 +1587,9 @@ fn exception_base_spec(name: &str) -> Option<ExceptionBaseSpec> {
         | "InterruptedError" | "IsADirectoryError" | "NotADirectoryError" | "PermissionError"
         | "ProcessLookupError" | "TimeoutError" => Some(ExceptionBaseSpec::One("OSError")),
         "UnsupportedOperation" => Some(ExceptionBaseSpec::Two("OSError", "ValueError")),
-        "NotImplementedError" | "RecursionError" => Some(ExceptionBaseSpec::One("RuntimeError")),
+        "NotImplementedError" | "PythonFinalizationError" | "RecursionError" => {
+            Some(ExceptionBaseSpec::One("RuntimeError"))
+        }
         "IndentationError" => Some(ExceptionBaseSpec::One("SyntaxError")),
         "TabError" => Some(ExceptionBaseSpec::One("IndentationError")),
         "UnicodeError" => Some(ExceptionBaseSpec::One("ValueError")),
