@@ -25,6 +25,7 @@ stdlib_full = [
     "stdlib_dbm", "stdlib_importlib_extra",
     "stdlib_logging_ext", "stdlib_stringprep", "stdlib_xml", "stdlib_ipaddress", "stdlib_zoneinfo",
     "builtin_fcntl",
+    "sqlite",
 ]
 stdlib_unicode_names = ["dep:unicode_names2", "molt-runtime-text?/stdlib_unicode_names"]
 
@@ -108,6 +109,10 @@ stdlib_ipaddress = ["dep:molt-runtime-ipaddress"]
 stdlib_zoneinfo = ["dep:molt-runtime-zoneinfo"]
 stdlib_signal = []
 stdlib_select = []
+# sqlite3 driver: pulls in `molt-db/sqlite` which transitively pulls in
+# `rusqlite` with the bundled SQLite amalgamation (~1MB binary).  Gated
+# behind a feature so edge/wasm tiers can omit the dependency entirely.
+sqlite = ["dep:molt-db", "molt-db/sqlite"]
 
 # Function-level tree shaking: each builtin type can be excluded.
 builtin_set = []
@@ -201,6 +206,14 @@ rustpython-parser = { version = "0.4", default-features = false, features = ["lo
 # Glob/tempfile
 glob = { version = "0.3", optional = true }
 tempfile = { version = "3", optional = true }
+
+# sqlite3 driver — molt-db re-exports rusqlite (bundled SQLite amalgamation).
+# Declared at the top-level [dependencies] table because Cargo's `dep:`
+# feature-gate syntax requires the dep to be visible without target
+# qualification. molt-db itself emits compile_error! when the `sqlite`
+# feature is enabled on wasm32, so the build still fails fast on
+# unsupported targets.
+molt-db = { package = "molt-db", path = "../molt-db", optional = true }
 
 [build-dependencies]
 cc = "1"
