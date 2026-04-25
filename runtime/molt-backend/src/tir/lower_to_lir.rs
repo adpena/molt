@@ -47,6 +47,7 @@ pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
     }
     let return_types = lir_return_types(&refined);
 
+    let label_id_map = refined.label_id_map.clone();
     LirFunction {
         name: refined.name,
         param_names,
@@ -54,6 +55,7 @@ pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
         return_types,
         blocks,
         entry_block: refined.entry_block,
+        label_id_map,
     }
 }
 

@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::blocks::BlockId;
-use super::lir::{LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
+use super::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 use super::ops::{AttrValue, OpCode};
 use super::types::TirType;
 use super::values::ValueId;
@@ -231,8 +231,12 @@ fn compute_dominators(func: &LirFunction) -> HashMap<BlockId, Option<BlockId>> {
     for bid in func.blocks.keys() {
         pred.entry(*bid).or_default();
     }
+    let label_to_block = exception_label_to_block(func);
     for (bid, block) in &func.blocks {
         for succ in terminator_successors(&block.terminator) {
+            pred.entry(succ).or_default().push(*bid);
+        }
+        for succ in exception_successors(block, &label_to_block) {
             pred.entry(succ).or_default().push(*bid);
         }
     }
@@ -364,10 +368,17 @@ fn bfs_order(func: &LirFunction) -> Vec<BlockId> {
     queue.push_back(func.entry_block);
     visited.insert(func.entry_block);
 
+    let label_to_block = exception_label_to_block(func);
+
     while let Some(bid) = queue.pop_front() {
         order.push(bid);
         if let Some(block) = func.blocks.get(&bid) {
             for succ in terminator_successors(&block.terminator) {
+                if visited.insert(succ) {
+                    queue.push_back(succ);
+                }
+            }
+            for succ in exception_successors(block, &label_to_block) {
                 if visited.insert(succ) {
                     queue.push_back(succ);
                 }
@@ -393,6 +404,40 @@ fn terminator_successors(terminator: &LirTerminator) -> Vec<BlockId> {
         }
         LirTerminator::Return { .. } | LirTerminator::Unreachable => Vec::new(),
     }
+}
+
+/// Build the inverse of `LirFunction::label_id_map` for resolving exception
+/// edges encoded as op `value` attrs.
+fn exception_label_to_block(func: &LirFunction) -> HashMap<i64, BlockId> {
+    func.label_id_map
+        .iter()
+        .map(|(&bid, &label_id)| (label_id, BlockId(bid)))
+        .collect()
+}
+
+/// Return the implicit successors of `block` that are reached only via
+/// exception flow — encoded by `CheckException`/`TryStart`/`TryEnd` ops
+/// with a `value` attr giving the target label_id. The LIR verifier needs
+/// to follow these edges so that exception handler blocks are considered
+/// reachable from the function entry; otherwise their value uses appear to
+/// violate dominance even though at runtime control flow correctly reaches
+/// them via the runtime exception path.
+fn exception_successors(
+    block: &LirBlock,
+    label_to_block: &HashMap<i64, BlockId>,
+) -> Vec<BlockId> {
+    let mut successors = Vec::new();
+    for op in &block.ops {
+        if matches!(
+            op.tir_op.opcode,
+            OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
+        ) && let Some(AttrValue::Int(target_label)) = op.tir_op.attrs.get("value")
+            && let Some(&target) = label_to_block.get(target_label)
+        {
+            successors.push(target);
+        }
+    }
+    successors
 }
 
 fn verify_ops(

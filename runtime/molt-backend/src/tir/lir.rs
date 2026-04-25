@@ -91,4 +91,10 @@ pub struct LirFunction {
     pub return_types: Vec<TirType>,
     pub blocks: HashMap<BlockId, LirBlock>,
     pub entry_block: BlockId,
+    /// Mirror of TirFunction.label_id_map: maps a TIR block-id (u32) to
+    /// the label_id (i64) it carries. Required for resolving exception
+    /// edges encoded as `CheckException`/`TryStart`/`TryEnd` op `value`
+    /// attrs into successor BlockIds during dominator/reachability
+    /// analysis.
+    pub label_id_map: HashMap<u32, i64>,
 }
