@@ -22,6 +22,12 @@ mod sqlite;
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteConn, SqliteOpenMode, sqlite_pool};
 
+/// Re-export the underlying `rusqlite` crate so downstream users (notably
+/// `molt-runtime::builtins::sqlite3`) can build prepared statements, bind
+/// parameters, and consume `ValueRef`s without pinning a separate version.
+#[cfg(feature = "sqlite")]
+pub use rusqlite;
+
 #[cfg(feature = "postgres")]
 mod postgres;
 
