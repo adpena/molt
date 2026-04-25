@@ -205,19 +205,13 @@ fn is_scalar_arithmetic(opcode: OpCode) -> bool {
     )
 }
 
-/// Returns `true` if `ty` is a numeric scalar eligible for SIMD lanes.
-///
-/// `Bool` is included because Python's numeric tower allows `bool` to
-/// participate in arithmetic (zext-promoted to `i64`). Treating it as numeric
-/// here lets bool-mixed-with-int loops vectorize as `i64` lanes, and
-/// bool-mixed-with-float loops vectorize as `f64` lanes via promotion.
-#[inline]
-fn is_numeric(ty: &TirType) -> bool {
-    matches!(ty, TirType::I64 | TirType::F64 | TirType::Bool)
-}
-
 /// SIMD lane category used for promotion analysis: `Int` covers `I64` / `Bool`
 /// (both ride in `i64` lanes), `Float` covers `F64`.
+///
+/// `Bool` is included in the numeric tower because Python promotes
+/// `bool → int → float`; zext-promoting `bool` to `i64` lets bool-mixed-with-int
+/// loops vectorize as `i64` lanes, while bool-mixed-with-float loops vectorize
+/// as `f64` lanes via the same `sitofp` promotion as integers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaneCategory {
     Int,

@@ -22,10 +22,10 @@
 //! LLVM's GVN uses an analogous scoped-hash-table walk over the dominator
 //! tree (see `llvm/lib/Transforms/Scalar/GVN.cpp::ValueTable`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::PassStats;
-use crate::tir::blocks::BlockId;
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators::{build_pred_map, compute_idoms, dominates};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
@@ -175,6 +175,57 @@ fn build_dom_children(
     children
 }
 
+/// Set of blocks reachable from entry via terminator-only successors.
+///
+/// `compute_idoms` is exception-edge-aware: it considers handler blocks
+/// reachable through `CheckException`/`TryStart`/`TryEnd` ops and assigns
+/// them a dominator.  However, the LIR verifier (`verify_lir`) computes
+/// reachability and dominance from terminator successors only — handler
+/// blocks reached only via exception edges are unreachable in its view,
+/// and therefore are not in its dominator preorder.
+///
+/// If GVN replaces an op in such a block with `Copy(leader)` where
+/// `leader` is defined elsewhere, `verify_lir` will reject the operand:
+/// `dominates(leader_block, handler_block)` returns `false` because the
+/// handler is not in the strict-CFG dominator tree.
+///
+/// To stay sound under the strict-CFG verifier, GVN restricts cross-block
+/// replacements to use sites that are themselves reachable via terminator
+/// successors.  Blocks reachable only through exception edges still get
+/// intra-block GVN (their leaders never escape their own scope), matching
+/// the behaviour the previous intra-block-only pass had for them.
+fn strict_terminator_reachable(func: &TirFunction) -> HashSet<BlockId> {
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut queue: VecDeque<BlockId> = VecDeque::new();
+    queue.push_back(func.entry_block);
+    visited.insert(func.entry_block);
+    while let Some(bid) = queue.pop_front() {
+        let Some(block) = func.blocks.get(&bid) else {
+            continue;
+        };
+        let succs: Vec<BlockId> = match &block.terminator {
+            Terminator::Branch { target, .. } => vec![*target],
+            Terminator::CondBranch {
+                then_block,
+                else_block,
+                ..
+            } => vec![*then_block, *else_block],
+            Terminator::Switch { cases, default, .. } => {
+                let mut s: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
+                s.push(*default);
+                s
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
+        };
+        for succ in succs {
+            if visited.insert(succ) {
+                queue.push_back(succ);
+            }
+        }
+    }
+    visited
+}
+
 pub fn run(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
         name: "gvn",
@@ -189,6 +240,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let pred_map = build_pred_map(func);
     let idoms = compute_idoms(func, &pred_map);
     let dom_children = build_dom_children(&idoms);
+
+    // Strict-CFG reachability (terminator-only).  Cross-block replacements
+    // are only safe when the use site is reachable via terminators — that
+    // is the reachability `verify_lir` uses, and emitting `Copy(leader)`
+    // into a block that's reachable only through exception edges would
+    // cause the verifier to reject the new operand.
+    let strict_reachable = strict_terminator_reachable(func);
 
     // Build a value→type map from STRUCTURALLY GUARANTEED sources only:
     // block args (set by type_refine), constants, and function params.
@@ -385,15 +443,29 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             .get(&leader)
                             .copied()
                             .unwrap_or(func.entry_block);
-                        if dominates(leader_block, bid, &idoms) {
+                        // Cross-block dedup additionally requires that BOTH
+                        // the leader's defining block AND the use block are
+                        // reachable via strict-CFG terminator successors.
+                        // The LIR verifier computes dominance only over that
+                        // subgraph; emitting `Copy(leader)` into a block
+                        // outside it would cause `verify_lir` to reject the
+                        // new operand.  Intra-block replacements (same block
+                        // for def and use) bypass the strict-CFG check
+                        // because verification handles same-block uses by
+                        // op-index ordering rather than dominator lookup.
+                        let cross_block = leader_block != bid;
+                        let strict_ok = !cross_block
+                            || (strict_reachable.contains(&leader_block)
+                                && strict_reachable.contains(&bid));
+                        if dominates(leader_block, bid, &idoms) && strict_ok {
                             let prior = value_number.insert(result, leader);
                             vn_undo.push((result, prior));
                             replacements.push((bid, i, leader));
                             continue;
                         }
-                        // Leader fell out of scope (should not happen with
-                        // correct undo, but stay fail-safe): fall through and
-                        // register `result` as a fresh leader.
+                        // Leader fell out of scope or strict-CFG check
+                        // failed — fall through and register `result` as a
+                        // fresh leader for this scope.
                     }
 
                     // First time seeing this computation in this scope —
@@ -420,47 +492,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     }
 
     // Apply replacements (replace redundant ops with Copy).
-    let dbg_gvn = std::env::var("MOLT_DEBUG_GVN").is_ok();
-    if dbg_gvn {
-        eprintln!("[GVN] === enter fn={} ===", func.name);
-        for (&bid, block) in &func.blocks {
-            eprintln!(
-                "[GVN]   bb{}: args={:?} term={:?}",
-                bid.0,
-                block.args.iter().map(|a| a.id.0).collect::<Vec<_>>(),
-                std::mem::discriminant(&block.terminator),
-            );
-            for (i, op) in block.ops.iter().enumerate() {
-                eprintln!(
-                    "[GVN]     #{} {:?} ops={:?} res={:?}",
-                    i,
-                    op.opcode,
-                    op.operands.iter().map(|v| v.0).collect::<Vec<_>>(),
-                    op.results.iter().map(|v| v.0).collect::<Vec<_>>(),
-                );
-            }
-        }
-    }
     for (bid, op_idx, leader) in &replacements {
         if let Some(block) = func.blocks.get_mut(bid) {
             if *op_idx < block.ops.len() {
                 let result = block.ops[*op_idx].results[0];
-                let leader_block = value_def_block
-                    .get(leader)
-                    .copied()
-                    .unwrap_or(func.entry_block);
-                if dbg_gvn {
-                    eprintln!(
-                        "[GVN] fn={} replace bb{}#{} {:?}={} -> Copy(%{}) leader_block=bb{}",
-                        func.name,
-                        bid.0,
-                        op_idx,
-                        block.ops[*op_idx].opcode,
-                        result.0,
-                        leader.0,
-                        leader_block.0,
-                    );
-                }
                 block.ops[*op_idx] = TirOp {
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
