@@ -1,15 +1,3 @@
-"""Intrinsic-first stdlib module stub for `xml.etree.cElementTree`."""
+# Deprecated alias for xml.etree.ElementTree
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `xml.etree.cElementTree` module stub with full intrinsic-backed lowering.
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "xml.etree.cElementTree" is not fully lowered yet; only an intrinsic-first stub is available.'
-    )
-
-
-globals().pop("_require_intrinsic", None)
+from xml.etree.ElementTree import *
