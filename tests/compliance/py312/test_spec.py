@@ -191,14 +191,12 @@ print(flat)
 class TestMathSumprod:
     """math.sumprod was added in Python 3.12."""
 
-    @pytest.mark.skip(reason="blocked on LIR-P0 collections.abc verification fix; sumprod is implemented in stdlib")
     def test_sumprod_basic(self):
         _assert_match("""\
 import math
 print(math.sumprod([1, 2, 3], [4, 5, 6]))
 """)
 
-    @pytest.mark.skip(reason="blocked on LIR-P0 collections.abc verification fix; sumprod is implemented in stdlib")
     def test_sumprod_floats(self):
         _assert_match("""\
 import math
