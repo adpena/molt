@@ -1,6 +1,10 @@
-"""Minimal zipfile implementation (store + deflate)."""
+"""zipfile implementation: STORED, DEFLATED, BZIP2, LZMA.
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): parity.
+The deflate / inflate path uses the molt_deflate_raw / molt_inflate_raw
+runtime intrinsics. BZIP2 and LZMA delegate to the public `bz2` and
+`lzma` modules, which themselves wrap molt_bz2_* and molt_lzma_*
+runtime intrinsics. No fallback Python implementations are introduced.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +19,8 @@ __all__ = [
     "ZipInfo",
     "ZIP_DEFLATED",
     "ZIP_STORED",
+    "ZIP_BZIP2",
+    "ZIP_LZMA",
 ]
 
 
@@ -28,7 +34,11 @@ class BadZipFile(ZipFileError):
 
 ZIP_STORED = 0
 ZIP_DEFLATED = 8
+ZIP_BZIP2 = 12
+ZIP_LZMA = 14
 ZIP64_LIMIT = 0xFFFFFFFF
+
+_SUPPORTED_COMPRESSION = frozenset({ZIP_STORED, ZIP_DEFLATED, ZIP_BZIP2, ZIP_LZMA})
 ZIP64_COUNT_LIMIT = 0xFFFF
 ZIP64_EXTRA_ID = 0x0001
 
@@ -111,7 +121,7 @@ class ZipFile:
 
         if mode not in {"r", "w"}:
             raise ValueError("zipfile mode must be 'r' or 'w'")
-        if compression not in {ZIP_STORED, ZIP_DEFLATED}:
+        if compression not in _SUPPORTED_COMPRESSION:
             raise NotImplementedError("unsupported compression method")
         if mode == "w":
             _require_capability("fs.write")
@@ -154,13 +164,20 @@ class ZipFile:
             method = info.compress_type
         if method is None:
             method = self._compression
-        if method not in {ZIP_STORED, ZIP_DEFLATED}:
+        if method not in _SUPPORTED_COMPRESSION:
             raise NotImplementedError("unsupported compression method")
         name_bytes = name.encode("utf-8")
         crc = _crc32(raw_data)
         if method == ZIP_DEFLATED:
             level = self._compresslevel if compresslevel is None else compresslevel
             data = _deflate_raw(raw_data, level)
+        elif method == ZIP_BZIP2:
+            import bz2 as _bz2
+            level = self._compresslevel if compresslevel is None else compresslevel
+            data = _bz2.compress(raw_data, level if level is not None else 9)
+        elif method == ZIP_LZMA:
+            import lzma as _lzma
+            data = _lzma.compress(raw_data)
         else:
             data = raw_data
         comp_size = len(data)
@@ -236,6 +253,18 @@ class ZipFile:
             try:
                 return _inflate_raw(payload)
             except ValueError as exc:
+                raise BadZipFile(str(exc)) from exc
+        if comp_method == ZIP_BZIP2:
+            import bz2 as _bz2
+            try:
+                return _bz2.decompress(payload)
+            except (OSError, ValueError) as exc:
+                raise BadZipFile(str(exc)) from exc
+        if comp_method == ZIP_LZMA:
+            import lzma as _lzma
+            try:
+                return _lzma.decompress(payload)
+            except (OSError, ValueError) as exc:
                 raise BadZipFile(str(exc)) from exc
         raise NotImplementedError("unsupported compression method")
 
