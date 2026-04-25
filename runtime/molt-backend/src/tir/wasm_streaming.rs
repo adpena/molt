@@ -37,7 +37,6 @@ mod tests {
         TirModule {
             name: "test".to_string(),
             functions: funcs,
-            class_hierarchy: None,
         }
     }
 

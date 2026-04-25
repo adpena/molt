@@ -52,7 +52,6 @@ mod tests {
         TirModule {
             name: name.to_string(),
             functions: funcs,
-            class_hierarchy: None,
         }
     }
 
