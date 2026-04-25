@@ -2133,6 +2133,11 @@ pub struct SimpleBackend {
     /// we collect the finalized IR here and compile them all in parallel
     /// via `flush_deferred_defines()`.
     deferred_defines: Vec<DeferredDefine>,
+    /// Functions that were replaced with trap stubs due to Cranelift
+    /// compilation failures.  Tracked so the CLI can report them as
+    /// warnings at build time instead of leaving the user to discover
+    /// a bare SIGILL at runtime.
+    pub trap_stub_names: Vec<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -2568,6 +2573,7 @@ impl SimpleBackend {
             declared_func_arities: BTreeMap::new(),
             defined_func_names: std::collections::BTreeSet::new(),
             deferred_defines: Vec::new(),
+            trap_stub_names: Vec::new(),
         }
     }
 
@@ -2794,6 +2800,7 @@ impl SimpleBackend {
                             eprintln!("  -> emitting trap stub for {} (Cranelift error)", name);
                             match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
                                 Ok(()) => {
+                                    self.trap_stub_names.push(name.clone());
                                     self.defined_func_names.insert(name);
                                 }
                                 Err(stub_err) => {
@@ -2831,6 +2838,7 @@ impl SimpleBackend {
                             );
                             match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
                                 Ok(()) => {
+                                    self.trap_stub_names.push(name.clone());
                                     self.defined_func_names.insert(name);
                                 }
                                 Err(stub_err) => {
@@ -3699,8 +3707,49 @@ impl SimpleBackend {
             );
         }
 
+        // Report trap stubs as visible warnings — these are functions that
+        // will SIGILL at runtime, so the user MUST know about them at build time.
+        if !self.trap_stub_names.is_empty() {
+            eprintln!();
+            eprintln!(
+                "╔══════════════════════════════════════════════════════════════╗"
+            );
+            eprintln!(
+                "║  WARNING: {} function(s) failed to compile                  ║",
+                self.trap_stub_names.len()
+            );
+            eprintln!(
+                "║  These functions will abort if called at runtime.           ║"
+            );
+            eprintln!(
+                "╠══════════════════════════════════════════════════════════════╣"
+            );
+            for name in &self.trap_stub_names {
+                // Demangle: molt_init_builtins__molt_module_chunk_5 → builtins (chunk 5)
+                let display_name = demangle_stub_name(name);
+                eprintln!("║  • {:<56} ║", display_name);
+            }
+            eprintln!(
+                "╠══════════════════════════════════════════════════════════════╣"
+            );
+            eprintln!(
+                "║  Cause: Cranelift compilation limit (function too large or  ║"
+            );
+            eprintln!(
+                "║  unsupported target feature). Try: --rebuild or splitting   ║"
+            );
+            eprintln!(
+                "║  large modules into smaller files.                          ║"
+            );
+            eprintln!(
+                "╚══════════════════════════════════════════════════════════════╝"
+            );
+            eprintln!();
+        }
+
         let emit_start = std::time::Instant::now();
-        let mut product = self.module.finish();
+        let SimpleBackend { module, .. } = self;
+        let mut product = module.finish();
         // Set MachO platform load command so ld doesn't emit
         // "no platform load command found" warnings on macOS.
         #[cfg(target_os = "macos")]
@@ -3728,6 +3777,31 @@ impl SimpleBackend {
         bytes
     }
 
+}
+
+/// Demangle internal function names for user-facing diagnostics.
+///
+/// Converts: `molt_init_builtins__molt_module_chunk_5` → `builtins (chunk 5)`
+///           `builtins__molt_module_chunk_5`            → `builtins (chunk 5)`
+///           `sieve`                                     → `sieve`
+#[cfg(feature = "native-backend")]
+fn demangle_stub_name(name: &str) -> String {
+    let stripped = name
+        .strip_prefix("molt_init_")
+        .or_else(|| name.strip_prefix("molt_"))
+        .unwrap_or(name);
+
+    if let Some(idx) = stripped.find("__molt_module_chunk_") {
+        let module = &stripped[..idx];
+        let chunk = stripped[idx + "__molt_module_chunk_".len()..].to_string();
+        return format!("{module} (chunk {chunk})");
+    }
+
+    stripped.to_string()
+}
+
+#[cfg(feature = "native-backend")]
+impl SimpleBackend {
     fn ensure_trampoline(
         module: &mut ObjectModule,
         trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
