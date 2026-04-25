@@ -148,13 +148,13 @@ def test_tinygrad_tensor_methods_cover_rope_style_surface() -> None:
     left = Tensor([[1.0, 2.0]])
     right = Tensor([[3.0, 4.0]])
     cat = left.cat(right, dim=0)
-    assert cat.to_list() == [[1.0, 2.0], [3.0, 4.0]]
+    assert cat.tolist() == [[1.0, 2.0], [3.0, 4.0]]
 
     transposed = cat.unsqueeze(0).transpose(-2, -1)
     assert transposed.shape == (1, 2, 2)
 
     x = Tensor([[-1.0, 2.0, 0.5]])
-    assert x.maximum(0.0).to_list() == [[0.0, 2.0, 0.5]]
+    assert x.maximum(0.0).tolist() == [[0.0, 2.0, 0.5]]
     assert Tensor([1.0, 3.0, 2.0]).argmax().item() == 1.0
     assert Tensor([[1.0], [2.0]]).squeeze(-1).shape == (2,)
     assert Tensor([1.0, 2.0]).cast(dtypes.float32).shape == (2,)
@@ -165,15 +165,15 @@ def test_tinygrad_tensor_indexing_covers_falcon_patterns() -> None:
 
     x = Tensor(list(range(24))).reshape(2, 3, 4).cast(dtypes.float32)
     assert x[..., :2].shape == (2, 3, 2)
-    assert x[0, 1:3].to_list() == [[4.0, 5.0, 6.0, 7.0], [8.0, 9.0, 10.0, 11.0]]
+    assert x[0, 1:3].tolist() == [[4.0, 5.0, 6.0, 7.0], [8.0, 9.0, 10.0, 11.0]]
 
     y = Tensor(list(range(12))).reshape(3, 4).cast(dtypes.float32)
     idx = Tensor([0, 2])
-    assert y[idx].to_list() == [[0.0, 1.0, 2.0, 3.0], [8.0, 9.0, 10.0, 11.0]]
+    assert y[idx].tolist() == [[0.0, 1.0, 2.0, 3.0], [8.0, 9.0, 10.0, 11.0]]
 
     packed = Tensor(list(range(8))).reshape(2, 4).cast(dtypes.float32)
-    assert packed[..., 0::2].to_list() == [[0.0, 2.0], [4.0, 6.0]]
-    assert packed[..., 1::2].to_list() == [[1.0, 3.0], [5.0, 7.0]]
+    assert packed[..., 0::2].tolist() == [[0.0, 2.0], [4.0, 6.0]]
+    assert packed[..., 1::2].tolist() == [[1.0, 3.0], [5.0, 7.0]]
 
 
 def test_tinygrad_tensor_scalar_power_supports_rope_pattern() -> None:
@@ -183,7 +183,7 @@ def test_tinygrad_tensor_scalar_power_supports_rope_pattern() -> None:
     out = 10000.0**exponents
 
     assert out.shape == (2,)
-    assert out.to_list() == [1.0, 100.0]
+    assert out.tolist() == [1.0, 100.0]
 
 
 def test_tinygrad_argmax_matches_upstream_surface() -> None:
@@ -191,16 +191,16 @@ def test_tinygrad_argmax_matches_upstream_surface() -> None:
 
     t = Tensor([[1.0, 0.0, 2.0], [5.0, 4.0, 3.0]])
     assert t.argmax().item() == 3.0
-    assert t.argmax(axis=0).to_list() == [1.0, 1.0, 1.0]
-    assert t.argmax(axis=1).to_list() == [2.0, 0.0]
-    assert t.argmax(axis=1, keepdim=True).to_list() == [[2.0], [0.0]]
+    assert t.argmax(axis=0).tolist() == [1.0, 1.0, 1.0]
+    assert t.argmax(axis=1).tolist() == [2.0, 0.0]
+    assert t.argmax(axis=1, keepdim=True).tolist() == [[2.0], [0.0]]
 
 
 def test_tinygrad_layernorm_and_rmsnorm_match_upstream_samples() -> None:
     from tinygrad import Tensor, nn
 
     x = Tensor.arange(6).reshape(2, 3).float()
-    assert _flatten_numeric(x.layernorm().to_list()) == pytest.approx(
+    assert _flatten_numeric(x.layernorm().tolist()) == pytest.approx(
         [
             -1.2247356176376343,
             0.0,
@@ -212,7 +212,7 @@ def test_tinygrad_layernorm_and_rmsnorm_match_upstream_samples() -> None:
         abs=1e-7,
         rel=0.0,
     )
-    assert _flatten_numeric(nn.LayerNorm(3)(x).to_list()) == pytest.approx(
+    assert _flatten_numeric(nn.LayerNorm(3)(x).tolist()) == pytest.approx(
         [
             -1.2247356176376343,
             0.0,
@@ -224,7 +224,7 @@ def test_tinygrad_layernorm_and_rmsnorm_match_upstream_samples() -> None:
         abs=1e-7,
         rel=0.0,
     )
-    assert _flatten_numeric(nn.RMSNorm(3)(x).to_list()) == pytest.approx(
+    assert _flatten_numeric(nn.RMSNorm(3)(x).tolist()) == pytest.approx(
         [
             0.0,
             0.7745963931083679,
@@ -242,7 +242,7 @@ def test_tinygrad_random_surface_matches_upstream_samples() -> None:
     from tinygrad import Tensor
 
     Tensor.manual_seed(42)
-    rand_vals = _flatten_numeric(Tensor.rand(2, 3).to_list())
+    rand_vals = _flatten_numeric(Tensor.rand(2, 3).tolist())
     assert rand_vals == pytest.approx(
         [
             0.9970332384109497,
@@ -257,7 +257,7 @@ def test_tinygrad_random_surface_matches_upstream_samples() -> None:
     )
 
     Tensor.manual_seed(42)
-    uniform_vals = _flatten_numeric(Tensor.uniform(2, 3, low=-1.0, high=1.0).to_list())
+    uniform_vals = _flatten_numeric(Tensor.uniform(2, 3, low=-1.0, high=1.0).tolist())
     assert uniform_vals == pytest.approx(
         [
             0.9940664768218994,
@@ -272,7 +272,7 @@ def test_tinygrad_random_surface_matches_upstream_samples() -> None:
     )
 
     Tensor.manual_seed(42)
-    glorot_vals = _flatten_numeric(Tensor.glorot_uniform(2, 3).to_list())
+    glorot_vals = _flatten_numeric(Tensor.glorot_uniform(2, 3).tolist())
     assert glorot_vals == pytest.approx(
         [
             1.0889452695846558,
@@ -287,7 +287,7 @@ def test_tinygrad_random_surface_matches_upstream_samples() -> None:
     )
 
     Tensor.manual_seed(42)
-    randn_vals = _flatten_numeric(Tensor.randn(2, 3).to_list())
+    randn_vals = _flatten_numeric(Tensor.randn(2, 3).tolist())
     assert randn_vals == pytest.approx(
         [
             0.9778566956520081,
@@ -308,11 +308,11 @@ def test_tinygrad_random_surface_compiles_in_native_molt(tmp_path: Path) -> None
     probe.write_text(
         "from tinygrad import Tensor\n"
         "Tensor.manual_seed(42)\n"
-        "print(Tensor.rand(2, 3).to_list())\n"
+        "print(Tensor.rand(2, 3).tolist())\n"
         "Tensor.manual_seed(42)\n"
-        "print(Tensor.uniform(2, 3, low=-1.0, high=1.0).to_list())\n"
+        "print(Tensor.uniform(2, 3, low=-1.0, high=1.0).tolist())\n"
         "Tensor.manual_seed(42)\n"
-        "print(Tensor.glorot_uniform(2, 3).to_list())\n",
+        "print(Tensor.glorot_uniform(2, 3).tolist())\n",
         encoding="utf-8",
     )
     run = subprocess.run(
@@ -379,9 +379,9 @@ def test_tinygrad_argmax_compiles_in_native_molt(tmp_path: Path) -> None:
         "from tinygrad import Tensor\n"
         "t = Tensor([[1.0, 0.0, 2.0], [5.0, 4.0, 3.0]])\n"
         "print(t.argmax().item())\n"
-        "print(t.argmax(axis=0).to_list())\n"
-        "print(t.argmax(axis=1).to_list())\n"
-        "print(t.argmax(axis=1, keepdim=True).to_list())\n",
+        "print(t.argmax(axis=0).tolist())\n"
+        "print(t.argmax(axis=1).tolist())\n"
+        "print(t.argmax(axis=1, keepdim=True).tolist())\n",
         encoding="utf-8",
     )
     run = subprocess.run(
@@ -415,9 +415,9 @@ def test_tinygrad_norm_layers_compile_in_native_molt(tmp_path: Path) -> None:
     probe.write_text(
         "from tinygrad import Tensor, nn\n"
         "x = Tensor.arange(6).reshape(2, 3).float()\n"
-        "print(x.layernorm().to_list())\n"
-        "print(nn.LayerNorm(3)(x).to_list())\n"
-        "print(nn.RMSNorm(3)(x).to_list())\n",
+        "print(x.layernorm().tolist())\n"
+        "print(nn.LayerNorm(3)(x).tolist())\n"
+        "print(nn.RMSNorm(3)(x).tolist())\n",
         encoding="utf-8",
     )
     run = subprocess.run(
@@ -468,7 +468,7 @@ def test_tinygrad_nn_initializers_match_upstream_samples() -> None:
 
     Tensor.manual_seed(42)
     linear = nn.Linear(3, 4, bias=False)
-    assert _flatten_numeric(linear.weight.to_list()) == pytest.approx(
+    assert _flatten_numeric(linear.weight.tolist()) == pytest.approx(
         [
             -0.5485392212867737,
             0.39442524313926697,
@@ -489,7 +489,7 @@ def test_tinygrad_nn_initializers_match_upstream_samples() -> None:
 
     Tensor.manual_seed(42)
     conv = nn.Conv2d(1, 1, 3)
-    assert _flatten_numeric(conv.weight.to_list()) == pytest.approx(
+    assert _flatten_numeric(conv.weight.tolist()) == pytest.approx(
         [
             -0.21733888983726501,
             -0.22886650264263153,
@@ -504,7 +504,7 @@ def test_tinygrad_nn_initializers_match_upstream_samples() -> None:
         abs=1e-7,
         rel=0.0,
     )
-    assert _flatten_numeric(conv.bias.to_list()) == pytest.approx(
+    assert _flatten_numeric(conv.bias.tolist()) == pytest.approx(
         [-0.27590489387512207],
         abs=1e-7,
         rel=0.0,
@@ -519,9 +519,9 @@ def test_tinygrad_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
         "Tensor.manual_seed(42)\n"
         "conv = nn.Conv2d(1, 1, 3)\n"
         "x = Tensor.arange(16).reshape(1, 1, 4, 4).float()\n"
-        "print(conv.weight.to_list())\n"
-        "print(conv.bias.to_list())\n"
-        "print(conv(x).to_list())\n",
+        "print(conv.weight.tolist())\n"
+        "print(conv.bias.tolist())\n"
+        "print(conv(x).tolist())\n",
         encoding="utf-8",
     )
     run = subprocess.run(
@@ -943,7 +943,7 @@ def test_tinygrad_tensor_cat_nonzero_dim_compiles_in_native_molt(
         "from tinygrad import Tensor\n"
         "x = Tensor([[1.0, 2.0], [3.0, 4.0]])\n"
         "y = Tensor([[5.0], [6.0]])\n"
-        "print(x.cat(y, dim=1).to_list())\n",
+        "print(x.cat(y, dim=1).tolist())\n",
         encoding="utf-8",
     )
     env = _native_molt_env(root, hermetic=True)
@@ -977,7 +977,7 @@ def test_tinygrad_tensor_stack_nonzero_dim_compiles_in_native_molt(
         "from tinygrad import Tensor\n"
         "x = Tensor([[1.0, 2.0], [3.0, 4.0]])\n"
         "y = Tensor([[5.0, 6.0], [7.0, 8.0]])\n"
-        "print(Tensor.stack(x, y, dim=-1).to_list())\n",
+        "print(Tensor.stack(x, y, dim=-1).tolist())\n",
         encoding="utf-8",
     )
     env = _native_molt_env(root, hermetic=True)
