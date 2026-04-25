@@ -961,6 +961,7 @@ mod tests {
             return_types: vec![TirType::Bool],
             blocks,
             entry_block: BlockId(0),
+            label_id_map: HashMap::new(),
         };
         assert!(verify_lir_function(&func).is_ok());
     }

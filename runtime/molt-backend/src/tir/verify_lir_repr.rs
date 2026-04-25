@@ -87,6 +87,7 @@ mod tests {
             param_types: vec![],
             return_types: vec![],
             blocks,
+            label_id_map: HashMap::new(),
             entry_block: BlockId(0),
         }
     }
