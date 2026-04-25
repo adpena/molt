@@ -192,4 +192,26 @@ def hypot(*coordinates: object) -> float:
     return _MOLT_MATH_HYPOT(coordinates)
 
 
+def sumprod(p, q, /):
+    """Return sum(p[i] * q[i] for i in range(len(p))).
+
+    Raises ValueError if the inputs do not have the same length. Mirrors
+    CPython 3.12's math.sumprod: the intermediate accumulation is kept as
+    accurate as possible — integer-only inputs produce an exact integer
+    result; any float input promotes to a compensated float sum via fsum.
+    """
+    p_list = list(p)
+    q_list = list(q)
+    if len(p_list) != len(q_list):
+        raise ValueError("Inputs are not the same length")
+    n = len(p_list)
+    products = [p_list[i] * q_list[i] for i in range(n)]
+    if all(isinstance(prod, int) for prod in products):
+        total = 0
+        for prod in products:
+            total += prod
+        return total
+    return fsum(products)
+
+
 globals().pop("_require_intrinsic", None)
