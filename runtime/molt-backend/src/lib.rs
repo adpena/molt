@@ -3039,7 +3039,6 @@ impl SimpleBackend {
         // locality (each function stays hot while all passes run).
         {
             use rayon::prelude::*;
-            let disable_rc = std::env::var("MOLT_DISABLE_RC_COALESCING").as_deref() == Ok("1");
             ir.functions.par_iter_mut().for_each(|func_ir| {
                 rewrite_stateful_loops(func_ir);
                 // Eliminate UnboundLocalError checks early — they are dead
@@ -3050,9 +3049,9 @@ impl SimpleBackend {
                 eliminate_redundant_guard_tags(func_ir);
                 elide_dead_struct_allocs(func_ir);
                 escape_analysis(func_ir);
-                if !disable_rc {
-                    rc_coalescing(func_ir);
-                }
+                // rc_coalescing has its own MOLT_DISABLE_RC_COALESCE early-return
+                // gate — single source of truth, no parallel pre-check.
+                rc_coalescing(func_ir);
                 fold_constants(&mut func_ir.ops);
                 fold_constants_cross_block(&mut func_ir.ops);
                 elide_safe_exception_checks(func_ir);
