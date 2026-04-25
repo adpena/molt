@@ -2702,6 +2702,10 @@ impl SimpleBackend {
                                 "WARNING: Cranelift compilation error in `{}`; will retry: {err}",
                                 item.name
                             );
+                            let _ = crate::debug_artifacts::append_debug_artifact(
+                                "native/cranelift_errors.txt",
+                                format!("FIRST ERROR {}: {}\n", item.name, err),
+                            );
                             CompileResult::NeedsRetry {
                                 func_id: item.func_id,
                                 func: Box::new(ctx.func),
@@ -2709,10 +2713,29 @@ impl SimpleBackend {
                             }
                         }
                         Err(_panic) => {
+                            let panic_msg = if let Some(s) = _panic.downcast_ref::<String>() {
+                                s.clone()
+                            } else if let Some(s) = _panic.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else {
+                                "unknown panic type".to_string()
+                            };
                             eprintln!(
-                                "WARNING: Cranelift optimizer panic in `{}`; will retry at opt_level=none",
-                                item.name
+                                "WARNING: Cranelift optimizer panic in `{}`: {}; will retry at opt_level=none",
+                                item.name, panic_msg
                             );
+                            // Write panic message directly to avoid debug_artifact cwd issues
+                            if let Ok(dir) = std::env::var("MOLT_DEBUG_ARTIFACT_DIR") {
+                                let _ = std::fs::create_dir_all(format!("{dir}/native"));
+                                let _ = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(format!("{dir}/native/cranelift_errors.txt"))
+                                    .and_then(|mut f| {
+                                        use std::io::Write;
+                                        writeln!(f, "FIRST PANIC {}: {}", item.name, panic_msg)
+                                    });
+                            }
                             CompileResult::NeedsRetry {
                                 func_id: item.func_id,
                                 func: Box::new(ctx.func),
@@ -2781,7 +2804,14 @@ impl SimpleBackend {
                             }
                         }
                         Err(_panic) => {
-                            let msg = format!("  -> retry panicked for {}", name);
+                            let panic_msg = if let Some(s) = _panic.downcast_ref::<String>() {
+                                s.clone()
+                            } else if let Some(s) = _panic.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else {
+                                format!("{:?}", std::any::type_name_of_val(&_panic))
+                            };
+                            let msg = format!("  -> retry panicked for {} : {}", name, panic_msg);
                             eprintln!("{msg}");
                             let _ = crate::debug_artifacts::append_debug_artifact(
                                 "native/cranelift_errors.txt",
