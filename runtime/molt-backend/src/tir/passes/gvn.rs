@@ -29,8 +29,10 @@ struct ValueKey {
     /// Operand value numbers (not raw ValueIds).
     operands: Vec<ValueId>,
     /// For constants, the literal value distinguishes different constants
-    /// with the same opcode.
-    const_key: Option<i64>,
+    /// with the same opcode.  Uses the exact value (no hashing) to prevent
+    /// collisions between distinct constants.
+    const_int_key: Option<i64>,
+    const_str_key: Option<String>,
 }
 
 /// Returns `true` if the opcode is pure and eligible for value numbering.
@@ -82,32 +84,39 @@ fn is_numberable(opcode: OpCode) -> bool {
     )
 }
 
-/// Extract a constant key for deduplicating constants by value.
-fn const_key(op: &TirOp) -> Option<i64> {
+/// Extract constant keys for deduplicating constants by exact value.
+fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>) {
     match op.opcode {
-        OpCode::ConstInt => op.attrs.get("value").and_then(|v| match v {
-            AttrValue::Int(i) => Some(*i),
-            _ => None,
-        }),
-        OpCode::ConstBool => op.attrs.get("value").and_then(|v| match v {
-            AttrValue::Bool(b) => Some(if *b { 1 } else { 0 }),
-            _ => None,
-        }),
-        OpCode::ConstNone => Some(0),
-        OpCode::ConstFloat => op.attrs.get("value").and_then(|v| match v {
-            AttrValue::Float(f) => Some(f.to_bits() as i64),
-            _ => None,
-        }),
-        OpCode::ConstStr => op.attrs.get("value").and_then(|v| match v {
-            AttrValue::Str(s) => {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                s.hash(&mut hasher);
-                Some(hasher.finish() as i64)
-            }
-            _ => None,
-        }),
-        _ => None,
+        OpCode::ConstInt => {
+            let k = op.attrs.get("value").and_then(|v| match v {
+                AttrValue::Int(i) => Some(*i),
+                _ => None,
+            });
+            (k, None)
+        }
+        OpCode::ConstBool => {
+            let k = op.attrs.get("value").and_then(|v| match v {
+                AttrValue::Bool(b) => Some(if *b { 1 } else { 0 }),
+                _ => None,
+            });
+            (k, None)
+        }
+        OpCode::ConstNone => (Some(0), None),
+        OpCode::ConstFloat => {
+            let k = op.attrs.get("value").and_then(|v| match v {
+                AttrValue::Float(f) => Some(f.to_bits() as i64),
+                _ => None,
+            });
+            (k, None)
+        }
+        OpCode::ConstStr | OpCode::ConstBytes => {
+            let s = op.attrs.get("value").and_then(|v| match v {
+                AttrValue::Str(s) => Some(s.clone()),
+                _ => None,
+            });
+            (None, s)
+        }
+        _ => (None, None),
     }
 }
 
@@ -375,10 +384,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 .map(|&v| value_number.get(&v).copied().unwrap_or(v))
                 .collect();
 
+            let (const_int_key, const_str_key) = const_keys(op);
             let key = ValueKey {
                 opcode: op.opcode,
                 operands: numbered_operands,
-                const_key: const_key(op),
+                const_int_key,
+                const_str_key,
             };
 
             if let Some(&leader) = key_to_leader.get(&key) {
