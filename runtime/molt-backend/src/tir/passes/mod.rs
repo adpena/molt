@@ -4,8 +4,10 @@
 pub mod bce;
 pub mod block_versioning;
 pub mod branchless_count;
+pub mod canonicalize;
 pub mod cha;
 pub mod closure_spec;
+pub mod copy_prop;
 pub mod dce;
 pub mod deforestation;
 pub mod effects;
@@ -138,6 +140,8 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         };
     }
 
+    // ── Lowering passes ──────────────────────────────────────────
+    // Devirtualize iterators and ranges into concrete loops.
     run_pass!("range_devirt", range_devirt::run(func));
     run_pass!("iter_devirt", iter_devirt::run(func));
     run_pass!(
@@ -145,16 +149,34 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         deforestation::run_tuple_scalarize(func)
     );
     run_pass!("loop_narrow", loop_narrow::run(func));
+
+    // ── Canonicalization ────────────────────────────────────────
+    // Normalize all ops to canonical form BEFORE analysis passes.
+    // Identity elimination, absorbing elements, commutative ordering,
+    // double negation, boolean simplification. This ensures SCCP,
+    // strength reduction, and BCE all see a single canonical representation.
+    run_pass!("canonicalize", canonicalize::run(func));
+
+    // ── Type-directed optimization ─────────────────────────────
     run_pass!("unboxing", unboxing::run(func));
     run_pass!("block_versioning", block_versioning::run(func));
+
+    // ── Memory optimization ────────────────────────────────────
     run_pass!("escape_analysis", escape_analysis::run(func));
     run_pass!("refcount_elim", refcount_elim::run(func));
     run_pass!("reuse_analysis", reuse_analysis::run(func));
+
+    // ── Value optimization ─────────────────────────────────────
     run_pass!("type_guard_hoist", type_guard_hoist::run(func));
     run_pass!("sccp", sccp::run(func));
     run_pass!("strength_reduction", strength_reduction::run(func));
     run_pass!("branchless_count", branchless_count::run(func));
     run_pass!("bce", bce::run(func));
+
+    // ── Cleanup ────────────────────────────────────────────────
+    // Copy propagation resolves chains introduced by prior passes.
+    // DCE removes everything left dead.
+    run_pass!("copy_prop", copy_prop::run(func));
     run_pass!("dce", dce::run(func));
 
     // If no pass changed anything, restore the snapshot to avoid any
