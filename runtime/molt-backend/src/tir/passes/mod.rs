@@ -174,9 +174,9 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     run_pass!("canonicalize_post", canonicalize::run(func));
 
     // ── Global redundancy elimination ──────────────────────────
-    // GVN: dominator-scoped hash-based value numbering. Eliminates
-    // redundant computations across branches. Gated until const_str
-    // value numbering interaction with TIR roundtrip is resolved.
+    // GVN: intra-block constant dedup. Gated until Copy-replacement
+    // interaction with TIR→native lowering is resolved (ConstFloat
+    // replaced by Copy in loop bodies produces wrong results).
     if std::env::var("MOLT_TIR_ENABLE_GVN").is_ok() {
         run_pass!("gvn", gvn::run(func));
     }
