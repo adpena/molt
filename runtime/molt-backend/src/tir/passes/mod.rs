@@ -178,12 +178,11 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     run_pass!("canonicalize_post", canonicalize::run(func));
 
     // ── Global redundancy elimination ──────────────────────────
-    // GVN: intra-block constant dedup. Gated until Copy-replacement
-    // interaction with TIR→native lowering is resolved (ConstFloat
-    // replaced by Copy in loop bodies produces wrong results).
-    if std::env::var("MOLT_TIR_ENABLE_GVN").is_ok() {
-        run_pass!("gvn", gvn::run(func));
-    }
+    // GVN: intra-block typed-arithmetic dedup. Active by default.
+    // Constants are NOT deduplicated (replacing ConstFloat with Copy
+    // changes how the native backend handles the op). Only arithmetic
+    // ops with proven-typed operands are deduplicated.
+    run_pass!("gvn", gvn::run(func));
     // LICM: gated behind opt-in until nested-loop support is hardened.
     // Enable with: MOLT_TIR_ENABLE_LICM=1
     if std::env::var("MOLT_TIR_ENABLE_LICM").is_ok() {

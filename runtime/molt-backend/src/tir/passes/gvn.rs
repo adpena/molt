@@ -35,22 +35,15 @@ struct ValueKey {
     const_str_key: Option<String>,
 }
 
-/// Returns `true` if the opcode is pure and eligible for value numbering.
-/// Returns `true` if the opcode MIGHT be numberable (if operands are typed).
-/// Constants are always numberable. Arithmetic is only numberable when
-/// operands are proven primitive types (I64/F64/Bool), not DynBox.
+/// Always-safe ops: box/unbox are pure value transformations that
+/// preserve type through TIR→SimpleIR→native lowering correctly.
+///
+/// Constants are NOT included here despite being pure — replacing
+/// a ConstFloat with Copy(earlier_const_float) changes how the
+/// native backend handles the op (ConstFloat → raw f64 vs
+/// Copy → NaN-boxed path), causing type mismatches.
 fn is_always_numberable(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::ConstInt
-            | OpCode::ConstFloat
-            | OpCode::ConstStr
-            | OpCode::ConstBool
-            | OpCode::ConstNone
-            | OpCode::ConstBytes
-            | OpCode::BoxVal
-            | OpCode::UnboxVal
-    )
+    matches!(opcode, OpCode::BoxVal | OpCode::UnboxVal)
 }
 
 /// Returns `true` if the opcode is numberable when operands are proven typed.
@@ -580,7 +573,10 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_constants_folded() {
+    fn duplicate_constants_not_folded() {
+        // Constants are NOT deduplicated by GVN because replacing
+        // ConstFloat/ConstInt with Copy changes how the native backend
+        // handles the op. Constants are cheap (single instruction).
         let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
         let c1 = func.fresh_value();
         let c2 = func.fresh_value(); // same constant as c1
@@ -590,13 +586,12 @@ mod tests {
         entry.ops.push(make_const_int(42, c2));
         entry.terminator = Terminator::Return { values: vec![c2] };
 
-        let stats = run(&mut func);
-        assert!(stats.values_changed > 0);
+        let _stats = run(&mut func);
 
-        // c2 should be a Copy from c1.
+        // Both constants should remain — not deduplicated.
         let ops = &func.blocks[&func.entry_block].ops;
-        assert_eq!(ops[1].opcode, OpCode::Copy);
-        assert_eq!(ops[1].operands[0], c1);
+        assert_eq!(ops[0].opcode, OpCode::ConstInt);
+        assert_eq!(ops[1].opcode, OpCode::ConstInt);
     }
 
     #[test]
