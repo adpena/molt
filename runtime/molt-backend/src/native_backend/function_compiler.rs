@@ -23446,10 +23446,34 @@ impl SimpleBackend {
             None
         };
 
-        // For molt_main: call _exit(0) to skip global destructors that
-        // cause intermittent SIGSEGV. Same approach as CPython.
+        // For molt_main: call _exit(0) on the SUCCESS path to skip
+        // global destructors that cause intermittent SIGSEGV.
+        // On the EXCEPTION path, return normally so the runtime can
+        // print the traceback before the process exits.
         if func_ir.name == "molt_main" {
-            // Flush stdio
+            // Check if an exception is pending.
+            let exc_check = import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_exception_pending_fast",
+                &[],
+                &[types::I64],
+            );
+            let exc_call = builder.ins().call(exc_check, &[]);
+            let exc_flag = builder.inst_results(exc_call)[0];
+            let has_exc = builder.ins().icmp_imm(IntCC::NotEqual, exc_flag, 0);
+
+            let exit_block = builder.create_block();
+            let normal_ret_block = builder.create_block();
+            builder
+                .ins()
+                .brif(has_exc, normal_ret_block, &[], exit_block, &[]);
+
+            // Success path: flush + _exit(0)
+            switch_to_block_materialized(&mut builder, exit_block);
+            seal_block_once(&mut builder, &mut sealed_blocks, exit_block);
             let fflush = Self::import_func_id_split(
                 &mut self.module,
                 &mut self.import_ids,
@@ -23460,7 +23484,6 @@ impl SimpleBackend {
             let local_fflush = self.module.declare_func_in_func(fflush, builder.func);
             let null = builder.ins().iconst(types::I64, 0);
             builder.ins().call(local_fflush, &[null]);
-            // _exit(0)
             let exit_fn = Self::import_func_id_split(
                 &mut self.module,
                 &mut self.import_ids,
@@ -23471,6 +23494,12 @@ impl SimpleBackend {
             let local_exit = self.module.declare_func_in_func(exit_fn, builder.func);
             let zero = builder.ins().iconst(types::I32, 0);
             builder.ins().call(local_exit, &[zero]);
+            // Unreachable after _exit, but Cranelift needs a terminator.
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
+
+            // Exception path: return normally for traceback printing.
+            switch_to_block_materialized(&mut builder, normal_ret_block);
+            seal_block_once(&mut builder, &mut sealed_blocks, normal_ret_block);
         }
         if let Some(res) = final_res {
             builder.ins().return_(&[res]);
