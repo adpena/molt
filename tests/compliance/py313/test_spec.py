@@ -90,7 +90,6 @@ def _assert_match(src: str):
 class TestPEP742TypeIs:
     """PEP 742 introduced typing.TypeIs as a narrowing guard in 3.13."""
 
-    @pytest.mark.skip(reason="typing.TypeIs not yet supported in Molt")
     def test_typeis_import(self):
         """TypeIs should be importable without crashing the compiler."""
         _assert_match("""\
@@ -103,7 +102,6 @@ print(is_str("hello"))
 print(is_str(42))
 """)
 
-    @pytest.mark.skip(reason="typing.TypeIs not yet supported in Molt")
     def test_typeis_in_condition(self):
         _assert_match("""\
 from typing import TypeIs
@@ -191,7 +189,6 @@ print(repr(func.__doc__))
 class TestCopyReplace:
     """copy.replace() was added in 3.13 for named tuples and dataclasses."""
 
-    @pytest.mark.skip(reason="copy.replace not yet supported in Molt")
     def test_copy_replace_namedtuple(self):
         _assert_match("""\
 from collections import namedtuple
