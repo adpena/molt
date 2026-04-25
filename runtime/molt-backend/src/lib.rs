@@ -51,10 +51,10 @@ pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir
 use crate::native_backend::TrampolineKey;
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
-    elide_safe_exception_checks, eliminate_dead_functions, eliminate_redundant_guard_tags,
-    eliminate_unbound_local_checks, escape_analysis, fold_constants, fold_constants_cross_block,
-    hoist_loop_invariants, inline_functions, rc_coalescing, rewrite_stateful_loops,
-    split_megafunctions,
+    elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_imports,
+    eliminate_dead_ops, eliminate_redundant_guard_tags, eliminate_unbound_local_checks,
+    escape_analysis, fold_constants, fold_constants_cross_block, hoist_loop_invariants,
+    inline_functions, rc_coalescing, rewrite_stateful_loops, split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -2470,21 +2470,22 @@ impl SimpleBackend {
             .set("enable_table_access_spectre_mitigation", "false")
             .unwrap();
         // Stack probing: guard pages detect stack overflow in large/recursive
-        // frames instead of silently segfaulting.  Without enable_probestack,
-        // the probestack_strategy setting is inert.
-        flag_builder.set("enable_probestack", "true").unwrap();
-        // Strategy: use outline (call-based) probes on aarch64 to avoid a
-        // Cranelift bug (tracked in 0.128-0.130) where inline probe loops
-        // generate incorrect touch sequences for frames >16KB, causing SIGTRAP.
+        // frames instead of silently segfaulting. Cranelift 0.131 does not
+        // implement stack probing on AArch64, so enabling it there is a
+        // compile-time backend panic. AArch64 keeps frame pointers above; stack
+        // probing is enabled only where the selected Cranelift target supports it.
+        flag_builder
+            .set(
+                "enable_probestack",
+                if targeting_aarch64 { "false" } else { "true" },
+            )
+            .unwrap();
         // On x86_64, inline probes are safe and faster for deep recursion.
+        // When probing is disabled the strategy setting is inert.
         flag_builder
             .set(
                 "probestack_strategy",
-                if targeting_aarch64 {
-                    "outline"
-                } else {
-                    "inline"
-                },
+                if targeting_aarch64 { "outline" } else { "inline" },
             )
             .unwrap();
         // MOLT_PORTABLE=1 forces baseline ISA (no host-specific features like AVX2).

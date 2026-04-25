@@ -682,6 +682,37 @@ fn collect_slot_backed_join_names(
     let mut exception_region_depth = 0i32;
     let mut first_seen_join_in_exception: BTreeMap<String, bool> = BTreeMap::new();
     let mut exception_written_locals: BTreeSet<String> = BTreeSet::new();
+
+    // Collect ALL store_var targets that appear anywhere in a function with
+    // exception handling. When exception_label_ids is non-empty, block
+    // sealing is deferred to seal_all_blocks(), which means Cranelift must
+    // resolve SSA phi nodes for every variable that has definitions reaching
+    // from different predecessors. Each check_exception creates a new block
+    // split, and variables carried across these splits become block
+    // parameters. In functions with many check_exceptions (e.g. try/except
+    // bodies), the block parameter count explodes and can overflow
+    // regalloc2's internal index tables (u32::MAX index panic).
+    //
+    // By routing ALL store_var targets through stack slots instead of SSA
+    // variables, we eliminate the phi nodes entirely. Stack loads/stores
+    // are slightly slower than register-to-register moves, but:
+    // 1. Exception-handling functions are already on the cold path
+    // 2. The alternative is a Cranelift panic and trap stub
+    // 3. regalloc2 phi resolution for many-predecessor blocks is O(n^2)
+    //
+    // This is the same strategy used by LLVM's mem2reg in the presence of
+    // exception handling: keep values in memory across EH boundaries.
+    let mut all_store_var_targets: BTreeSet<String> = BTreeSet::new();
+    for op in ops {
+        if op.kind == "store_var" {
+            if let Some(name) = op.var.as_ref().or(op.out.as_ref()) {
+                all_store_var_targets.insert(name.clone());
+            }
+        }
+    }
+    // All store_var targets in exception-bearing functions use stack slots.
+    slot_backed_join_names.extend(all_store_var_targets);
+
     for op in ops {
         match op.kind.as_str() {
             "try_start" => {
@@ -692,9 +723,6 @@ fn collect_slot_backed_join_names(
             }
             "store_var" if exception_region_depth > 0 => {
                 if let Some(name) = op.var.as_ref().or(op.out.as_ref()) {
-                    // Values first written inside a protected region must
-                    // survive `check_exception`-driven block splits. Pure
-                    // SSA vars are not stable enough here; keep a stack slot.
                     exception_written_locals.insert(name.clone());
                     if is_join_slot_name(name) {
                         first_seen_join_in_exception
@@ -2481,7 +2509,12 @@ impl SimpleBackend {
         // mechanism is needed for refcount correctness at phi-join boundaries.
         let mut slot_backed_join_names =
             collect_slot_backed_join_names(&func_ir.ops, &exception_label_ids);
-        if scalar_fast_paths_enabled {
+        // In functions with exception handling, keep ALL store_var targets
+        // slot-backed to prevent regalloc2 block-parameter explosion.
+        // Scalar exclusion is only safe when blocks are eagerly sealed
+        // (no exception labels), because eager sealing resolves phi nodes
+        // incrementally without creating massive block parameter lists.
+        if scalar_fast_paths_enabled && exception_label_ids.is_empty() {
             slot_backed_join_names.retain(|name| {
                 let is_scalar = raw_int_shadow.contains_key(name)
                     || int_like_vars.contains(name)
@@ -3782,15 +3815,14 @@ impl SimpleBackend {
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
                         }
-                    } else if (raw_int_shadow_vals.contains_key(&args[0])
-                        || raw_int_shadow.contains_key(&args[0]))
-                        && (raw_int_shadow_vals.contains_key(&args[1])
-                            || raw_int_shadow.contains_key(&args[1]))
-                        && op_prefers_int_lane(&op)
-                    {
+                    } else if op_prefers_int_lane(&op) {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
                         // Inside loops, use Variable-only shadows (phi-correct).
+                        // Use Option-based lookup (matching the `add` handler) so
+                        // that when inside a loop and only Value-tier shadows exist
+                        // (no Variable-tier), we fall through to the proven-int path
+                        // instead of panicking on unwrap.
                         let in_loop = !loop_stack.is_empty();
                         let lhs_val = if in_loop {
                             shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
@@ -3801,8 +3833,7 @@ impl SimpleBackend {
                                 &raw_int_shadow_vals,
                                 &args[0],
                             )
-                        }
-                        .unwrap();
+                        };
                         let rhs_val = if in_loop {
                             shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
                         } else {
@@ -3812,21 +3843,24 @@ impl SimpleBackend {
                                 &raw_int_shadow_vals,
                                 &args[1],
                             )
-                        }
-                        .unwrap();
-                        // Typed IR: raw i64 is PRIMARY.  Branchless iadd
-                        // with deferred overflow — no boxing emitted here.
-                        let raw_result = builder.ins().iadd(lhs_val, rhs_val);
-                        if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, raw_result);
-                            raw_primary_int.insert(out_name.clone());
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, raw_result);
+                        };
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_val, rhs_val) {
+                            // Typed IR: raw i64 is PRIMARY.  Branchless iadd
+                            // with deferred overflow — no boxing emitted here.
+                            let raw_result = builder.ins().iadd(lhs_raw, rhs_raw);
+                            if let Some(ref out_name) = op.out {
+                                def_var_named(&mut builder, &vars, out_name, raw_result);
+                                raw_primary_int.insert(out_name.clone());
+                                if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                    builder.def_var(shadow_var, raw_result);
+                                }
+                                raw_int_shadow_vals.insert(out_name.clone(), raw_result);
                             }
-                            raw_int_shadow_vals.insert(out_name.clone(), raw_result);
+                            continue;
                         }
-                        continue;
-                    } else if op_prefers_int_lane(&op) {
+                        // Proven-int fallback: shadows unavailable (e.g. inside loop
+                        // with only Value-tier shadows). Box both operands and use the
+                        // unbox-add-rebox path with overflow guard.
                         // Propagate raw shadow so downstream ops skip unbox.
                         let lhs = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("LHS not found");
                         let rhs = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("RHS not found");
@@ -23334,16 +23368,6 @@ impl SimpleBackend {
                     let clif_text = format!("CLIF {}:\n{}", func_ir.name, builder.func.display());
                     let _ = std::fs::write(&path, &clif_text);
                 }
-            } else {
-                // Append function name to a manifest file so we can see all function names
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .and_then(|mut f| {
-                        use std::io::Write;
-                        writeln!(f, "FUNC: {}", func_ir.name)
-                    });
             }
         }
 
@@ -23355,25 +23379,10 @@ impl SimpleBackend {
         // and remove any blocks not visited — the canonical fix endorsed by
         // Cranelift maintainers (bytecodealliance/wasmtime#5022).
         //
-        // The DFS follows branch_destination of terminator instructions.
-        // For functions with exception handling, some blocks are not eagerly
-        // sealed, so their terminators may not yet reference successors.
-        // Supplement the DFS with the `reachable_blocks` set maintained
-        // during codegen, which tracks every block that was explicitly
-        // wired into the control flow graph.  This prevents the DFS from
-        // incorrectly marking exception-handler and fallthrough blocks as
-        // unreachable and inserting traps that crash the function.
         {
             let entry = builder.func.layout.entry_block().unwrap();
             let mut visited = BTreeSet::new();
             let mut stack = vec![entry];
-            // Seed with all blocks known reachable from codegen — these
-            // blocks were explicitly connected via jump/brif/switch during
-            // IR lowering but may not yet have terminators that the DFS
-            // can follow (deferred sealing for exception handling).
-            for &block in &reachable_blocks {
-                stack.push(block);
-            }
             while let Some(block) = stack.pop() {
                 if !visited.insert(block) {
                     continue;
@@ -23391,38 +23400,17 @@ impl SimpleBackend {
             }
             // Remove blocks not reachable from entry
             let all_blocks: Vec<_> = builder.func.layout.blocks().collect();
-            let unreachable_count = all_blocks.iter().filter(|b| !visited.contains(b)).count();
-            let total_count = all_blocks.len();
-            // Log when most blocks are unreachable — likely a CFG bug
-            if unreachable_count > 0
-                && std::env::var("MOLT_DEBUG_UNREACHABLE_BLOCKS").is_ok()
-            {
-                let _ = crate::debug_artifacts::append_debug_artifact(
-                    "native/unreachable_debug.txt",
-                    format!(
-                        "func={} total_blocks={} unreachable={} visited={} entry={:?}\n",
-                        func_ir.name,
-                        total_count,
-                        unreachable_count,
-                        visited.len(),
-                        entry,
-                    ),
-                );
-                // If more than half the blocks are unreachable, dump the full CLIF
-                if unreachable_count * 2 > total_count {
-                    let _ = crate::debug_artifacts::write_debug_artifact(
-                        format!("native/unreachable_clif_{}.txt", func_ir.name.replace(|c: char| !c.is_alphanumeric() && c != '_', "_")),
-                        format!("CLIF {} (before unreachable elim):\n{}", func_ir.name, builder.func.display()),
-                    );
-                }
-            }
             for block in all_blocks {
                 if !visited.contains(&block) {
-                    // Switch to the block and insert a trap so it has a
-                    // terminator (required for removal in some paths), then
-                    // Cranelift's finalize() will remove it as unreachable.
-                    // We must NOT call switch_to_block on a filled block.
-                    if builder.func.layout.block_insts(block).next().is_none() {
+                    // Only insert traps into truly empty orphaned blocks —
+                    // blocks that have no instructions AND are not known
+                    // reachable from codegen.  For exception-handling
+                    // functions, the DFS may miss blocks whose terminators
+                    // are not yet wired (deferred sealing).  The
+                    // `reachable_blocks` set protects those blocks.
+                    if builder.func.layout.block_insts(block).next().is_none()
+                        && !reachable_blocks.contains(&block)
+                    {
                         switch_to_block_materialized(&mut builder, block);
                         builder
                             .ins()
