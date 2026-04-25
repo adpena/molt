@@ -431,6 +431,7 @@ fn prune_and_partition_native_stdlib(
     entry_module: &str,
     stdlib_module_symbols: Option<&std::collections::BTreeSet<String>>,
 ) -> (Vec<molt_backend::FunctionIR>, Vec<molt_backend::FunctionIR>) {
+    molt_backend::inject_runtime_exit(ir);
     molt_backend::eliminate_dead_functions(ir);
     molt_backend::eliminate_dead_imports(ir);
     molt_backend::eliminate_dead_ops(ir);
@@ -2126,9 +2127,10 @@ fn main() -> io::Result<()> {
                 }
             }
 
+            // Inject _exit(0) call at end of molt_main — ALWAYS, regardless
+            // of stdlib cache status. Prevents intermittent SIGSEGV on exit.
+            molt_backend::inject_runtime_exit(&mut ir);
             if stdlib_obj_path.is_none() {
-                // Run dead function elimination on the full IR before batching
-                // when the stdlib path did not already do the prune/partition split.
                 molt_backend::eliminate_dead_functions(&mut ir);
                 molt_backend::eliminate_dead_imports(&mut ir);
                 molt_backend::eliminate_dead_ops(&mut ir);
@@ -2907,6 +2909,7 @@ mod tests {
             profile: None,
         };
 
+        molt_backend::inject_runtime_exit(&mut ir);
         molt_backend::eliminate_dead_functions(&mut ir);
         molt_backend::eliminate_dead_imports(&mut ir);
         molt_backend::eliminate_dead_ops(&mut ir);
@@ -3116,6 +3119,7 @@ mod tests {
         // it must compile the full IR, not the drained remainder.
         let maybe_stdlib = std::env::var("MOLT_STDLIB_OBJ").ok();
         if maybe_stdlib.is_none() {
+            molt_backend::inject_runtime_exit(&mut ir);
             molt_backend::eliminate_dead_functions(&mut ir);
             molt_backend::eliminate_dead_imports(&mut ir);
             molt_backend::eliminate_dead_ops(&mut ir);

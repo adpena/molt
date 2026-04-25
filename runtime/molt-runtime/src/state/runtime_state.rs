@@ -476,6 +476,20 @@ fn trace_runtime_init(stage: &str) {
     }
 }
 
+/// Clean process exit — flushes IO and calls `_exit(0)`.
+///
+/// Skips C-level global destructors and TLS teardown that cause
+/// intermittent SIGSEGV during process exit. Same approach as CPython.
+///
+/// `_code_bits` is the NaN-boxed exit code (ignored — always exits 0).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_runtime_exit(_code_bits: u64) -> u64 {
+    // Flush all C stdio buffers (stdout, stderr).
+    unsafe { libc::fflush(std::ptr::null_mut()) };
+    // Hard exit — no destructors, no TLS teardown.
+    unsafe { libc::_exit(0) }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init() -> u64 {
     #[cfg(target_arch = "wasm32")]
