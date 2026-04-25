@@ -87,6 +87,8 @@ _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = [
     ("molt_select_", "stdlib_select"),
     # low-level tinygrad GPU primitive bridge
     ("molt_gpu_prim_", "molt_gpu_primitives"),
+    # sqlite3 driver: pulls in rusqlite + bundled SQLite via molt-db.
+    ("molt_sqlite3_", "sqlite"),
 ]
 
 
@@ -296,6 +298,7 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_cancelled", "cancel"),
     ("molt_lock_", "lock"),
     ("molt_sqlite_", "sqlite"),
+    ("molt_sqlite3_", "sqlite"),
     ("molt_db_", "sqlite"),
     ("molt_tk_", "tk"),
     ("molt_atexit_", "atexit"),

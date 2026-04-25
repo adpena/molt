@@ -967,6 +967,28 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_socket_reader_drop", symbol: "molt_socket_reader_drop", arity: 1 },
     IntrinsicSpec { name: "molt_db_query_obj", symbol: "molt_db_query_obj", arity: 2 },
     IntrinsicSpec { name: "molt_db_exec_obj", symbol: "molt_db_exec_obj", arity: 2 },
+    IntrinsicSpec { name: "molt_sqlite3_connect", symbol: "molt_sqlite3_connect", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_close", symbol: "molt_sqlite3_close", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_commit", symbol: "molt_sqlite3_commit", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_rollback", symbol: "molt_sqlite3_rollback", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_in_transaction", symbol: "molt_sqlite3_in_transaction", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_total_changes", symbol: "molt_sqlite3_total_changes", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_cursor", symbol: "molt_sqlite3_cursor", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_cursor_close", symbol: "molt_sqlite3_cursor_close", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_cursor_drop", symbol: "molt_sqlite3_cursor_drop", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_execute", symbol: "molt_sqlite3_execute", arity: 3 },
+    IntrinsicSpec { name: "molt_sqlite3_executemany", symbol: "molt_sqlite3_executemany", arity: 3 },
+    IntrinsicSpec { name: "molt_sqlite3_executescript", symbol: "molt_sqlite3_executescript", arity: 2 },
+    IntrinsicSpec { name: "molt_sqlite3_fetchone", symbol: "molt_sqlite3_fetchone", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_fetchall", symbol: "molt_sqlite3_fetchall", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_fetchmany", symbol: "molt_sqlite3_fetchmany", arity: 2 },
+    IntrinsicSpec { name: "molt_sqlite3_lastrowid", symbol: "molt_sqlite3_lastrowid", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_rowcount", symbol: "molt_sqlite3_rowcount", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_arraysize_get", symbol: "molt_sqlite3_arraysize_get", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_arraysize_set", symbol: "molt_sqlite3_arraysize_set", arity: 2 },
+    IntrinsicSpec { name: "molt_sqlite3_description", symbol: "molt_sqlite3_description", arity: 1 },
+    IntrinsicSpec { name: "molt_sqlite3_library_version", symbol: "molt_sqlite3_library_version", arity: 0 },
+    IntrinsicSpec { name: "molt_sqlite3_complete_statement", symbol: "molt_sqlite3_complete_statement", arity: 1 },
     IntrinsicSpec { name: "molt_msgpack_parse_scalar_obj", symbol: "molt_msgpack_parse_scalar_obj", arity: 1 },
     IntrinsicSpec { name: "molt_cbor_parse_scalar_obj", symbol: "molt_cbor_parse_scalar_obj", arity: 1 },
     IntrinsicSpec { name: "molt_json_parse_scalar_obj", symbol: "molt_json_parse_scalar_obj", arity: 1 },
@@ -5925,6 +5947,50 @@ fn resolve_sqlite_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         "molt_db_query_obj" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_db_query_obj", crate::molt_db_query_obj as *const ())),
         "molt_db_exec_obj" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_db_exec_obj", crate::molt_db_exec_obj as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_connect" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_connect", crate::molt_sqlite3_connect as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_close" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_close", crate::molt_sqlite3_close as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_commit" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_commit", crate::molt_sqlite3_commit as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_rollback" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_rollback", crate::molt_sqlite3_rollback as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_in_transaction" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_in_transaction", crate::molt_sqlite3_in_transaction as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_total_changes" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_total_changes", crate::molt_sqlite3_total_changes as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_cursor" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_cursor", crate::molt_sqlite3_cursor as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_cursor_close" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_cursor_close", crate::molt_sqlite3_cursor_close as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_cursor_drop" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_cursor_drop", crate::molt_sqlite3_cursor_drop as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_execute" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_execute", crate::molt_sqlite3_execute as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_executemany" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_executemany", crate::molt_sqlite3_executemany as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_executescript" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_executescript", crate::molt_sqlite3_executescript as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_fetchone" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_fetchone", crate::molt_sqlite3_fetchone as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_fetchall" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_fetchall", crate::molt_sqlite3_fetchall as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_fetchmany" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_fetchmany", crate::molt_sqlite3_fetchmany as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_lastrowid" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_lastrowid", crate::molt_sqlite3_lastrowid as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_rowcount" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_rowcount", crate::molt_sqlite3_rowcount as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_arraysize_get" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_arraysize_get", crate::molt_sqlite3_arraysize_get as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_arraysize_set" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_arraysize_set", crate::molt_sqlite3_arraysize_set as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_description" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_description", crate::molt_sqlite3_description as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_library_version" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_library_version", crate::molt_sqlite3_library_version as *const ())),
+        #[cfg(feature = "sqlite")]
+        "molt_sqlite3_complete_statement" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_sqlite3_complete_statement", crate::molt_sqlite3_complete_statement as *const ())),
         _ => None,
     }
 }
