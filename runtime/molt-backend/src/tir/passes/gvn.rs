@@ -43,7 +43,17 @@ struct ValueKey {
 /// native backend handles the op (ConstFloat → raw f64 vs
 /// Copy → NaN-boxed path), causing type mismatches.
 fn is_always_numberable(opcode: OpCode) -> bool {
-    matches!(opcode, OpCode::BoxVal | OpCode::UnboxVal)
+    matches!(
+        opcode,
+        OpCode::ConstInt
+            | OpCode::ConstFloat
+            | OpCode::ConstStr
+            | OpCode::ConstBool
+            | OpCode::ConstNone
+            | OpCode::ConstBytes
+            | OpCode::BoxVal
+            | OpCode::UnboxVal
+    )
 }
 
 /// Returns `true` if the opcode is numberable when operands are proven typed.
@@ -106,10 +116,15 @@ fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>) {
         }
         OpCode::ConstNone => (Some(0), None),
         OpCode::ConstFloat => {
-            let k = op.attrs.get("value").and_then(|v| match v {
-                AttrValue::Float(f) => Some(f.to_bits() as i64),
-                _ => None,
-            });
+            // TIR ConstFloat stores the float in "f_value" (or "value" as fallback).
+            let k = op
+                .attrs
+                .get("f_value")
+                .or_else(|| op.attrs.get("value"))
+                .and_then(|v| match v {
+                    AttrValue::Float(f) => Some(f.to_bits() as i64),
+                    _ => None,
+                });
             (k, None)
         }
         OpCode::ConstStr | OpCode::ConstBytes => {
@@ -573,10 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_constants_not_folded() {
-        // Constants are NOT deduplicated by GVN because replacing
-        // ConstFloat/ConstInt with Copy changes how the native backend
-        // handles the op. Constants are cheap (single instruction).
+    fn duplicate_constants_folded() {
         let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
         let c1 = func.fresh_value();
         let c2 = func.fresh_value(); // same constant as c1
@@ -586,12 +598,13 @@ mod tests {
         entry.ops.push(make_const_int(42, c2));
         entry.terminator = Terminator::Return { values: vec![c2] };
 
-        let _stats = run(&mut func);
+        let stats = run(&mut func);
+        assert!(stats.values_changed > 0);
 
-        // Both constants should remain — not deduplicated.
+        // c2 should be replaced with a Copy from c1.
         let ops = &func.blocks[&func.entry_block].ops;
-        assert_eq!(ops[0].opcode, OpCode::ConstInt);
-        assert_eq!(ops[1].opcode, OpCode::ConstInt);
+        assert_eq!(ops[1].opcode, OpCode::Copy);
+        assert_eq!(ops[1].operands[0], c1);
     }
 
     #[test]
