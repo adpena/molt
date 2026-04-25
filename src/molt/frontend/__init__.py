@@ -19933,8 +19933,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         item = MoltValue(self.next_var(), type_hint=iter_elem_hint)
                         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-                        # Bind loop variable.
+                        # Bind loop variable.  CPython treats the genexpr target as
+                        # belonging to the (separate) genexpr scope, so it must not
+                        # bleed into the enclosing function's binding for the same
+                        # name.  Since we're inlining the comp body into the
+                        # outer function we re-use ``self.locals[target_name]`` as
+                        # storage, but we must prevent ``_load_local_value`` from
+                        # routing reads of ``target_name`` through the outer
+                        # function's LOAD_VAR slot — that slot belongs to a
+                        # different (outer) variable in CPython's model and may
+                        # be unbound or hold an unrelated value.  Drop the name
+                        # from ``scope_assigned`` and ``unbound_check_names`` so
+                        # reads inside the body fall through to the cached
+                        # ``item`` MoltValue (or to a boxed cell when one
+                        # exists, handled below).  Both sets are restored after
+                        # the loop emission completes.
                         old_local = self.locals.get(target_name)
+                        target_in_scope_assigned = (
+                            target_name in self.scope_assigned
+                        )
+                        target_in_unbound_check = (
+                            target_name in self.unbound_check_names
+                        )
+                        if target_in_scope_assigned:
+                            self.scope_assigned.discard(target_name)
+                        if target_in_unbound_check:
+                            self.unbound_check_names.discard(target_name)
                         self.locals[target_name] = item
                         if cell is not None:
                             _box_idx = MoltValue(self.next_var(), type_hint="int")
@@ -20053,11 +20077,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                     result=MoltValue("none"),
                                 )
                             )
-                        # Restore previous binding.
+                        # Restore previous binding so the enclosing scope is
+                        # untouched by the inlined genexpr (CPython parity: the
+                        # genexpr target lives in its own scope).
                         if old_local is not None:
                             self.locals[target_name] = old_local
                         else:
                             self.locals.pop(target_name, None)
+                        if target_in_scope_assigned:
+                            self.scope_assigned.add(target_name)
+                        if target_in_unbound_check:
+                            self.unbound_check_names.add(target_name)
                         self.emit(
                             MoltOp(
                                 kind="LOOP_CONTINUE",
