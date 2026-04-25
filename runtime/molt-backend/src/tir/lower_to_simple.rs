@@ -6205,3 +6205,79 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod not_roundtrip_tests {
+    use crate::ir::{FunctionIR, OpIR};
+    use crate::tir::lower_from_simple::lower_to_tir;
+
+    fn op_const_bool(out: &str, val: bool) -> OpIR {
+        OpIR {
+            kind: "const_bool".to_string(),
+            out: Some(out.to_string()),
+            value: Some(if val { 1 } else { 0 }),
+            ..OpIR::default()
+        }
+    }
+
+    fn op_not(arg: &str, out: &str) -> OpIR {
+        OpIR {
+            kind: "not".to_string(),
+            args: Some(vec![arg.to_string()]),
+            out: Some(out.to_string()),
+            ..OpIR::default()
+        }
+    }
+
+    fn op_ret(arg: &str) -> OpIR {
+        OpIR {
+            kind: "ret".to_string(),
+            args: Some(vec![arg.to_string()]),
+            ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn not_true_roundtrip_preserves_operand() {
+        let func = FunctionIR {
+            name: "test_not".to_string(),
+            params: vec![],
+            ops: vec![
+                op_const_bool("x", true),
+                op_not("x", "y"),
+                op_ret("y"),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir = lower_to_tir(&func);
+        // Roundtrip: TIR → SimpleIR
+        let types = std::collections::HashMap::new();
+        let roundtripped = super::lower_to_simple_ir(&tir, &types);
+
+        // Find the "not" op
+        let not_op = roundtripped.iter().find(|op| op.kind == "not");
+        assert!(not_op.is_some(), "not op must survive roundtrip");
+
+        let not_op = not_op.unwrap();
+        let not_args = not_op.args.as_ref().expect("not must have args");
+        assert_eq!(not_args.len(), 1, "not must have exactly 1 arg");
+
+        // The arg must reference a variable that is defined by const_bool
+        let arg_name = &not_args[0];
+        let const_op = roundtripped
+            .iter()
+            .find(|op| op.kind == "const_bool" && op.out.as_deref() == Some(arg_name));
+        assert!(
+            const_op.is_some(),
+            "not's operand '{}' must be defined by a const_bool op. ops: {:?}",
+            arg_name,
+            roundtripped
+                .iter()
+                .map(|op| format!("{} out={:?} args={:?}", op.kind, op.out, op.args))
+                .collect::<Vec<_>>()
+        );
+    }
+}
