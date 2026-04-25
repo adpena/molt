@@ -110,6 +110,7 @@ fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>) {
         OpCode::ConstBool => {
             let k = op.attrs.get("value").and_then(|v| match v {
                 AttrValue::Bool(b) => Some(if *b { 1 } else { 0 }),
+                AttrValue::Int(i) => Some(*i),
                 _ => None,
             });
             (k, None)
