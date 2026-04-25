@@ -2878,65 +2878,6 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     assert cached_path_stat is not None
 
 
-@pytest.mark.skip(reason="_frontend_cache_epoch was removed from cli")
-def test_load_module_analysis_invalidates_on_frontend_cache_epoch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module_path = tmp_path / "pkg.py"
-    module_path.write_text("import warnings\nVALUE = 1\n")
-    cache = cli._ModuleResolutionCache()
-
-    monkeypatch.setattr(cli, "_frontend_cache_epoch", lambda: "epoch-a")
-    cli._load_module_analysis(
-        module_path,
-        module_name="pkg",
-        is_package=False,
-        include_nested=True,
-        source=None,
-        logical_source_path=str(module_path),
-        resolution_cache=cache,
-        project_root=tmp_path,
-    )
-
-    parse_calls = 0
-    original_parse = cache.parse_module_ast
-
-    def wrapped_parse(*args: object, **kwargs: object) -> ast.AST:
-        nonlocal parse_calls
-        parse_calls += 1
-        return original_parse(*args, **kwargs)
-
-    monkeypatch.setattr(cli, "_frontend_cache_epoch", lambda: "epoch-b")
-    monkeypatch.setattr(cache, "parse_module_ast", wrapped_parse)
-    (
-        tree,
-        imports,
-        func_defaults,
-        cached_source,
-        cache_hit,
-        interface_changed,
-        cached_path_stat,
-    ) = cli._load_module_analysis(
-        module_path,
-        module_name="pkg",
-        is_package=False,
-        include_nested=True,
-        source=None,
-        logical_source_path=str(module_path),
-        resolution_cache=cache,
-        project_root=tmp_path,
-    )
-
-    assert tree is not None
-    assert imports == ("warnings",)
-    assert func_defaults == {}
-    assert cached_source is not None
-    assert cache_hit is False
-    assert interface_changed is True
-    assert cached_path_stat is not None
-    assert parse_calls == 1
-
-
 def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3261,45 +3202,6 @@ def test_persisted_module_lowering_repairs_truncated_param_types(
     assert cached["functions"][0]["param_types"] == ["Any", "i64", "i64"]
 
 
-@pytest.mark.skip(reason="_frontend_cache_epoch was removed from cli")
-def test_persisted_module_lowering_invalidates_on_frontend_cache_epoch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module_path = tmp_path / "pkg.py"
-    module_path.write_text("x = 1\n")
-    context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
-    assert context_digest is not None
-
-    monkeypatch.setattr(cli, "_frontend_cache_epoch", lambda: "epoch-a")
-    cli._write_persisted_module_lowering(
-        tmp_path,
-        module_path,
-        module_name="pkg",
-        is_package=False,
-        context_digest=context_digest,
-        result={
-            "functions": [],
-            "func_code_ids": {},
-            "local_class_names": [],
-            "local_classes": {},
-            "midend_policy_outcomes_by_function": {},
-            "midend_pass_stats_by_function": {},
-            "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
-        },
-    )
-
-    monkeypatch.setattr(cli, "_frontend_cache_epoch", lambda: "epoch-b")
-    cached = cli._read_persisted_module_lowering(
-        tmp_path,
-        module_path,
-        module_name="pkg",
-        is_package=False,
-        context_digest=context_digest,
-    )
-
-    assert cached is None
-
-
 def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3381,66 +3283,6 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     assert cached_results == {"alpha": {"module": "alpha", "kind": "cached"}}
     assert context_digest_by_module == {"alpha": "digest"}
     assert context_payload_calls == 1
-
-
-@pytest.mark.skip(
-    reason="cache_enabled parameter was removed from _prepare_frontend_parallel_batch"
-)
-def test_prepare_frontend_parallel_batch_skips_cache_reads_when_disabled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module_path = tmp_path / "alpha.py"
-    module_path.write_text("VALUE = 1\n")
-    module_graph_metadata = cli._build_module_graph_metadata(
-        {"alpha": module_path},
-        generated_module_source_paths={},
-        entry_module="__main__",
-        namespace_module_names=set(),
-    )
-
-    monkeypatch.setattr(
-        cli,
-        "_load_cached_module_lowering_result",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("unexpected cached module lowering read")
-        ),
-    )
-
-    cached_results, worker_payloads, context_digest_by_module, batch_error = (
-        cli._prepare_frontend_parallel_batch(
-            ["alpha"],
-            module_graph={"alpha": module_path},
-            module_sources={},
-            project_root=tmp_path,
-            known_classes_snapshot={},
-            module_resolution_cache=cli._ModuleResolutionCache(),
-            parse_codec="json",
-            type_hint_policy="ignore",
-            fallback_policy="error",
-            type_facts=None,
-            enable_phi=True,
-            known_modules={"alpha"},
-            stdlib_allowlist=set(),
-            known_func_defaults={},
-            module_deps={"alpha": set()},
-            module_chunk_max_ops=0,
-            optimization_profile="dev",
-            pgo_hot_function_names=set(),
-            known_modules_sorted=("alpha",),
-            stdlib_allowlist_sorted=(),
-            pgo_hot_function_names_sorted=(),
-            module_dep_closures={"alpha": frozenset({"alpha"})},
-            module_graph_metadata=module_graph_metadata,
-            module_chunking=False,
-            dirty_lowering_modules=set(),
-            cache_enabled=False,
-        )
-    )
-
-    assert batch_error is None
-    assert cached_results == {}
-    assert len(worker_payloads) == 1
-    assert context_digest_by_module == {}
 
 
 def test_load_cached_module_lowering_result_reuses_single_module_stat(

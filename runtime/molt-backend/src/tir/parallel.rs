@@ -149,7 +149,6 @@ mod tests {
                 make_const_int_func("f1", 2),
                 make_add_func("f2"),
             ],
-            class_hierarchy: None,
         };
 
         let stats = compile_module_parallel(&mut module);
@@ -172,7 +171,6 @@ mod tests {
         let mut module = TirModule {
             name: "empty".into(),
             functions: vec![],
-            class_hierarchy: None,
         };
 
         let stats = compile_module_parallel(&mut module);
@@ -197,7 +195,6 @@ mod tests {
         let mut module = TirModule {
             name: "single".into(),
             functions: vec![par_func],
-            class_hierarchy: None,
         };
         let par_stats = compile_module_parallel(&mut module);
 

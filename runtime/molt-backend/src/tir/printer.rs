@@ -767,7 +767,6 @@ mod tests {
         let module = TirModule {
             name: "test_mod".into(),
             functions: vec![func],
-            class_hierarchy: None,
         };
         let s = print_module(&module);
         assert!(s.contains("module @test_mod"), "{}", s);
