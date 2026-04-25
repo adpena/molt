@@ -362,9 +362,25 @@ fn infer_scalar_lane(
         }
         "sub" | "mul" | "inplace_sub" | "inplace_mul" | "floordiv" | "mod" | "mod_"
         | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor" | "bitand"
-        | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor"
-        | "pow" => {
+        | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" => {
             if args_all(&is_float)
+                || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
+            {
+                Some(ScalarLane::Float)
+            } else if args_all(&is_int) {
+                Some(ScalarLane::Int)
+            } else {
+                None
+            }
+        }
+        // Python pow: `int ** float` → float (always).  `int ** int` → int.
+        // `float ** anything` → float.  The exponent determines the result
+        // type when mixed: any float exponent forces float output.
+        "pow" => {
+            if args.len() >= 2 && is_float(&args[1]) {
+                // Float exponent → result is always float.
+                Some(ScalarLane::Float)
+            } else if args_all(&is_float)
                 || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
             {
                 Some(ScalarLane::Float)
@@ -1995,12 +2011,46 @@ impl SimpleBackend {
             }
             unsafe_set
         };
-        let float_primary_vars: BTreeSet<String> = if is_cold_module_chunk_function(&func_ir.name) {
-            // Cold module-chunk functions have scalar_fast_paths disabled,
-            // so store_var / copy_var / load_var skip the float-primary
-            // fast paths and fall through to the generic I64 codegen.
-            // Declaring Variables as F64 while codegen emits I64 values
-            // causes a Cranelift type-mismatch panic.  Disable entirely.
+        // Build the set of variables that are defined by ANY non-float-safe op.
+        // A variable is F64-primary ONLY if every definition site produces a
+        // raw f64 value. If even one definition produces I64 (NaN-boxed),
+        // the Variable must remain I64 to avoid Cranelift type-mismatch panics.
+        let vars_with_non_float_defs: BTreeSet<String> = {
+            let mut non_float = BTreeSet::new();
+            for op in &func_ir.ops {
+                // store_var can define a variable via its target (var or out).
+                // If the source is not proven float, the target gets a non-float def.
+                if op.kind == "store_var" {
+                    let target = op.var.as_ref().or(op.out.as_ref());
+                    let source = op.args.as_ref().and_then(|a| a.first());
+                    if let (Some(t), Some(s)) = (target, source) {
+                        if !float_like_vars.contains(s) {
+                            non_float.insert(t.clone());
+                        }
+                    }
+                }
+                // Any op with an output: if the op doesn't produce a float value
+                // AND the output is in float_like_vars, it's a mixed-type variable.
+                if let Some(ref out) = op.out {
+                    let lane = infer_scalar_lane(
+                        op,
+                        &int_like_vars,
+                        &bool_like_vars,
+                        &float_like_vars,
+                        &str_like_vars,
+                    );
+                    if lane != Some(ScalarLane::Float) && float_like_vars.contains(out) {
+                        non_float.insert(out.clone());
+                    }
+                }
+            }
+            non_float
+        };
+        // Disable F64-primary when the function contains pow ops that mix
+        // int and float — the intermediate variable classification can't
+        // prove that all definition sites produce F64.
+        let has_pow_ops = func_ir.ops.iter().any(|op| op.kind == "pow");
+        let float_primary_vars: BTreeSet<String> = if is_cold_module_chunk_function(&func_ir.name) || has_pow_ops {
             BTreeSet::new()
         } else {
             float_like_vars
@@ -2008,6 +2058,8 @@ impl SimpleBackend {
                 .filter(|name| {
                     !param_name_set.contains(name.as_str())
                         && !float_unsafe_outputs.contains(*name)
+                        && !int_like_vars.contains(*name)
+                        && !vars_with_non_float_defs.contains(*name)
                 })
                 .cloned()
                 .collect()
