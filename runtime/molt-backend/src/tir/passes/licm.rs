@@ -394,7 +394,6 @@ mod tests {
     ///                                         ↘ exit
     /// with a+b computed inside the loop body.
     #[test]
-    #[ignore = "LICM preheader hoisting needs value_def_block seeding fix"]
     fn invariant_add_hoisted_to_preheader() {
         let mut func =
             TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
@@ -497,11 +496,15 @@ mod tests {
 
         let stats = run(&mut func);
 
-        // The Add(a, b) should have been hoisted from loop_body to preheader.
+        // The invariant Add(a, b) → sum_ab should have been hoisted.
+        // The non-invariant Add(sum_ab, loop_var) → use_val should remain.
         let body_ops = &func.blocks[&loop_body].ops;
+        let invariant_add_remains = body_ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Add && op.operands == vec![a, b]);
         assert!(
-            body_ops.iter().all(|op| op.opcode != OpCode::Add),
-            "Add should have been hoisted out of the loop body"
+            !invariant_add_remains,
+            "Invariant Add(a, b) should have been hoisted out of the loop body"
         );
 
         let preheader_ops = &func.blocks[&preheader].ops;
