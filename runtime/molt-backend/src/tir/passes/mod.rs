@@ -183,11 +183,9 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     // changes how the native backend handles the op). Only arithmetic
     // ops with proven-typed operands are deduplicated.
     run_pass!("gvn", gvn::run(func));
-    // LICM: gated behind opt-in until nested-loop support is hardened.
-    // Enable with: MOLT_TIR_ENABLE_LICM=1
-    if std::env::var("MOLT_TIR_ENABLE_LICM").is_ok() {
-        run_pass!("licm", licm::run(func));
-    }
+    // LICM: hoist loop-invariant computations to preheaders.
+    // Only processes outermost loops to avoid nested-loop dominance issues.
+    run_pass!("licm", licm::run(func));
 
     // ── Memory optimization ────────────────────────────────────
     run_pass!("escape_analysis", escape_analysis::run(func));
