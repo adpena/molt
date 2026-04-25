@@ -1004,7 +1004,17 @@ impl<'a> SsaContext<'a> {
         // Build attrs from literal values on the op.
         let mut attrs = AttrDict::new();
         if let Some(v) = op.value {
-            attrs.insert("value".into(), AttrValue::Int(v));
+            // ConstBool values must be stored as AttrValue::Bool so that
+            // downstream passes (SCCP, canonicalize, GVN) can read the
+            // boolean constant correctly.  The SSA lift previously stored
+            // all values as AttrValue::Int, which made ConstBool(True)
+            // and ConstBool(False) indistinguishable to passes that only
+            // pattern-matched on AttrValue::Bool.
+            if op.kind == "const_bool" {
+                attrs.insert("value".into(), AttrValue::Bool(v != 0));
+            } else {
+                attrs.insert("value".into(), AttrValue::Int(v));
+            }
         }
         if let Some(v) = op.f_value {
             attrs.insert("f_value".into(), AttrValue::Float(v));
