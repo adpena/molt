@@ -119,21 +119,18 @@ print(first([10, 20, 30]))
 class TestPEP701FStrings:
     """PEP 701 (formalized in 3.12) allows nested quotes, backslashes, etc."""
 
-    @pytest.mark.skip(reason="F-string compilation not yet supported in Molt")
     def test_fstring_basic(self):
         _assert_match("""\
 name = "world"
 print(f"hello {name}")
 """)
 
-    @pytest.mark.skip(reason="F-string compilation not yet supported in Molt")
     def test_fstring_expression(self):
         _assert_match("""\
 x = 42
 print(f"value is {x * 2 + 1}")
 """)
 
-    @pytest.mark.skip(reason="F-string compilation not yet supported in Molt")
     def test_fstring_nested_quotes(self):
         """PEP 701: f-strings can now reuse the same quote type."""
         _assert_match("""\
@@ -141,7 +138,6 @@ items = ["a", "b", "c"]
 print(f"first is {items[0]}")
 """)
 
-    @pytest.mark.skip(reason="F-string compilation not yet supported in Molt")
     def test_fstring_format_spec(self):
         _assert_match("""\
 print(f"{'hello':>10}")
