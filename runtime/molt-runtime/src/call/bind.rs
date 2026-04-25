@@ -14,7 +14,8 @@ use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING,
     TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs,
     alloc_exception_from_class_bits, alloc_instance_for_class,
-    alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
+    alloc_instance_for_default_object_new, alloc_object, alloc_object_zeroed_with_pool,
+    alloc_string, alloc_tuple,
     apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
     attr_name_bits_from_bytes,
     audit::{AuditArgs, audit_capability_decision},
@@ -318,6 +319,11 @@ struct CallBindIcEntry {
     target_bits: u64,
     class_bits: u64,
     class_version: u64,
+    /// For `CALL_BIND_IC_KIND_TYPE_CALL`: cached total allocation size
+    /// (header + payload) computed once at IC-population time.  Avoids
+    /// re-running `class_layout_size` (MRO walks, dict probes, name
+    /// interning) on every instance allocation.
+    cached_alloc_size: u32,
     arity: u8,
     kind: u8,
 }
@@ -336,7 +342,7 @@ const IC_TLS_SIZE: usize = 256; // Must be power of 2
 
 thread_local! {
     static IC_TLS: std::cell::RefCell<[(u64, CallBindIcEntry); IC_TLS_SIZE]> =
-        const { std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, target_bits: 0, class_bits: 0, class_version: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]) };
+        const { std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, target_bits: 0, class_bits: 0, class_version: 0, cached_alloc_size: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]) };
 }
 
 #[inline]
@@ -1922,6 +1928,7 @@ unsafe fn call_bind_ic_entry_for_call(
                         target_bits: call_bits,
                         class_bits: 0,
                         class_version: 0,
+                        cached_alloc_size: 0,
                         arity: arity as u8,
                         kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
                     })
@@ -1955,6 +1962,7 @@ unsafe fn call_bind_ic_entry_for_call(
                         target_bits: func_bits,
                         class_bits: 0,
                         class_version: 0,
+                        cached_alloc_size: 0,
                         arity: 1,
                         kind: CALL_BIND_IC_KIND_LIST_APPEND,
                     })
@@ -1966,6 +1974,7 @@ unsafe fn call_bind_ic_entry_for_call(
                             target_bits: func_bits,
                             class_bits: 0,
                             class_version: 0,
+                            cached_alloc_size: 0,
                             arity: (arity - 1) as u8,
                             kind: CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC,
                         })
@@ -2013,11 +2022,19 @@ unsafe fn call_bind_ic_entry_for_call(
                 if !(1..=5).contains(&init_arity) {
                     return None;
                 }
+                // Cache the allocation size so the IC fast path skips
+                // the entire class_layout_size computation (MRO walks,
+                // dict probes, name interning) on every instantiation.
+                let layout_size = crate::call::class_init::class_layout_size_cached(
+                    _py, call_ptr,
+                );
+                let total_alloc = layout_size + std::mem::size_of::<crate::object::MoltHeader>();
                 Some(CallBindIcEntry {
                     fn_ptr: function_fn_ptr(init_ptr) as u64,
                     target_bits: init_bits,
                     class_bits,
                     class_version: class_layout_version_bits(call_ptr),
+                    cached_alloc_size: total_alloc as u32,
                     arity: (init_arity - 1) as u8,
                     kind: CALL_BIND_IC_KIND_TYPE_CALL,
                 })
@@ -2047,6 +2064,7 @@ unsafe fn call_bind_ic_entry_for_call(
                     target_bits: func_bits,
                     class_bits,
                     class_version: class_layout_version_bits(class_ptr),
+                    cached_alloc_size: 0,
                     arity: (arity - 1) as u8,
                     kind: CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC,
                 })
@@ -2198,11 +2216,27 @@ unsafe fn try_call_bind_ic_fast(
             if function_fn_ptr(init_ptr) as u64 != entry.fn_ptr {
                 return None;
             }
-            // Allocate instance (default object.__new__ path).
-            let inst_bits = alloc_instance_for_default_object_new(_py, call_ptr);
-            if exception_pending(_py) {
-                return Some(MoltObject::none().bits());
-            }
+            // Allocate instance using the IC-cached allocation size.
+            // This skips the entire class_layout_size recomputation
+            // (MRO walks, dict probes, issubclass checks) on every
+            // instantiation — the layout was computed once when the IC
+            // entry was populated.
+            let inst_bits = if entry.cached_alloc_size > 0 {
+                let total = entry.cached_alloc_size as usize;
+                let obj_ptr = alloc_object_zeroed_with_pool(_py, total, TYPE_ID_OBJECT);
+                if obj_ptr.is_null() {
+                    return Some(MoltObject::none().bits());
+                }
+                object_set_class_bits(_py, obj_ptr, class_bits);
+                inc_ref_bits(_py, class_bits);
+                MoltObject::from_ptr(obj_ptr).bits()
+            } else {
+                let bits = alloc_instance_for_default_object_new(_py, call_ptr);
+                if exception_pending(_py) {
+                    return Some(MoltObject::none().bits());
+                }
+                bits
+            };
             // Fast-path __init__ call: bypass call_function_obj_vec to skip
             // profiling, exception baseline, trampoline probe, arity check,
             // and double enforce_no_pending.  We already validated fn_ptr,

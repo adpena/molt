@@ -84,6 +84,17 @@ unsafe fn max_slot_end_from_mro_offsets(
     }
 }
 
+/// Compute the byte size of the payload for instances of the class at
+/// `class_ptr`.  This involves MRO walks, dict probes and name interning so
+/// it is expensive.  Callers in hot loops should cache the result (e.g. via
+/// the call-bind IC `cached_alloc_size` field).
+pub(crate) unsafe fn class_layout_size_cached(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+) -> usize {
+    unsafe { class_layout_size(_py, class_ptr) }
+}
+
 unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
     unsafe {
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
