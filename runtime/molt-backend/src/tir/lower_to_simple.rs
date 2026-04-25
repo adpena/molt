@@ -4777,11 +4777,31 @@ mod tests {
             .as_ref()
             .and_then(|args| args.first())
             .expect("module_cache_get must keep module-name operand");
-        let cache_arg_op = producer_by_out
-            .get(cache_arg)
-            .expect("module_cache_get operand must come from an op");
-        assert_eq!(cache_arg_op.kind, "const_str");
-        assert_eq!(cache_arg_op.s_value.as_deref(), Some("method_trace"));
+        // Follow through Copy/copy chains to find the original const_str
+        // (GVN may deduplicate identical constants, replacing the second
+        // with a copy of the first).
+        let mut cache_arg_name = cache_arg.clone();
+        for _ in 0..10 {
+            let op = producer_by_out
+                .get(&cache_arg_name)
+                .expect("module_cache_get operand must come from an op");
+            if op.kind == "const_str" {
+                assert_eq!(op.s_value.as_deref(), Some("method_trace"));
+                break;
+            }
+            if op.kind == "copy" || op.kind == "copy_var" {
+                cache_arg_name = op
+                    .args
+                    .as_ref()
+                    .and_then(|a| a.first().cloned())
+                    .unwrap_or_else(|| cache_arg_name.clone());
+            } else {
+                panic!(
+                    "expected const_str or copy, got {} for module_cache_get operand",
+                    op.kind
+                );
+            }
+        }
 
         let class_lookup = &round_tripped[module_get_idx];
         let class_lookup_args = class_lookup

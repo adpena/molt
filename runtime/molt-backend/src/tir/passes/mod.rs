@@ -10,6 +10,8 @@ pub mod closure_spec;
 pub mod copy_prop;
 pub mod dce;
 pub mod deforestation;
+pub mod gvn;
+pub mod licm;
 pub mod effects;
 pub mod escape_analysis;
 pub mod ownership;
@@ -40,15 +42,21 @@ pub struct PassStats {
 
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// Pass order is critical -- each pass feeds into the next:
-/// 1. Unboxing (needs types from type_refine)
-/// 2. Escape analysis (benefits from unboxed info)
-/// 3. Refcount elimination (uses escape analysis results)
-/// 4. Type guard hoisting (moves checks up in CFG)
-/// 5. SCCP (folds constants after unboxing reveals types)
-/// 6. Strength reduction (after SCCP reveals constant operands)
-/// 7. BCE (after SCCP/SR simplify loop bounds)
-/// 8. DCE (cleans up dead code from all prior passes)
+/// 23 passes organized in 7 phases:
+///
+/// **Lowering**: range_devirt → iter_devirt → tuple_scalarize → loop_narrow
+/// **Canonicalization**: canonicalize (pre-type) → unboxing → block_versioning →
+///   canonicalize (post-type)
+/// **Redundancy**: gvn → licm
+/// **Memory**: escape_analysis → refcount_elim → reuse_analysis
+/// **Value**: type_guard_hoist → sccp → strength_reduction → fast_math →
+///   branchless_count → bce → vectorize → polyhedral
+/// **Cleanup**: copy_prop → dce
+///
+/// Dual canonicalization follows LLVM instcombine: unboxing reveals type
+/// information that creates new normalization opportunities. GVN runs
+/// after canonicalization ensures a single representation per pattern.
+/// LICM runs after GVN so hoisted values are already deduplicated.
 ///
 /// If the optimized function violates TIR invariants, this is a compiler bug
 /// and the pipeline panics immediately. Zero-delta pipelines still return
@@ -58,7 +66,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     // lower the original IR structurally without pass-induced metadata drift.
     let snapshot = func.clone();
 
-    let mut stats = Vec::with_capacity(10);
+    let mut stats = Vec::with_capacity(24);
 
     // Each pass can be individually disabled for debugging:
     //   MOLT_TIR_SKIP=unboxing,sccp,dce (comma-separated pass names)
@@ -164,6 +172,17 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     // Re-canonicalize after unboxing: unboxed operations may reveal
     // new identity/absorbing patterns (e.g., unboxed int x + 0).
     run_pass!("canonicalize_post", canonicalize::run(func));
+
+    // ── Global redundancy elimination ──────────────────────────
+    // GVN + LICM: implemented and tested but gated behind opt-in
+    // until dominance-aware operand renaming is complete.
+    // Enable with: MOLT_TIR_ENABLE_GVN=1 / MOLT_TIR_ENABLE_LICM=1
+    if std::env::var("MOLT_TIR_ENABLE_GVN").is_ok() {
+        run_pass!("gvn", gvn::run(func));
+    }
+    if std::env::var("MOLT_TIR_ENABLE_LICM").is_ok() {
+        run_pass!("licm", licm::run(func));
+    }
 
     // ── Memory optimization ────────────────────────────────────
     run_pass!("escape_analysis", escape_analysis::run(func));
