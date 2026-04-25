@@ -1,4 +1,14 @@
-"""Dataclasses for Molt (static-only)."""
+"""Dataclasses for Molt.
+
+Supports both compile-time recognition (the frontend marks classes with
+``__molt_dataclass__ = True``) and runtime decoration of arbitrary user
+classes. The synthesis logic below is the single source of truth for both
+paths: it walks ``cls.__annotations__`` to discover fields, installs
+``__init__`` / ``__repr__`` / ``__eq__`` / ``__hash__`` / order dunders
+onto the class via ``setattr``, and honours ``slots`` / ``frozen`` /
+``order`` / ``kw_only`` / ``unsafe_hash`` / ``weakref_slot`` / ``match_args``
+exactly as CPython 3.12 does.
+"""
 
 from __future__ import annotations
 
@@ -425,6 +435,107 @@ def _dataclass_hash(self) -> int:
     return int(_MOLT_DATACLASSES_HASH_FN(self))
 
 
+def _collect_inherited_slots(cls) -> set:
+    """Mirror CPython's ``_get_slots`` walk over ``cls.__mro__[1:-1]``.
+
+    Each base contributes its declared ``__slots__`` (string or iterable). We
+    skip ``object`` because every class inherits from it and its slots are
+    irrelevant. The returned set is used to filter our generated slot names so
+    we never re-declare an inherited slot.
+    """
+    inherited: set = set()
+    mro = getattr(cls, "__mro__", None) or (cls,)
+    for base in mro[1:-1]:
+        base_slots = base.__dict__.get("__slots__", None)
+        if base_slots is None:
+            continue
+        if isinstance(base_slots, str):
+            inherited.add(base_slots)
+            continue
+        try:
+            for entry in base_slots:
+                if isinstance(entry, str):
+                    inherited.add(entry)
+        except TypeError:
+            # Non-iterable __slots__ on a base — leave to the base class.
+            continue
+    return inherited
+
+
+def _add_slots(cls, fields_map, *, frozen: bool, weakref_slot: bool):
+    """Rebuild ``cls`` with ``__slots__`` baked into its class dict.
+
+    Mirrors CPython's ``dataclasses._add_slots``: copies the existing class
+    namespace (which already contains every dunder synthesized above), drops
+    field-name attributes that would shadow slot descriptors, removes any
+    existing ``__dict__``/``__weakref__`` entries, then constructs a new class
+    via the original metaclass. The original class object is intentionally
+    discarded — callers receive the rebuilt class through the decorator return
+    value, exactly as CPython does.
+    """
+    field_names = tuple(
+        field_obj.name
+        for field_obj in fields_map.values()
+        if field_obj._field_type is _FIELD
+    )
+    inherited_slots = _collect_inherited_slots(cls)
+    new_slots = tuple(
+        name
+        for name in (*field_names, *(("__weakref__",) if weakref_slot else ()))
+        if name not in inherited_slots
+    )
+
+    # Snapshot the (now fully decorated) class namespace.
+    cls_dict = dict(cls.__dict__)
+    cls_dict["__slots__"] = new_slots
+    for field_name in field_names:
+        # Slot descriptors must own the attribute name; strip any default
+        # value we wrote earlier in this pass so it does not shadow the slot.
+        cls_dict.pop(field_name, None)
+    cls_dict.pop("__dict__", None)
+    cls_dict.pop("__weakref__", None)
+
+    qualname = getattr(cls, "__qualname__", None)
+    bases = cls.__bases__
+
+    # Use ``types.new_class`` (the proven path used by ``make_dataclass``) to
+    # rebuild via the original metaclass. This avoids any reliance on the
+    # rarely-exercised 3-arg ``type(name, bases, dict)`` path while preserving
+    # CPython semantics: a brand-new class object whose namespace contains
+    # ``__slots__`` and the synthesized dunders.
+    snapshot = cls_dict
+
+    def _exec_body(ns):
+        ns.update(snapshot)
+
+    import types as _types
+
+    new_cls = _types.new_class(cls.__name__, bases, {}, _exec_body)
+    if qualname is not None:
+        new_cls.__qualname__ = qualname
+
+    if frozen:
+        # Frozen + slots needs explicit pickle support: __setstate__ must use
+        # ``object.__setattr__`` since assignment goes through our frozen
+        # ``__setattr__`` guard. Match CPython behaviour exactly.
+        if "__getstate__" not in cls_dict:
+            new_cls.__getstate__ = _dataclass_slots_getstate
+        if "__setstate__" not in cls_dict:
+            new_cls.__setstate__ = _dataclass_slots_setstate
+
+    return new_cls
+
+
+def _dataclass_slots_getstate(self):
+    return [getattr(self, name) for name in self.__slots__ if name != "__weakref__"]
+
+
+def _dataclass_slots_setstate(self, state) -> None:
+    names = [name for name in self.__slots__ if name != "__weakref__"]
+    for name, value in zip(names, state):
+        object.__setattr__(self, name, value)
+
+
 def _molt_apply_dataclass(
     cls,
     init: bool,
@@ -438,10 +549,12 @@ def _molt_apply_dataclass(
     slots: bool,
     weakref_slot: bool,
 ):
+    # Mark the class as a molt dataclass so downstream introspection (and any
+    # cooperating frontend lowering) sees the same flag whether the class was
+    # produced via compile-time recognition, ``make_dataclass``, or runtime
+    # decoration of an arbitrary user class.
     if not getattr(cls, "__molt_dataclass__", False):
-        raise NotImplementedError(
-            "dataclasses.dataclass is static-only in Molt (use @dataclass at compile time)"
-        )
+        cls.__molt_dataclass__ = True
     if order and not eq:
         raise ValueError("eq must be true if order is true")
     if weakref_slot and not slots:
@@ -603,14 +716,7 @@ def _molt_apply_dataclass(
         cls.__match_args__ = match_fields
 
     if slots:
-        slot_names = [
-            field_obj.name
-            for field_obj in fields.values()
-            if field_obj._field_type is _FIELD
-        ]
-        if weakref_slot:
-            slot_names.append("__weakref__")
-        cls.__slots__ = tuple(slot_names)
+        cls = _add_slots(cls, fields, frozen=frozen, weakref_slot=weakref_slot)
 
     cls.__molt_dataclass_field_names__ = tuple(
         field_obj.name
