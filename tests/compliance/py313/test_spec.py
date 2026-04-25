@@ -145,7 +145,7 @@ except ValueError as e:
     print(type(e).__name__)
 """)
 
-    @pytest.mark.skip(reason="ExceptionGroup not yet supported in Molt")
+    @pytest.mark.skip(reason="module-level except* consumption: handlers run and produce correct prints, but residual ExceptionGroup propagates after both handlers complete (works correctly inside a function — top-level molt_main path needs investigation)")
     def test_exception_group_basic(self):
         """ExceptionGroup (3.11+) with except* (3.11+), commonly used in 3.13 code."""
         _assert_match("""\
