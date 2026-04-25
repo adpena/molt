@@ -10416,6 +10416,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             return
+        # Metaclass __init__ receives `cls` which is a TYPE object, not an
+        # instance. Field offsets don't apply — always use generic setattr.
+        if class_info and "type" in class_info.get("bases", []):
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_PTR",
+                    args=[obj, attr, value],
+                    result=MoltValue("none"),
+                )
+            )
+            return
         if class_info and attr not in class_info.get("fields", {}):
             self.emit(
                 MoltOp(
@@ -10555,6 +10566,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_OBJ",
                     args=[obj, attr],
                     result=res,
+                )
+            )
+            return res
+        # Metaclass methods operate on TYPE objects — field offsets don't apply.
+        if class_info and "type" in class_info.get("bases", []):
+            res = MoltValue(self.next_var())
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_PTR",
+                    args=[obj, attr],
+                    result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
