@@ -767,12 +767,23 @@ class Tensor:
 
     def layernorm(
         self,
-        normalized_shape,
+        normalized_shape=None,
         weight: "Tensor" = None,
         bias: "Tensor" = None,
         eps: float = 1e-5,
+        axis=-1,
     ) -> "Tensor":
         """Layer normalization."""
+        if normalized_shape is None:
+            if isinstance(axis, tuple):
+                if axis != (-1,):
+                    raise NotImplementedError(
+                        "Tensor.layernorm currently supports the last axis"
+                    )
+            elif axis != -1 and axis != self.ndim - 1:
+                raise NotImplementedError(
+                    "Tensor.layernorm currently supports the last axis"
+                )
         mean = self.mean(axis=-1)
         # variance = mean((x - mean)^2)
         diff = self - mean._broadcast_to(self.shape)
@@ -786,95 +797,213 @@ class Tensor:
             normed = normed + bias
         return normed
 
-    @staticmethod
     def conv2d(
-        x: "Tensor",
+        self,
         weight: "Tensor",
         bias: "Tensor" = None,
-        stride: int = 1,
-        padding: int = 0,
+        groups=1,
+        stride=1,
+        dilation=1,
+        padding=0,
+        dtype=None,
     ) -> "Tensor":
-        """2D convolution via im2col + matmul.
+        """Convolution matching tinygrad Tensor.conv2d call semantics."""
+        x = self
+        if x.ndim < 3:
+            raise ValueError(f"conv2d input must have at least 3 dims, got {x.shape}")
+        if x.ndim != weight.ndim:
+            raise ValueError(
+                f"Input Tensor shape {x.shape} does not match weights {weight.shape}"
+            )
+        spatial_ndim = x.ndim - 2
+        stride_t = _make_tuple(stride, spatial_ndim, "stride")
+        dilation_t = _make_tuple(dilation, spatial_ndim, "dilation")
+        pads = _resolve_pool_pads(padding, spatial_ndim)
+        groups = int(groups)
+        if groups <= 0:
+            raise ValueError("conv2d groups must be positive")
 
-        x: (N, C_in, H, W) input tensor
-        weight: (C_out, C_in, kH, kW) filter tensor
-        bias: optional (C_out,) bias tensor
-        stride: int stride
-        padding: int zero-padding
-        """
+        batch, in_channels = x.shape[:2]
+        out_channels, weight_in_channels = weight.shape[:2]
+        spatial = x.shape[2:]
+        kernels = weight.shape[2:]
+        if in_channels % groups != 0 or out_channels % groups != 0:
+            raise ValueError("conv2d channels must be divisible by groups")
+        if groups * weight_in_channels != in_channels:
+            raise ValueError(
+                f"Input Tensor shape {x.shape} does not match weights {weight.shape}"
+            )
+        if bias is not None and bias.shape != (out_channels,):
+            raise ValueError(
+                f"conv2d bias shape mismatch: {bias.shape} vs ({out_channels},)"
+            )
+
+        out_spatial = tuple(
+            (
+                spatial[i]
+                + pads[i][0]
+                + pads[i][1]
+                - dilation_t[i] * (kernels[i] - 1)
+                - 1
+            )
+            // stride_t[i]
+            + 1
+            for i in range(spatial_ndim)
+        )
+        if any(size < 0 for size in out_spatial):
+            raise ValueError(f"conv2d output shape is invalid: {out_spatial}")
+
         x_data = tinygrad.realize.realize(x.lazydata)
         w_data = tinygrad.realize.realize(weight.lazydata)
-
-        n, c_in, h, w = x.shape
-        c_out, c_in_w, kh, kw = weight.shape
-        if c_in != c_in_w:
-            raise ValueError(f"conv2d: channel mismatch {c_in} vs {c_in_w}")
-
-        h_out = (h + 2 * padding - kh) // stride + 1
-        w_out = (w + 2 * padding - kw) // stride + 1
-
-        # im2col: extract patches as columns
-        col_h = c_in * kh * kw
-        col_w = n * h_out * w_out
-        col = [0.0] * (col_h * col_w)
-
-        for batch in range(n):
-            for oh in range(h_out):
-                for ow in range(w_out):
-                    col_idx = batch * h_out * w_out + oh * w_out + ow
-                    for ic in range(c_in):
-                        for fh in range(kh):
-                            for fw in range(kw):
-                                ih = oh * stride - padding + fh
-                                iw = ow * stride - padding + fw
-                                row_idx = ic * kh * kw + fh * kw + fw
-                                if 0 <= ih < h and 0 <= iw < w:
-                                    val = x_data[
-                                        batch * (c_in * h * w)
-                                        + ic * (h * w)
-                                        + ih * w
-                                        + iw
-                                    ]
-                                else:
-                                    val = 0.0
-                                col[row_idx * col_w + col_idx] = val
-
-        # Reshape weight to (C_out, C_in * kH * kW)
-        # Matmul: output = weight_2d @ col -> (C_out, N * H_out * W_out)
-        result = [0.0] * (c_out * col_w)
-        for i in range(c_out):
-            for j in range(col_w):
-                s = 0.0
-                for p in range(col_h):
-                    s += w_data[i * col_h + p] * col[p * col_w + j]
-                result[i * col_w + j] = s
-
-        # Add bias
+        b_data = None
         if bias is not None:
             b_data = tinygrad.realize.realize(bias.lazydata)
-            for i in range(c_out):
-                for j in range(col_w):
-                    result[i * col_w + j] += b_data[i]
 
-        # Reshape to (N, C_out, H_out, W_out)
-        out_data = [0.0] * (n * c_out * h_out * w_out)
-        for batch in range(n):
-            for oc in range(c_out):
-                for oh in range(h_out):
-                    for ow in range(w_out):
-                        col_idx = batch * h_out * w_out + oh * w_out + ow
-                        out_data[
-                            batch * (c_out * h_out * w_out)
-                            + oc * (h_out * w_out)
-                            + oh * w_out
-                            + ow
-                        ] = result[oc * col_w + col_idx]
+        out_shape = (batch, out_channels, *out_spatial)
+        out_data = [0.0] * _numel(out_shape)
+        out_channels_per_group = out_channels // groups
+        x_strides = _strides_for_shape(x.shape)
+        w_strides = _strides_for_shape(weight.shape)
+        out_strides = _strides_for_shape(out_shape)
 
-        out_shape = (n, c_out, h_out, w_out)
-        from tinygrad.lazy import LazyOp, LazyBuffer as LB
+        for n in range(batch):
+            for oc in range(out_channels):
+                group = oc // out_channels_per_group
+                input_base_channel = group * weight_in_channels
+                for out_coords in _iter_indices(out_spatial):
+                    acc = 0.0 if b_data is None else b_data[oc]
+                    for local_ic in range(weight_in_channels):
+                        ic = input_base_channel + local_ic
+                        for kernel_coords in _iter_indices(kernels):
+                            src_coords = tuple(
+                                out_coords[i] * stride_t[i]
+                                - pads[i][0]
+                                + kernel_coords[i] * dilation_t[i]
+                                for i in range(spatial_ndim)
+                            )
+                            if not all(
+                                0 <= src_coords[i] < spatial[i]
+                                for i in range(spatial_ndim)
+                            ):
+                                continue
+                            x_index = _flat_index((n, ic, *src_coords), x_strides)
+                            w_index = _flat_index(
+                                (oc, local_ic, *kernel_coords), w_strides
+                            )
+                            acc += x_data[x_index] * w_data[w_index]
+                    out_index = _flat_index((n, oc, *out_coords), out_strides)
+                    out_data[out_index] = acc
+
+        out_dtype = dtype or x.dtype
+        op = LazyOp("LOAD", (), dtype=out_dtype, shape=out_shape)
+        return tensor_from_lazy(LazyBuffer(op, out_dtype, out_shape, data=out_data))
+
+    def conv_transpose2d(
+        self,
+        weight: "Tensor",
+        bias: "Tensor" = None,
+        groups=1,
+        stride=1,
+        dilation=1,
+        padding=0,
+        output_padding=0,
+    ) -> "Tensor":
+        """Transposed convolution matching tinygrad Tensor.conv_transpose2d."""
+        x = self
+        if x.ndim < 3:
+            raise ValueError(
+                f"conv_transpose2d input must have at least 3 dims, got {x.shape}"
+            )
+        if x.ndim != weight.ndim:
+            raise ValueError(
+                f"Input Tensor shape {x.shape} does not match weights {weight.shape}"
+            )
+        spatial_ndim = x.ndim - 2
+        stride_t = _make_tuple(stride, spatial_ndim, "stride")
+        dilation_t = _make_tuple(dilation, spatial_ndim, "dilation")
+        output_padding_t = _make_tuple(
+            output_padding, spatial_ndim, "output_padding"
+        )
+        pads = _resolve_pool_pads(padding, spatial_ndim)
+        groups = int(groups)
+        if groups <= 0:
+            raise ValueError("conv_transpose2d groups must be positive")
+
+        batch, in_channels = x.shape[:2]
+        weight_in_channels, out_channels_per_group = weight.shape[:2]
+        spatial = x.shape[2:]
+        kernels = weight.shape[2:]
+        if weight_in_channels != in_channels:
+            raise ValueError(
+                f"Input Tensor shape {x.shape} does not match weights {weight.shape}"
+            )
+        if in_channels % groups != 0:
+            raise ValueError("conv_transpose2d input channels must divide groups")
+        out_channels = out_channels_per_group * groups
+        if bias is not None and bias.shape != (out_channels,):
+            raise ValueError(
+                f"conv_transpose2d bias shape mismatch: {bias.shape} vs ({out_channels},)"
+            )
+
+        out_spatial = tuple(
+            (spatial[i] - 1) * stride_t[i]
+            - pads[i][0]
+            - pads[i][1]
+            + dilation_t[i] * (kernels[i] - 1)
+            + output_padding_t[i]
+            + 1
+            for i in range(spatial_ndim)
+        )
+        if any(size < 0 for size in out_spatial):
+            raise ValueError(
+                f"conv_transpose2d output shape is invalid: {out_spatial}"
+            )
+
+        out_shape = (batch, out_channels, *out_spatial)
+        out_data = [0.0] * _numel(out_shape)
+        x_data = tinygrad.realize.realize(x.lazydata)
+        w_data = tinygrad.realize.realize(weight.lazydata)
+        x_strides = _strides_for_shape(x.shape)
+        w_strides = _strides_for_shape(weight.shape)
+        out_strides = _strides_for_shape(out_shape)
+        input_channels_per_group = in_channels // groups
+
+        for n in range(batch):
+            for ic in range(in_channels):
+                group = ic // input_channels_per_group
+                for in_coords in _iter_indices(spatial):
+                    x_index = _flat_index((n, ic, *in_coords), x_strides)
+                    x_val = x_data[x_index]
+                    for local_oc in range(out_channels_per_group):
+                        oc = group * out_channels_per_group + local_oc
+                        for kernel_coords in _iter_indices(kernels):
+                            out_coords = tuple(
+                                in_coords[i] * stride_t[i]
+                                - pads[i][0]
+                                + kernel_coords[i] * dilation_t[i]
+                                for i in range(spatial_ndim)
+                            )
+                            if not all(
+                                0 <= out_coords[i] < out_spatial[i]
+                                for i in range(spatial_ndim)
+                            ):
+                                continue
+                            w_index = _flat_index(
+                                (ic, local_oc, *kernel_coords), w_strides
+                            )
+                            out_index = _flat_index((n, oc, *out_coords), out_strides)
+                            out_data[out_index] += x_val * w_data[w_index]
+
+        if bias is not None:
+            b_data = tinygrad.realize.realize(bias.lazydata)
+            for n in range(batch):
+                for oc in range(out_channels):
+                    for out_coords in _iter_indices(out_spatial):
+                        out_index = _flat_index((n, oc, *out_coords), out_strides)
+                        out_data[out_index] += b_data[oc]
 
         op = LazyOp("LOAD", (), dtype=x.dtype, shape=out_shape)
-        return tensor_from_lazy(LB(op, x.dtype, out_shape, data=out_data))
+        return tensor_from_lazy(LazyBuffer(op, x.dtype, out_shape, data=out_data))
 
     # --- Internal Helpers ---
 
@@ -1036,6 +1165,67 @@ def _broadcast_shape(a: tuple, b: tuple) -> tuple:
         else:
             raise ValueError(f"Cannot broadcast shapes {a} and {b}")
     return tuple(result)
+
+
+def _numel(shape: tuple) -> int:
+    total = 1
+    for size in shape:
+        total *= size
+    return total
+
+
+def _make_tuple(value, size: int, name: str) -> tuple:
+    if isinstance(value, int):
+        return (value,) * size
+    if isinstance(value, (list, tuple)):
+        out = tuple(int(v) for v in value)
+        if len(out) != size:
+            raise ValueError(f"{name} must have {size} values, got {out}")
+        return out
+    raise TypeError(f"{name} must be an int or tuple")
+
+
+def _resolve_pool_pads(padding, spatial_ndim: int) -> tuple:
+    if isinstance(padding, int):
+        return tuple((padding, padding) for _ in range(spatial_ndim))
+    if not isinstance(padding, (list, tuple)):
+        raise TypeError("padding must be an int or tuple")
+    padding = tuple(int(p) for p in padding)
+    if len(padding) == spatial_ndim:
+        return tuple((p, p) for p in padding)
+    if len(padding) == spatial_ndim * 2:
+        pairs = tuple(
+            (padding[i], padding[i + 1]) for i in range(0, len(padding), 2)
+        )
+        return tuple(reversed(pairs))
+    raise ValueError(
+        f"padding must have length {spatial_ndim} or {spatial_ndim * 2}, got {padding}"
+    )
+
+
+def _strides_for_shape(shape: tuple) -> tuple:
+    strides = []
+    stride = 1
+    for size in reversed(shape):
+        strides.append(stride)
+        stride *= size
+    return tuple(reversed(strides))
+
+
+def _flat_index(indices: tuple, strides: tuple) -> int:
+    out = 0
+    for idx, stride in zip(indices, strides):
+        out += idx * stride
+    return out
+
+
+def _iter_indices(shape: tuple):
+    if not shape:
+        yield ()
+        return
+    for idx in range(shape[0]):
+        for rest in _iter_indices(shape[1:]):
+            yield (idx, *rest)
 
 
 def _permute_data(flat: list, shape: tuple, order: tuple) -> list:

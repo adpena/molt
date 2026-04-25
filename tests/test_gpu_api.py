@@ -1253,29 +1253,31 @@ def test_nn_conv2d_uses_tensor_conv2d(monkeypatch):
     from molt.gpu.nn import Conv2d
     from molt.gpu.tensor import Tensor
 
-    conv = Conv2d(1, 1, 3)
+    conv = Conv2d(2, 4, (3, 2), stride=(2, 1), padding=(1, 0), dilation=(2, 1), groups=2, bias=False)
     x = Tensor.arange(16).reshape(1, 1, 4, 4).float()
     sentinel = Tensor([1.0], shape=(1, 1, 1, 1))
     seen = {}
 
-    def fake_conv2d(self, weight, bias=None, groups=1, stride=1, dilation=1, padding=0):
+    def fake_conv2d(self, weight, bias=None, groups=1, stride=1, dilation=1, padding=0, dtype=None):
         seen["weight"] = weight
         seen["bias"] = bias
         seen["groups"] = groups
         seen["stride"] = stride
         seen["dilation"] = dilation
         seen["padding"] = padding
+        seen["dtype"] = dtype
         return sentinel
 
     monkeypatch.setattr(Tensor, "conv2d", fake_conv2d)
     out = conv(x)
     assert out is sentinel
     assert seen["weight"] is conv.weight
-    assert seen["bias"] is conv.bias
-    assert seen["groups"] == 1
+    assert seen["bias"] is None
+    assert seen["groups"] == 2
     assert seen["stride"] == conv.stride
-    assert seen["dilation"] == 1
+    assert seen["dilation"] == conv.dilation
     assert seen["padding"] == conv.padding
+    assert seen["dtype"] is None
 
 
 def test_nn_layernorm_uses_tensor_layernorm(monkeypatch):
