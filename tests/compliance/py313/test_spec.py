@@ -173,7 +173,6 @@ def greet():
 print(greet.__doc__)
 """)
 
-    @pytest.mark.skip(reason="Docstring attribute access not yet supported in Molt")
     def test_multiline_docstring_stripping(self):
         _assert_match("""\
 def func():
