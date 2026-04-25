@@ -15,6 +15,7 @@ __all__ = [
     "Flag",
     "StrEnum",
     "auto",
+    "global_enum",
     "unique",
     "verify",
     "CONFORM",
@@ -331,6 +332,32 @@ def unique(enumeration: type) -> type:
 def verify(enumeration: type) -> type:
     """Class decorator that checks all enum members are valid."""
     return enumeration
+
+
+def global_enum(cls, update_str: bool = False):
+    """Class decorator that exports an enum's members into its module's globals.
+
+    Mirrors CPython 3.12's `enum.global_enum`: the decorated class's
+    `__members__` are merged into the host module's namespace so users
+    can reference members by their bare name (e.g. `MONDAY` instead of
+    `Day.MONDAY`). The repr override that CPython applies to make
+    `repr(MONDAY)` return `"calendar.MONDAY"` is intentionally simplified
+    here — molt's Enum.__repr__ already includes the class name, which
+    is sufficient for the deterministic compiled-binary contract.
+    """
+    import sys as _sys
+
+    module_name = getattr(cls, "__module__", None)
+    if module_name is None:
+        return cls
+    module = _sys.modules.get(module_name)
+    if module is None:
+        return cls
+    members = getattr(cls, "__members__", None)
+    if members is None:
+        return cls
+    module.__dict__.update(members)
+    return cls
 
 
 globals().pop("_require_intrinsic", None)
