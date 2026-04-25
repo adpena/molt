@@ -33,10 +33,19 @@ fn loop_start_has_index_prelude(ops: &[OpIR], start_idx: usize) -> bool {
 /// `list_insert`, `list_remove`, or `list_clear`) anywhere in the loop body.
 ///
 /// Returns `(list_int_hoistable, list_generic_hoistable)`.
+///
+/// Hoisting requires that the list's SSA name be **defined before the loop
+/// header** so its NaN-boxed pointer is available in the pre-loop block.
+/// Variables defined inside the loop body are filtered out — hoisting them
+/// would emit `obj_ptr = use_var(undef) = 0` followed by a NULL header read,
+/// which traps at runtime.  This preserves correctness for loops that index
+/// through an outer-scope value (e.g. boxed-cell reads of `list[i]` inside a
+/// list comprehension whose enclosing function preboxed the local).
 #[cfg(feature = "native-backend")]
 fn scan_loop_hoistable_lists(
     ops: &[OpIR],
     start_idx: usize,
+    pre_loop_defined: &BTreeSet<String>,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut list_int_accessed: BTreeSet<String> = BTreeSet::new();
     let mut list_generic_accessed: BTreeSet<String> = BTreeSet::new();
@@ -76,9 +85,30 @@ fn scan_loop_hoistable_lists(
             _ => {}
         }
     }
-    list_int_accessed.retain(|v| !mutated.contains(v));
-    list_generic_accessed.retain(|v| !mutated.contains(v));
+    list_int_accessed.retain(|v| !mutated.contains(v) && pre_loop_defined.contains(v));
+    list_generic_accessed.retain(|v| !mutated.contains(v) && pre_loop_defined.contains(v));
     (list_int_accessed, list_generic_accessed)
+}
+
+/// Collect the set of SSA names defined by ops at indices `[0, start_idx)`.
+/// Used to gate loop-invariant list pointer hoisting so we never hoist a
+/// value that is produced inside the loop body (which would emit
+/// `use_var(undef) = 0` and trap on the subsequent header load).
+///
+/// Function parameters are added by the caller via the param iterator;
+/// this routine only walks `ops`.
+#[cfg(feature = "native-backend")]
+fn collect_pre_loop_defined_names(ops: &[OpIR], start_idx: usize) -> BTreeSet<String> {
+    let mut defined: BTreeSet<String> = BTreeSet::new();
+    for op in ops.iter().take(start_idx) {
+        if let Some(out) = op.out.as_ref() {
+            defined.insert(out.clone());
+        }
+        if let Some(var) = op.var.as_ref() {
+            defined.insert(var.clone());
+        }
+    }
+    defined
 }
 
 /// Describes a recognized integer sum-reduction loop eligible for 4x unrolling.
@@ -19507,8 +19537,16 @@ impl SimpleBackend {
                         // across iterations via phi nodes.  The in-loop cache
                         // lookup will then hit on every iteration.
                         {
-                            let (li_hoist, lg_hoist) =
-                                scan_loop_hoistable_lists(&func_ir.ops, op_idx);
+                            let mut pre_loop_defined =
+                                collect_pre_loop_defined_names(&func_ir.ops, op_idx);
+                            for p in func_ir.params.iter().filter(|n| n.as_str() != "none") {
+                                pre_loop_defined.insert(p.clone());
+                            }
+                            let (li_hoist, lg_hoist) = scan_loop_hoistable_lists(
+                                &func_ir.ops,
+                                op_idx,
+                                &pre_loop_defined,
+                            );
                             for list_name in &li_hoist {
                                 if list_int_data_cache.contains_key(list_name) {
                                     continue; // already cached from an outer scope
@@ -19855,8 +19893,16 @@ impl SimpleBackend {
                         // loads in the pre-loop block so the in-loop cache hits
                         // on every iteration.
                         {
-                            let (li_hoist, lg_hoist) =
-                                scan_loop_hoistable_lists(&func_ir.ops, op_idx);
+                            let mut pre_loop_defined =
+                                collect_pre_loop_defined_names(&func_ir.ops, op_idx);
+                            for p in func_ir.params.iter().filter(|n| n.as_str() != "none") {
+                                pre_loop_defined.insert(p.clone());
+                            }
+                            let (li_hoist, lg_hoist) = scan_loop_hoistable_lists(
+                                &func_ir.ops,
+                                op_idx,
+                                &pre_loop_defined,
+                            );
                             for list_name in &li_hoist {
                                 if list_int_data_cache.contains_key(list_name) {
                                     continue;
