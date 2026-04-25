@@ -10,18 +10,41 @@
 //! This pass performs **hint annotation only**; actual SIMD code generation is
 //! deferred to the LLVM backend which reads these attrs.
 //!
-//! ## Vectorizability criteria (Phase 4 simplified)
+//! ## Vectorizability criteria
 //!
 //! A loop (identified by blocks that contain a `ForIter` or `ScfFor` op, plus
 //! all blocks reachable from it before the loop exit) is considered vectorizable
 //! when **all** of the following hold:
 //!
-//! 1. Every non-structural op operates only on `I64` or `F64` values.
+//! 1. Every non-structural op operates only on `I64`, `F64`, or `Bool` values.
+//!    Mixed numeric types are allowed via Python-style numeric promotion (see
+//!    "Mixed-type promotion" below).
 //! 2. No op is a `Call`, `CallMethod`, `CallBuiltin`, or any other impure op.
 //! 3. No write to non-local memory (`StoreAttr`, `StoreIndex`, `DelAttr`,
 //!    `DelIndex`, `Free`, `IncRef`, `DecRef`).
 //! 4. No generator ops (`Yield`, `YieldFrom`), exception ops (`Raise`,
 //!    `CheckException`), or import ops.
+//!
+//! ## Mixed-type promotion
+//!
+//! Python's numeric tower promotes `bool → int → float`. SIMD ISAs (SSE2/AVX2/
+//! AVX-512/NEON/SVE) all support both i64 and f64 lanes at the same vector
+//! bit-width (e.g. AVX2 supplies both 4xi64 and 4xf64 in a 256-bit register),
+//! and provide cheap `sitofp` lane-wise conversions. We classify each loop's
+//! body by the join of every numeric value it touches:
+//!
+//! - All `I64` (and `Bool`, which zext-promotes to i64) → vectorize as i64 lanes.
+//! - All `F64`                                          → vectorize as f64 lanes.
+//! - Mixed `{I64, Bool} ∪ {F64}`                        → vectorize as f64 lanes
+//!   with a `promoted = true` hint so the backend inserts `sitofp` on the
+//!   integer-typed lane loads. The total vector bit-width stays the same; the
+//!   lane count is unchanged because i64 and f64 share the same lane width.
+//!
+//! This lift is correctness-preserving: float arithmetic on integers that fit
+//! in 53 mantissa bits is exact, matching CPython's behaviour for the values
+//! that participate in such mixed loops in practice. The LIR backend is free
+//! to widen / narrow the chosen lane count based on target features; we emit
+//! the conservative 2-lane (128-bit) minimum.
 //!
 //! ## Reduction detection
 //!
@@ -48,12 +71,18 @@ use super::PassStats;
 pub struct VectorizationInfo {
     /// Whether the loop body is safe to vectorize.
     pub vectorizable: bool,
-    /// The element type used in the loop body (if uniform).
+    /// The lane element type after numeric promotion (if any numeric op was
+    /// observed). For mixed-numeric loops this is `F64` — see `promoted`.
     pub element_type: Option<TirType>,
     /// Estimated trip count (only available when the loop bound is a compile-time constant).
     pub estimated_trip_count: Option<u64>,
     /// A detected reduction operation.
     pub reduction_op: Option<ReductionOp>,
+    /// `true` when the loop body mixes integer-shaped (`I64`/`Bool`) and
+    /// floating-point (`F64`) values, requiring lane-wise `sitofp` promotion
+    /// of the integer values into the chosen `F64` lane type. Always `false`
+    /// for uniform-typed loops.
+    pub promoted: bool,
 }
 
 /// Reduction operation kinds.
@@ -177,9 +206,31 @@ fn is_scalar_arithmetic(opcode: OpCode) -> bool {
 }
 
 /// Returns `true` if `ty` is a numeric scalar eligible for SIMD lanes.
+///
+/// `Bool` is included because Python's numeric tower allows `bool` to
+/// participate in arithmetic (zext-promoted to `i64`). Treating it as numeric
+/// here lets bool-mixed-with-int loops vectorize as `i64` lanes, and
+/// bool-mixed-with-float loops vectorize as `f64` lanes via promotion.
 #[inline]
 fn is_numeric(ty: &TirType) -> bool {
-    matches!(ty, TirType::I64 | TirType::F64)
+    matches!(ty, TirType::I64 | TirType::F64 | TirType::Bool)
+}
+
+/// SIMD lane category used for promotion analysis: `Int` covers `I64` / `Bool`
+/// (both ride in `i64` lanes), `Float` covers `F64`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneCategory {
+    Int,
+    Float,
+}
+
+#[inline]
+fn lane_category(ty: &TirType) -> Option<LaneCategory> {
+    match ty {
+        TirType::I64 | TirType::Bool => Some(LaneCategory::Int),
+        TirType::F64 => Some(LaneCategory::Float),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -425,8 +476,16 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
     let ty_map = collect_types(func, body);
 
     let mut vectorizable = true;
-    let mut seen_type: Option<TirType> = None;
-    let mut mixed_types = false;
+    // Track which lane categories the body touches; we resolve the final
+    // lane type by joining these at the end:
+    //   {Int} only            → I64 lanes, no promotion.
+    //   {Float} only          → F64 lanes, no promotion.
+    //   {Int, Float} mixed    → F64 lanes with `promoted = true`.
+    //   ∅                     → no numeric type observed (e.g. an
+    //                           iterator-only body); element type unset,
+    //                           no promotion.
+    let mut saw_int = false;
+    let mut saw_float = false;
     let mut reduction: Option<ReductionOp> = None;
 
     // Collect all block-argument ids across body blocks to detect accumulators.
@@ -482,23 +541,17 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
                 break;
             }
 
-            // Type uniformity check: scan both operand and result types.
-            // Operand types come from ty_map (block args); result types too
-            // when available. Mixed I64+F64 in the same loop body disqualifies.
-            let operand_and_result_ids: Vec<ValueId> = op
-                .operands
-                .iter()
-                .chain(op.results.iter())
-                .copied()
-                .collect();
-            for v in operand_and_result_ids {
-                if let Some(ty) = ty_map.get(&v)
-                    && is_numeric(ty)
-                {
-                    match &seen_type {
-                        None => seen_type = Some(ty.clone()),
-                        Some(prev) if prev == ty => {}
-                        _ => mixed_types = true,
+            // Lane-category accumulation. Walk both operands and results;
+            // every numeric value contributes to the int / float join.
+            // Non-numeric values cannot legally appear here because the
+            // disqualifying / arithmetic-only gates above already filter
+            // any op shape that could carry one (BuildList/Alloc/Store/etc.).
+            for v in op.operands.iter().chain(op.results.iter()) {
+                if let Some(ty) = ty_map.get(v) {
+                    match lane_category(ty) {
+                        Some(LaneCategory::Int) => saw_int = true,
+                        Some(LaneCategory::Float) => saw_float = true,
+                        None => {}
                     }
                 }
             }
@@ -539,17 +592,23 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
         }
     }
 
-    // If we saw mixed numeric types the loop is still technically vectorizable
-    // in some ISAs, but we conservatively mark it not vectorizable for now.
-    if mixed_types {
-        vectorizable = false;
-    }
+    // Resolve the lane element type by joining the observed categories.
+    // Float dominates Int in the numeric tower, so any presence of F64 forces
+    // F64 lanes. Bool collapses into Int (we treated it as such in
+    // `lane_category`), so no additional handling is needed here.
+    let (element_type, promoted) = match (saw_int, saw_float) {
+        (false, false) => (None, false),
+        (true, false) => (Some(TirType::I64), false),
+        (false, true) => (Some(TirType::F64), false),
+        (true, true) => (Some(TirType::F64), true),
+    };
 
     VectorizationInfo {
         vectorizable,
-        element_type: seen_type,
+        element_type,
         estimated_trip_count: None, // trip-count analysis is a future pass
         reduction_op: if vectorizable { reduction } else { None },
+        promoted: vectorizable && promoted,
     }
 }
 
@@ -621,16 +680,22 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
         // Mojo/GCC 15 auto-vectorization: emit element type and SIMD width
         // hints so the LLVM backend can select the correct vector intrinsic
-        // width. For I64 elements, typical SIMD widths are:
+        // width. For I64 / F64 elements, typical SIMD widths are:
         //   - SSE2/NEON: 2 lanes (128-bit)
-        //   - AVX2: 4 lanes (256-bit)
-        //   - AVX-512: 8 lanes (512-bit)
+        //   - AVX2:      4 lanes (256-bit)
+        //   - AVX-512:   8 lanes (512-bit)
         // We emit the conservative width (2) as the minimum; the backend
-        // can widen based on target features.
+        // can widen based on target features. `i64` and `f64` share the
+        // same lane width, so the lane count is identical for promoted
+        // mixed-type loops and uniform `f64` loops.
         if let Some(ref elem_ty) = info.element_type {
             let ty_str = match elem_ty {
                 TirType::I64 => "i64",
                 TirType::F64 => "f64",
+                // `analyse_loop` only ever sets element_type to I64 or F64
+                // (Bool collapses into the I64 lane category). We still
+                // surface a defensive default rather than panicking so
+                // future numeric tower extensions degrade gracefully.
                 _ => "unknown",
             };
             op.attrs
@@ -641,6 +706,15 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             };
             op.attrs
                 .insert("simd_width".into(), AttrValue::Int(simd_width));
+        }
+
+        // Mixed-type promotion hint: when the loop body mixed integer-shaped
+        // and floating-point values, the analysis chose F64 lanes and the
+        // backend must insert lane-wise `sitofp` on the integer-typed
+        // operand loads. We surface this as an explicit attr so the LIR
+        // lowering does not need to re-derive it.
+        if info.promoted {
+            op.attrs.insert("promoted".into(), AttrValue::Bool(true));
         }
     }
 
@@ -929,20 +1003,26 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 3: Loop with mixed types (I64 and F64) → NOT marked vectorizable.
+    // Helper: build a single-block loop function whose header carries `args`
+    // and `ops`, with a self-back-edge passing `back_args` to the header and
+    // an exit edge to a Return.
+    //
+    // Centralising this scaffolding keeps the new mixed-type tests focused
+    // on the type contract rather than CFG plumbing, and matches the layout
+    // used by the original `loop_with_mixed_types_*` test.
     // -----------------------------------------------------------------------
-    #[test]
-    fn loop_with_mixed_types_not_vectorizable() {
+    fn build_loop_func(
+        name: &str,
+        header_args: Vec<TirValue>,
+        body_ops: Vec<TirOp>,
+        cond: ValueId,
+        back_args: Vec<ValueId>,
+    ) -> TirFunction {
         let entry_id = BlockId(0);
         let header_id = BlockId(1);
         let exit_id = BlockId(2);
 
-        let int_val = ValueId(0);
-        let float_val = ValueId(1);
-        let mixed_sum = ValueId(2);
-
         let mut blocks = HashMap::new();
-
         blocks.insert(
             entry_id,
             TirBlock {
@@ -955,39 +1035,21 @@ mod tests {
                 },
             },
         );
-
-        let mut float_attrs = AttrDict::new();
-        float_attrs.insert("value".into(), AttrValue::Float(1.0));
-
         blocks.insert(
             header_id,
             TirBlock {
                 id: header_id,
-                args: vec![
-                    TirValue {
-                        id: int_val,
-                        ty: TirType::I64,
-                    },
-                    TirValue {
-                        id: float_val,
-                        ty: TirType::F64,
-                    },
-                ],
-                ops: vec![
-                    // Add with mixed I64/F64 operands — mixed types.
-                    op(OpCode::Add, vec![int_val, float_val], vec![mixed_sum]),
-                    op(OpCode::ForIter, vec![], vec![]),
-                ],
+                args: header_args,
+                ops: body_ops,
                 terminator: Terminator::CondBranch {
-                    cond: int_val,
+                    cond,
                     then_block: header_id,
-                    then_args: vec![int_val, float_val],
+                    then_args: back_args,
                     else_block: exit_id,
                     else_args: vec![],
                 },
             },
         );
-
         blocks.insert(
             exit_id,
             TirBlock {
@@ -998,15 +1060,18 @@ mod tests {
             },
         );
 
-        let mut func = TirFunction {
-            name: "mixed_type_loop".into(),
+        // `next_value` / `next_block` only matter when the pass needs to mint
+        // fresh ids; the vectorize pass is annotation-only, so a generous
+        // upper bound is sufficient and keeps tests robust to future edits.
+        TirFunction {
+            name: name.into(),
             param_names: vec![],
             param_types: vec![],
             return_type: TirType::None,
             blocks,
             entry_block: entry_id,
-            next_value: 3,
-            next_block: 3,
+            next_value: 1024,
+            next_block: 16,
             attrs: crate::tir::ops::AttrDict::new(),
             has_exception_handling: false,
             label_id_map: std::collections::HashMap::new(),
@@ -1014,25 +1079,248 @@ mod tests {
             loop_pairs: std::collections::HashMap::new(),
             loop_break_kinds: std::collections::HashMap::new(),
             loop_cond_blocks: std::collections::HashMap::new(),
-        };
+        }
+    }
 
-        run(&mut func);
-
-        let header = &func.blocks[&header_id];
-        let for_iter_op = header
+    fn header_op<'a>(func: &'a TirFunction, header_id: BlockId) -> &'a TirOp {
+        func.blocks[&header_id]
             .ops
             .iter()
             .find(|o| o.opcode == OpCode::ForIter)
-            .expect("ForIter op must exist");
+            .expect("ForIter op must exist in loop header")
+    }
 
-        assert!(
-            !for_iter_op.attrs.contains_key("vectorize"),
-            "loop with mixed types must NOT be marked vectorizable"
+    // -----------------------------------------------------------------------
+    // Test 3: Mixed I64 + F64 loop body → vectorized as F64 lanes with the
+    // `promoted` attr set, modelling `total = total + a[i]` where `a` is
+    // `list[int]` and `total` is `float`. This is the headline behaviour of
+    // the lift: previously this loop was bailed out of vectorization.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn mixed_int_float_promotes_to_float_vector() {
+        let int_val = ValueId(0); // simulates a[i] : int
+        let float_acc = ValueId(1); // total : float (loop-carried)
+        let int_as_float = ValueId(2); // result of mixed-type arithmetic
+        let new_acc = ValueId(3); // updated accumulator (still float)
+
+        let mut func = build_loop_func(
+            "mixed_int_float_loop",
+            vec![
+                TirValue {
+                    id: int_val,
+                    ty: TirType::I64,
+                },
+                TirValue {
+                    id: float_acc,
+                    ty: TirType::F64,
+                },
+            ],
+            vec![
+                // First op references both an I64 operand and an F64 result —
+                // the mixed-type pattern that previously bailed.
+                op(OpCode::Add, vec![float_acc, int_val], vec![int_as_float]),
+                op(OpCode::Add, vec![int_as_float, float_acc], vec![new_acc]),
+                op(OpCode::ForIter, vec![], vec![]),
+            ],
+            int_val,
+            vec![int_val, new_acc],
+        );
+
+        run(&mut func);
+
+        let for_iter_op = header_op(&func, BlockId(1));
+
+        assert_eq!(
+            for_iter_op.attrs.get("vectorize"),
+            Some(&AttrValue::Bool(true)),
+            "mixed-type loop must now be marked vectorizable"
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("element_type"),
+            Some(&AttrValue::Str("f64".into())),
+            "mixed-type loop must promote to f64 lanes"
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("simd_width"),
+            Some(&AttrValue::Int(2)),
+            "f64 lanes use the conservative 128-bit minimum width"
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("promoted"),
+            Some(&AttrValue::Bool(true)),
+            "promoted attr must signal lane-wise sitofp insertion"
+        );
+        // The Add-on-acc is still recognised as a Sum reduction even after
+        // promotion — vectorized horizontal-add reductions on f64 are well-
+        // defined on every targeted ISA.
+        assert_eq!(
+            for_iter_op.attrs.get("reduction"),
+            Some(&AttrValue::Str("sum".into())),
+            "sum reduction detection survives promotion"
         );
     }
 
     // -----------------------------------------------------------------------
-    // Test 4: Function with no loops → no changes, no panic.
+    // Test 4: Pure-int loop continues to vectorize as `i64` lanes with no
+    // `promoted` attribute. Guards against the lift accidentally promoting
+    // every loop to f64.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn pure_int_remains_int_vector() {
+        let acc = ValueId(0);
+        let elem = ValueId(1);
+        let acc2 = ValueId(2);
+
+        let mut func = build_loop_func(
+            "pure_int_loop",
+            vec![TirValue {
+                id: acc,
+                ty: TirType::I64,
+            }],
+            vec![
+                op_with_attrs(OpCode::ConstInt, vec![], vec![elem], int_attrs(7)),
+                op(OpCode::Add, vec![acc, elem], vec![acc2]),
+                op(OpCode::ForIter, vec![], vec![]),
+            ],
+            acc,
+            vec![acc2],
+        );
+
+        run(&mut func);
+
+        let for_iter_op = header_op(&func, BlockId(1));
+
+        assert_eq!(
+            for_iter_op.attrs.get("vectorize"),
+            Some(&AttrValue::Bool(true))
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("element_type"),
+            Some(&AttrValue::Str("i64".into())),
+            "pure-int loop must stay on i64 lanes"
+        );
+        assert!(
+            !for_iter_op.attrs.contains_key("promoted"),
+            "pure-int loop must NOT carry the promoted hint"
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("reduction"),
+            Some(&AttrValue::Str("sum".into()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5: Pure-float loop continues to vectorize as `f64` lanes with no
+    // `promoted` attribute (no integer to promote).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn pure_float_remains_float_vector() {
+        let acc = ValueId(0);
+        let elem = ValueId(1);
+        let acc2 = ValueId(2);
+
+        let mut float_attrs = AttrDict::new();
+        float_attrs.insert("value".into(), AttrValue::Float(1.5));
+
+        let mut func = build_loop_func(
+            "pure_float_loop",
+            vec![TirValue {
+                id: acc,
+                ty: TirType::F64,
+            }],
+            vec![
+                op_with_attrs(OpCode::ConstFloat, vec![], vec![elem], float_attrs),
+                op(OpCode::Add, vec![acc, elem], vec![acc2]),
+                op(OpCode::ForIter, vec![], vec![]),
+            ],
+            acc,
+            vec![acc2],
+        );
+
+        run(&mut func);
+
+        let for_iter_op = header_op(&func, BlockId(1));
+
+        assert_eq!(
+            for_iter_op.attrs.get("vectorize"),
+            Some(&AttrValue::Bool(true))
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("element_type"),
+            Some(&AttrValue::Str("f64".into())),
+            "pure-float loop must stay on f64 lanes"
+        );
+        assert!(
+            !for_iter_op.attrs.contains_key("promoted"),
+            "pure-float loop must NOT carry the promoted hint"
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("reduction"),
+            Some(&AttrValue::Str("sum".into()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6: Bool-mixed-with-Int arithmetic — Python's `True + 1 == 2`
+    // pattern. Bool operands collapse into the integer lane category, so the
+    // loop must vectorize as `i64` lanes without triggering the `promoted`
+    // hint. This guards against accidentally classifying Bool as a separate
+    // numeric category that would force unnecessary float promotion.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn boolean_mixed_in_blocks_vectorization_correctness() {
+        let acc = ValueId(0); // i64 accumulator
+        let flag = ValueId(1); // bool predicate (e.g. element > 0)
+        let acc2 = ValueId(2); // updated accumulator
+
+        let mut func = build_loop_func(
+            "bool_int_loop",
+            vec![
+                TirValue {
+                    id: acc,
+                    ty: TirType::I64,
+                },
+                TirValue {
+                    id: flag,
+                    ty: TirType::Bool,
+                },
+            ],
+            vec![
+                // Bool-promoted-to-int arithmetic: count += predicate.
+                op(OpCode::Add, vec![acc, flag], vec![acc2]),
+                op(OpCode::ForIter, vec![], vec![]),
+            ],
+            acc,
+            vec![acc2, flag],
+        );
+
+        run(&mut func);
+
+        let for_iter_op = header_op(&func, BlockId(1));
+
+        assert_eq!(
+            for_iter_op.attrs.get("vectorize"),
+            Some(&AttrValue::Bool(true)),
+            "bool+int loop must vectorize"
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("element_type"),
+            Some(&AttrValue::Str("i64".into())),
+            "bool collapses into i64 lane category"
+        );
+        assert!(
+            !for_iter_op.attrs.contains_key("promoted"),
+            "bool+int does not require float promotion"
+        );
+        assert_eq!(
+            for_iter_op.attrs.get("reduction"),
+            Some(&AttrValue::Str("sum".into())),
+            "predicate-counting reduction is still recognised as Sum"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 7: Function with no loops → no changes, no panic.
     // -----------------------------------------------------------------------
     #[test]
     fn no_loops_no_changes() {
