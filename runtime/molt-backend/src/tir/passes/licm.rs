@@ -236,6 +236,26 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         return stats;
     }
 
+    // Only process OUTERMOST loops. An inner loop header is inside
+    // another loop's block set — hoisting from inner loops to their
+    // preheader can break dominance for values used in the outer loop.
+    // Collect all loop block sets first, then filter.
+    let loop_block_sets: Vec<(BlockId, HashSet<BlockId>)> = loop_headers
+        .iter()
+        .map(|&h| (h, collect_loop_blocks(func, h)))
+        .collect();
+    let outermost_headers: Vec<BlockId> = loop_headers
+        .iter()
+        .copied()
+        .filter(|&h| {
+            // A header is "outermost" if it is NOT contained in ANY other loop's block set.
+            !loop_block_sets.iter().any(|(other_h, other_blocks)| {
+                *other_h != h && other_blocks.contains(&h)
+            })
+        })
+        .collect();
+    let loop_headers = outermost_headers;
+
     // Build a set of all values defined in each block for quick lookup.
     let mut value_def_block: HashMap<ValueId, BlockId> = HashMap::new();
     for (&bid, block) in &func.blocks {
