@@ -2104,6 +2104,22 @@ pub(crate) struct TrampolineSpec {
     pub(crate) target_has_ret: bool,
 }
 
+/// Output of a native compilation pass.
+///
+/// Separating bytes from diagnostics lets callers handle warnings
+/// structurally instead of parsing stderr.  The design follows
+/// Lattner's principle: compilation is a pure function from IR to
+/// (artifact, diagnostics) — side effects are the caller's concern.
+#[cfg(feature = "native-backend")]
+pub struct CompileOutput {
+    /// The compiled object file bytes.
+    pub bytes: Vec<u8>,
+    /// Functions that Cranelift could not compile, replaced with trap stubs.
+    /// Each entry is the mangled function name.  If non-empty, the binary
+    /// will abort at runtime when any of these functions are called.
+    pub trap_stub_names: Vec<String>,
+}
+
 #[cfg(feature = "native-backend")]
 pub struct SimpleBackend {
     module: ObjectModule,
@@ -2997,7 +3013,7 @@ impl SimpleBackend {
         )
     }
 
-    pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
+    pub fn compile(mut self, ir: SimpleIR) -> CompileOutput {
         let timing = env_setting("MOLT_BACKEND_TIMING")
             .as_deref()
             .map(parse_truthy_env)
@@ -3774,7 +3790,10 @@ impl SimpleBackend {
                 bytes.len()
             );
         }
-        bytes
+        CompileOutput {
+            bytes,
+            trap_stub_names: self.trap_stub_names,
+        }
     }
 
 }
@@ -4215,10 +4234,10 @@ mod tests {
             }],
             profile: None,
         };
-        let bytes = SimpleBackend::new().compile(ir);
+        let output = SimpleBackend::new().compile(ir);
         unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") };
         unsafe { std::env::remove_var("MOLT_TIR_OPT") };
-        bytes
+        output.bytes
     }
 
     fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) -> String {
@@ -4780,15 +4799,17 @@ mod tests {
             profile: None,
         };
 
-        let bytes = SimpleBackend::new().compile(ir);
+        let output = SimpleBackend::new().compile(ir);
 
         assert!(
-            !bytes
+            !output
+                .bytes
                 .windows(b"molt_profile_struct_field_store".len())
                 .any(|window| window == b"molt_profile_struct_field_store")
         );
         assert!(
-            !bytes
+            !output
+                .bytes
                 .windows(b"molt_profile_enabled".len())
                 .any(|window| window == b"molt_profile_enabled")
         );
@@ -4834,16 +4855,18 @@ mod tests {
             profile: None,
         };
 
-        let bytes = SimpleBackend::new().compile(ir);
+        let output = SimpleBackend::new().compile(ir);
         unsafe { std::env::remove_var("MOLT_TIR_OPT") };
 
         assert!(
-            bytes
+            output
+                .bytes
                 .windows(b"molt_profile_struct_field_store".len())
                 .any(|window| window == b"molt_profile_struct_field_store")
         );
         assert!(
-            bytes
+            output
+                .bytes
                 .windows(b"molt_profile_enabled".len())
                 .any(|window| window == b"molt_profile_enabled")
         );
@@ -4988,9 +5011,9 @@ mod tests {
             profile: None,
         };
 
-        let bytes = SimpleBackend::new().compile(ir);
+        let output = SimpleBackend::new().compile(ir);
 
-        assert!(!bytes.is_empty());
+        assert!(!output.bytes.is_empty());
     }
 
     #[test]
@@ -5415,9 +5438,9 @@ mod tests {
             profile: None,
         };
 
-        let bytes = SimpleBackend::new().compile(ir);
+        let output = SimpleBackend::new().compile(ir);
 
-        assert!(!bytes.is_empty());
+        assert!(!output.bytes.is_empty());
     }
 
     #[test]
@@ -5467,9 +5490,9 @@ mod tests {
             profile: None,
         };
 
-        let bytes = SimpleBackend::new().compile(ir);
+        let output = SimpleBackend::new().compile(ir);
 
-        assert!(!bytes.is_empty());
+        assert!(!output.bytes.is_empty());
     }
 
     #[test]
