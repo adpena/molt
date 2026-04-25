@@ -540,7 +540,48 @@ fn ensure_boxed_overflow_safe(
     }
 }
 
+/// Box a known-bool variable's raw 0/1 value into a TAG_BOOL NaN-box.
+///
+/// Bool-typed variables (proven by static lane inference, e.g. `const_bool`,
+/// comparisons, `not`, `bool()`) carry their raw 0/1 in `raw_int_shadow_vals`
+/// and the bool-specific `raw_bool_values` / `raw_bool_shadow_vars`.  They
+/// must be re-boxed as TAG_BOOL — never TAG_INT — so that the runtime's
+/// `as_bool()` predicate (and CPython-equivalent `__bool__` validators) can
+/// recognize them.  The previous code went through `ensure_boxed_overflow_safe`
+/// which unconditionally TAG_INT-boxed any value found in `raw_int_shadow_vals`,
+/// silently demoting `False`/`True` returns from `__bool__` methods to ints
+/// and triggering a false-positive `TypeError: __bool__ should return bool,
+/// returned int` at runtime.
 #[cfg(feature = "native-backend")]
+fn ensure_boxed_bool_safe(
+    builder: &mut FunctionBuilder<'_>,
+    raw_int_shadow: &BTreeMap<String, Variable>,
+    raw_int_shadow_vals: &BTreeMap<String, Value>,
+    raw_bool_values: &std::collections::BTreeMap<String, Value>,
+    raw_bool_shadow_vars: &std::collections::BTreeMap<String, Variable>,
+    vars: &BTreeMap<String, Variable>,
+    nbc: &crate::NanBoxConsts,
+    name: &str,
+) -> Option<Value> {
+    // Prefer bool-specific shadows (tier 2 value, then tier 1 Variable).
+    let raw_val = raw_bool_values
+        .get(name)
+        .copied()
+        .or_else(|| raw_bool_shadow_vars.get(name).map(|&var| builder.use_var(var)))
+        .or_else(|| {
+            shadow_value_for(builder, raw_int_shadow, raw_int_shadow_vals, name)
+        });
+    if let Some(raw_val) = raw_val {
+        // raw_val is 0 or 1 (an i64). Re-box as TAG_BOOL.
+        return Some(box_bool_value(builder, raw_val, nbc));
+    }
+    // Fall back to whatever the variable holds. For const_bool, this is the
+    // already-TAG_BOOL-boxed value emitted at the const_bool site.
+    var_get(builder, vars, name).map(|v| v.0)
+}
+
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
 fn ensure_boxed_primitive_safe(
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -549,7 +590,11 @@ fn ensure_boxed_primitive_safe(
     sealed_blocks: &mut BTreeSet<Block>,
     raw_int_shadow: &BTreeMap<String, Variable>,
     raw_int_shadow_vals: &BTreeMap<String, Value>,
+    raw_bool_values: &std::collections::BTreeMap<String, Value>,
+    raw_bool_shadow_vars: &std::collections::BTreeMap<String, Variable>,
+    bool_like_vars: &BTreeSet<String>,
     vars: &BTreeMap<String, Variable>,
+    nbc: &crate::NanBoxConsts,
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
     raw_primary_int: &std::collections::BTreeSet<String>,
@@ -567,6 +612,22 @@ fn ensure_boxed_primitive_safe(
             box_int_tag_var,
         )
         .expect("float escape var not found")
+    } else if bool_like_vars.contains(name) {
+        // Bool-typed variable: must re-box as TAG_BOOL, not TAG_INT.  Falling
+        // through to ensure_boxed_overflow_safe would silently demote bool
+        // values found in raw_int_shadow_vals to ints (the source of the
+        // "__bool__ should return bool, returned int" false positive).
+        ensure_boxed_bool_safe(
+            builder,
+            raw_int_shadow,
+            raw_int_shadow_vals,
+            raw_bool_values,
+            raw_bool_shadow_vars,
+            vars,
+            nbc,
+            name,
+        )
+        .expect("bool variable not found for primitive-safe boxing")
     } else {
         ensure_boxed_overflow_safe(
             module,
@@ -7539,7 +7600,11 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &raw_int_shadow,
                         &raw_int_shadow_vals,
+                        &raw_bool_values,
+                        &raw_bool_shadow_vars,
+                        &bool_like_vars,
                         &vars,
+                        &nbc,
                         box_int_mask_var,
                         box_int_tag_var,
                         &raw_primary_int,
@@ -10047,7 +10112,11 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &raw_int_shadow,
                             &raw_int_shadow_vals,
+                            &raw_bool_values,
+                            &raw_bool_shadow_vars,
+                            &bool_like_vars,
                             &vars,
+                            &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
                             &raw_primary_int,
@@ -14923,7 +14992,11 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &raw_int_shadow,
                             &raw_int_shadow_vals,
+                            &raw_bool_values,
+                            &raw_bool_shadow_vars,
+                            &bool_like_vars,
                             &vars,
+                            &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
                             &raw_primary_int,
@@ -22007,7 +22080,11 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &raw_int_shadow,
                         &raw_int_shadow_vals,
+                        &raw_bool_values,
+                        &raw_bool_shadow_vars,
+                        &bool_like_vars,
                         &vars,
+                        &nbc,
                         box_int_mask_var,
                         box_int_tag_var,
                         &raw_primary_int,
