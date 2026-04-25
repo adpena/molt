@@ -5,8 +5,6 @@ pub mod bce;
 pub mod block_versioning;
 pub mod branchless_count;
 pub mod canonicalize;
-pub mod cha;
-pub mod closure_spec;
 pub mod copy_prop;
 pub mod dce;
 pub mod deforestation;
@@ -14,13 +12,10 @@ pub mod gvn;
 pub mod licm;
 pub mod effects;
 pub mod escape_analysis;
-pub mod ownership;
 pub mod fast_math;
-pub mod interprocedural;
 pub mod iter_devirt;
-pub mod loop_unroll;
 pub mod loop_narrow;
-pub mod monomorphize;
+pub mod loop_unroll;
 pub mod polyhedral;
 pub mod range_devirt;
 mod reachability;
@@ -43,16 +38,18 @@ pub struct PassStats {
 
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// 22 passes organized in 7 phases (+ LICM gated):
+/// 24 passes organized in 6 phases (all unconditional unless skipped via
+/// `MOLT_TIR_SKIP=name1,name2,…`):
 ///
-/// **Lowering**: range_devirt → iter_devirt → tuple_scalarize → loop_narrow
-/// **Canonicalization**: canonicalize (pre-type) → unboxing → block_versioning →
-///   canonicalize (post-type)
-/// **Redundancy**: gvn → licm
-/// **Memory**: escape_analysis → refcount_elim → reuse_analysis
-/// **Value**: type_guard_hoist → sccp → strength_reduction → fast_math →
+/// **Lowering** (5): range_devirt → iter_devirt → tuple_scalarize →
+///   loop_narrow → loop_unroll
+/// **Canonicalization** (4): canonicalize (pre-type) → unboxing →
+///   block_versioning → canonicalize_post
+/// **Redundancy** (2): gvn → licm
+/// **Memory** (3): escape_analysis → refcount_elim → reuse_analysis
+/// **Value** (8): type_guard_hoist → sccp → strength_reduction → fast_math →
 ///   branchless_count → bce → vectorize → polyhedral
-/// **Cleanup**: copy_prop → dce
+/// **Cleanup** (2): copy_prop → dce
 ///
 /// Dual canonicalization follows LLVM instcombine: unboxing reveals type
 /// information that creates new normalization opportunities. GVN runs

@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 use super::PassStats;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
 
 /// Returns `true` if the opcode is pure and safe to hoist out of a loop.
