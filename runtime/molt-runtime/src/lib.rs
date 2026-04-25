@@ -529,6 +529,8 @@ pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;
 pub use crate::builtins::sitebuiltins::*;
+#[cfg(feature = "sqlite")]
+pub use crate::builtins::sqlite3::*;
 #[cfg(feature = "stdlib_net")]
 pub use crate::builtins::ssl::*;
 pub use crate::builtins::string_ext::*;

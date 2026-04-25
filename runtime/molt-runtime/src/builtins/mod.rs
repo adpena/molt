@@ -126,6 +126,8 @@ pub(crate) mod select;
 pub(crate) mod shutil;
 pub(crate) mod signal_ext;
 pub(crate) mod sitebuiltins;
+#[cfg(feature = "sqlite")]
+pub(crate) mod sqlite3;
 #[cfg(feature = "stdlib_net")]
 pub(crate) mod ssl;
 pub(crate) mod string_ext;
