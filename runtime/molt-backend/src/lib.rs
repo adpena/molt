@@ -3506,7 +3506,10 @@ impl SimpleBackend {
                 );
             }
 
-            return bytes;
+            return CompileOutput {
+                bytes,
+                trap_stub_names: Vec::new(),
+            };
         }
         // Re-analyze after dead function elimination and megafunction
         // splitting so defined_functions/closure_functions reflect only the
