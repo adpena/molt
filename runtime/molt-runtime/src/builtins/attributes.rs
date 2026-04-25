@@ -484,6 +484,24 @@ unsafe fn type_attr_lookup_ptr_inner(
 ) -> Option<u64> {
     unsafe {
         let class_bits = MoltObject::from_ptr(obj_ptr).bits();
+
+        // CPython parity: type.__getattribute__ first checks the class's
+        // own __dict__ for user-defined class attributes. This handles
+        // attributes set via `cls.attr = value` in classmethods, metaclass
+        // __init__, or module-level class attribute assignment.
+        // Without this, dynamically-set attributes on user-defined classes
+        // are invisible to getattr even though setattr succeeds.
+        if !is_builtin_class_bits(_py, class_bits) {
+            let dict_bits = class_dict_bits(obj_ptr);
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+                && let Some(val_bits) = dict_get_in_place(_py, dict_ptr, attr_bits)
+            {
+                inc_ref_bits(_py, val_bits);
+                return Some(val_bits);
+            }
+        }
+
         if is_builtin_class_bits(_py, class_bits) {
             let getattribute_bits = intern_static_name(
                 _py,
