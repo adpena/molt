@@ -228,8 +228,9 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
         output_path: Path,
         json_output: bool,
         link_timeout: float | None,
+        export_link_args: str = "",
     ) -> bool:
-        del json_output, link_timeout
+        del json_output, link_timeout, export_link_args
         linked["staticlib_path"] = staticlib_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
@@ -312,8 +313,9 @@ def test_ensure_runtime_wasm_reloc_builds_when_only_hashed_current_target_static
         output_path: Path,
         json_output: bool,
         link_timeout: float | None,
+        export_link_args: str = "",
     ) -> bool:
-        del json_output, link_timeout
+        del json_output, link_timeout, export_link_args
         linked["staticlib_path"] = staticlib_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
