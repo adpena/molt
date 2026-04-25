@@ -150,16 +150,20 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     );
     run_pass!("loop_narrow", loop_narrow::run(func));
 
-    // ── Canonicalization ────────────────────────────────────────
-    // Normalize all ops to canonical form BEFORE analysis passes.
-    // Identity elimination, absorbing elements, commutative ordering,
-    // double negation, boolean simplification. This ensures SCCP,
-    // strength reduction, and BCE all see a single canonical representation.
+    // ── Canonicalization (phase 1) ───────────────────────────────
+    // Normalize all ops to canonical form BEFORE type-directed passes.
+    // Following MLIR/LLVM instcombine philosophy: canonicalize runs
+    // multiple times — once before and once after unboxing reveals types.
     run_pass!("canonicalize", canonicalize::run(func));
 
     // ── Type-directed optimization ─────────────────────────────
     run_pass!("unboxing", unboxing::run(func));
     run_pass!("block_versioning", block_versioning::run(func));
+
+    // ── Canonicalization (phase 2) ───────────────────────────────
+    // Re-canonicalize after unboxing: unboxed operations may reveal
+    // new identity/absorbing patterns (e.g., unboxed int x + 0).
+    run_pass!("canonicalize_post", canonicalize::run(func));
 
     // ── Memory optimization ────────────────────────────────────
     run_pass!("escape_analysis", escape_analysis::run(func));
@@ -170,8 +174,17 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     run_pass!("type_guard_hoist", type_guard_hoist::run(func));
     run_pass!("sccp", sccp::run(func));
     run_pass!("strength_reduction", strength_reduction::run(func));
+    // Fast math: reassociate and simplify floating-point expressions
+    // when the user has opted in via annotations or global flags.
+    run_pass!("fast_math", fast_math::run(func));
     run_pass!("branchless_count", branchless_count::run(func));
     run_pass!("bce", bce::run(func));
+    // Auto-vectorization: detect and vectorize parallel loop bodies
+    // using SIMD operations (SSE/AVX on x86, NEON on ARM).
+    run_pass!("vectorize", vectorize::run(func));
+    // Polyhedral optimization: loop tiling, interchange, and fusion
+    // for nested loop nests with affine bounds.
+    run_pass!("polyhedral", polyhedral::run(func));
 
     // ── Cleanup ────────────────────────────────────────────────
     // Copy propagation resolves chains introduced by prior passes.
