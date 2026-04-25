@@ -1,8 +1,8 @@
 """
-molt.gpu.nn — Neural network layers for inference.
+molt.gpu.nn — Neural network substrate layers for inference.
 
-Provides PyTorch-style layer API for building and running neural network
-models in inference mode (no autograd / backpropagation).
+This module follows tinygrad call shapes where it exposes tinygrad-owned
+semantics. The canonical user-facing package remains ``tinygrad``.
 
 Usage:
     from molt.gpu.nn import Linear, ReLU, Sequential
@@ -18,7 +18,7 @@ Usage:
 """
 
 import math
-from .tensor import Tensor, zeros, randn, _product
+from .tensor import Tensor, ones, zeros, randn, _product
 
 
 # ── Activation layers ─────────────────────────────────────────────────
@@ -174,26 +174,18 @@ class Linear:
 
 
 class Conv2d:
-    """2D convolution layer for image models.
-
-    Expects input shape: (batch, in_channels, height, width)
-    Output shape: (batch, out_channels, out_h, out_w)
-
-    Args:
-        in_channels: number of input channels
-        out_channels: number of output channels (filters)
-        kernel_size: size of the convolution kernel (int or tuple)
-        stride: convolution stride (default: 1)
-        padding: zero-padding added to both sides (default: 0)
-    """
+    """2D convolution layer with tinygrad-compatible constructor shape."""
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        padding: int = 0,
+        kernel_size: int | tuple[int, int],
+        stride=1,
+        padding: int | tuple[int, ...] | str = 0,
+        dilation=1,
+        groups=1,
+        bias=True,
     ):
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -202,30 +194,33 @@ class Conv2d:
             if isinstance(kernel_size, tuple)
             else (kernel_size, kernel_size)
         )
-        self.stride = stride if isinstance(stride, tuple) else (stride, stride)
-        self.padding = padding if isinstance(padding, tuple) else (padding, padding)
+        self.stride = stride
+        self.dilation = dilation
+        self.groups = groups
+        self.padding = padding
+        self.has_bias = bias
 
         kh, kw = self.kernel_size
         bound = 1.0 / math.sqrt(in_channels * kh * kw)
         self.weight = (
             randn(
                 out_channels,
-                in_channels,
+                in_channels // groups,
                 kh,
                 kw,
-                seed=hash((in_channels, out_channels, kh, kw)) & 0xFFFFFFFF,
+                seed=hash((in_channels, out_channels, kh, kw, groups)) & 0xFFFFFFFF,
             )
             * bound
         )
-        self.bias = zeros(out_channels) * 0.0
+        self.bias = zeros(out_channels) * 0.0 if bias else None
 
     def __call__(self, x: Tensor) -> Tensor:
         return x.conv2d(
             self.weight,
             self.bias,
-            1,
+            self.groups,
             self.stride,
-            1,
+            self.dilation,
             self.padding,
         )
 
@@ -249,7 +244,8 @@ class Conv2d:
         return (
             f"Conv2d({self.in_channels}, {self.out_channels}, "
             f"kernel_size={self.kernel_size}, stride={self.stride}, "
-            f"padding={self.padding})"
+            f"padding={self.padding}, dilation={self.dilation}, "
+            f"groups={self.groups}, bias={self.has_bias})"
         )
 
 
@@ -445,11 +441,11 @@ class LayerNorm:
     def __init__(self, normalized_shape, eps=1e-5):
         if isinstance(normalized_shape, int):
             normalized_shape = (normalized_shape,)
-        self.normalized_shape = tuple(normalized_shape)
+        normalized_shape = tuple(normalized_shape)
+        self.normalized_shape = normalized_shape
         self.eps = eps
-        norm_size = _product(self.normalized_shape)
-        self.weight = Tensor([1.0] * norm_size, shape=self.normalized_shape)
-        self.bias_param = Tensor([0.0] * norm_size, shape=self.normalized_shape)
+        self.weight = ones(*normalized_shape)
+        self.bias_param = zeros(*normalized_shape)
 
     def __call__(self, x: Tensor) -> Tensor:
         axes = tuple(-1 - i for i in range(len(self.normalized_shape)))

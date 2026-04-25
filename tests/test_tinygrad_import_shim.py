@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.helpers.falcon_ocr_paths import FALCON_OCR_ARTIFACT_ROOT
+from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
 
 
 def _native_molt_env(
@@ -583,7 +584,7 @@ def test_tinygrad_tensor_conv2d_matches_upstream_sample() -> None:
     assert _flatten_numeric(
         x.conv2d(
             conv.weight, conv.bias, 1, conv.stride, conv.dilation, conv.padding
-        ).to_list()
+        ).tolist()
     ) == pytest.approx(
         [
             -0.32956963777542114,
@@ -596,6 +597,224 @@ def test_tinygrad_tensor_conv2d_matches_upstream_sample() -> None:
     )
 
 
+def _reference_conv_nd(
+    x,
+    weight,
+    bias=None,
+    *,
+    groups=1,
+    stride=1,
+    dilation=1,
+    padding=0,
+):
+    spatial_ndim = len(x.shape) - 2
+    stride = (stride,) * spatial_ndim if isinstance(stride, int) else tuple(stride)
+    dilation = (
+        (dilation,) * spatial_ndim if isinstance(dilation, int) else tuple(dilation)
+    )
+    if isinstance(padding, int):
+        pads = tuple((padding, padding) for _ in range(spatial_ndim))
+    else:
+        padding = tuple(padding)
+        if len(padding) == spatial_ndim:
+            pads = tuple((p, p) for p in padding)
+        elif len(padding) == spatial_ndim * 2:
+            pairs = [(padding[i], padding[i + 1]) for i in range(0, len(padding), 2)]
+            pads = tuple(reversed(pairs))
+        else:
+            raise ValueError("invalid padding")
+
+    x_data = x.tolist()
+    w_data = weight.tolist()
+    batch, cin = x.shape[:2]
+    cout, cin_per_group = weight.shape[:2]
+    spatial = x.shape[2:]
+    kernels = weight.shape[2:]
+    out_spatial = tuple(
+        (spatial[i] + pads[i][0] + pads[i][1] - dilation[i] * (kernels[i] - 1) - 1)
+        // stride[i]
+        + 1
+        for i in range(spatial_ndim)
+    )
+    cout_per_group = cout // groups
+
+    def get_x(n, c, coords):
+        cur = x_data[n][c]
+        for coord in coords:
+            cur = cur[coord]
+        return cur
+
+    def get_w(oc, ic, coords):
+        cur = w_data[oc][ic]
+        for coord in coords:
+            cur = cur[coord]
+        return cur
+
+    def all_indices(shape):
+        if not shape:
+            yield ()
+            return
+        for i in range(shape[0]):
+            for rest in all_indices(shape[1:]):
+                yield (i, *rest)
+
+    out = []
+    for n in range(batch):
+        batch_out = []
+        for oc in range(cout):
+            group = oc // cout_per_group
+            channel_out = {}
+            for out_coords in all_indices(out_spatial):
+                acc = 0.0 if bias is None else bias.tolist()[oc]
+                for ic in range(cin_per_group):
+                    src_channel = group * cin_per_group + ic
+                    for kernel_coords in all_indices(kernels):
+                        src_coords = tuple(
+                            out_coords[i] * stride[i]
+                            - pads[i][0]
+                            + kernel_coords[i] * dilation[i]
+                            for i in range(spatial_ndim)
+                        )
+                        if all(0 <= src_coords[i] < spatial[i] for i in range(spatial_ndim)):
+                            acc += get_x(n, src_channel, src_coords) * get_w(
+                                oc, ic, kernel_coords
+                            )
+                channel_out[out_coords] = acc
+
+            def build(shape, prefix=()):
+                if not shape:
+                    return channel_out[prefix]
+                return [build(shape[1:], (*prefix, i)) for i in range(shape[0])]
+
+            batch_out.append(build(out_spatial))
+        out.append(batch_out)
+    return out
+
+
+def test_tinygrad_tensor_conv2d_supports_groups_dilation_and_explicit_padding() -> None:
+    from tinygrad import Tensor
+
+    x = Tensor.arange(50).reshape(1, 2, 5, 5).float()
+    weight = Tensor.arange(8).reshape(2, 1, 2, 2).float()
+    bias = Tensor([0.5, -1.0])
+
+    out = x.conv2d(
+        weight,
+        bias,
+        groups=2,
+        stride=(2, 1),
+        dilation=(2, 1),
+        padding=(1, 0, 0, 1),
+    )
+
+    assert out.shape == (1, 2, 2, 5)
+    assert _flatten_numeric(out.tolist()) == pytest.approx(
+        _flatten_numeric(
+            _reference_conv_nd(
+                x,
+                weight,
+                bias,
+                groups=2,
+                stride=(2, 1),
+                dilation=(2, 1),
+                padding=(1, 0, 0, 1),
+            )
+        )
+    )
+
+
+def test_tinygrad_tensor_conv_transpose2d_matches_upstream_sample() -> None:
+    from tinygrad import Tensor
+
+    x = Tensor.arange(9).reshape(1, 1, 3, 3).float()
+    weight = Tensor.ones(1, 1, 2, 2)
+
+    assert x.conv_transpose2d(weight).tolist() == [
+        [
+            [
+                [0.0, 1.0, 3.0, 2.0],
+                [3.0, 8.0, 12.0, 7.0],
+                [9.0, 20.0, 24.0, 13.0],
+                [6.0, 13.0, 15.0, 8.0],
+            ]
+        ]
+    ]
+
+
+def test_tinygrad_nn_groupnorm_matches_upstream_composition() -> None:
+    from tinygrad import Tensor, nn
+
+    x = Tensor.arange(16).reshape(1, 4, 2, 2).float()
+    norm = nn.GroupNorm(2, 4)
+    norm.weight = Tensor([1.0, 1.5, -1.0, 0.5])
+    norm.bias = Tensor([0.0, 1.0, 2.0, -2.0])
+
+    expected = (
+        x.reshape(1, 2, -1)
+        .layernorm(eps=norm.eps)
+        .reshape(x.shape)
+        * norm.weight.reshape(1, -1, 1, 1)
+        + norm.bias.reshape(1, -1, 1, 1)
+    )
+
+    assert _flatten_numeric(norm(x).tolist()) == pytest.approx(
+        _flatten_numeric(expected.tolist())
+    )
+    assert _flatten_numeric(nn.GroupNorm(2, 4, affine=False)(x).tolist()) == pytest.approx(
+        _flatten_numeric(
+            x.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(x.shape).tolist()
+        )
+    )
+
+
+def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -> None:
+    with tinygrad_stdlib_context("nn") as modules:
+        Tensor = modules["tensor"].Tensor
+        nn = modules["nn"]
+
+        x = Tensor(list(range(9))).reshape(1, 1, 3, 3)
+        weight = Tensor.ones(1, 1, 2, 2)
+        assert x.conv_transpose2d(weight).tolist() == [
+            [
+                [
+                    [0.0, 1.0, 3.0, 2.0],
+                    [3.0, 8.0, 12.0, 7.0],
+                    [9.0, 20.0, 24.0, 13.0],
+                    [6.0, 13.0, 15.0, 8.0],
+                ]
+            ]
+        ]
+
+        grouped = Tensor(list(range(18))).reshape(1, 2, 3, 3).conv2d(
+            Tensor.ones(2, 1, 2, 2),
+            groups=2,
+            padding=1,
+        )
+        assert grouped.tolist() == [
+            [
+                [
+                    [0.0, 1.0, 3.0, 2.0],
+                    [3.0, 8.0, 12.0, 7.0],
+                    [9.0, 20.0, 24.0, 13.0],
+                    [6.0, 13.0, 15.0, 8.0],
+                ],
+                [
+                    [9.0, 19.0, 21.0, 11.0],
+                    [21.0, 44.0, 48.0, 25.0],
+                    [27.0, 56.0, 60.0, 31.0],
+                    [15.0, 31.0, 33.0, 17.0],
+                ],
+            ]
+        ]
+
+        norm = nn.GroupNorm(2, 4, affine=False)
+        y = Tensor(list(range(16))).reshape(1, 4, 2, 2)
+        expected = y.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(y.shape)
+        assert _flatten_numeric(norm(y).tolist()) == pytest.approx(
+            _flatten_numeric(expected.tolist())
+        )
+
+
 def test_tinygrad_tensor_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "tinygrad_tensor_conv2d_native.py"
@@ -604,7 +823,7 @@ def test_tinygrad_tensor_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
         "Tensor.manual_seed(42)\n"
         "conv = nn.Conv2d(1, 1, 3)\n"
         "x = Tensor.arange(16).reshape(1, 1, 4, 4).float()\n"
-        "print(x.conv2d(conv.weight, conv.bias, 1, conv.stride, conv.dilation, conv.padding).to_list())\n",
+        "print(x.conv2d(conv.weight, conv.bias, 1, conv.stride, conv.dilation, conv.padding).tolist())\n",
         encoding="utf-8",
     )
     run = subprocess.run(
