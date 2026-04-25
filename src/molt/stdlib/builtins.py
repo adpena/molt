@@ -437,6 +437,7 @@ __all__ = [
     "MemoryError",
     "NameError",
     "NotImplementedError",
+    "PythonFinalizationError",
     "OSError",
     "EnvironmentError",
     "IOError",
@@ -605,6 +606,7 @@ MemoryError = MemoryError
 NameError = NameError
 UnboundLocalError = UnboundLocalError
 NotImplementedError = NotImplementedError
+PythonFinalizationError = PythonFinalizationError
 OSError = OSError
 EnvironmentError = EnvironmentError
 IOError = IOError
