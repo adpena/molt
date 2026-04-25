@@ -330,8 +330,8 @@ fn compile_stdlib_cache_object(
         let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
         stdlib_backend.skip_ir_passes = true;
         stdlib_backend.skip_shared_stdlib_partition = true;
-        let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
-        std::fs::write(stdlib_path, &stdlib_bytes)?;
+        let stdlib_output = stdlib_backend.compile(stdlib_ir);
+        std::fs::write(stdlib_path, &stdlib_output.bytes)?;
         return Ok(());
     }
 
@@ -360,9 +360,9 @@ fn compile_stdlib_cache_object(
             batch_backend.external_function_names =
                 batch_external_function_names(&all_stdlib_names, &batch_ir.functions);
             batch_backend.set_module_context(stdlib_module_context.clone());
-            let batch_bytes = batch_backend.compile(batch_ir);
+            let batch_output = batch_backend.compile(batch_ir);
             let batch_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
-            std::fs::write(&batch_path, &batch_bytes)?;
+            std::fs::write(&batch_path, &batch_output.bytes)?;
             stdlib_batch_paths.push(batch_path);
         }
 
@@ -1253,7 +1253,8 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 if stdlib_obj_path.is_some() {
                     backend.skip_shared_stdlib_partition = true;
                 }
-                Arc::from(backend.compile(ir))
+                let output = backend.compile(ir);
+                Arc::from(output.bytes)
             }
             #[cfg(not(feature = "native-backend"))]
             {
@@ -2152,14 +2153,14 @@ fn main() -> io::Result<()> {
                 if stdlib_obj_path.is_some() {
                     backend.skip_shared_stdlib_partition = true;
                 }
-                let obj_bytes = backend.compile(ir);
+                let obj_output = backend.compile(ir);
                 let mut file = create_backend_output_file(output_file).map_err(|err| {
                     io::Error::new(
                         err.kind(),
                         format!("failed to create backend output '{}': {}", output_file, err),
                     )
                 })?;
-                file.write_all(&obj_bytes)?;
+                file.write_all(&obj_output.bytes)?;
                 eprintln!("Successfully compiled to {output_file} ({func_count} functions)");
             } else {
                 // Large IR: split into batches, compile each independently,
@@ -2202,10 +2203,10 @@ fn main() -> io::Result<()> {
                     backend.external_function_names =
                         batch_external_function_names(&all_func_names, &batch_ir.functions);
                     backend.set_module_context(module_context.clone());
-                    let obj_bytes = backend.compile(batch_ir);
+                    let obj_output = backend.compile(batch_ir);
 
                     let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
-                    std::fs::write(&batch_path, &obj_bytes)?;
+                    std::fs::write(&batch_path, &obj_output.bytes)?;
                     batch_paths.push(batch_path);
                     batch_idx += 1;
                 }
