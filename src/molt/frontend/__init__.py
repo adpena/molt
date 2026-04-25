@@ -13487,7 +13487,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 varkw=varkw,
                 default_exprs=[],
                 kw_default_exprs=[],
-                docstring=ast.get_docstring(item),
+                docstring=ast.get_docstring(item, clean=False),
                 is_generator=True,
                 varnames=varnames,
             )
@@ -13796,7 +13796,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 varkw=varkw,
                 default_exprs=[],
                 kw_default_exprs=[],
-                docstring=ast.get_docstring(item),
+                docstring=ast.get_docstring(item, clean=False),
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -14180,7 +14180,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     varkw=varkw,
                     default_exprs=[],
                     kw_default_exprs=[],
-                    docstring=ast.get_docstring(item),
+                    docstring=ast.get_docstring(item, clean=False),
                     is_async_generator=True,
                     poll_fn_symbol=poll_symbol,
                     varnames=varnames,
@@ -14479,7 +14479,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 varkw=varkw,
                 default_exprs=[],
                 kw_default_exprs=[],
-                docstring=ast.get_docstring(item),
+                docstring=ast.get_docstring(item, clean=False),
                 is_coroutine=True,
                 varnames=varnames,
             )
@@ -27004,7 +27004,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 varkw=varkw,
                 default_exprs=node.args.defaults,
                 kw_default_exprs=node.args.kw_defaults,
-                docstring=ast.get_docstring(node),
+                docstring=ast.get_docstring(node, clean=False),
                 is_async_generator=True,
                 poll_fn_symbol=poll_func_name,
                 varnames=varnames,
@@ -27294,7 +27294,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             varkw=varkw,
             default_exprs=node.args.defaults,
             kw_default_exprs=node.args.kw_defaults,
-            docstring=ast.get_docstring(node),
+            docstring=ast.get_docstring(node, clean=False),
             is_coroutine=True,
             varnames=varnames,
         )
@@ -27511,7 +27511,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 varkw=varkw,
                 default_exprs=node.args.defaults,
                 kw_default_exprs=node.args.kw_defaults,
-                docstring=ast.get_docstring(node),
+                docstring=ast.get_docstring(node, clean=False),
                 is_generator=True,
                 varnames=varnames,
             )
@@ -27789,7 +27789,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             varkw=varkw,
             default_exprs=node.args.defaults,
             kw_default_exprs=node.args.kw_defaults,
-            docstring=ast.get_docstring(node),
+            docstring=ast.get_docstring(node, clean=False),
             varnames=varnames,
         )
         is_gpu_kernel = self._has_gpu_kernel_decorator(node)
