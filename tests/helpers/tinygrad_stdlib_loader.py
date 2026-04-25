@@ -12,7 +12,14 @@ TINYGRAD_STDLIB = ROOT / "src" / "molt" / "stdlib" / "tinygrad"
 
 
 def _load_module(module_name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(module_name, path)
+    if path.is_dir():
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            path / "__init__.py",
+            submodule_search_locations=[str(path)],
+        )
+    else:
+        spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     assert spec.loader is not None
@@ -44,7 +51,10 @@ def tinygrad_stdlib_context(*extra_leaves: str):
 
         modules = {}
         for leaf in leaves:
-            module = _load_module(f"tinygrad.{leaf}", TINYGRAD_STDLIB / f"{leaf}.py")
+            module_path = TINYGRAD_STDLIB / f"{leaf}.py"
+            if not module_path.exists():
+                module_path = TINYGRAD_STDLIB / leaf
+            module = _load_module(f"tinygrad.{leaf}", module_path)
             setattr(package, leaf, module)
             modules[leaf] = module
 
