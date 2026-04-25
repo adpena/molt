@@ -164,7 +164,6 @@ except* TypeError as eg:
 class TestDocstringHandling:
     """Python 3.13 improved docstring leading whitespace handling."""
 
-    @pytest.mark.skip(reason="Docstring attribute access not yet supported in Molt")
     def test_docstring_preserved(self):
         _assert_match("""\
 def greet():
@@ -238,7 +237,6 @@ print(classify(2))
 print(classify(99))
 """)
 
-    @pytest.mark.skip(reason="match/case with capture not yet supported in Molt")
     def test_match_statement_capture(self):
         _assert_match("""\
 def describe(point):

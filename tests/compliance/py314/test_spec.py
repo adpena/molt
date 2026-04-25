@@ -91,7 +91,6 @@ class TestPEP649DeferredAnnotations:
     """PEP 649 makes annotations lazy — they should not cause side effects
     at function/class definition time."""
 
-    @pytest.mark.skip(reason="PEP 649 deferred annotations not yet implemented in Molt")
     def test_annotation_no_side_effect(self):
         """Annotations should not be evaluated at definition time."""
         _assert_match("""\
@@ -109,7 +108,6 @@ print(len(side_effects))
 print(func(42))
 """)
 
-    @pytest.mark.skip(reason="PEP 649 deferred annotations not yet implemented in Molt")
     def test_forward_reference_in_annotation(self):
         """Forward references should work without quotes under PEP 649."""
         _assert_match("""\
@@ -122,7 +120,6 @@ class Node:
 print(make_node(5))
 """)
 
-    @pytest.mark.skip(reason="PEP 649 deferred annotations not yet implemented in Molt")
     def test_annotation_access_via_get_annotations(self):
         """__annotations__ should still be accessible when explicitly requested."""
         _assert_match("""\
@@ -263,7 +260,6 @@ print(middle)
 print(last)
 """)
 
-    @pytest.mark.skip(reason="Complex unpacking not yet supported in Molt")
     def test_nested_unpacking(self):
         _assert_match("""\
 data = [(1, 2), (3, 4), (5, 6)]
