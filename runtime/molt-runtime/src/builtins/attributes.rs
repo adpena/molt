@@ -497,6 +497,26 @@ unsafe fn type_attr_lookup_ptr_inner(
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
                 && let Some(val_bits) = dict_get_in_place(_py, dict_ptr, attr_bits)
             {
+                // Invoke the descriptor protocol for classmethod/staticmethod/property
+                // descriptors found in the class dict. CPython's type.__getattribute__
+                // does this automatically; we must do it here too.
+                if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr() {
+                    let val_type_id = object_type_id(val_ptr);
+                    if val_type_id == TYPE_ID_CLASSMETHOD {
+                        let func_bits = classmethod_func_bits(val_ptr);
+                        return Some(molt_bound_method_new(func_bits, class_bits));
+                    }
+                    if val_type_id == TYPE_ID_STATICMETHOD {
+                        let func_bits = staticmethod_func_bits(val_ptr);
+                        inc_ref_bits(_py, func_bits);
+                        return Some(func_bits);
+                    }
+                    if val_type_id == TYPE_ID_PROPERTY {
+                        // Property on a class (not instance) — return the descriptor itself.
+                        inc_ref_bits(_py, val_bits);
+                        return Some(val_bits);
+                    }
+                }
                 inc_ref_bits(_py, val_bits);
                 return Some(val_bits);
             }
