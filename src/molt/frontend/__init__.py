@@ -310,6 +310,7 @@ BUILTIN_EXCEPTION_NAMES = {
     "NameError",
     "UnboundLocalError",
     "NotImplementedError",
+    "PythonFinalizationError",
     "OSError",
     "EnvironmentError",
     "IOError",
