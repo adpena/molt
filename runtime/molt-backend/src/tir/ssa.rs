@@ -1264,11 +1264,41 @@ impl<'a> SsaContext<'a> {
                     let fall_through = bid + 1;
                     let (then_bid, else_bid) = match last_kind {
                         "if" => {
-                            // if: TRUE = fall-through, FALSE = else/end_if
-                            if succs[0] == fall_through {
-                                (succs[0], succs[1])
+                            // For structured `if`, TRUE = fall-through ONLY when
+                            // the THEN body is non-empty.  When the next block
+                            // begins with `else`, the THEN body is empty and
+                            // cfg.rs routes the TRUE edge directly to the
+                            // matching `end_if` block (skipping the else body).
+                            // The fall-through (`bid + 1`) is then the FALSE
+                            // path (the else block).  Treating fall-through as
+                            // TRUE in that case swaps the THEN/ELSE bodies and
+                            // miscompiles `if cond: pass / else: <body>`
+                            // patterns the frontend emits for guarded cleanup
+                            // sequences (e.g. module-level `del eg` after an
+                            // `except*` handler).
+                            let next_starts_with_else = self
+                                .cfg
+                                .blocks
+                                .get(fall_through)
+                                .map(|b| {
+                                    b.start_op < self.ops.len()
+                                        && self.ops[b.start_op].kind == "else"
+                                })
+                                .unwrap_or(false);
+                            if next_starts_with_else {
+                                // Empty THEN: fall-through is the else block (FALSE).
+                                if succs[0] == fall_through {
+                                    (succs[1], succs[0])
+                                } else {
+                                    (succs[0], succs[1])
+                                }
                             } else {
-                                (succs[1], succs[0])
+                                // Non-empty THEN: fall-through is the then body (TRUE).
+                                if succs[0] == fall_through {
+                                    (succs[0], succs[1])
+                                } else {
+                                    (succs[1], succs[0])
+                                }
                             }
                         }
                         "loop_break_if_true" => {
@@ -1990,6 +2020,96 @@ mod tests {
                 }
                 _ => {}
             }
+        }
+    }
+
+    // =======================================================================
+    // Test 7b: Empty THEN (`if cond: pass / else: <body>`) must NOT swap
+    //          THEN/ELSE bodies in CondBranch.  Regression for module-level
+    //          `except*` residual ExceptionGroup propagation: the frontend
+    //          emits `if exc IS None: pass / else: <recovery>` after every
+    //          guarded `del` in `_emit_module_global_del_safe` and the SSA
+    //          builder used to mis-route the TRUE edge into the recovery
+    //          body, inverting the guard.
+    // =======================================================================
+    #[test]
+    fn empty_then_with_else_does_not_swap_branch_bodies() {
+        // Pattern:
+        //   if cond:
+        //       pass
+        //   else:
+        //       y = 7   <-- recovery body must run when cond is FALSE
+        let ops = vec![
+            op_val_out("const_bool", 1, "cond"), // 0: cond
+            op_args("if", &["cond"]),            // 1: if (empty THEN)
+            op("else"),                          // 2: else
+            op_val_out("const", 7, "y"),         // 3: ELSE body
+            op("end_if"),                        // 4: join
+            op("ret_void"),                      // 5
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        // Locate the `if` block.
+        let if_block_id = {
+            let mut found = None;
+            for block in &output.blocks {
+                if matches!(&block.terminator, Terminator::CondBranch { .. }) {
+                    found = Some(block.id);
+                    break;
+                }
+            }
+            found.expect("if block must exist")
+        };
+        let if_block = output
+            .blocks
+            .iter()
+            .find(|b| b.id == if_block_id)
+            .expect("if block lookup");
+
+        let (then_block, else_block) = match &if_block.terminator {
+            Terminator::CondBranch {
+                then_block,
+                else_block,
+                ..
+            } => (*then_block, *else_block),
+            _ => unreachable!("verified above"),
+        };
+
+        // The ELSE block (`y = 7`) must be the FALSE-path destination.
+        // Before the fix, ssa.rs treated fall-through as TRUE, which
+        // routed the recovery body into the THEN edge and broke
+        // `if cond: pass / else: <recovery>` semantics.
+        let else_target = output
+            .blocks
+            .iter()
+            .find(|b| b.id == else_block)
+            .expect("else block lookup");
+        let else_has_recovery = else_target
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::ConstInt);
+        assert!(
+            else_has_recovery,
+            "FALSE path (else_block) must contain the recovery `const 7`; \
+             builder is mis-routing branches"
+        );
+
+        // The THEN target must NOT contain the recovery body.
+        if then_block != else_block {
+            let then_target = output
+                .blocks
+                .iter()
+                .find(|b| b.id == then_block)
+                .expect("then block lookup");
+            let then_has_recovery = then_target
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::ConstInt);
+            assert!(
+                !then_has_recovery,
+                "TRUE path (then_block) must NOT contain the FALSE-only recovery body"
+            );
         }
     }
 
