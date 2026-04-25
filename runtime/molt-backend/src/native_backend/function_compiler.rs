@@ -524,6 +524,51 @@ fn ensure_boxed_overflow_safe(
     }
 }
 
+#[cfg(feature = "native-backend")]
+fn ensure_boxed_primitive_safe(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    raw_int_shadow: &BTreeMap<String, Variable>,
+    raw_int_shadow_vals: &BTreeMap<String, Value>,
+    vars: &BTreeMap<String, Variable>,
+    box_int_mask_var: Variable,
+    box_int_tag_var: Variable,
+    raw_primary_int: &std::collections::BTreeSet<String>,
+    raw_primary_float: &std::collections::BTreeSet<String>,
+    name: &str,
+) -> Value {
+    if raw_primary_float.contains(name) {
+        *var_get_boxed(
+            builder,
+            vars,
+            name,
+            raw_primary_int,
+            raw_primary_float,
+            box_int_mask_var,
+            box_int_tag_var,
+        )
+        .expect("float escape var not found")
+    } else {
+        ensure_boxed_overflow_safe(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            raw_int_shadow,
+            raw_int_shadow_vals,
+            vars,
+            box_int_mask_var,
+            box_int_tag_var,
+            raw_primary_int,
+            name,
+        )
+    }
+}
+
 // --- Raw f64 shadow lookup functions (mirrors raw_int_shadow) ---
 
 #[cfg(feature = "native-backend")]
@@ -2145,7 +2190,7 @@ impl SimpleBackend {
         let mut raw_primary_int: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
         let mut raw_primary_float: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+            float_primary_vars.clone();
         // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
         // Valid only while the list is not resized (no append/insert inside the loop).
@@ -7426,7 +7471,7 @@ impl SimpleBackend {
                     list_is_bool_cache.remove(&args[0]);
                     let list = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("List not found");
                     // Deferred overflow re-boxing at heap store (list_append).
-                    let val = ensure_boxed_overflow_safe(
+                    let val = ensure_boxed_primitive_safe(
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -7438,6 +7483,7 @@ impl SimpleBackend {
                         box_int_mask_var,
                         box_int_tag_var,
                         &raw_primary_int,
+                        &raw_primary_float,
                         &args[1],
                     );
                     let callee = Self::import_func_id_split(
@@ -9933,7 +9979,7 @@ impl SimpleBackend {
                             _ => "molt_store_index",
                         };
                         // Deferred overflow re-boxing at heap store (store_index).
-                        let safe_val = ensure_boxed_overflow_safe(
+                        let safe_val = ensure_boxed_primitive_safe(
                             &mut self.module,
                             &mut self.import_ids,
                             &mut builder,
@@ -9945,6 +9991,7 @@ impl SimpleBackend {
                             box_int_mask_var,
                             box_int_tag_var,
                             &raw_primary_int,
+                            &raw_primary_float,
                             &args[2],
                         );
                         let callee = Self::import_func_id_split(
@@ -14808,7 +14855,7 @@ impl SimpleBackend {
                     let mut args = Vec::new();
                     for name in args_names {
                         // Deferred overflow re-boxing at call argument.
-                        let val = ensure_boxed_overflow_safe(
+                        let val = ensure_boxed_primitive_safe(
                             &mut self.module,
                             &mut self.import_ids,
                             &mut builder,
@@ -14820,6 +14867,7 @@ impl SimpleBackend {
                             box_int_mask_var,
                             box_int_tag_var,
                             &raw_primary_int,
+                            &raw_primary_float,
                             name,
                         );
                         args.push(val);
@@ -16224,8 +16272,14 @@ impl SimpleBackend {
                         }
                         let cleared_val = builder.ins().iconst(types::I64, box_none());
                         for name in &callargs_arg_cleanup_names {
+                            if raw_primary_float.contains(name.as_str()) {
+                                continue;
+                            }
                             if let Some(var) = vars.get(name) {
                                 builder.def_var(*var, cleared_val);
+                                raw_primary_int.remove(name.as_str());
+                                raw_int_shadow_vals.remove(name.as_str());
+                                raw_bool_values.remove(name.as_str());
                             }
                         }
                         scrub_tracked_roots(
@@ -21884,8 +21938,8 @@ impl SimpleBackend {
                         is_block_filled = true;
                         continue;
                     };
-                    // Deferred overflow re-boxing at function return.
-                    let ret_val = ensure_boxed_overflow_safe(
+                    // Deferred primitive boxing at function return.
+                    let ret_val = ensure_boxed_primitive_safe(
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -21897,6 +21951,7 @@ impl SimpleBackend {
                         box_int_mask_var,
                         box_int_tag_var,
                         &raw_primary_int,
+                        &raw_primary_float,
                         var_name,
                     );
                     let ret_root = alias_roots
