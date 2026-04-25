@@ -30687,7 +30687,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 else:
                     expected_class = list(self.classes.keys())[-1]
                 offset = field_offset(expected_class, attr)
-                if offset is None:
+                # Metaclass __init__ receives `cls` which is a TYPE object,
+                # not an INSTANCE. Field offsets apply to instances, not to
+                # the class itself. When the expected class IS the metaclass
+                # (a subclass of `type`), emit generic setattr so the
+                # attribute goes into the class __dict__.
+                _class_info_meta = self.classes.get(expected_class)
+                _is_type_subclass = (
+                    _class_info_meta is not None
+                    and "type" in _class_info_meta.get("bases", [])
+                )
+                if offset is None or _is_type_subclass:
                     class_info = self.classes.get(expected_class)
                     if class_info and self._class_is_exception_subclass(
                         expected_class, class_info
@@ -30901,7 +30911,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 else:
                     expected_class = list(self.classes.keys())[-1]
                 offset = field_offset(expected_class, attr)
-                if offset is None:
+                # Metaclass methods operate on TYPE objects, not instances.
+                # Field offsets don't apply — use generic getattr.
+                _ga_class_info = self.classes.get(expected_class)
+                _ga_is_type_sub = (
+                    _ga_class_info is not None
+                    and "type" in _ga_class_info.get("bases", [])
+                )
+                if offset is None or _ga_is_type_sub:
                     class_info = self.classes.get(expected_class)
                     if class_info and self._class_is_exception_subclass(
                         expected_class, class_info
