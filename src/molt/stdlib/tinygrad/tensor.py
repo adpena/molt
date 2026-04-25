@@ -773,22 +773,36 @@ class Tensor:
         eps: float = 1e-5,
         axis=-1,
     ) -> "Tensor":
-        """Layer normalization."""
-        if normalized_shape is None:
-            if isinstance(axis, tuple):
-                if axis != (-1,):
-                    raise NotImplementedError(
-                        "Tensor.layernorm currently supports the last axis"
-                    )
-            elif axis != -1 and axis != self.ndim - 1:
-                raise NotImplementedError(
-                    "Tensor.layernorm currently supports the last axis"
-                )
-        mean = self.mean(axis=-1)
-        # variance = mean((x - mean)^2)
+        """Layer normalization over one or more axes.
+
+        Matches upstream tinygrad's call shape: `axis` accepts an int or a
+        tuple of ints (negative indexing supported). Reduction is computed
+        as the mean / variance over the union of the specified axes; the
+        reduced dimensions are kept as size 1 so broadcasting back to the
+        original shape works regardless of which axes were reduced.
+        """
+        if isinstance(axis, (list, tuple)):
+            axes = tuple(int(a) for a in axis)
+        else:
+            axes = (int(axis),)
+        # Normalize negative axes and sort descending so sequential reduction
+        # keeps the remaining indices valid.
+        axes = tuple(a if a >= 0 else self.ndim + a for a in axes)
+        if any(a < 0 or a >= self.ndim for a in axes):
+            raise ValueError(
+                f"layernorm axis {axis!r} out of range for tensor of ndim {self.ndim}"
+            )
+        axes_desc = tuple(sorted(set(axes), reverse=True))
+
+        def _reduce_mean(t):
+            out = t
+            for a in axes_desc:
+                out = out.mean(axis=a)
+            return out
+
+        mean = _reduce_mean(self)
         diff = self - mean._broadcast_to(self.shape)
-        var = (diff * diff).mean(axis=-1)
-        # normalize
+        var = _reduce_mean(diff * diff)
         inv_std = (var + eps).reciprocal().sqrt()
         normed = diff * inv_std._broadcast_to(self.shape)
         if weight is not None:
