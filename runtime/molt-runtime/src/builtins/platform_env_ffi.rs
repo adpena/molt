@@ -180,7 +180,18 @@ pub extern "C" fn molt_locale_setlocale(_category_bits: u64, locale_bits: u64) -
         let Some(mut locale) = string_obj_to_owned(obj_from_bits(locale_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "locale must be str or None");
         };
-        if locale.is_empty() || locale == "C" || locale == "POSIX" {
+        if locale.is_empty() {
+            // POSIX setlocale("") — resolve from environment variables in
+            // priority order: LC_ALL, LC_<category>, LANG. Honors live OS
+            // locale rather than the Rust-internal default.
+            locale = std::env::var("LC_ALL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| std::env::var("LC_CTYPE").ok().filter(|s| !s.is_empty()))
+                .or_else(|| std::env::var("LANG").ok().filter(|s| !s.is_empty()))
+                .unwrap_or_else(|| String::from("C"));
+        }
+        if locale == "POSIX" {
             locale = String::from("C");
         }
         *locale_state()
