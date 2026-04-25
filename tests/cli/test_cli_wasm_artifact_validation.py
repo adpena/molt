@@ -488,8 +488,9 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         output_path: Path,
         json_output: bool,
         link_timeout: float | None,
+        export_link_args: str = "",
     ) -> bool:
-        del json_output, link_timeout
+        del json_output, link_timeout, export_link_args
         captured["linked_staticlib_path"] = staticlib_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
