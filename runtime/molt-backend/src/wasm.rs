@@ -1939,6 +1939,8 @@ impl WasmBackend {
 
         // Dead function elimination: remove unreachable functions after inlining.
         crate::eliminate_dead_functions(&mut ir);
+        crate::eliminate_dead_imports(&mut ir);
+        crate::eliminate_dead_ops(&mut ir);
 
         if let Some(config) = crate::should_dump_ir() {
             for func_ir in &ir.functions {

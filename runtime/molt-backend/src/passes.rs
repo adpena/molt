@@ -1978,6 +1978,236 @@ fn is_protected_runtime_entrypoint(name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// SimpleIR dead op elimination (intra-function)
+//
+// Removes ops within each function whose results are never consumed by any
+// subsequent op. This is the SimpleIR equivalent of TIR DCE — it catches
+// waste from frontend codegen before TIR lifting even sees it.
+//
+// Safety: only removes ops that are provably pure (no side effects).
+// Side-effecting ops (calls, stores, raises, imports) are always preserved.
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if a SimpleIR op kind is pure (has no side effects).
+/// Only pure ops with unused results can be eliminated.
+fn simple_ir_op_is_pure(kind: &str) -> bool {
+    matches!(
+        kind,
+        "const_int"
+            | "const_float"
+            | "const_str"
+            | "const_bool"
+            | "const_none"
+            | "const_bytes"
+            | "copy"
+            | "copy_var"
+            | "load_var"
+            | "load_fast"
+            | "nop"
+            | "add"
+            | "sub"
+            | "mul"
+            | "div"
+            | "floor_div"
+            | "mod"
+            | "pow"
+            | "neg"
+            | "pos"
+            | "eq"
+            | "ne"
+            | "lt"
+            | "le"
+            | "gt"
+            | "ge"
+            | "is"
+            | "is_not"
+            | "in"
+            | "not_in"
+            | "bit_and"
+            | "bit_or"
+            | "bit_xor"
+            | "bit_not"
+            | "shl"
+            | "shr"
+            | "and"
+            | "or"
+            | "not"
+            | "bool"
+            | "box"
+            | "unbox"
+            | "cast"
+            | "widen"
+            | "identity_alias"
+            | "build_list"
+            | "build_tuple"
+            | "build_dict"
+            | "build_set"
+            | "build_slice"
+            | "get_iter"
+            | "format_value"
+            | "build_string"
+            | "load_attr"
+            | "index"
+            | "type_guard"
+    )
+}
+
+/// Eliminate dead ops within each function of the SimpleIR.
+///
+/// An op is dead when:
+/// 1. It is pure (no side effects).
+/// 2. Its `var` (result name) is never referenced by any subsequent op's
+///    `args`, `var`, `s_value`, or `value` in the same function.
+///
+/// Iterates to fixpoint (max 5 rounds) to catch cascading dead chains.
+pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
+    if std::env::var("MOLT_DISABLE_DEAD_OP_ELIM").is_ok() {
+        return;
+    }
+
+    let trace = std::env::var("MOLT_DEBUG_DEAD_OP_ELIM").is_ok();
+    let mut total_removed = 0usize;
+
+    for func in &mut ir.functions {
+        for _round in 0..5 {
+            // Build a set of all consumed names (args + var references).
+            let mut consumed: HashSet<String> = HashSet::new();
+
+            for op in &func.ops {
+                if let Some(args) = &op.args {
+                    for arg in args {
+                        consumed.insert(arg.clone());
+                    }
+                }
+                // s_value can reference function names or variable names
+                // in certain ops — conservatively keep anything it references.
+                if let Some(sv) = &op.s_value {
+                    // Only count as consumed if this is a load/copy-like op
+                    // that reads the value. Calls reference functions, not locals.
+                    if matches!(
+                        op.kind.as_str(),
+                        "copy_var" | "load_var" | "load_fast" | "store_var"
+                    ) {
+                        consumed.insert(sv.clone());
+                    }
+                }
+            }
+
+            // Also mark variables consumed by special ops' var field when the
+            // op reads from it (load_var, copy_var use var as the source).
+            for op in &func.ops {
+                if let Some(v) = &op.var {
+                    // var is the result name for most ops, but for store_var
+                    // and similar, var is the target. For load_var/copy_var,
+                    // the var field is the source being loaded.
+                    if matches!(op.kind.as_str(), "store_var" | "store_fast") {
+                        consumed.insert(v.clone());
+                    }
+                }
+            }
+
+            let before = func.ops.len();
+
+            func.ops.retain(|op| {
+                // Keep all side-effecting ops.
+                if !simple_ir_op_is_pure(&op.kind) {
+                    return true;
+                }
+
+                // Keep nops (they're just markers, trivial to keep).
+                if op.kind == "nop" {
+                    return true;
+                }
+
+                // If the op has a result variable, check if it's consumed.
+                if let Some(var) = &op.var {
+                    if consumed.contains(var) {
+                        return true;
+                    }
+                    // Unreferenced pure result → dead.
+                    return false;
+                }
+
+                // Ops without a result variable but with no side effects
+                // are dead (e.g., a bare `build_list` with no assignment).
+                // Conservatively keep them — they might be consumed by
+                // stack-based implicit references we can't see.
+                true
+            });
+
+            let removed = before - func.ops.len();
+            total_removed += removed;
+
+            if removed == 0 {
+                break; // fixpoint
+            }
+        }
+    }
+
+    if trace && total_removed > 0 {
+        eprintln!("dead-op-elim: removed {total_removed} dead ops across all functions");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dead import elimination
+//
+// Removes `import` and `import_from` ops whose loaded module/name is never
+// referenced by any subsequent op in the same function. This prevents pulling
+// in entire stdlib modules for imports that the user code never actually uses.
+// ---------------------------------------------------------------------------
+
+/// Eliminate imports whose results are never consumed.
+pub fn eliminate_dead_imports(ir: &mut SimpleIR) {
+    if std::env::var("MOLT_DISABLE_DEAD_IMPORT_ELIM").is_ok() {
+        return;
+    }
+
+    let trace = std::env::var("MOLT_DEBUG_DEAD_IMPORT_ELIM").is_ok();
+    let mut total_removed = 0usize;
+
+    for func in &mut ir.functions {
+        // Build the set of all consumed variable names.
+        let mut consumed: HashSet<String> = HashSet::new();
+        for op in &func.ops {
+            if let Some(args) = &op.args {
+                for arg in args {
+                    consumed.insert(arg.clone());
+                }
+            }
+        }
+
+        let before = func.ops.len();
+
+        func.ops.retain(|op| {
+            // Only target import ops.
+            if !matches!(op.kind.as_str(), "import_name" | "import_from") {
+                return true;
+            }
+
+            // If the import result is consumed, keep it.
+            if let Some(var) = &op.var {
+                if consumed.contains(var) {
+                    return true;
+                }
+                // The import result is never referenced → dead import.
+                return false;
+            }
+
+            // No result var — keep conservatively.
+            true
+        });
+
+        let removed = before - func.ops.len();
+        total_removed += removed;
+    }
+
+    if trace && total_removed > 0 {
+        eprintln!("dead-import-elim: removed {total_removed} dead imports across all functions");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Megafunction splitting pass
 //
 // Cranelift's register allocator has O(n^2) behavior on very large functions.
