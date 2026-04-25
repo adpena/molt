@@ -156,7 +156,7 @@ mod tests {
 
         // Zero-delta pipelines now restore the original snapshot but still
         // return per-pass stats so the caller keeps the strict TIR roundtrip.
-        assert_eq!(stats.len(), 3 * 17, "expected 17 pass stats per function");
+        assert_eq!(stats.len(), 3 * 21, "expected 21 pass stats per function");
 
         // Verify all functions still have their entry blocks intact.
         for func in &module.functions {
