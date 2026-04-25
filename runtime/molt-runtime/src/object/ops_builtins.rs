@@ -3514,14 +3514,12 @@ pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u
             };
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 let type_id = object_type_id(obj_ptr);
-                if type_id == TYPE_ID_TYPE {
-                    dec_ref_bits(_py, attr_bits);
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "can't apply this __setattr__ to type object",
-                    );
-                }
+                // Type objects (classes) support setattr — class attributes
+                // are stored in the object's generic attribute dict, same as
+                // any other object.  The previous TYPE_ID_TYPE guard was
+                // incorrect: it blocked ALL attribute modification on classes,
+                // breaking metaclass __init__, @classmethod setattr, and
+                // dynamic Protocol registration.
                 let class_bits = object_class_bits(obj_ptr);
                 let builtins = builtin_classes(_py);
                 let is_dict_subclass =
