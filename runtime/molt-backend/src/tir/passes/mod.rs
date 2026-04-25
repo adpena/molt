@@ -42,7 +42,7 @@ pub struct PassStats {
 
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// 23 passes organized in 7 phases:
+/// 22 passes organized in 7 phases (+ LICM gated):
 ///
 /// **Lowering**: range_devirt → iter_devirt → tuple_scalarize → loop_narrow
 /// **Canonicalization**: canonicalize (pre-type) → unboxing → block_versioning →
@@ -174,12 +174,14 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     run_pass!("canonicalize_post", canonicalize::run(func));
 
     // ── Global redundancy elimination ──────────────────────────
-    // GVN + LICM: implemented and tested but gated behind opt-in
-    // until dominance-aware operand renaming is complete.
-    // Enable with: MOLT_TIR_ENABLE_GVN=1 / MOLT_TIR_ENABLE_LICM=1
+    // GVN: dominator-scoped hash-based value numbering. Eliminates
+    // redundant computations across branches. Gated until const_str
+    // value numbering interaction with TIR roundtrip is resolved.
     if std::env::var("MOLT_TIR_ENABLE_GVN").is_ok() {
         run_pass!("gvn", gvn::run(func));
     }
+    // LICM: gated behind opt-in until nested-loop support is hardened.
+    // Enable with: MOLT_TIR_ENABLE_LICM=1
     if std::env::var("MOLT_TIR_ENABLE_LICM").is_ok() {
         run_pass!("licm", licm::run(func));
     }
