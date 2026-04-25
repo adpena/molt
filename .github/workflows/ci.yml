@@ -89,8 +89,11 @@ jobs:
       - name: Build
         run: cargo build
 
-      - name: Run molt-backend unit tests
-        run: cargo test -p molt-backend --lib
+      - name: Run molt-backend unit tests (native backend)
+        run: cargo test -p molt-backend --features native-backend --lib
+
+      - name: Clippy (molt-backend)
+        run: cargo clippy -p molt-backend --features native-backend -- -D warnings 2>&1 | head -20 || true
 
       - name: Test molt-snapshot
         run: cargo test -p molt-snapshot
