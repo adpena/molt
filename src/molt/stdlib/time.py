@@ -63,13 +63,21 @@ __all__ = [
     "localtime",
     "gmtime",
     "strftime",
+    "strptime",
     "timezone",
     "daylight",
     "altzone",
     "tzname",
+    "tzset",
     "mktime",
     "timegm",
 ]
+
+
+# Number of fields the struct_time exposes — _strptime indexes into the
+# raw 11-tuple it builds before constructing struct_time, so this must
+# match struct_time.__new__'s required length.
+_STRUCT_TM_ITEMS = 9
 
 if TYPE_CHECKING:
 
@@ -426,3 +434,24 @@ def timegm(t: Any) -> int:
             f"not enough values to unpack (expected 6, got {len(tuple_val)})"
         )
     return int(_MOLT_TIME_TIMEGM(tuple(tuple_val)))
+
+
+def tzset() -> None:
+    """Reset the timezone information from the TZ environment variable.
+
+    Molt's deterministic compiled-binary contract has no dynamic timezone
+    state — the runtime is initialized from the host environment at
+    startup and stays fixed. Provided as a no-op for compatibility with
+    code that calls tzset() defensively (e.g. _strptime.LocaleTime).
+    """
+    return None
+
+
+def strptime(data_string: str, format: str = "%a %b %d %H:%M:%S %Y") -> "struct_time":
+    """Parse a string according to a format string and return a struct_time.
+
+    Mirrors CPython's `time.strptime` — a thin wrapper over the
+    `_strptime` module's `_strptime_time` entry point.
+    """
+    import _strptime as _strptime_mod  # imported lazily to avoid circular boot
+    return _strptime_mod._strptime_time(data_string, format)
