@@ -18,6 +18,7 @@ pub mod ownership;
 pub mod fast_math;
 pub mod interprocedural;
 pub mod iter_devirt;
+pub mod loop_unroll;
 pub mod loop_narrow;
 pub mod monomorphize;
 pub mod polyhedral;
@@ -157,6 +158,9 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         deforestation::run_tuple_scalarize(func)
     );
     run_pass!("loop_narrow", loop_narrow::run(func));
+    // Unroll small fixed-trip loops (trip count <= 8) to enable
+    // per-iteration constant folding and dead branch elimination.
+    run_pass!("loop_unroll", loop_unroll::run(func));
 
     // ── Canonicalization (phase 1) ───────────────────────────────
     // Normalize all ops to canonical form BEFORE type-directed passes.
