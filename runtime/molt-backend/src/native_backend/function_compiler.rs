@@ -23347,15 +23347,7 @@ impl SimpleBackend {
             }
         }
 
-        // Seal all blocks first so Cranelift resolves SSA phi nodes and
-        // all block terminators are finalized.  The DFS below needs
-        // complete terminators to find successor blocks; running it
-        // before sealing misses blocks whose terminators are only
-        // wired up during phi resolution (e.g. check_exception
-        // fallthrough blocks in functions with exception handling).
-        builder.seal_all_blocks();
-
-        // Eliminate unreachable blocks AFTER sealing.  Cranelift's SSA
+        // Eliminate unreachable blocks BEFORE sealing.  Cranelift's SSA
         // builder can create alias cycles (v1 -> v2 -> v1) when use_var is
         // called in blocks that form unreachable loops.  These cycles cause
         // remove_constant_phis to assert (mismatched formals/actuals) and
@@ -23363,12 +23355,25 @@ impl SimpleBackend {
         // and remove any blocks not visited — the canonical fix endorsed by
         // Cranelift maintainers (bytecodealliance/wasmtime#5022).
         //
-        // Now that all blocks are sealed, every block has a terminator
-        // and the DFS can follow all edges correctly.
+        // The DFS follows branch_destination of terminator instructions.
+        // For functions with exception handling, some blocks are not eagerly
+        // sealed, so their terminators may not yet reference successors.
+        // Supplement the DFS with the `reachable_blocks` set maintained
+        // during codegen, which tracks every block that was explicitly
+        // wired into the control flow graph.  This prevents the DFS from
+        // incorrectly marking exception-handler and fallthrough blocks as
+        // unreachable and inserting traps that crash the function.
         {
             let entry = builder.func.layout.entry_block().unwrap();
             let mut visited = BTreeSet::new();
             let mut stack = vec![entry];
+            // Seed with all blocks known reachable from codegen — these
+            // blocks were explicitly connected via jump/brif/switch during
+            // IR lowering but may not yet have terminators that the DFS
+            // can follow (deferred sealing for exception handling).
+            for &block in &reachable_blocks {
+                stack.push(block);
+            }
             while let Some(block) = stack.pop() {
                 if !visited.insert(block) {
                     continue;
@@ -23426,6 +23431,7 @@ impl SimpleBackend {
                 }
             }
         }
+        builder.seal_all_blocks();
         builder.finalize();
 
         if let Some(config) = should_dump_ir()
