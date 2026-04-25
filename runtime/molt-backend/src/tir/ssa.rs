@@ -107,6 +107,16 @@ struct SsaContext<'a> {
     iter_fuse_map: HashMap<usize, (usize, usize, String, String)>,
     /// Op indices to skip globally (fused into IterNextUnboxed).
     iter_fuse_skip: HashSet<usize>,
+    /// Augmented predecessors: regular predecessors ∪ exception edges. Used
+    /// for SSA-correct dominance analysis. Exception handler blocks are
+    /// reached only via implicit exception edges; without folding those into
+    /// the predecessor relation, the dominator tree treats them as
+    /// unreachable and any post-handler join block (where handler exit
+    /// merges back into normal flow) is not recognized as a true join.
+    aug_predecessors: Vec<Vec<usize>>,
+    /// Augmented immediate dominators computed from `aug_predecessors`.
+    /// Indexed by block id; entry block's idom is `None`.
+    aug_dominators: Vec<Option<usize>>,
 }
 
 impl<'a> SsaContext<'a> {
@@ -128,6 +138,8 @@ impl<'a> SsaContext<'a> {
             undef_value: None,
             iter_fuse_map: HashMap::new(),
             iter_fuse_skip: HashSet::new(),
+            aug_predecessors: vec![Vec::new(); n],
+            aug_dominators: vec![None; n],
         }
     }
 
@@ -149,6 +161,7 @@ impl<'a> SsaContext<'a> {
         }
         self.build_iter_fuse_map();
         self.gather_defs_uses();
+        self.build_augmented_cfg();
         self.compute_dominance_frontiers();
         self.insert_block_arguments();
         self.insert_exception_handler_arguments();
@@ -293,30 +306,87 @@ impl<'a> SsaContext<'a> {
         }
     }
 
+    // -- Phase 1.5: augmented CFG (regular edges + exception edges) ----------
+    //
+    // Exception handler blocks are reached via implicit exception edges, not
+    // ordinary CFG branches. The regular `cfg.predecessors` array therefore
+    // does not list any predecessors for handler blocks. Using only those
+    // regular edges to compute dominators makes handler blocks unreachable
+    // from the entry, which then makes the dominator analysis miss true
+    // join points where a handler's normal exit rejoins the success path
+    // (e.g. the merge block after a `try ... finally`).
+    //
+    // To restore correct SSA dominance, the SSA pass walks an *augmented*
+    // CFG that folds the recorded `cfg.exception_edges` into the predecessor
+    // relation, then recomputes the dominator tree on top of it. Iterated
+    // dominance frontiers and the variable-rename walk both consume the
+    // augmented relation. We do not modify `self.cfg` itself: other passes
+    // (loop detection, codegen control flow) intentionally treat exception
+    // edges as side channels and must keep their own view.
+    fn build_augmented_cfg(&mut self) {
+        let n = self.cfg.blocks.len();
+        // Start from regular predecessors.
+        let mut aug_preds: Vec<Vec<usize>> = self.cfg.predecessors.clone();
+        // Fold exception edges in.
+        for &(from_bid, handler_bid) in &self.cfg.exception_edges {
+            if from_bid >= n || handler_bid >= n {
+                continue;
+            }
+            if !aug_preds[handler_bid].contains(&from_bid) {
+                aug_preds[handler_bid].push(from_bid);
+            }
+        }
+        // Sort for determinism.
+        for preds in &mut aug_preds {
+            preds.sort_unstable();
+            preds.dedup();
+        }
+
+        // Build augmented successors for the dominator algorithm's RPO walk.
+        let mut aug_succs: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (bid, preds) in aug_preds.iter().enumerate() {
+            for &p in preds {
+                aug_succs[p].push(bid);
+            }
+        }
+        for succs in &mut aug_succs {
+            succs.sort_unstable();
+            succs.dedup();
+        }
+
+        self.aug_predecessors = aug_preds;
+        self.aug_dominators = compute_dominators_from(
+            n,
+            &aug_succs,
+            &self.aug_predecessors,
+            self.cfg.entry,
+        );
+    }
+
     // -- Phase 2: dominance frontiers ----------------------------------------
 
     fn compute_dominance_frontiers(&mut self) {
         let n = self.cfg.blocks.len();
         for b in 0..n {
-            for &pred in &self.cfg.predecessors[b] {
+            for &pred in &self.aug_predecessors[b] {
                 let mut runner = pred;
-                // Walk up the dominator tree from `pred` until we reach
-                // the immediate dominator of `b` (exclusive).
+                // Walk up the (augmented) dominator tree from `pred` until we
+                // reach the immediate dominator of `b` (exclusive).
                 loop {
                     // `b` is in DF(runner) if runner doesn't strictly dominate b.
                     // runner dominates pred (or runner==pred), and b has pred as
                     // a predecessor. runner strictly dominates b only if
                     // runner == idom chain ancestor strictly.
-                    if Some(runner) == self.cfg.dominators[b] {
+                    if Some(runner) == self.aug_dominators[b] {
                         // runner strictly dominates b — stop.
                         break;
                     }
                     // runner == b is also possible in loop headers.
-                    if runner == b && self.cfg.dominators[b].is_none() && b == self.cfg.entry {
+                    if runner == b && self.aug_dominators[b].is_none() && b == self.cfg.entry {
                         break;
                     }
                     self.dom_frontier[runner].insert(b);
-                    match self.cfg.dominators[runner] {
+                    match self.aug_dominators[runner] {
                         Some(idom) if idom != runner => runner = idom,
                         _ => break,
                     }
@@ -333,7 +403,11 @@ impl<'a> SsaContext<'a> {
         // This is pruned SSA: only insert a block argument when the variable is
         // actually live-in to the join block. Otherwise dead branch-local vars
         // create bogus block params and unresolved predecessor values.
-        let live_in = self.compute_live_in_vars(false);
+        //
+        // Liveness is computed over the augmented CFG (regular + exception
+        // edges) so that variables propagated through an exception handler's
+        // normal exit are considered live at the post-handler merge block.
+        let live_in = self.compute_live_in_vars(true);
 
         // Function parameters are implicit definitions available at the entry
         // block. Add them as entry-block arguments so the rename phase creates
@@ -464,10 +538,14 @@ impl<'a> SsaContext<'a> {
         let undef_vid = self.fresh_value_typed();
         self.undef_value = Some(undef_vid);
 
-        // Build dominator tree children.
+        // Build dominator tree children from the *augmented* dominator tree.
+        // Handler blocks are reached only via exception edges, so the regular
+        // CFG sees them as unreachable (no idom). The augmented relation
+        // makes them reachable and gives them a real idom, so the rename
+        // walk visits them in dominance order alongside the success path.
         let mut dom_children: Vec<Vec<usize>> = vec![Vec::new(); n];
         for bid in 0..n {
-            if let Some(idom) = self.cfg.dominators[bid] {
+            if let Some(idom) = self.aug_dominators[bid] {
                 dom_children[idom].push(bid);
             }
         }
@@ -682,6 +760,8 @@ impl<'a> SsaContext<'a> {
                         // the nearest dominator that defines this variable.
                         // Values in block_exit_vars[d] dominate d, and
                         // since d dominates bid, they also dominate bid.
+                        // Use the augmented dominator tree so handler blocks
+                        // (reached only via exception edges) participate.
                         let mut d = Some(bid);
                         while let Some(dom_bid) = d {
                             if let Some(vars) = block_exit_vars.get(&dom_bid)
@@ -691,7 +771,7 @@ impl<'a> SsaContext<'a> {
                                 *arg = val;
                                 break;
                             }
-                            let next = self.cfg.dominators[dom_bid];
+                            let next = self.aug_dominators[dom_bid];
                             if next == Some(dom_bid) || next == d {
                                 break; // entry block or cycle
                             }
@@ -1439,6 +1519,109 @@ impl<'a> SsaContext<'a> {
 /// keyword like "none").
 fn is_variable(name: &str) -> bool {
     !name.is_empty() && name != "none" && name != "True" && name != "False"
+}
+
+/// Compute immediate dominators for a CFG given by `successors` and
+/// `predecessors`, rooted at `entry`. Mirrors `cfg::compute_dominators` but
+/// operates on free-form predecessor/successor slices so the SSA pass can
+/// build a dominator tree over an *augmented* graph (regular edges + exception
+/// edges). Returns `idom[entry] = None` and `idom[bid] = Some(...)` for every
+/// reachable block; unreachable blocks get `None`.
+fn compute_dominators_from(
+    n: usize,
+    successors: &[Vec<usize>],
+    predecessors: &[Vec<usize>],
+    entry: usize,
+) -> Vec<Option<usize>> {
+    if n == 0 {
+        return vec![];
+    }
+
+    // RPO over forward (successor) edges from entry.
+    let rpo = rpo_from(n, entry, successors);
+    let mut rpo_number: Vec<usize> = vec![usize::MAX; n];
+    for (rpo_idx, &bid) in rpo.iter().enumerate() {
+        rpo_number[bid] = rpo_idx;
+    }
+
+    let mut idom: Vec<Option<usize>> = vec![None; n];
+    idom[entry] = Some(entry);
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &b in &rpo {
+            if b == entry {
+                continue;
+            }
+            let mut new_idom: Option<usize> = None;
+            for &p in &predecessors[b] {
+                if idom[p].is_some() {
+                    new_idom = Some(match new_idom {
+                        None => p,
+                        Some(cur) => intersect_dom_idx(&idom, &rpo_number, cur, p),
+                    });
+                }
+            }
+            if new_idom != idom[b] {
+                idom[b] = new_idom;
+                changed = true;
+            }
+        }
+    }
+
+    idom[entry] = None;
+    idom
+}
+
+fn intersect_dom_idx(
+    idom: &[Option<usize>],
+    rpo_number: &[usize],
+    mut a: usize,
+    mut b: usize,
+) -> usize {
+    while a != b {
+        while rpo_number[a] > rpo_number[b] {
+            match idom[a] {
+                Some(d) if d != a => a = d,
+                _ => break,
+            }
+        }
+        while rpo_number[b] > rpo_number[a] {
+            match idom[b] {
+                Some(d) if d != b => b = d,
+                _ => break,
+            }
+        }
+        if rpo_number[a] == rpo_number[b] && a != b {
+            break;
+        }
+    }
+    a
+}
+
+fn rpo_from(n: usize, entry: usize, successors: &[Vec<usize>]) -> Vec<usize> {
+    let mut visited = vec![false; n];
+    let mut postorder = Vec::with_capacity(n);
+    let mut stack: Vec<(usize, bool)> = vec![(entry, false)];
+    while let Some((node, processed)) = stack.pop() {
+        if processed {
+            postorder.push(node);
+            continue;
+        }
+        if visited[node] {
+            continue;
+        }
+        visited[node] = true;
+        stack.push((node, true));
+        for &succ in successors[node].iter().rev() {
+            if !visited[succ] {
+                stack.push((succ, false));
+            }
+        }
+    }
+    postorder.reverse();
+    postorder
 }
 
 // Use shared is_structural from parent module (ensures SSA and lower_from_simple
@@ -2485,6 +2668,195 @@ mod tests {
         assert!(
             !seed_values.contains(&returned),
             "load_var after the if/join must not collapse back to any seed missing/None value"
+        );
+    }
+
+    // =======================================================================
+    // Regression: try/finally body assignment must thread through the
+    // post-handler join via a phi (block argument).
+    //
+    // Shape (mirrors `copy.deepcopy`'s try/finally that exposed the bug):
+    //
+    //   r = missing            // pre-init in entry
+    //   try_start L_handler
+    //     check_exception L_handler
+    //     r = ...               // assignment inside try body
+    //     check_exception L_handler
+    //   try_end
+    //   ret r                   // use of r AFTER the try/finally
+    //   L_handler:              // implicit handler entry (exception edge only)
+    //     ret
+    //
+    // Without the augmented dominator construction, the post-handler join
+    // block sees only the success-path predecessor in the regular CFG, and
+    // the handler-side definition of `r` is invisible. The result-using
+    // block then references `r` defined on a path that does not dominate
+    // it, which the LIR verifier flags as an SSA dominance violation.
+    // =======================================================================
+    #[test]
+    fn try_finally_threads_assignment_through_post_handler_join() {
+        // CPython try/finally lowering, simplified:
+        //
+        //   r = missing                      // entry-block initializer
+        //   try_start L_handler
+        //     ... if c:                       // structured branch inside try
+        //       r = 1                         // try-body assignment
+        //     else:
+        //       r = 2
+        //   try_end
+        //   jump L_join                      // skip handler on success
+        //   L_handler:                        // exception path enters here
+        //     // (handler runs cleanup, then merges to L_join)
+        //   L_join:
+        //     ret r                           // use of r AFTER handler merges
+        //
+        // The structured `if` inside the try forces a block split, so the
+        // try body is multiple blocks. Without the augmented dominance
+        // analysis, the post-handler `L_join` block sees only the
+        // success-path predecessor (because the handler block has no
+        // regular CFG predecessors) and the dominator analysis treats the
+        // try body as dominating the join — producing a return that
+        // references `r` on a path that does not actually dominate it
+        // through every runtime control flow.
+        let ops = vec![
+            // r = missing
+            op_val_out("const", 0, "r"),
+            // c = 1
+            op_val_out("const", 1, "c"),
+            // try_start L100  (handler at label 100)
+            op_val("try_start", 100),
+            // if c:
+            op_args("if", &["c"]),
+            //   r = 1
+            op_val_out("const", 1, "r"),
+            // else:
+            op("else"),
+            //   r = 2
+            op_val_out("const", 2, "r"),
+            // end_if
+            op("end_if"),
+            // check_exception L100
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(100),
+                ..OpIR::default()
+            },
+            // try_end
+            op_val("try_end", 100),
+            // jump L_join
+            op_val("jump", 200),
+            // L_handler:
+            op_val("label", 100),
+            // (handler cleanup body — no assignment to r)
+            // jump L_join (handler merges back into the post-try control flow)
+            op_val("jump", 200),
+            // L_join:
+            op_val("label", 200),
+            // ret r
+            op_args("ret", &["r"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        // Locate the return block.
+        let return_block = output
+            .blocks
+            .iter()
+            .find(|b| matches!(b.terminator, Terminator::Return { .. }))
+            .expect("must produce at least one return block");
+        let returned_value = match &return_block.terminator {
+            Terminator::Return { values } => *values
+                .first()
+                .expect("return must carry one value (r)"),
+            _ => unreachable!(),
+        };
+
+        // Collect which block each value is defined in.
+        let mut def_block: HashMap<ValueId, BlockId> = HashMap::new();
+        for block in &output.blocks {
+            for arg in &block.args {
+                def_block.insert(arg.id, block.id);
+            }
+            for op in &block.ops {
+                for &r in &op.results {
+                    def_block.insert(r, block.id);
+                }
+            }
+        }
+        let def_bid = *def_block
+            .get(&returned_value)
+            .expect("returned value must be defined somewhere");
+
+        // Build the augmented predecessor relation used at runtime: regular
+        // CFG predecessors PLUS exception edges. The returned value's
+        // defining block must dominate the return block under THIS
+        // relation. The bug being regressed is precisely that the
+        // dominance check using only regular predecessors says the def
+        // block dominates the return, but the augmented (runtime)
+        // relation reveals it does not.
+        let n = cfg.blocks.len();
+        let mut aug_preds: Vec<Vec<usize>> = cfg.predecessors.clone();
+        for &(from_bid, handler_bid) in &cfg.exception_edges {
+            if !aug_preds[handler_bid].contains(&from_bid) {
+                aug_preds[handler_bid].push(from_bid);
+            }
+        }
+        // BFS from each block to determine which blocks each block is
+        // reachable from in the augmented CFG (i.e., what its augmented
+        // predecessors transitively reach to). Then for every block on a
+        // path from entry to the return block, the def block must lie on
+        // every such path — i.e., must be a dominator. Compute the set of
+        // blocks that strictly dominate the return block under augmented
+        // edges by a simple intersection-of-paths algorithm.
+        let return_bid_idx = return_block.id.0 as usize;
+        // Build augmented successors.
+        let mut aug_succs: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (bid, preds) in aug_preds.iter().enumerate() {
+            for &p in preds {
+                aug_succs[p].push(bid);
+            }
+        }
+        // For every path from entry to return_bid in aug graph, def_bid
+        // must appear. Equivalent: removing def_bid from the graph makes
+        // return_bid unreachable from entry.
+        let def_bid_idx = def_bid.0 as usize;
+        let entry_bid = output.blocks[0].id.0 as usize;
+        let dominates = if def_bid_idx == return_bid_idx || def_bid_idx == entry_bid {
+            true
+        } else {
+            // Reachability of return_bid from entry, skipping def_bid.
+            let mut visited = vec![false; n];
+            visited[def_bid_idx] = true; // mark blocked
+            let mut stack = vec![entry_bid];
+            visited[entry_bid] = true;
+            let mut reaches_return = false;
+            while let Some(b) = stack.pop() {
+                if b == return_bid_idx {
+                    reaches_return = true;
+                    break;
+                }
+                for &succ in &aug_succs[b] {
+                    if !visited[succ] {
+                        visited[succ] = true;
+                        stack.push(succ);
+                    }
+                }
+            }
+            !reaches_return
+        };
+
+        assert!(
+            dominates,
+            "returned `r` (value {returned_value:?}) is defined in bb{} but \
+             that block does not dominate the return block bb{} under the \
+             *augmented* CFG (regular edges + exception edges). This is the \
+             deepcopy try/finally SSA dominance regression: without \
+             folding exception edges into the dominance analysis, a \
+             try-body assignment leaks past the handler-side control \
+             flow into a return that the success-path definition does \
+             not actually dominate at runtime.",
+            def_bid.0,
+            return_block.id.0,
         );
     }
 
