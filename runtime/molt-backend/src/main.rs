@@ -114,6 +114,9 @@ struct DaemonJobResponse {
     output_written: bool,
     needs_ir: bool,
     message: Option<String>,
+    /// Function names that were replaced with trap stubs due to Cranelift
+    /// compilation failures.  Propagated to the CLI for build warnings.
+    warnings: Vec<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -429,6 +432,8 @@ fn prune_and_partition_native_stdlib(
     stdlib_module_symbols: Option<&std::collections::BTreeSet<String>>,
 ) -> (Vec<molt_backend::FunctionIR>, Vec<molt_backend::FunctionIR>) {
     molt_backend::eliminate_dead_functions(ir);
+    molt_backend::eliminate_dead_imports(ir);
+    molt_backend::eliminate_dead_ops(ir);
     let user_func_set: std::collections::BTreeSet<String> = ir
         .functions
         .iter()
@@ -743,6 +748,17 @@ impl DaemonJobResponse {
         if let Some(message) = &self.message {
             obj.insert("message".to_string(), JsonValue::String(message.clone()));
         }
+        if !self.warnings.is_empty() {
+            obj.insert(
+                "warnings".to_string(),
+                JsonValue::Array(
+                    self.warnings
+                        .iter()
+                        .map(|w| JsonValue::String(w.clone()))
+                        .collect(),
+                ),
+            );
+        }
         JsonValue::Object(obj)
     }
 }
@@ -961,6 +977,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             output_written: false,
             needs_ir: false,
             message: Some(unsupported.to_string()),
+            warnings: Vec::new(),
         };
     }
 
@@ -985,6 +1002,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         output_written,
                         needs_ir: false,
                         message: None,
+                        warnings: Vec::new(),
                     };
                 }
                 Err(err) => {
@@ -996,6 +1014,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         output_written: false,
                         needs_ir: false,
                         message: Some(format!("failed to write cached output: {err}")),
+                        warnings: Vec::new(),
                     };
                 }
             }
@@ -1014,6 +1033,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         output_written,
                         needs_ir: false,
                         message: None,
+                        warnings: Vec::new(),
                     };
                 }
                 Err(err) => {
@@ -1025,6 +1045,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         output_written: false,
                         needs_ir: false,
                         message: Some(format!("failed to write cached output: {err}")),
+                        warnings: Vec::new(),
                     };
                 }
             }
@@ -1039,6 +1060,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 output_written: false,
                 needs_ir: true,
                 message: None,
+                warnings: Vec::new(),
             };
         }
 
@@ -1051,6 +1073,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 output_written: false,
                 needs_ir: false,
                 message: Some("missing ir for cache miss".to_string()),
+                warnings: Vec::new(),
             };
         };
 
@@ -1087,6 +1110,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     message: Some(
                         "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend".to_string(),
                     ),
+                    warnings: Vec::new(),
                 };
             }
         } else {
@@ -1192,6 +1216,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                     message: Some(format!(
                                         "failed to materialize shared stdlib cache: {err}"
                                     )),
+                                    warnings: Vec::new(),
                                 };
                             }
                             if let Err(err) = publish_shared_stdlib_cache_object(
@@ -1211,6 +1236,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                     message: Some(format!(
                                         "failed to publish shared stdlib cache: {err}"
                                     )),
+                                    warnings: Vec::new(),
                                 };
                             }
                         }
@@ -1241,6 +1267,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     message: Some(
                         "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend".to_string(),
                     ),
+                    warnings: Vec::new(),
                 };
             }
         };
@@ -1254,6 +1281,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 output_written: false,
                 needs_ir: false,
                 message: Some(format!("failed to write compiled output: {err}")),
+                warnings: Vec::new(),
             };
         }
 
@@ -1277,6 +1305,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             output_written: true,
             needs_ir: false,
             message: None,
+            warnings: Vec::new(),
         }
     }
 }
@@ -2100,6 +2129,8 @@ fn main() -> io::Result<()> {
                 // Run dead function elimination on the full IR before batching
                 // when the stdlib path did not already do the prune/partition split.
                 molt_backend::eliminate_dead_functions(&mut ir);
+                molt_backend::eliminate_dead_imports(&mut ir);
+                molt_backend::eliminate_dead_ops(&mut ir);
             }
 
             // Deduplicate functions by name — the compiler can emit the same
@@ -2330,6 +2361,7 @@ mod tests {
                 output_written: true,
                 needs_ir: false,
                 message: None,
+                warnings: Vec::new(),
             }],
             error: None,
             health: None,
@@ -2875,6 +2907,8 @@ mod tests {
         };
 
         molt_backend::eliminate_dead_functions(&mut ir);
+        molt_backend::eliminate_dead_imports(&mut ir);
+        molt_backend::eliminate_dead_ops(&mut ir);
         let retained: std::collections::BTreeSet<_> =
             ir.functions.iter().map(|func| func.name.as_str()).collect();
 
@@ -3082,6 +3116,8 @@ mod tests {
         let maybe_stdlib = std::env::var("MOLT_STDLIB_OBJ").ok();
         if maybe_stdlib.is_none() {
             molt_backend::eliminate_dead_functions(&mut ir);
+            molt_backend::eliminate_dead_imports(&mut ir);
+            molt_backend::eliminate_dead_ops(&mut ir);
         }
 
         let names: Vec<_> = ir.functions.iter().map(|func| func.name.as_str()).collect();
