@@ -236,7 +236,11 @@ print(p)
 print(p.x + p.y)
 """)
 
-    @pytest.mark.skip(reason="@dataclass not yet supported in Molt")
+    @pytest.mark.skip(
+        reason="runtime @dataclass synthesis is implemented in stdlib but native"
+        " end-to-end is gated on the LIR P0 build (pre-existing XML intrinsic"
+        " link errors); unskip once the runtime crate compiles"
+    )
     def test_dataclass_with_slots(self):
         _assert_match("""\
 from dataclasses import dataclass
