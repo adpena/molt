@@ -3212,6 +3212,14 @@ impl SimpleBackend {
         // `len`/`index` can fold without touching the runtime. The tuple
         // object itself must still use the canonical runtime layout.
         let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        if std::env::var("MOLT_DUMP_IR").as_deref() == Ok("ALL_OPS") && ops.iter().any(|o| o.kind == "not") {
+            eprintln!("[FUNC] {} ({} ops)", func_ir.name, ops.len());
+            for (i, op) in ops.iter().enumerate() {
+                if op.kind.contains("not") || op.kind.contains("bool") || op.kind.contains("print") || op.kind.contains("const") {
+                    eprintln!("[OP] {}: kind={:20} out={:15?} args={:?} val={:?}", i, op.kind, op.out, op.args, op.value);
+                }
+            }
+        }
         for op_idx in 0..ops.len() {
             if skip_ops.contains(&op_idx) {
                 continue;
