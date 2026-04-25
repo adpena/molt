@@ -16,5 +16,13 @@ etree -- The ElementTree XML library.  This is a subset of the full
 
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+# The package itself contains no logic, but every subpackage is wired through
+# the runtime XML intrinsic surface.  The probe call here keeps the package
+# inside the intrinsic-backed stdlib gate.
+_require_intrinsic("molt_stdlib_probe")
+
+del _require_intrinsic
 
 __all__ = ["dom", "parsers", "sax", "etree"]

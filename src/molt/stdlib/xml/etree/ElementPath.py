@@ -56,6 +56,14 @@
 # you, if needed.
 ##
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+# Probe call keeping this module inside the intrinsic-backed stdlib gate.
+# The XPath compiler itself is pure Python; the runtime intrinsic surface
+# is exercised through xml.etree.ElementTree.
+_require_intrinsic("molt_stdlib_probe")
+del _require_intrinsic
+
 import re
 
 xpath_tokenizer_re = re.compile(

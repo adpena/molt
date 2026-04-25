@@ -31,3 +31,12 @@
 
 # Licensed to PSF under a Contributor Agreement.
 # See https://www.python.org/psf/license for licensing details.
+
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+# Probe call to keep the package inside the intrinsic-backed stdlib gate;
+# the actual XML data structures and parser are wired through the
+# molt_xml_* intrinsics from xml.etree.ElementTree.
+_require_intrinsic("molt_stdlib_probe")
+
+del _require_intrinsic
