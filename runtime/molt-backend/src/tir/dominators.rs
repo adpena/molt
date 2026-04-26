@@ -7,8 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::blocks::{BlockId, Terminator};
+use super::blocks::{BlockId, Terminator, TirBlock};
 use super::function::TirFunction;
+use super::ops::{AttrValue, OpCode};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,16 +34,46 @@ pub fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
     }
 }
 
+fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
+    func.label_id_map
+        .iter()
+        .map(|(&bid, &label_id)| (label_id, BlockId(bid)))
+        .collect()
+}
+
+fn exception_successors(block: &TirBlock, label_to_block: &HashMap<i64, BlockId>) -> Vec<BlockId> {
+    let mut successors = Vec::new();
+    for op in &block.ops {
+        if matches!(
+            op.opcode,
+            OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
+        ) && let Some(AttrValue::Int(target_label)) = op.attrs.get("value")
+            && let Some(&target) = label_to_block.get(target_label)
+        {
+            successors.push(target);
+        }
+    }
+    successors
+}
+
 /// Build predecessor map: BlockId -> Vec<BlockId>.
 pub fn build_pred_map(func: &TirFunction) -> HashMap<BlockId, Vec<BlockId>> {
     let mut pred_map: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
     for &bid in func.blocks.keys() {
         pred_map.entry(bid).or_default();
     }
+    let label_to_block = exception_label_to_block(func);
     for (&bid, block) in &func.blocks {
         for succ in terminator_successors(&block.terminator) {
             pred_map.entry(succ).or_default().push(bid);
         }
+        for succ in exception_successors(block, &label_to_block) {
+            pred_map.entry(succ).or_default().push(bid);
+        }
+    }
+    for preds in pred_map.values_mut() {
+        preds.sort_unstable_by_key(|bid| bid.0);
+        preds.dedup();
     }
     pred_map
 }
@@ -65,6 +96,7 @@ pub fn compute_idoms(
     fn dfs_postorder(
         bid: BlockId,
         func: &TirFunction,
+        label_to_block: &HashMap<i64, BlockId>,
         visited: &mut HashSet<BlockId>,
         order: &mut Vec<BlockId>,
     ) {
@@ -73,13 +105,23 @@ pub fn compute_idoms(
         }
         if let Some(block) = func.blocks.get(&bid) {
             for succ in terminator_successors(&block.terminator) {
-                dfs_postorder(succ, func, visited, order);
+                dfs_postorder(succ, func, label_to_block, visited, order);
+            }
+            for succ in exception_successors(block, label_to_block) {
+                dfs_postorder(succ, func, label_to_block, visited, order);
             }
         }
         order.push(bid);
     }
 
-    dfs_postorder(func.entry_block, func, &mut visited, &mut rpo_order);
+    let label_to_block = exception_label_to_block(func);
+    dfs_postorder(
+        func.entry_block,
+        func,
+        &label_to_block,
+        &mut visited,
+        &mut rpo_order,
+    );
     rpo_order.reverse(); // Now in reverse postorder.
 
     // Map BlockId -> RPO index for fast lookup.
@@ -323,5 +365,63 @@ mod tests {
         // bb1 does NOT dominate bb3 (bb2 also reaches bb3)
         assert!(!dominates(bb1, bb3, &idoms));
         assert!(!dominates(bb2, bb3, &idoms));
+    }
+
+    #[test]
+    fn exception_edge_target_is_reachable_for_dominance() {
+        use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+        use crate::tir::values::TirValue;
+
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let normal = func.fresh_block();
+        let handler = func.fresh_block();
+        let entry_arg = func.blocks[&func.entry_block].args[0].id;
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(100));
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CheckException,
+                operands: vec![entry_arg],
+                results: vec![],
+                attrs,
+                source_span: None,
+            });
+            entry.terminator = Terminator::Branch {
+                target: normal,
+                args: vec![],
+            };
+        }
+
+        func.blocks.insert(
+            normal,
+            TirBlock {
+                id: normal,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let handler_arg = func.fresh_value();
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.label_id_map.insert(handler.0, 100);
+
+        let pred_map = build_pred_map(&func);
+        let idoms = compute_idoms(&func, &pred_map);
+
+        assert!(dominates(func.entry_block, handler, &idoms));
     }
 }
