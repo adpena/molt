@@ -18,10 +18,10 @@
 //!
 //! Reference: Muchnick ch. 17, LLVM LoopUnrollPass.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::PassStats;
-use crate::tir::blocks::{BlockId, LoopRole, Terminator};
+use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -184,17 +184,267 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         return stats;
     }
 
-    // For now, just count candidates. Full unrolling requires
-    // duplicating body ops with substituted induction variables,
-    // which needs careful SSA value renaming. The detection alone
-    // enables future passes to act on the metadata.
-    //
-    // TODO: implement body duplication + induction variable substitution.
-    // This is tracked as a known limitation, not a workaround — the
-    // detection infrastructure is complete and correct.
-    stats.values_changed = candidates.len();
+    for candidate in candidates {
+        unroll_candidate(func, &candidate, &mut stats);
+    }
 
     stats
+}
+
+/// Unroll a single loop candidate: replace header + body with a straight-line
+/// "landing" block that contains `trip_count` copies of the body, each with
+/// the induction variable substituted by its iteration constant. Exit-edge
+/// arguments that referenced the induction variable are rewritten to the
+/// final post-loop value (start + trip_count * step), and arguments that
+/// referenced the body's loop-back values are rewritten to the corresponding
+/// last-iteration result.
+fn unroll_candidate(func: &mut TirFunction, c: &UnrollCandidate, stats: &mut PassStats) {
+    // Snapshot what we need from header/body before mutating.
+    let body_ops = match func.blocks.get(&c.body) {
+        Some(b) => b.ops.clone(),
+        None => return,
+    };
+    let body_back_args: Vec<ValueId> = match func.blocks.get(&c.body) {
+        Some(b) => match &b.terminator {
+            Terminator::Branch { target, args } if *target == c.header => args.clone(),
+            _ => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    let header_block = match func.blocks.get(&c.header) {
+        Some(b) => b.clone(),
+        None => return,
+    };
+    let orig_exit_args: Vec<ValueId> = match &header_block.terminator {
+        Terminator::CondBranch {
+            then_block,
+            then_args,
+            else_block,
+            else_args,
+            ..
+        } => {
+            if *else_block == c.exit {
+                else_args.clone()
+            } else if *then_block == c.exit {
+                then_args.clone()
+            } else {
+                return;
+            }
+        }
+        _ => return,
+    };
+
+    // Map each header block-arg index to which body back-edge ValueId fills it.
+    // body_back_args[i] is the value the body branch passes for header.args[i].
+    let header_arg_ids: Vec<ValueId> = header_block.args.iter().map(|a| a.id).collect();
+
+    let header_ops_count = header_block.ops.len();
+    let body_ops_count = body_ops.len();
+
+    // Build the landing block ops.
+    let mut landing_ops: Vec<TirOp> = Vec::new();
+    // Track the last iteration's remap so we can substitute exit-arg references
+    // to body-loop-back values with the last clone's outputs.
+    let mut last_iter_remap: HashMap<ValueId, ValueId> = HashMap::new();
+
+    for i in 0..c.trip_count {
+        let iter_value = c.start + i * c.step;
+        let iter_const_id = func.fresh_value();
+
+        let mut const_attrs = AttrDict::new();
+        const_attrs.insert("value".into(), AttrValue::Int(iter_value));
+        landing_ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![iter_const_id],
+            attrs: const_attrs,
+            source_span: None,
+        });
+
+        // Per-iteration value remap: induction var → this iteration's constant,
+        // then each cloned op's result gets a fresh ValueId added to the map.
+        let mut remap: HashMap<ValueId, ValueId> = HashMap::new();
+        remap.insert(c.induction_var, iter_const_id);
+
+        for op in &body_ops {
+            let new_results: Vec<ValueId> = op
+                .results
+                .iter()
+                .map(|&result| {
+                    let new_value = func.fresh_value();
+                    remap.insert(result, new_value);
+                    new_value
+                })
+                .collect();
+
+            let new_operands: Vec<ValueId> = op
+                .operands
+                .iter()
+                .map(|v| remap.get(v).copied().unwrap_or(*v))
+                .collect();
+
+            landing_ops.push(TirOp {
+                dialect: op.dialect,
+                opcode: op.opcode,
+                operands: new_operands,
+                results: new_results.clone(),
+                attrs: op.attrs.clone(),
+                source_span: op.source_span,
+            });
+
+            stats.ops_added += 1;
+            stats.values_changed += new_results.len();
+        }
+
+        last_iter_remap = remap;
+    }
+
+    // If any exit arg references the induction variable, materialise the
+    // post-loop final value (start + trip_count * step) as a ConstInt in the
+    // landing block and use it as the substitution target.
+    let final_value_id: Option<ValueId> = if orig_exit_args.iter().any(|v| *v == c.induction_var) {
+        let final_value = c.start + c.trip_count * c.step;
+        let final_id = func.fresh_value();
+        let mut final_attrs = AttrDict::new();
+        final_attrs.insert("value".into(), AttrValue::Int(final_value));
+        landing_ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![final_id],
+            attrs: final_attrs,
+            source_span: None,
+        });
+        Some(final_id)
+    } else {
+        None
+    };
+
+    // Substitute exit args:
+    //   - References to the induction variable → final post-loop value.
+    //   - References to a header block-arg whose body back-edge value is in
+    //     last_iter_remap → that remapped result. (Handles cases where the
+    //     exit-edge passes a body-defined value that loops back through
+    //     header.args[k], i.e. the loop-carried reduction pattern.)
+    let new_exit_args: Vec<ValueId> = orig_exit_args
+        .iter()
+        .map(|&v| {
+            if v == c.induction_var {
+                return final_value_id.unwrap_or(v);
+            }
+            // Loop-carried block arg: header.args[k] is forwarded by body's
+            // back-edge as body_back_args[k]. The exit edge gets the same
+            // value as the LAST iteration's body produced, which is
+            // last_iter_remap[body_back_args[k]].
+            if let Some(arg_idx) = header_arg_ids.iter().position(|&id| id == v) {
+                if let Some(&body_value) = body_back_args.get(arg_idx) {
+                    if let Some(&remapped) = last_iter_remap.get(&body_value) {
+                        return remapped;
+                    }
+                }
+            }
+            v
+        })
+        .collect();
+
+    // Allocate the landing block.
+    let landing = func.fresh_block();
+    let landing_block = TirBlock {
+        id: landing,
+        args: Vec::new(),
+        ops: landing_ops,
+        terminator: Terminator::Branch {
+            target: c.exit,
+            args: new_exit_args,
+        },
+    };
+    func.blocks.insert(landing, landing_block);
+
+    // Redirect every predecessor of the header to the landing block.
+    let preds: Vec<BlockId> = func
+        .blocks
+        .iter()
+        .filter_map(|(&bid, b)| {
+            if bid == c.header || bid == c.body {
+                return None;
+            }
+            if branches_to(&b.terminator, c.header) {
+                Some(bid)
+            } else {
+                None
+            }
+        })
+        .collect();
+    for pred in preds {
+        if let Some(b) = func.blocks.get_mut(&pred) {
+            redirect_terminator(&mut b.terminator, c.header, landing);
+        }
+    }
+    // Also remap the function entry if it pointed at the header.
+    if func.entry_block == c.header {
+        func.entry_block = landing;
+    }
+
+    // Drop the original header and body blocks plus their loop metadata.
+    func.blocks.remove(&c.header);
+    func.blocks.remove(&c.body);
+    func.loop_roles.remove(&c.header);
+    func.loop_pairs.remove(&c.header);
+    func.loop_break_kinds.remove(&c.header);
+    func.loop_cond_blocks.remove(&c.header);
+
+    stats.ops_removed += header_ops_count + body_ops_count;
+}
+
+/// Returns `true` if the terminator references `target` as any successor.
+fn branches_to(term: &Terminator, target: BlockId) -> bool {
+    match term {
+        Terminator::Branch { target: t, .. } => *t == target,
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => *then_block == target || *else_block == target,
+        Terminator::Switch { cases, default, .. } => {
+            *default == target || cases.iter().any(|(_, b, _)| *b == target)
+        }
+        _ => false,
+    }
+}
+
+/// Replace every successor reference to `from` with `to` in `term`.
+fn redirect_terminator(term: &mut Terminator, from: BlockId, to: BlockId) {
+    match term {
+        Terminator::Branch { target, .. } => {
+            if *target == from {
+                *target = to;
+            }
+        }
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => {
+            if *then_block == from {
+                *then_block = to;
+            }
+            if *else_block == from {
+                *else_block = to;
+            }
+        }
+        Terminator::Switch { cases, default, .. } => {
+            for (_, b, _) in cases.iter_mut() {
+                if *b == from {
+                    *b = to;
+                }
+            }
+            if *default == from {
+                *default = to;
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -210,8 +460,63 @@ mod tests {
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};
 
-    #[test]
-    fn detects_small_range_loop() {
+    fn const_int_op(result: ValueId, value: i64) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![result],
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("value".into(), AttrValue::Int(value));
+                m
+            },
+            source_span: None,
+        }
+    }
+
+    fn range_metadata_op(result: ValueId, role: &str, value: i64) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![result],
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("value".into(), AttrValue::Int(value));
+                m.insert("range_role".into(), AttrValue::Str(role.into()));
+                m
+            },
+            source_span: None,
+        }
+    }
+
+    fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![lhs, rhs],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
+    struct TestLoop {
+        func: TirFunction,
+        header: BlockId,
+        body: BlockId,
+        exit: BlockId,
+        body_result: ValueId,
+    }
+
+    fn build_test_loop(
+        start: i64,
+        stop: i64,
+        step: i64,
+        body_op_count: usize,
+        exit_args: impl FnOnce(ValueId, ValueId) -> Vec<ValueId>,
+    ) -> TestLoop {
         let mut func = TirFunction::new("f".into(), vec![], TirType::None);
 
         let header = func.fresh_block();
@@ -221,12 +526,14 @@ mod tests {
         let cond = func.fresh_value();
         let start_val = func.fresh_value();
         let stop_val = func.fresh_value();
+        let step_val = func.fresh_value();
+        let external = func.fresh_value();
         let body_op_result = func.fresh_value();
-        let body_branch_arg = func.fresh_value();
 
         // Entry → header
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(const_int_op(external, 10));
             entry.terminator = Terminator::Branch {
                 target: header,
                 args: vec![],
@@ -243,76 +550,37 @@ mod tests {
                     ty: TirType::I64,
                 }],
                 ops: vec![
-                    TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstInt,
-                        operands: vec![],
-                        results: vec![start_val],
-                        attrs: {
-                            let mut m = AttrDict::new();
-                            m.insert("value".into(), AttrValue::Int(0));
-                            m.insert("range_role".into(), AttrValue::Str("start".into()));
-                            m
-                        },
-                        source_span: None,
-                    },
-                    TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstInt,
-                        operands: vec![],
-                        results: vec![stop_val],
-                        attrs: {
-                            let mut m = AttrDict::new();
-                            m.insert("value".into(), AttrValue::Int(4));
-                            m.insert("range_role".into(), AttrValue::Str("stop".into()));
-                            m
-                        },
-                        source_span: None,
-                    },
-                    TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstInt,
-                        operands: vec![],
-                        results: vec![cond],
-                        attrs: {
-                            let mut m = AttrDict::new();
-                            m.insert("value".into(), AttrValue::Int(1));
-                            m
-                        },
-                        source_span: None,
-                    },
+                    range_metadata_op(start_val, "start", start),
+                    range_metadata_op(stop_val, "stop", stop),
+                    range_metadata_op(step_val, "step", step),
+                    const_int_op(cond, 1),
                 ],
                 terminator: Terminator::CondBranch {
                     cond,
                     then_block: body,
                     then_args: vec![],
                     else_block: exit,
-                    else_args: vec![],
+                    else_args: exit_args(ind_var, body_op_result),
                 },
             },
         );
 
         // Body: one op, loops back to header
+        let mut body_ops = vec![add_op(ind_var, external, body_op_result)];
+        for _ in 1..body_op_count {
+            let extra_result = func.fresh_value();
+            body_ops.push(add_op(ind_var, external, extra_result));
+        }
+
         func.blocks.insert(
             body,
             TirBlock {
                 id: body,
                 args: vec![],
-                ops: vec![TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::ConstInt,
-                    operands: vec![],
-                    results: vec![body_op_result],
-                    attrs: {
-                        let mut m = AttrDict::new();
-                        m.insert("value".into(), AttrValue::Int(0));
-                        m
-                    },
-                    source_span: None,
-                }],
+                ops: body_ops,
                 terminator: Terminator::Branch {
                     target: header,
-                    args: vec![body_branch_arg],
+                    args: vec![body_op_result],
                 },
             },
         );
@@ -330,118 +598,128 @@ mod tests {
 
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
-        let stats = run(&mut func);
-        assert_eq!(stats.values_changed, 1, "should detect 1 unroll candidate");
+        TestLoop {
+            func,
+            header,
+            body,
+            exit,
+            body_result: body_op_result,
+        }
+    }
+
+    fn attr_int(op: &TirOp, name: &str) -> Option<i64> {
+        match op.attrs.get(name) {
+            Some(AttrValue::Int(value)) => Some(*value),
+            _ => None,
+        }
     }
 
     #[test]
-    fn rejects_large_trip_count() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
-
-        let header = func.fresh_block();
-        let body = func.fresh_block();
-        let exit = func.fresh_block();
-        let ind_var = func.fresh_value();
-        let cond = func.fresh_value();
-        let start_v = func.fresh_value();
-        let stop_v = func.fresh_value();
-        let body_arg = func.fresh_value();
-
-        {
-            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry.terminator = Terminator::Branch {
-                target: header,
-                args: vec![],
-            };
-        }
-
-        func.blocks.insert(
+    fn unrolls_small_range_loop_into_four_body_copies() {
+        let TestLoop {
+            mut func,
             header,
-            TirBlock {
-                id: header,
-                args: vec![TirValue {
-                    id: ind_var,
-                    ty: TirType::I64,
-                }],
-                ops: vec![
-                    TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstInt,
-                        operands: vec![],
-                        results: vec![start_v],
-                        attrs: {
-                            let mut m = AttrDict::new();
-                            m.insert("value".into(), AttrValue::Int(0));
-                            m.insert("range_role".into(), AttrValue::Str("start".into()));
-                            m
-                        },
-                        source_span: None,
-                    },
-                    TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstInt,
-                        operands: vec![],
-                        results: vec![stop_v],
-                        attrs: {
-                            let mut m = AttrDict::new();
-                            m.insert("value".into(), AttrValue::Int(100));
-                            m.insert("range_role".into(), AttrValue::Str("stop".into()));
-                            m
-                        },
-                        source_span: None,
-                    },
-                    TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstInt,
-                        operands: vec![],
-                        results: vec![cond],
-                        attrs: {
-                            let mut m = AttrDict::new();
-                            m.insert("value".into(), AttrValue::Int(1));
-                            m
-                        },
-                        source_span: None,
-                    },
-                ],
-                terminator: Terminator::CondBranch {
-                    cond,
-                    then_block: body,
-                    then_args: vec![],
-                    else_block: exit,
-                    else_args: vec![],
-                },
-            },
-        );
-
-        func.blocks.insert(
             body,
-            TirBlock {
-                id: body,
-                args: vec![],
-                ops: vec![],
-                terminator: Terminator::Branch {
-                    target: header,
-                    args: vec![body_arg],
-                },
-            },
-        );
-
-        func.blocks.insert(
-            exit,
-            TirBlock {
-                id: exit,
-                args: vec![],
-                ops: vec![],
-                terminator: Terminator::Return { values: vec![] },
-            },
-        );
-
-        func.loop_roles.insert(header, LoopRole::LoopHeader);
+            ..
+        } = build_test_loop(0, 4, 1, 1, |_, _| vec![]);
 
         let stats = run(&mut func);
+
+        assert_eq!(stats.values_changed, 4);
+        assert_eq!(stats.ops_added, 4);
+        assert_eq!(stats.ops_removed, 5);
+        assert!(!func.blocks.contains_key(&header));
+        assert!(!func.blocks.contains_key(&body));
+        assert!(!func.loop_roles.contains_key(&header));
+
+        let landing = match &func.blocks[&func.entry_block].terminator {
+            Terminator::Branch { target, args } => {
+                assert!(args.is_empty());
+                *target
+            }
+            _ => panic!("entry should branch to unrolled landing block"),
+        };
+        assert_ne!(landing, header);
+        assert_ne!(landing, body);
+
+        let landing_block = &func.blocks[&landing];
+        let add_count = landing_block
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::Add)
+            .count();
+        assert_eq!(add_count, 4, "body Add op should be cloned once per trip");
+
+        let iteration_constants: Vec<_> = landing_block
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::ConstInt)
+            .filter_map(|op| attr_int(op, "value"))
+            .collect();
+        assert_eq!(iteration_constants, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn substitutes_exit_arg_induction_var_with_final_iteration_value() {
+        let TestLoop {
+            mut func,
+            exit,
+            ..
+        } = build_test_loop(2, 10, 2, 1, |ind_var, _| vec![ind_var]);
+
+        let stats = run(&mut func);
+        assert_eq!(stats.values_changed, 4);
+
+        let landing = match &func.blocks[&func.entry_block].terminator {
+            Terminator::Branch { target, .. } => *target,
+            _ => panic!("entry should branch to unrolled landing block"),
+        };
+        let landing_block = &func.blocks[&landing];
+        let branch_args = match &landing_block.terminator {
+            Terminator::Branch { target, args } => {
+                assert_eq!(*target, exit);
+                args
+            }
+            _ => panic!("landing should branch to exit"),
+        };
+        assert_eq!(branch_args.len(), 1);
+
+        let final_value_op = landing_block
+            .ops
+            .iter()
+            .find(|op| op.results == vec![branch_args[0]])
+            .expect("final induction value should be materialized in landing block");
+        assert_eq!(final_value_op.opcode, OpCode::ConstInt);
+        assert_eq!(attr_int(final_value_op, "value"), Some(10));
+    }
+
+    #[test]
+    fn does_not_unroll_body_larger_than_max_unroll_ops() {
+        let TestLoop {
+            mut func,
+            header,
+            body,
+            body_result,
+            ..
+        } = build_test_loop(0, 4, 1, MAX_UNROLL_OPS + 1, |_, _| vec![]);
+        let entry_target_before = match &func.blocks[&func.entry_block].terminator {
+            Terminator::Branch { target, .. } => *target,
+            _ => panic!("entry should branch to header"),
+        };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.values_changed, 0);
+        assert_eq!(stats.ops_added, 0);
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(entry_target_before, header);
+        assert!(func.blocks.contains_key(&header));
+        assert!(func.blocks.contains_key(&body));
+        assert!(func.loop_roles.contains_key(&header));
         assert_eq!(
-            stats.values_changed, 0,
-            "trip count 100 > MAX should not be detected"
+            func.blocks[&body].ops[0].results,
+            vec![body_result],
+            "oversized body should remain intact"
         );
     }
 }
