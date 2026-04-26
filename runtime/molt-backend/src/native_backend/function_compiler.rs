@@ -967,10 +967,20 @@ fn materialize_label_block(
     is_block_filled: &mut bool,
 ) {
     ensure_block_in_layout(builder, block);
-    if !*is_block_filled {
-        jump_block(builder, block, &[]);
+    // If we're already inside `block` and it's still open, the label has
+    // effectively materialised in place — do not emit a self-jump to itself,
+    // which would (a) close the block, (b) wire it as its own predecessor,
+    // and (c) generate an unreachable trailing instruction. The
+    // `is_block_filled` guard alone is not sufficient because a fresh
+    // resume block created by `state_yield` lowering also has
+    // `is_block_filled == false` while already being the current block.
+    let already_in_target = builder.current_block() == Some(block);
+    if !already_in_target {
+        if !*is_block_filled {
+            jump_block(builder, block, &[]);
+        }
+        crate::switch_to_block_tracking(builder, block, is_block_filled);
     }
-    crate::switch_to_block_tracking(builder, block, is_block_filled);
 }
 
 #[cfg(feature = "native-backend")]
@@ -24547,6 +24557,30 @@ mod tests {
         assert!(
             !is_block_filled,
             "materialized label block must be open for emission"
+        );
+    }
+
+    #[test]
+    fn materialize_label_block_does_not_self_jump_current_resume_block() {
+        let sig = Signature::new(CallConv::SystemV);
+        let mut func = Function::with_name_signature(UserFuncName::default(), sig);
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
+
+        let resume_block = builder.create_block();
+        switch_to_block_materialized(&mut builder, resume_block);
+
+        let mut is_block_filled = false;
+        materialize_label_block(&mut builder, resume_block, &mut is_block_filled);
+
+        assert_eq!(builder.current_block(), Some(resume_block));
+        assert!(
+            !is_block_filled,
+            "state_label materialization must leave the current resume block open"
+        );
+        assert!(
+            builder.func.layout.last_inst(resume_block).is_none(),
+            "state_label materialization must not emit a self-jump predecessor"
         );
     }
 
