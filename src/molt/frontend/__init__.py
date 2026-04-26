@@ -21971,6 +21971,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise NotImplementedError("Type aliases are only supported at module scope")
         if not isinstance(node.name, ast.Name):
             raise NotImplementedError("Unsupported type alias target")
+        # Eagerly load typing._molt_type_alias before evaluating the alias
+        # value.  This forces the typing module to be initialized prior to
+        # any annotation expression evaluation, ensuring consistent runtime
+        # state regardless of whether type_params trigger an earlier load.
+        alias_fn = self._emit_module_attr_get_on("typing", "_molt_type_alias")
         type_param_vals, type_param_map = self._emit_type_params_values(
             node.type_params
         )
@@ -21985,7 +21990,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         finally:
             self.annotation_type_params = prev_type_params
-        alias_fn = self._emit_module_attr_get_on("typing", "_molt_type_alias")
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[node.name.id], result=name_val))
         params_tuple = MoltValue(self.next_var(), type_hint="tuple")
