@@ -327,7 +327,11 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
     // 2c. Create synthetic resume blocks for stateful generator/coroutine ops.
     lowering.initialize_state_resume_blocks();
 
-    // 3. Compute RPO ordering (simple BFS from entry for now).
+    // 3. Compute reverse-post-order (RPO) ordering of the CFG.
+    //    RPO emits each block before its non-back-edge successors, which is
+    //    the order LLVM's downstream passes (and our own phi finalization)
+    //    expect: dominators precede dominatees, so each block sees its
+    //    operand definitions already lowered.
     let rpo = lowering.compute_rpo();
 
     // 4. Lower each block.
@@ -430,6 +434,127 @@ pub fn declare_tir_function<'ctx>(
     llvm_fn
 }
 
+/// Append the successor block ids of `term` to `out`, preserving the order
+/// in which they appear in the terminator (then-before-else for conditional
+/// branches; case-list order followed by default for switches).
+///
+/// This is the single source of truth for "what does this terminator branch
+/// to" within the LLVM lowering — both RPO traversal and any future analyses
+/// route through here.
+///
+/// Public so integration tests (under `runtime/molt-backend/tests/`) can
+/// exercise it without going through an inkwell context.
+#[cfg(feature = "llvm")]
+pub fn append_terminator_successors(term: &Terminator, out: &mut Vec<BlockId>) {
+    match term {
+        Terminator::Branch { target, .. } => out.push(*target),
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => {
+            out.push(*then_block);
+            out.push(*else_block);
+        }
+        Terminator::Switch { cases, default, .. } => {
+            for (_, bid, _) in cases {
+                out.push(*bid);
+            }
+            out.push(*default);
+        }
+        Terminator::Return { .. } | Terminator::Unreachable => {}
+    }
+}
+
+/// Compute a reverse-post-order (RPO) traversal of `func`'s CFG starting
+/// from its entry block.
+///
+/// Algorithm: classic Cooper/Harvey/Kennedy iterative DFS post-order, then
+/// reverse. We use an explicit work stack with two-phase entries (Enter then
+/// Exit markers) so deeply nested or pathologically chained CFGs cannot
+/// overflow the host call stack — a hard requirement for production-grade
+/// codegen.
+///
+/// Properties of the result:
+/// - The entry block is always first (a dominator of every reachable block).
+/// - For any forward CFG edge `a -> b`, `a` precedes `b` in the result.
+/// - Back-edges (loop latch -> header) are the only edges that go "backwards"
+///   in the resulting order, which is exactly the layout LLVM expects: it
+///   minimizes branch-backwards count for downstream code-layout passes.
+/// - Unreachable blocks are not included; the lowering driver emits an
+///   `unreachable` terminator for them in a separate sweep.
+/// - Successor order within a terminator is preserved (then-before-else,
+///   case-list-before-default), so the result is deterministic given a
+///   deterministic CFG construction.
+///
+/// Public so integration tests (under `runtime/molt-backend/tests/`) can
+/// exercise it without going through an inkwell context.
+#[cfg(feature = "llvm")]
+pub fn compute_function_rpo(func: &TirFunction) -> Vec<BlockId> {
+    /// Work-stack frame: either `Enter(b)` (visit `b` and schedule its
+    /// successors) or `Exit(b)` (record `b` in post-order — all successors
+    /// have now been fully visited).
+    enum Frame {
+        Enter(BlockId),
+        Exit(BlockId),
+    }
+
+    let entry = func.entry_block;
+    if !func.blocks.contains_key(&entry) {
+        // Malformed function with no entry block. Returning empty preserves
+        // the contract that callers see only blocks present in the CFG.
+        return Vec::new();
+    }
+
+    let mut visited: std::collections::HashSet<BlockId> =
+        std::collections::HashSet::with_capacity(func.blocks.len());
+    let mut post_order: Vec<BlockId> = Vec::with_capacity(func.blocks.len());
+    let mut stack: Vec<Frame> = Vec::with_capacity(func.blocks.len());
+    let mut succ_buf: Vec<BlockId> = Vec::new();
+
+    stack.push(Frame::Enter(entry));
+
+    while let Some(frame) = stack.pop() {
+        match frame {
+            Frame::Enter(b) => {
+                if !visited.insert(b) {
+                    continue;
+                }
+                let Some(block) = func.blocks.get(&b) else {
+                    // Terminator references a block that was deleted from
+                    // the CFG. Skip rather than panic — the lowering driver
+                    // will emit an unreachable terminator for any LLVM block
+                    // that lacks one.
+                    continue;
+                };
+
+                // Schedule the post-order Exit for this block first; it will
+                // run after all successors (and their transitive successors)
+                // have been fully visited.
+                stack.push(Frame::Exit(b));
+
+                // Push successors in reverse so the *first* successor is
+                // popped (and thus visited) first. This makes the recursion
+                // order match the natural left-to-right successor order
+                // recorded by `append_terminator_successors`.
+                succ_buf.clear();
+                append_terminator_successors(&block.terminator, &mut succ_buf);
+                for succ in succ_buf.iter().rev() {
+                    if !visited.contains(succ) {
+                        stack.push(Frame::Enter(*succ));
+                    }
+                }
+            }
+            Frame::Exit(b) => {
+                post_order.push(b);
+            }
+        }
+    }
+
+    post_order.reverse();
+    post_order
+}
+
 #[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Record that `from_bb` branches to `to_bb` at the LLVM level.
@@ -438,50 +563,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.llvm_pred_map.entry(to_bb).or_default().push(from_bb);
     }
 
-    /// Compute a reverse-post-order traversal of blocks starting from entry.
+    /// Compute a reverse-post-order (RPO) traversal of the CFG starting from
+    /// the function's entry block.
+    ///
+    /// Delegates to the pure free function [`compute_function_rpo`] so the
+    /// algorithm can be unit-tested without an inkwell context.
     fn compute_rpo(&self) -> Vec<BlockId> {
-        let mut visited = std::collections::HashSet::new();
-        let mut post_order = Vec::new();
-        self.dfs_post_order(self.func.entry_block, &mut visited, &mut post_order);
-        post_order.reverse();
-        post_order
-    }
-
-    fn dfs_post_order(
-        &self,
-        block_id: BlockId,
-        visited: &mut std::collections::HashSet<BlockId>,
-        post_order: &mut Vec<BlockId>,
-    ) {
-        if !self.func.blocks.contains_key(&block_id) {
-            return;
-        }
-        if !visited.insert(block_id) {
-            return;
-        }
-        if let Some(block) = self.func.blocks.get(&block_id) {
-            for succ in Self::terminator_successors(&block.terminator) {
-                self.dfs_post_order(succ, visited, post_order);
-            }
-        }
-        post_order.push(block_id);
-    }
-
-    fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-        match term {
-            Terminator::Branch { target, .. } => vec![*target],
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => vec![*then_block, *else_block],
-            Terminator::Switch { cases, default, .. } => {
-                let mut succs: Vec<BlockId> = cases.iter().map(|(_, bid, _)| *bid).collect();
-                succs.push(*default);
-                succs
-            }
-            Terminator::Return { .. } | Terminator::Unreachable => vec![],
-        }
+        compute_function_rpo(self.func)
     }
 
     fn lower_block(&mut self, block_id: BlockId) {
@@ -8852,5 +8940,362 @@ mod tests {
             "expected NaN-boxing AND mask in IR: {}",
             ir
         );
+    }
+
+    // ── RPO algorithm tests ──
+    //
+    // The RPO algorithm is exercised end-to-end by the integration tests in
+    // `runtime/molt-backend/tests/llvm_rpo.rs`, which call into
+    // [`super::compute_function_rpo`] directly with synthetic CFGs covering
+    // diamonds, loops, switches, deep chains, self-loops, and unreachable
+    // blocks. Those tests live in a separate test binary and so are not
+    // blocked by drift in the wider lib test suite.
+
+    /// Helper: build a function with `num_blocks` empty blocks (terminators
+    /// initialized to `Unreachable`; tests overwrite them).
+    fn make_func_with_blocks(name: &str, num_blocks: u32) -> TirFunction {
+        let mut func = TirFunction::new(name.into(), vec![], TirType::I64);
+        for _ in 1..num_blocks {
+            let bid = func.fresh_block();
+            func.blocks.insert(
+                bid,
+                TirBlock {
+                    id: bid,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Unreachable,
+                },
+            );
+        }
+        func
+    }
+
+    fn set_term(func: &mut TirFunction, b: BlockId, term: Terminator) {
+        func.blocks.get_mut(&b).unwrap().terminator = term;
+    }
+
+    fn position_of(rpo: &[BlockId], b: BlockId) -> usize {
+        rpo.iter()
+            .position(|x| *x == b)
+            .unwrap_or_else(|| panic!("BlockId {:?} not present in RPO {:?}", b, rpo))
+    }
+
+    #[test]
+    fn rpo_diamond_cfg_orders_entry_first_then_arms_then_merge() {
+        // CFG:
+        //   entry -> A, B   (cond branch)
+        //   A     -> merge
+        //   B     -> merge
+        //   merge -> return
+        //
+        // Valid RPOs: [entry, A, B, merge] OR [entry, B, A, merge].
+        let mut func = make_func_with_blocks("diamond", 4);
+        let entry = func.entry_block; // BlockId(0)
+        let a = BlockId(1);
+        let b = BlockId(2);
+        let merge = BlockId(3);
+
+        // We allocate ValueId(0) as the conditional value. We never actually
+        // evaluate it — RPO walks terminators, not ops.
+        let cond = func.fresh_value();
+        set_term(
+            &mut func,
+            entry,
+            Terminator::CondBranch {
+                cond,
+                then_block: a,
+                then_args: vec![],
+                else_block: b,
+                else_args: vec![],
+            },
+        );
+        set_term(
+            &mut func,
+            a,
+            Terminator::Branch {
+                target: merge,
+                args: vec![],
+            },
+        );
+        set_term(
+            &mut func,
+            b,
+            Terminator::Branch {
+                target: merge,
+                args: vec![],
+            },
+        );
+        set_term(&mut func, merge, Terminator::Return { values: vec![] });
+
+        let rpo = compute_function_rpo(&func);
+
+        assert_eq!(rpo.len(), 4, "all four blocks must appear in RPO: {:?}", rpo);
+        assert_eq!(rpo[0], entry, "entry must be first: {:?}", rpo);
+        assert_eq!(rpo[3], merge, "merge must be last: {:?}", rpo);
+
+        let pos_entry = position_of(&rpo, entry);
+        let pos_a = position_of(&rpo, a);
+        let pos_b = position_of(&rpo, b);
+        let pos_merge = position_of(&rpo, merge);
+
+        assert!(pos_entry < pos_a, "entry must precede A: {:?}", rpo);
+        assert!(pos_entry < pos_b, "entry must precede B: {:?}", rpo);
+        assert!(pos_a < pos_merge, "A must precede merge: {:?}", rpo);
+        assert!(pos_b < pos_merge, "B must precede merge: {:?}", rpo);
+
+        // The two valid orderings are exactly these two.
+        let valid_a_first = rpo == vec![entry, a, b, merge];
+        let valid_b_first = rpo == vec![entry, b, a, merge];
+        assert!(
+            valid_a_first || valid_b_first,
+            "RPO must be one of the two valid diamond orderings, got {:?}",
+            rpo
+        );
+    }
+
+    #[test]
+    fn rpo_simple_loop_orders_entry_before_header_before_body() {
+        // CFG:
+        //   entry  -> header
+        //   header -> body, exit  (cond branch)
+        //   body   -> header      (back-edge — does NOT change RPO order)
+        //   exit   -> return
+        //
+        // Required: entry < header < body in RPO. The back-edge body->header
+        // is the only edge that runs "backwards" in the resulting layout.
+        let mut func = make_func_with_blocks("loop", 4);
+        let entry = func.entry_block; // BlockId(0)
+        let header = BlockId(1);
+        let body = BlockId(2);
+        let exit = BlockId(3);
+
+        let cond = func.fresh_value();
+        set_term(
+            &mut func,
+            entry,
+            Terminator::Branch {
+                target: header,
+                args: vec![],
+            },
+        );
+        set_term(
+            &mut func,
+            header,
+            Terminator::CondBranch {
+                cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        );
+        set_term(
+            &mut func,
+            body,
+            Terminator::Branch {
+                target: header,
+                args: vec![],
+            },
+        );
+        set_term(&mut func, exit, Terminator::Return { values: vec![] });
+
+        let rpo = compute_function_rpo(&func);
+
+        assert_eq!(rpo.len(), 4, "all four blocks must appear in RPO: {:?}", rpo);
+
+        let pos_entry = position_of(&rpo, entry);
+        let pos_header = position_of(&rpo, header);
+        let pos_body = position_of(&rpo, body);
+        let pos_exit = position_of(&rpo, exit);
+
+        assert_eq!(pos_entry, 0, "entry must be first: {:?}", rpo);
+        assert!(
+            pos_entry < pos_header,
+            "entry must precede header: {:?}",
+            rpo
+        );
+        assert!(
+            pos_header < pos_body,
+            "header must precede body (back-edge does not flip order): {:?}",
+            rpo
+        );
+        assert!(
+            pos_header < pos_exit,
+            "header must precede exit (then is forward edge): {:?}",
+            rpo
+        );
+    }
+
+    #[test]
+    fn rpo_unreachable_blocks_are_excluded() {
+        // CFG:
+        //   entry -> exit (return)
+        //   dead  -> return  (no predecessor — unreachable)
+        let mut func = make_func_with_blocks("dead_block", 3);
+        let entry = func.entry_block;
+        let exit = BlockId(1);
+        let dead = BlockId(2);
+
+        set_term(
+            &mut func,
+            entry,
+            Terminator::Branch {
+                target: exit,
+                args: vec![],
+            },
+        );
+        set_term(&mut func, exit, Terminator::Return { values: vec![] });
+        set_term(&mut func, dead, Terminator::Return { values: vec![] });
+
+        let rpo = compute_function_rpo(&func);
+
+        assert_eq!(rpo, vec![entry, exit]);
+        assert!(
+            !rpo.contains(&dead),
+            "unreachable block must be excluded from RPO: {:?}",
+            rpo
+        );
+    }
+
+    #[test]
+    fn rpo_switch_terminator_visits_all_cases_and_default() {
+        // CFG:
+        //   entry -> switch on v: case 0 -> A, case 1 -> B, default -> C
+        //   A, B, C -> merge -> return
+        let mut func = make_func_with_blocks("switch_cfg", 5);
+        let entry = func.entry_block;
+        let a = BlockId(1);
+        let b = BlockId(2);
+        let c = BlockId(3);
+        let merge = BlockId(4);
+
+        let v = func.fresh_value();
+        set_term(
+            &mut func,
+            entry,
+            Terminator::Switch {
+                value: v,
+                cases: vec![(0, a, vec![]), (1, b, vec![])],
+                default: c,
+                default_args: vec![],
+            },
+        );
+        for case_block in [a, b, c] {
+            set_term(
+                &mut func,
+                case_block,
+                Terminator::Branch {
+                    target: merge,
+                    args: vec![],
+                },
+            );
+        }
+        set_term(&mut func, merge, Terminator::Return { values: vec![] });
+
+        let rpo = compute_function_rpo(&func);
+
+        assert_eq!(rpo.len(), 5, "all five blocks must appear: {:?}", rpo);
+        assert_eq!(rpo[0], entry);
+        assert_eq!(rpo[4], merge);
+        for case_block in [a, b, c] {
+            let p = position_of(&rpo, case_block);
+            assert!(p > 0, "case block must follow entry");
+            assert!(p < 4, "case block must precede merge");
+        }
+    }
+
+    #[test]
+    fn rpo_deeply_chained_cfg_does_not_overflow_stack() {
+        // Build a chain of 5,000 blocks: entry -> b1 -> b2 -> ... -> b4999 -> return.
+        // The original recursive implementation overflowed at this depth on
+        // default thread stack sizes; the iterative version handles it
+        // without issue.
+        const N: u32 = 5_000;
+        let mut func = make_func_with_blocks("deep_chain", N);
+        for i in 0..N - 1 {
+            set_term(
+                &mut func,
+                BlockId(i),
+                Terminator::Branch {
+                    target: BlockId(i + 1),
+                    args: vec![],
+                },
+            );
+        }
+        set_term(
+            &mut func,
+            BlockId(N - 1),
+            Terminator::Return { values: vec![] },
+        );
+
+        let rpo = compute_function_rpo(&func);
+
+        assert_eq!(rpo.len(), N as usize);
+        for (i, bid) in rpo.iter().enumerate() {
+            assert_eq!(
+                *bid,
+                BlockId(i as u32),
+                "deep chain RPO must be entry, b1, b2, ... in order"
+            );
+        }
+    }
+
+    #[test]
+    fn rpo_terminator_successor_helper_preserves_order() {
+        // The order in which `append_terminator_successors` records successors
+        // is part of the algorithm's contract: it determines tie-breaking
+        // when multiple valid RPOs exist. Pin it explicitly.
+        let mut buf = Vec::new();
+
+        buf.clear();
+        append_terminator_successors(
+            &Terminator::Branch {
+                target: BlockId(7),
+                args: vec![],
+            },
+            &mut buf,
+        );
+        assert_eq!(buf, vec![BlockId(7)]);
+
+        buf.clear();
+        append_terminator_successors(
+            &Terminator::CondBranch {
+                cond: ValueId(0),
+                then_block: BlockId(11),
+                then_args: vec![],
+                else_block: BlockId(13),
+                else_args: vec![],
+            },
+            &mut buf,
+        );
+        assert_eq!(
+            buf,
+            vec![BlockId(11), BlockId(13)],
+            "then must precede else"
+        );
+
+        buf.clear();
+        append_terminator_successors(
+            &Terminator::Switch {
+                value: ValueId(0),
+                cases: vec![(0, BlockId(20), vec![]), (1, BlockId(21), vec![])],
+                default: BlockId(22),
+                default_args: vec![],
+            },
+            &mut buf,
+        );
+        assert_eq!(
+            buf,
+            vec![BlockId(20), BlockId(21), BlockId(22)],
+            "switch cases in declaration order, then default"
+        );
+
+        buf.clear();
+        append_terminator_successors(&Terminator::Return { values: vec![] }, &mut buf);
+        assert!(buf.is_empty(), "Return has no successors");
+
+        buf.clear();
+        append_terminator_successors(&Terminator::Unreachable, &mut buf);
+        assert!(buf.is_empty(), "Unreachable has no successors");
     }
 }
