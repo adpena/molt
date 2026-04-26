@@ -179,7 +179,7 @@ class _TypingBase:
 class _SpecialForm(_TypingBase):
     __slots__ = ("_name", "_getitem")
 
-    def __init__(self, name: str, getitem=None) -> None:
+    def __init__(self, name: str, getitem: object = None) -> None:
         self._name = name
         self._getitem = getitem
 
@@ -476,7 +476,7 @@ Callable = _SpecialForm("Callable", _make_callable)
 # Keep runtime shape aligned (type: _SpecialGenericAlias) without importing
 # contextlib at typing import time (avoids contextlib<->typing cycle).
 ContextManager = _SpecialGenericAlias(object, "ContextManager")
-Self = _SpecialForm("Self")
+Self = _SpecialForm("Self", None)
 IO = _SpecialForm("IO", lambda params: _GenericAlias(IO, params, "IO"))
 
 
@@ -496,9 +496,9 @@ BinaryIO.__module__ = __name__
 TextIO.__module__ = __name__
 Text = str
 
-Never = _SpecialForm("Never")
-NoReturn = _SpecialForm("NoReturn")
-TypeAlias = _SpecialForm("TypeAlias")
+Never = _SpecialForm("Never", None)
+NoReturn = _SpecialForm("NoReturn", None)
+TypeAlias = _SpecialForm("TypeAlias", None)
 TypeGuard = _SpecialForm(
     "TypeGuard", lambda params: _GenericAlias(TypeGuard, params, "TypeGuard")
 )
@@ -1013,7 +1013,7 @@ def is_typeddict(tp, /):
     )
 
 
-LiteralString = _SpecialForm("LiteralString")
+LiteralString = _SpecialForm("LiteralString", None)
 
 
 def get_overloads(func):

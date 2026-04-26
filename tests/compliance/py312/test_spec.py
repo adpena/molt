@@ -90,21 +90,18 @@ def _assert_match(src: str):
 class TestPEP695TypeParams:
     """PEP 695 introduced `type X = ...` syntax for type aliases in 3.12."""
 
-    @pytest.mark.skip(reason="PEP 695 type alias syntax not yet implemented in Molt")
     def test_simple_type_alias(self):
         _assert_match("""\
 type Vector = list[float]
 print("ok")
 """)
 
-    @pytest.mark.skip(reason="PEP 695 type alias syntax not yet implemented in Molt")
     def test_generic_type_alias(self):
         _assert_match("""\
 type Matrix[T] = list[list[T]]
 print("ok")
 """)
 
-    @pytest.mark.skip(reason="PEP 695 type alias syntax not yet implemented in Molt")
     def test_generic_function(self):
         _assert_match("""\
 def first[T](items: list[T]) -> T:
