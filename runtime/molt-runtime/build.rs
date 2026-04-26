@@ -337,15 +337,31 @@ fn emit_native_cdylib_isolate_stubs(out_dir: &Path, target_arch: &str, target_en
     }
 
     let source = out_dir.join("molt_cdylib_isolate_stubs.c");
+    // Mark the stubs as weak so they yield to strong definitions provided by
+    // any downstream crate that links molt-runtime (e.g. molt-ffi's own
+    // `runtime_linked` stubs, or a real isolate implementation in production
+    // app code). Without weak linkage, building any cdylib that depends on
+    // both molt-runtime and another crate that defines these symbols fails
+    // with "duplicate symbol" at link time. `__attribute__((weak))` is
+    // honored by clang on macOS, Linux/glibc/musl, and Windows MSVC; on
+    // platforms where the compiler doesn't recognize it, the macro expands
+    // to nothing and the stubs become regular strong symbols (matching the
+    // pre-existing behavior).
     fs::write(
         &source,
         r#"#include <stdint.h>
 
-uint64_t molt_isolate_bootstrap(void) {
+#if defined(__GNUC__) || defined(__clang__)
+#define MOLT_WEAK __attribute__((weak))
+#else
+#define MOLT_WEAK
+#endif
+
+MOLT_WEAK uint64_t molt_isolate_bootstrap(void) {
     return 0;
 }
 
-uint64_t molt_isolate_import(uint64_t name_bits) {
+MOLT_WEAK uint64_t molt_isolate_import(uint64_t name_bits) {
     (void)name_bits;
     return 0;
 }
