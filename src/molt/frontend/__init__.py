@@ -6458,33 +6458,62 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[value, none_val], result=is_none))
-        args_cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[none_val], result=args_cell))
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-        empty_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_tuple))
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[args_cell, zero, empty_tuple],
-                result=MoltValue("none"),
+        # Async/poll-function bodies need a closure-slot result, not a list
+        # cell. The cell SSA value can be merged with the entry-block default
+        # by Cranelift's loop-header phi resolver, producing
+        # store_index(None, ...) crashes (see _emit_guarded_field_get for the
+        # full rationale).
+        if self.is_async():
+            slot = self._async_local_offset(
+                f"__stop_iter_args_{len(self.async_locals)}"
             )
-        )
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        value_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=[value], result=value_tuple))
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[args_cell, zero, value_tuple],
-                result=MoltValue("none"),
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, none_val],
+                    result=MoltValue("none"),
+                )
             )
-        )
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        args_val = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="INDEX", args=[args_cell, zero], result=args_val))
+            self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
+            empty_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_tuple))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, empty_tuple],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            value_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=[value], result=value_tuple))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, value_tuple],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            args_val = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE", args=["self", slot], result=args_val
+                )
+            )
+        else:
+            # Sync path: a single SSA value updated in both branches.
+            args_val = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=args_val))
+            self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
+            empty_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_tuple))
+            self.emit(MoltOp(kind="COPY", args=[empty_tuple], result=args_val))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            value_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=[value], result=value_tuple))
+            self.emit(MoltOp(kind="COPY", args=[value_tuple], result=args_val))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         kind_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=["StopIteration"], result=kind_val))
         exc_val = MoltValue(self.next_var(), type_hint="exception")
@@ -6854,32 +6883,60 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         is_missing = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[name_val, missing], result=is_missing))
+        # Async/poll-function bodies must thread the result through a closure
+        # slot rather than a LIST_NEW + STORE_INDEX cell. The cell pattern is
+        # unsafe under Cranelift's loop-header phi resolver: the cell SSA
+        # value can be merged with the entry-block default (None) on the
+        # first iteration, producing store_index(None, ...) crashes.
+        if self.is_async():
+            slot = self._async_local_offset(
+                f"__name_from_obj_{len(self.async_locals)}"
+            )
+            placeholder = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[""], result=placeholder))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, placeholder],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
+            fallback = self._emit_str_from_obj(obj)
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, fallback],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, name_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            res = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=res)
+            )
+            return res
+
+        # Sync path: a single SSA value updated in both branches replaces the
+        # LIST_NEW + STORE_INDEX cell.
+        res = MoltValue(self.next_var(), type_hint="str")
         placeholder = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[""], result=placeholder))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[placeholder], result=cell))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+        self.emit(MoltOp(kind="COPY", args=[placeholder], result=res))
         self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
         fallback = self._emit_str_from_obj(obj)
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, idx, fallback],
-                result=MoltValue("none"),
-            )
-        )
+        self.emit(MoltOp(kind="COPY", args=[fallback], result=res))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, idx, name_val],
-                result=MoltValue("none"),
-            )
-        )
+        self.emit(MoltOp(kind="COPY", args=[name_val], result=res))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        res = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=res))
         return res
 
     def _emit_type_name(self, value: MoltValue) -> MoltValue:
@@ -10895,12 +10952,75 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="PHI", args=[fast_val, slow_val], result=merged))
             return merged
 
-        placeholder = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[placeholder], result=cell))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+        # Non-phi path. Async/poll-function bodies must thread the merged
+        # result through a closure slot — the LIST_NEW + STORE_INDEX cell
+        # pattern was unsafe because Cranelift's loop-header phi resolver
+        # could merge the cell SSA value with the entry-block default
+        # (None) on the first iteration, producing store_index(None, ...)
+        # crashes.
+        if self.is_async():
+            slot = self._async_local_offset(
+                f"__guarded_field_{len(self.async_locals)}"
+            )
+            none_init = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, none_init],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
+            fast_val = MoltValue(self.next_var())
+            self.emit(
+                MoltOp(
+                    kind="GETATTR",
+                    args=[obj, fast_attr, expected_class],
+                    result=fast_val,
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, fast_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            slow_val = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_PTR",
+                    args=[obj, fallback_attr],
+                    result=slow_val,
+                    metadata={"ic_index": _next_ic_index()},
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, slow_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            res_hint = (
+                fast_val.type_hint
+                if fast_val.type_hint == slow_val.type_hint
+                else "Any"
+            )
+            merged = MoltValue(self.next_var(), type_hint=res_hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE", args=["self", slot], result=merged
+                )
+            )
+            return merged
+
+        # Sync, non-phi path: a single SSA value updated in both branches.
+        merged = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=merged))
         self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
         fast_val = MoltValue(self.next_var())
         self.emit(
@@ -10910,13 +11030,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=fast_val,
             )
         )
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, idx, fast_val],
-                result=MoltValue("none"),
-            )
-        )
+        self.emit(MoltOp(kind="COPY", args=[fast_val], result=merged))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         slow_val = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
@@ -10927,16 +11041,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 metadata={"ic_index": _next_ic_index()},
             )
         )
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, idx, slow_val],
-                result=MoltValue("none"),
-            )
-        )
+        self.emit(MoltOp(kind="COPY", args=[slow_val], result=merged))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        merged = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=merged))
+        if fast_val.type_hint == slow_val.type_hint:
+            merged.type_hint = fast_val.type_hint
         return merged
 
     def _emit_guarded_property_get(
@@ -10974,22 +11082,67 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="PHI", args=[fast_val, slow_val], result=merged))
             return merged
 
-        placeholder = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[placeholder], result=cell))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+        # Non-phi path. See `_emit_guarded_field_get_with_guard` for the full
+        # rationale: in poll-function bodies we route the merged result
+        # through a closure slot rather than a LIST_NEW + STORE_INDEX cell,
+        # which is unsafe under Cranelift's loop-header phi resolver.
+        if self.is_async():
+            slot = self._async_local_offset(
+                f"__guarded_property_{len(self.async_locals)}"
+            )
+            none_init = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, none_init],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
+            fast_val = MoltValue(self.next_var(), type_hint=fast_hint)
+            self.emit(MoltOp(kind="CALL", args=[getter_symbol, obj], result=fast_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, fast_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            slow_val = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_PTR",
+                    args=[obj, attr],
+                    result=slow_val,
+                    metadata={"ic_index": _next_ic_index()},
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, slow_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            res_hint = fast_hint if fast_hint == slow_val.type_hint else "Any"
+            merged = MoltValue(self.next_var(), type_hint=res_hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE", args=["self", slot], result=merged
+                )
+            )
+            return merged
+
+        # Sync, non-phi path: a single SSA value updated in both branches.
+        merged = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=merged))
         self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
         fast_val = MoltValue(self.next_var(), type_hint=fast_hint)
         self.emit(MoltOp(kind="CALL", args=[getter_symbol, obj], result=fast_val))
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, idx, fast_val],
-                result=MoltValue("none"),
-            )
-        )
+        self.emit(MoltOp(kind="COPY", args=[fast_val], result=merged))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         slow_val = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
@@ -11000,16 +11153,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 metadata={"ic_index": _next_ic_index()},
             )
         )
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, idx, slow_val],
-                result=MoltValue("none"),
-            )
-        )
+        self.emit(MoltOp(kind="COPY", args=[slow_val], result=merged))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        merged = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=merged))
+        if fast_hint == slow_val.type_hint:
+            merged.type_hint = fast_hint
         return merged
 
     def _emit_aiter(self, iterable: MoltValue) -> MoltValue:
@@ -15571,6 +15718,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.emit(MoltOp(kind="CONST_BOOL", args=[value], result=res))
                     return res
 
+                # Route the compile-time-recognized ``@dataclass`` path
+                # through the public ``dataclasses.dataclass`` wrapper rather
+                # than the internal ``_molt_apply_dataclass`` worker.  The
+                # wrapper performs the same work but its calling convention
+                # — single positional ``cls`` plus keyword-only options —
+                # matches the natural Python semantics, avoiding an
+                # 11-argument positional-only call into the worker that
+                # exposed an SSA/dominator interaction during module init
+                # (frontend bypass would intermittently corrupt the class
+                # binding before module attribute publication).
                 init_val = emit_bool(dataclass_params.get("init", True))
                 repr_val = emit_bool(dataclass_params.get("repr", True))
                 eq_val = emit_bool(dataclass_params.get("eq", True))
@@ -15584,37 +15741,63 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     dataclass_params.get("weakref_slot", False)
                 )
                 helper_val = self._emit_module_attr_get_on(
-                    "dataclasses", "_molt_apply_dataclass"
+                    "dataclasses", "dataclass"
                 )
                 callargs = MoltValue(self.next_var(), type_hint="callargs")
                 self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-                for arg_val in [
-                    class_val,
-                    init_val,
-                    repr_val,
-                    eq_val,
-                    order_val,
-                    unsafe_hash_val,
-                    frozen_val,
-                    match_args_val,
-                    kw_only_val,
-                    slots_val,
-                    weakref_slot_val,
+                # Single positional argument: the class itself.
+                self.emit(
+                    MoltOp(
+                        kind="CALLARGS_PUSH_POS",
+                        args=[callargs, class_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                # Keyword-only options matching CPython's dataclass signature.
+                for kw_name, kw_val in [
+                    ("init", init_val),
+                    ("repr", repr_val),
+                    ("eq", eq_val),
+                    ("order", order_val),
+                    ("unsafe_hash", unsafe_hash_val),
+                    ("frozen", frozen_val),
+                    ("match_args", match_args_val),
+                    ("kw_only", kw_only_val),
+                    ("slots", slots_val),
+                    ("weakref_slot", weakref_slot_val),
                 ]:
+                    key_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(
+                        MoltOp(kind="CONST_STR", args=[kw_name], result=key_val)
+                    )
                     self.emit(
                         MoltOp(
-                            kind="CALLARGS_PUSH_POS",
-                            args=[callargs, arg_val],
+                            kind="CALLARGS_PUSH_KW",
+                            args=[callargs, key_val, kw_val],
                             result=MoltValue("none"),
                         )
                     )
+                # ``dataclass`` always returns the (possibly rebuilt) class
+                # object.  Capture and rebind so that ``slots=True`` — which
+                # produces a brand-new class via ``_add_slots`` — and any
+                # future rebuild paths replace the original binding.  For
+                # the non-slots path the function mutates and returns the
+                # same object, so the rebind is a no-op.
+                applied_cls = MoltValue(self.next_var(), type_hint="type")
                 self.emit(
                     MoltOp(
                         kind="CALL_BIND",
                         args=[helper_val, callargs],
-                        result=MoltValue("none"),
+                        result=applied_cls,
                     )
                 )
+                if self.current_func_name == "molt_main":
+                    self.globals[node.name] = applied_cls
+                    self._emit_module_attr_set(node.name, applied_cls)
+                    if node.name in self.boxed_locals:
+                        self._store_local_value(node.name, applied_cls)
+                else:
+                    self._store_local_value(node.name, applied_cls)
         else:
             # Dynamic path
             if self.current_func_name == "molt_main":
@@ -23184,69 +23367,75 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="PHI", args=[true_alias, false_alias], result=merged))
             return merged
 
-        placeholder = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[placeholder], result=cell))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-        cell_slot: int | None = None
-        idx_slot: int | None = None
-        if self.is_async() and (
-            self._expr_may_yield(node.body) or self._expr_may_yield(node.orelse)
-        ):
-            cell_slot = self._spill_async_value(
-                cell, f"__ifexp_cell_{len(self.async_locals)}"
+        # Non-phi path. In poll-function bodies (async generators / coroutines)
+        # we must thread the result through a closure slot so it survives any
+        # state-machine yield points AND so the cell itself is not subject to
+        # Cranelift's loop-header phi resolver (which can merge the cell SSA
+        # value with the entry-block default and crash on store_index).
+        if self.is_async():
+            slot = self._async_local_offset(
+                f"__ifexp_result_{len(self.async_locals)}"
             )
-            idx_slot = self._spill_async_value(
-                idx, f"__ifexp_idx_{len(self.async_locals)}"
+            none_init = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, none_init],
+                    result=MoltValue("none"),
+                )
             )
+            self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
+            true_val = self.visit(node.body)
+            if true_val is None:
+                raise NotImplementedError("Unsupported if expression true branch")
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, true_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            false_val = self.visit(node.orelse)
+            if false_val is None:
+                raise NotImplementedError("Unsupported if expression false branch")
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, false_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            res_type = "Any"
+            if true_val.type_hint == false_val.type_hint:
+                res_type = true_val.type_hint
+            result = MoltValue(self.next_var(), type_hint=res_type)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE", args=["self", slot], result=result
+                )
+            )
+            return result
 
+        # Sync, non-phi path: a single SSA value updated in both branches.
+        new_result = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=new_result))
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         true_val = self.visit(node.body)
         if true_val is None:
             raise NotImplementedError("Unsupported if expression true branch")
-        store_cell = cell
-        store_idx = idx
-        if cell_slot is not None and idx_slot is not None:
-            store_cell = self._reload_async_value(cell_slot, "list")
-            store_idx = self._reload_async_value(idx_slot, "int")
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[store_cell, store_idx, true_val],
-                result=MoltValue("none"),
-            )
-        )
+        self.emit(MoltOp(kind="COPY", args=[true_val], result=new_result))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         false_val = self.visit(node.orelse)
         if false_val is None:
             raise NotImplementedError("Unsupported if expression false branch")
-        store_cell = cell
-        store_idx = idx
-        if cell_slot is not None and idx_slot is not None:
-            store_cell = self._reload_async_value(cell_slot, "list")
-            store_idx = self._reload_async_value(idx_slot, "int")
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[store_cell, store_idx, false_val],
-                result=MoltValue("none"),
-            )
-        )
+        self.emit(MoltOp(kind="COPY", args=[false_val], result=new_result))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        final_cell = cell
-        final_idx = idx
-        if cell_slot is not None and idx_slot is not None:
-            final_cell = self._reload_async_value(cell_slot, "list")
-            final_idx = self._reload_async_value(idx_slot, "int")
-        res_type = "Any"
         if true_val.type_hint == false_val.type_hint:
-            res_type = true_val.type_hint
-        result = MoltValue(self.next_var(), type_hint=res_type)
-        self.emit(MoltOp(kind="INDEX", args=[final_cell, final_idx], result=result))
-        return result
+            new_result.type_hint = true_val.type_hint
+        return new_result
 
     def _emit_match_cell(self, initial: bool) -> tuple[MoltValue, MoltValue]:
         initial_val = MoltValue(self.next_var(), type_hint="bool")
@@ -26166,13 +26355,79 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     result = new_result
                 else:
-                    if not self.is_async():
-                        # Keep branch results in a single SSA value instead of an
-                        # intermediate list cell. The cell+STORE_INDEX pattern can
-                        # lose the branch result when a later pass injects an
-                        # exception check between a call and the store.
+                    # Non-phi path (e.g. async generator/coroutine poll bodies):
+                    # we need the result to survive across IF/ELSE branches
+                    # AND any yield points.  In poll functions, plain SSA
+                    # values are NOT preserved across state-machine boundaries
+                    # — only closure slots are.  Spill the merged result into
+                    # a closure slot inside both branches and reload after
+                    # END_IF.  An earlier implementation used LIST_NEW +
+                    # STORE_INDEX cell, but the cell itself was a plain SSA
+                    # value that Cranelift's loop-header phi resolver could
+                    # merge with the entry-block default (None) on the first
+                    # iteration, producing store_index(None, ...) crashes.
+                    if self.is_async():
+                        slot = self._async_local_offset(
+                            f"__boolop_and_{len(self.async_locals)}"
+                        )
+                        none_init = MoltValue(self.next_var(), type_hint="None")
+                        self.emit(
+                            MoltOp(kind="CONST_NONE", args=[], result=none_init)
+                        )
+                        self.emit(
+                            MoltOp(
+                                kind="STORE_CLOSURE",
+                                args=["self", slot, none_init],
+                                result=MoltValue("none"),
+                            )
+                        )
+                        self.emit(
+                            MoltOp(kind="IF", args=[result], result=MoltValue("none"))
+                        )
+                        right = self.visit(value)
+                        if right is None:
+                            raise NotImplementedError("Unsupported bool op operand")
+                        and_val = MoltValue(self.next_var(), type_hint="Any")
+                        self.emit(
+                            MoltOp(kind="AND", args=[result, right], result=and_val)
+                        )
+                        self.emit(
+                            MoltOp(
+                                kind="STORE_CLOSURE",
+                                args=["self", slot, and_val],
+                                result=MoltValue("none"),
+                            )
+                        )
+                        self.emit(
+                            MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
+                        )
+                        # Left was falsy — short-circuit, store left.
+                        self.emit(
+                            MoltOp(
+                                kind="STORE_CLOSURE",
+                                args=["self", slot, result],
+                                result=MoltValue("none"),
+                            )
+                        )
+                        self.emit(
+                            MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
+                        )
+                        final_result = MoltValue(self.next_var(), type_hint="Any")
+                        self.emit(
+                            MoltOp(
+                                kind="LOAD_CLOSURE",
+                                args=["self", slot],
+                                result=final_result,
+                            )
+                        )
+                        result = final_result
+                    else:
+                        # Sync, non-phi: same single-SSA-value pattern as the
+                        # `use_phi` branch above without an explicit PHI op.
                         new_result = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=new_result))
+                        self.emit(
+                            MoltOp(kind="CONST_NONE", args=[], result=new_result)
+                        )
                         self.emit(
                             MoltOp(kind="IF", args=[result], result=MoltValue("none"))
                         )
@@ -26188,82 +26443,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.emit(MoltOp(kind="COPY", args=[result], result=new_result))
                         self.emit(
                             MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                        )
-                        result = new_result
-                    else:
-                        # Async/non-phi path: use cell to pass result across branches
-                        placeholder = MoltValue(self.next_var(), type_hint="None")
-                        self.emit(
-                            MoltOp(kind="CONST_NONE", args=[], result=placeholder)
-                        )
-                        cell = MoltValue(self.next_var(), type_hint="list")
-                        self.emit(
-                            MoltOp(kind="LIST_NEW", args=[placeholder], result=cell)
-                        )
-                        idx = MoltValue(self.next_var(), type_hint="int")
-                        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-                        cell_slot: int | None = None
-                        idx_slot: int | None = None
-                        if self._expr_may_yield(value):
-                            cell_slot = self._spill_async_value(
-                                cell, f"__boolop_and_cell_{len(self.async_locals)}"
-                            )
-                            idx_slot = self._spill_async_value(
-                                idx, f"__boolop_and_idx_{len(self.async_locals)}"
-                            )
-                        self.emit(
-                            MoltOp(kind="IF", args=[result], result=MoltValue("none"))
-                        )
-                        right = self.visit(value)
-                        if right is None:
-                            raise NotImplementedError("Unsupported bool op operand")
-                        and_val = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(kind="AND", args=[result, right], result=and_val)
-                        )
-                        store_cell = cell
-                        store_idx = idx
-                        if cell_slot is not None and idx_slot is not None:
-                            store_cell = self._reload_async_value(cell_slot, "list")
-                            store_idx = self._reload_async_value(idx_slot, "int")
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[store_cell, store_idx, and_val],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        self.emit(
-                            MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
-                        )
-                        # Left was falsy — short-circuit
-                        store_cell2 = cell
-                        store_idx2 = idx
-                        if cell_slot is not None and idx_slot is not None:
-                            store_cell2 = self._reload_async_value(cell_slot, "list")
-                            store_idx2 = self._reload_async_value(idx_slot, "int")
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[store_cell2, store_idx2, result],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        self.emit(
-                            MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                        )
-                        final_cell = cell
-                        final_idx = idx
-                        if cell_slot is not None and idx_slot is not None:
-                            final_cell = self._reload_async_value(cell_slot, "list")
-                            final_idx = self._reload_async_value(idx_slot, "int")
-                        new_result = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(
-                                kind="INDEX",
-                                args=[final_cell, final_idx],
-                                result=new_result,
-                            )
                         )
                         result = new_result
             elif isinstance(node.op, ast.Or):
