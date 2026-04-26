@@ -473,17 +473,19 @@ def _add_slots(cls, fields_map, *, frozen: bool, weakref_slot: bool):
     discarded — callers receive the rebuilt class through the decorator return
     value, exactly as CPython does.
     """
-    field_names = tuple(
-        field_obj.name
-        for field_obj in fields_map.values()
-        if field_obj._field_type is _FIELD
-    )
+    field_names_list: list[str] = []
+    for field_obj in fields_map.values():
+        if field_obj._field_type is _FIELD:
+            field_names_list.append(cast(str, field_obj.name))
+    field_names = tuple(field_names_list)
     inherited_slots = _collect_inherited_slots(cls)
-    new_slots = tuple(
-        name
-        for name in (*field_names, *(("__weakref__",) if weakref_slot else ()))
-        if name not in inherited_slots
-    )
+    new_slots_list: list[str] = []
+    for name in field_names:
+        if name not in inherited_slots:
+            new_slots_list.append(name)
+    if weakref_slot and "__weakref__" not in inherited_slots:
+        new_slots_list.append("__weakref__")
+    new_slots = tuple(new_slots_list)
 
     # Snapshot the (now fully decorated) class namespace.
     cls_dict = dict(cls.__dict__)
