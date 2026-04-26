@@ -16,8 +16,38 @@ MOLT_DIR = Path(__file__).resolve().parents[3]
 ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
 
 
-def _compile_and_run(python_source: str) -> str:
+def _python_for(min_version: tuple[int, int]) -> str:
+    """Return a Python executable that satisfies `min_version`.
+
+    Falls back through known interpreter paths so a 3.13/3.14-only feature
+    test can run on a host whose `sys.executable` is older.
+    """
+    if sys.version_info >= min_version:
+        return sys.executable
+    for candidate in (
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "/opt/homebrew/opt/python@3.13/bin/python3.13",
+        "/usr/local/bin/python3.14",
+        "/usr/local/bin/python3.13",
+    ):
+        if Path(candidate).exists():
+            try:
+                ver = subprocess.run(
+                    [candidate, "-c", "import sys; print(sys.version_info[:2])"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                ).stdout.strip()
+                if ver and eval(ver) >= min_version:
+                    return candidate
+            except Exception:  # noqa: BLE001
+                continue
+    return sys.executable
+
+
+def _compile_and_run(python_source: str, *, min_version: tuple[int, int] = (3, 12)) -> str:
     """Compile Python source via molt CLI (native target), run binary, return stdout."""
+    python_exe = _python_for(min_version)
     with tempfile.TemporaryDirectory() as tmp:
         src_path = Path(tmp) / "test_input.py"
         src_path.write_text(python_source)
@@ -35,7 +65,7 @@ def _compile_and_run(python_source: str) -> str:
 
         build = subprocess.run(
             [
-                sys.executable,
+                python_exe,
                 "-m",
                 "molt.cli",
                 "build",
@@ -66,10 +96,11 @@ def _compile_and_run(python_source: str) -> str:
         return run.stdout.strip()
 
 
-def _python_output(source: str) -> str:
+def _python_output(source: str, *, min_version: tuple[int, int] = (3, 12)) -> str:
     """Get CPython reference output."""
+    python_exe = _python_for(min_version)
     result = subprocess.run(
-        [sys.executable, "-c", source],
+        [python_exe, "-c", source],
         capture_output=True,
         text=True,
         timeout=10,
@@ -79,9 +110,9 @@ def _python_output(source: str) -> str:
     return result.stdout.strip()
 
 
-def _assert_match(src: str):
+def _assert_match(src: str, *, min_version: tuple[int, int] = (3, 12)):
     """Assert compiled Molt output matches CPython."""
-    assert _compile_and_run(src) == _python_output(src)
+    assert _compile_and_run(src, min_version=min_version) == _python_output(src, min_version=min_version)
 
 
 # -- PEP 742: TypeIs (typing) -------------------------------------------------
@@ -100,7 +131,7 @@ def is_str(val: object) -> TypeIs[str]:
 
 print(is_str("hello"))
 print(is_str(42))
-""")
+""", min_version=(3, 13))
 
     def test_typeis_in_condition(self):
         _assert_match("""\
@@ -116,7 +147,7 @@ def process(val: object) -> str:
 
 print(process(10))
 print(process("hi"))
-""")
+""", min_version=(3, 13))
 
 
 # -- Improved Error Messages / Exception Groups --------------------------------
@@ -198,7 +229,7 @@ Point = namedtuple("Point", ["x", "y"])
 p1 = Point(1, 2)
 p2 = copy.replace(p1, x=10)
 print(p2)
-""")
+""", min_version=(3, 13))
 
 
 # -- General 3.13-era Python Patterns -----------------------------------------
