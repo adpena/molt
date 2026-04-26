@@ -6024,6 +6024,9 @@ def test_start_backend_daemon_leaves_warming_process_running(
     class _FakePopen:
         pid = 4321
 
+        def poll(self) -> int | None:  # subprocess.Popen API
+            return None
+
     monkeypatch.setattr(
         cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path
     )
@@ -6089,6 +6092,9 @@ def test_start_backend_daemon_uses_short_probe_for_stale_socket_with_live_pid(
 
     class _FakePopen:
         pid = 4321
+
+        def poll(self) -> int | None:  # subprocess.Popen API
+            return None
 
     monkeypatch.setattr(
         cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path
@@ -6156,6 +6162,9 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
 
     class _FakePopen:
         pid = 4321
+
+        def poll(self) -> int | None:  # subprocess.Popen API
+            return None
 
     def fake_wait_until_ready(
         *args: object, **kwargs: object
@@ -6232,6 +6241,9 @@ def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
 
     class _FakePopen:
         pid = 4321
+
+        def poll(self) -> int | None:  # subprocess.Popen API
+            return None
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
     monkeypatch.setenv("CARGO_TARGET_DIR", str(explicit_target))
@@ -11004,6 +11016,76 @@ def test_kill_stale_backend_daemon_uses_project_canonical_sidecars(
 
     assert killed == [(4321, signal.SIGTERM)]
     assert removed == [pid_path]
+
+
+def test_sweep_orphaned_backend_daemon_locks_removes_dead_pid_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    own_root = project_root / "target" / ".molt_state" / "backend_daemon"
+    own_root.mkdir(parents=True)
+    sibling_root = (
+        project_root / "target" / "sessions" / "agent-x" / ".molt_state" / "backend_daemon"
+    )
+    sibling_root.mkdir(parents=True)
+
+    dead_pid_file = own_root / "molt-backend.dev-fast.dead.aaaa.pid"
+    dead_pid_file.write_text("99999\n")
+    dead_socket = own_root / "molt-backend.dev-fast.dead.aaaa.sock"
+    dead_socket.write_text("")
+
+    sibling_dead = sibling_root / "molt-backend.release-fast.gone.bbbb.pid"
+    sibling_dead.write_text("88888\n")
+
+    live_pid_file = own_root / "molt-backend.dev-fast.live.cccc.pid"
+    live_pid_file.write_text("4242\n")
+
+    malformed = own_root / "molt-backend.dev-fast.bad.dddd.pid"
+    malformed.write_text("not-a-pid\n")
+
+    monkeypatch.setattr(cli, "_build_state_root", lambda root: project_root / "target" / ".molt_state")
+
+    def fake_pid_alive(pid: int) -> bool:
+        return pid == 4242
+
+    monkeypatch.setattr(cli, "_pid_alive", fake_pid_alive)
+
+    cleaned = cli._sweep_orphaned_backend_daemon_locks(project_root)
+    assert cleaned == 3  # dead_pid_file + sibling_dead + malformed
+
+    assert not dead_pid_file.exists()
+    assert not dead_socket.exists()  # paired socket removed too
+    assert not sibling_dead.exists()
+    assert not malformed.exists()
+    # Live daemon must remain untouched.
+    assert live_pid_file.exists()
+
+
+def test_rotate_backend_daemon_log_if_large_rotates_above_threshold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "daemon.log"
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON_LOG_MAX_BYTES", "16")
+    log_path.write_bytes(b"x" * 64)
+    cli._rotate_backend_daemon_log_if_large(log_path)
+    assert not log_path.exists()
+    assert (log_path.with_name("daemon.log.old")).exists()
+
+
+def test_rotate_backend_daemon_log_if_large_keeps_small_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "daemon.log"
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON_LOG_MAX_BYTES", "1024")
+    log_path.write_bytes(b"under-threshold")
+    cli._rotate_backend_daemon_log_if_large(log_path)
+    assert log_path.exists()
+    assert log_path.read_bytes() == b"under-threshold"
+    assert not (log_path.with_name("daemon.log.old")).exists()
 
 
 def test_backend_daemon_skip_output_sync_flags_track_artifact_state(

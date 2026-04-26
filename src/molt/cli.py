@@ -11429,6 +11429,61 @@ def _backend_daemon_log_tail(log_path: Path, *, max_lines: int = 30) -> str | No
     return "\n".join(tail).strip() or None
 
 
+# Maximum daemon log size before rotation. The daemon writes structured
+# diagnostic lines for every compile and warm-cache decision; on long-running
+# sessions this naturally grows multiple megabytes. Rotating at 5 MiB keeps
+# tail-based diagnostics fast while preserving the most recent build context.
+_BACKEND_DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _backend_daemon_log_max_bytes_cached(raw: str) -> int:
+    if not raw:
+        return _BACKEND_DAEMON_LOG_MAX_BYTES
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return _BACKEND_DAEMON_LOG_MAX_BYTES
+    return parsed if parsed > 0 else _BACKEND_DAEMON_LOG_MAX_BYTES
+
+
+def _backend_daemon_log_max_bytes() -> int:
+    return _backend_daemon_log_max_bytes_cached(
+        os.environ.get("MOLT_BACKEND_DAEMON_LOG_MAX_BYTES", "")
+    )
+
+
+def _rotate_backend_daemon_log_if_large(log_path: Path) -> None:
+    """Rotate the daemon log to ``<log>.old`` when it exceeds the limit.
+
+    Called immediately before opening the log for append on daemon spawn so
+    the new daemon writes into a fresh file. The previous log is preserved
+    (single rolling slot) for post-mortem diagnostics; older rotations are
+    discarded to bound disk use to roughly 2x the rotation threshold.
+    """
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return
+    if size <= _backend_daemon_log_max_bytes():
+        return
+    rotated = log_path.with_name(f"{log_path.name}.old")
+    try:
+        if rotated.exists():
+            rotated.unlink()
+    except OSError:
+        pass
+    try:
+        log_path.replace(rotated)
+    except OSError:
+        # Best-effort: if rename fails (e.g. cross-device), truncate in place
+        # to keep the daemon spawn path responsive instead of failing the build.
+        try:
+            with log_path.open("wb"):
+                pass
+        except OSError:
+            pass
+
+
 _MAX_CONCURRENT_BUILDS = 2
 
 
@@ -11723,6 +11778,94 @@ def _kill_stale_backend_daemon(project_root: Path, cargo_profile: str) -> None:
             except OSError:
                 pass
         _remove_backend_daemon_pid(pid_file)
+
+
+def _sweep_orphaned_backend_daemon_locks(
+    project_root: Path,
+    *,
+    include_other_sessions: bool = True,
+) -> int:
+    """Remove PID files whose recorded daemon process is dead.
+
+    Returns the number of orphan lock files that were cleaned up. This
+    targets the multi-session corruption scenario where an agent session is
+    SIGKILLed mid-build and leaves a ``.pid`` sidecar behind. Live daemons
+    are never disturbed — only files whose PID does not correspond to a live
+    process (or is unreadable) are removed.
+
+    When ``include_other_sessions`` is True, also walks
+    ``target/sessions/*/.molt_state/backend_daemon`` so that stale state
+    from sibling sessions (e.g. agents that crashed) does not accumulate.
+    """
+    cleaned = 0
+
+    candidate_roots: list[Path] = []
+    own_root = _build_state_root(project_root) / "backend_daemon"
+    candidate_roots.append(own_root)
+
+    if include_other_sessions:
+        sessions_root = project_root / "target" / "sessions"
+        try:
+            session_dirs = list(sessions_root.iterdir()) if sessions_root.is_dir() else []
+        except OSError:
+            session_dirs = []
+        for session_dir in session_dirs:
+            sibling = session_dir / ".molt_state" / "backend_daemon"
+            if sibling == own_root:
+                continue
+            candidate_roots.append(sibling)
+
+    for daemon_root in candidate_roots:
+        try:
+            pid_files = list(daemon_root.glob("*.pid"))
+        except OSError:
+            continue
+        for pid_file in pid_files:
+            pid = _read_backend_daemon_pid(pid_file)
+            if pid is None:
+                # Unreadable / malformed pid file: definitely orphan.
+                _remove_backend_daemon_pid(pid_file)
+                cleaned += 1
+                continue
+            if _pid_alive(pid):
+                continue
+            _remove_backend_daemon_pid(pid_file)
+            cleaned += 1
+            # Remove the matching socket if present so the next spawn does
+            # not waste a probe window before deciding to restart.
+            socket_candidate = pid_file.with_suffix(".sock")
+            try:
+                if socket_candidate.exists():
+                    socket_candidate.unlink()
+            except OSError:
+                pass
+
+    return cleaned
+
+
+_BACKEND_DAEMON_ORPHAN_SWEEP_DONE: set[Path] = set()
+
+
+def _sweep_orphaned_backend_daemon_locks_once(project_root: Path) -> None:
+    """Run the orphan sweep at most once per (process, project_root).
+
+    Cheap when no orphans exist, but we still don't want to walk
+    ``target/sessions`` on every compile request. The set is keyed on the
+    resolved project root so multi-project test runs still get one sweep
+    each.
+    """
+    try:
+        key = project_root.resolve()
+    except OSError:
+        key = project_root
+    if key in _BACKEND_DAEMON_ORPHAN_SWEEP_DONE:
+        return
+    _BACKEND_DAEMON_ORPHAN_SWEEP_DONE.add(key)
+    try:
+        _sweep_orphaned_backend_daemon_locks(project_root)
+    except Exception:
+        # Sweep is best-effort — never block daemon spawn on cleanup errors.
+        pass
 
 
 def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
@@ -12490,6 +12633,10 @@ def _start_backend_daemon(
     if _unix_socket_path_exceeds_limit(socket_path):
         _report_daemon_issue(_backend_daemon_socket_path_error(socket_path))
         return False
+    # Cheap, idempotent cross-session orphan sweep. Live daemons are never
+    # touched (gated by _pid_alive). Suppress for the common case where the
+    # current PID is already alive — that path will short-circuit below.
+    _sweep_orphaned_backend_daemon_locks_once(project_root)
     existing_pid = _read_backend_daemon_pid(pid_path)
     if existing_pid is not None:
         if _pid_alive(existing_pid):
@@ -12685,15 +12832,21 @@ def _start_backend_daemon(
     except OSError:
         pass
     daemon_pid: int | None = None
+    daemon_proc: subprocess.Popen[bytes] | None = None
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Rotate the log if it has grown beyond the configured cap before the
+        # new daemon starts appending. Long-running multi-session repos see
+        # daemon logs grow to tens of megabytes otherwise, which slows down
+        # post-mortem tail reads and bloats the artifact root.
+        _rotate_backend_daemon_log_if_large(log_path)
         # Propagate all environment variables to the daemon so that
         # debug env vars (MOLT_TRACE_EQ, MOLT_DEBUG_EXCEPTION_FLOW etc.)
         # reach the backend process.  Daemon stderr goes to the log file
         # so it's always available for post-mortem debugging.
         daemon_env = dict(os.environ)
         with log_path.open("ab") as log_file:
-            daemon = subprocess.Popen(
+            daemon_proc = subprocess.Popen(
                 [str(backend_bin), "--daemon", "--socket", str(socket_path)],
                 cwd=project_root,
                 stdout=log_file,
@@ -12701,7 +12854,7 @@ def _start_backend_daemon(
                 start_new_session=True,
                 env=daemon_env,
             )
-            daemon_pid = daemon.pid
+            daemon_pid = daemon_proc.pid
             _write_backend_daemon_pid(pid_path, daemon_pid)
     except OSError as exc:
         if daemon_pid is not None:
@@ -12717,13 +12870,40 @@ def _start_backend_daemon(
     if ready:
         return True
     probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
+    # Surface concrete subprocess status instead of a bare timeout. If the
+    # daemon already exited (crash, missing dynamic dep, port conflict, etc.)
+    # the returncode tells us so directly; otherwise we know it is still
+    # running but unresponsive within the probe window.
+    proc_status = "process status unavailable"
+    if daemon_proc is not None:
+        exit_code = daemon_proc.poll()
+        if exit_code is None:
+            proc_status = (
+                f"daemon process pid={daemon_pid} still running but did not "
+                f"answer readiness probes"
+            )
+        elif exit_code < 0:
+            proc_status = (
+                f"daemon process pid={daemon_pid} terminated by signal "
+                f"{-exit_code} before readiness"
+            )
+        else:
+            proc_status = (
+                f"daemon process pid={daemon_pid} exited with code "
+                f"{exit_code} before readiness"
+            )
     message = (
         "Backend daemon did not become ready after spawn within "
-        f"{probe_window:.2f}s; falling back to one-shot compile for this build."
+        f"{probe_window:.2f}s ({proc_status}); falling back to one-shot "
+        "compile for this build."
     )
     log_tail = _backend_daemon_log_tail(log_path)
     if log_tail:
         message = f"{message}\nLast daemon log lines:\n{log_tail}"
+    else:
+        message = (
+            f"{message}\n(no daemon log output captured at {log_path})"
+        )
     _report_daemon_issue(message)
     return False
 
