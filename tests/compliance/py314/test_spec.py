@@ -170,22 +170,20 @@ for k in keys:
 class TestPEP750TemplateStrings:
     """PEP 750 introduces t-string syntax: t'Hello {name}'."""
 
-    @pytest.mark.skip(reason="PEP 750 template strings not yet implemented in Molt")
     def test_tstring_basic(self):
         _assert_match("""\
 name = "world"
 template = t"Hello {name}"
 print(type(template).__name__)
-""")
+""", min_version=(3, 14))
 
-    @pytest.mark.skip(reason="PEP 750 template strings not yet implemented in Molt")
     def test_tstring_interpolation_count(self):
         _assert_match("""\
 x = 1
 y = 2
 template = t"coords: {x}, {y}"
 print(len(template.interpolations))
-""")
+""", min_version=(3, 14))
 
 
 # -- PEP 758: except Without Parentheses for Multiple Types -------------------

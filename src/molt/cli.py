@@ -4187,7 +4187,9 @@ def _collect_imports(
 ) -> list[str]:
     imports: list[str] = []
     needs_typing = False
+    needs_string_templatelib = False
     type_alias_cls = getattr(ast, "TypeAlias", None)
+    template_str_cls = getattr(ast, "TemplateStr", None)
     module_string_constants: dict[str, str] = {}
     helper_string_functions: dict[str, tuple[list[str], ast.expr]] = {}
     helper_param_import_positions: dict[str, set[int]] = {}
@@ -4440,6 +4442,12 @@ def _collect_imports(
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
             needs_typing = True
             continue
+        if template_str_cls is not None and isinstance(node, template_str_cls):
+            # PEP 750 t-strings desugar to string.templatelib.{Template,Interpolation}
+            # at the molt frontend layer, so the import must be reflected in the
+            # module graph closure even though no `import` statement appears.
+            needs_string_templatelib = True
+            continue
         if isinstance(node, ast.Call) and node.args:
             target = _importlib_target(node.func)
             if target in {
@@ -4454,6 +4462,8 @@ def _collect_imports(
             continue
     if needs_typing:
         imports.append("typing")
+    if needs_string_templatelib:
+        imports.append("string.templatelib")
     return imports
 
 

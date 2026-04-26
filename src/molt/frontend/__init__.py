@@ -12204,6 +12204,124 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise NotImplementedError("Unsupported f-string segment")
         return self._emit_string_join(parts)
 
+    def _emit_template_interpolation(self, node: Any) -> MoltValue:
+        """Lower a single ``ast.Interpolation`` inside a ``t"..."`` literal.
+
+        Constructs a ``string.templatelib.Interpolation`` instance with
+        ``(value, expression, conversion, format_spec)`` matching CPython 3.14
+        semantics. ``conversion`` is the single-letter str ('s'/'r'/'a') or
+        ``None``; ``format_spec`` is the rendered format-spec text or ``""``.
+        """
+        value = self.visit(node.value)
+        if value is None:
+            raise NotImplementedError("Unsupported t-string interpolation value")
+        # expression — the literal source text of the interpolated expression.
+        expression_text = node.str if node.str is not None else ""
+        expression_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(
+            MoltOp(kind="CONST_STR", args=[expression_text], result=expression_val)
+        )
+        # conversion — None for -1, otherwise single-char str.
+        conversion = node.conversion
+        if conversion == -1:
+            conversion_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=conversion_val))
+        elif conversion in (ord("s"), ord("r"), ord("a")):
+            conversion_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(
+                    kind="CONST_STR",
+                    args=[chr(conversion)],
+                    result=conversion_val,
+                )
+            )
+        else:
+            raise NotImplementedError(
+                "Unsupported t-string interpolation conversion"
+            )
+        # format_spec — rendered to str via shared f-string format-spec helper.
+        if node.format_spec is None:
+            format_spec_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[""], result=format_spec_val))
+        else:
+            format_spec_val = self._emit_format_spec_value(node.format_spec)
+        # Construct ``Interpolation(value, expression, conversion, format_spec)``.
+        interp_class = self._emit_module_attr_get_on(
+            "string.templatelib", "Interpolation"
+        )
+        callargs = MoltValue(self.next_var(), type_hint="callargs")
+        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+        for arg in (value, expression_val, conversion_val, format_spec_val):
+            push_res = MoltValue(self.next_var(), type_hint="None")
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[callargs, arg],
+                    result=push_res,
+                )
+            )
+        interp_val = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(
+                kind="CALL_BIND",
+                args=[interp_class, callargs],
+                result=interp_val,
+            )
+        )
+        return interp_val
+
+    def visit_TemplateStr(self, node: Any) -> Any:
+        """Lower a PEP 750 ``t"..."`` literal to a ``Template`` object.
+
+        The AST shape (CPython 3.14) is::
+
+            TemplateStr(values=[Constant | Interpolation, ...])
+
+        We construct a flat positional argument list of ``str`` literals and
+        ``Interpolation`` objects in source order, then call
+        ``string.templatelib.Template(*args)``. The Template constructor
+        normalizes the sequence so that ``len(strings) == len(interpolations) + 1``.
+        """
+        ast_interpolation_cls = getattr(ast, "Interpolation", None)
+        ast_constant_cls = ast.Constant
+        positional_vals: list[MoltValue] = []
+        for item in node.values:
+            if isinstance(item, ast_constant_cls) and isinstance(item.value, str):
+                lit = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[item.value], result=lit))
+                positional_vals.append(lit)
+                continue
+            if (
+                ast_interpolation_cls is not None
+                and isinstance(item, ast_interpolation_cls)
+            ):
+                positional_vals.append(self._emit_template_interpolation(item))
+                continue
+            raise NotImplementedError("Unsupported t-string segment")
+        template_class = self._emit_module_attr_get_on(
+            "string.templatelib", "Template"
+        )
+        callargs = MoltValue(self.next_var(), type_hint="callargs")
+        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+        for val in positional_vals:
+            push_res = MoltValue(self.next_var(), type_hint="None")
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[callargs, val],
+                    result=push_res,
+                )
+            )
+        result = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(
+                kind="CALL_BIND",
+                args=[template_class, callargs],
+                result=result,
+            )
+        )
+        return result
+
     def _build_comprehension_body(
         self,
         generators: list[ast.comprehension],
