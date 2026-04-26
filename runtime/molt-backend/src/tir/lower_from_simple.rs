@@ -47,11 +47,13 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     } else {
         rewritten_ops
     };
-    // Also rewrite cell-based locals (store_index/index on list) to
-    // store_var/load_var for the same reason.
-    // Memory SSA: rewrite cell-based locals to store_var/load_var so SSA
-    // creates proper phi nodes at loop headers for cell variables.
-    // Memory SSA default ON: rewrite cell locals to store_var/load_var.
+    // Optional: rewrite cell-based locals (store_index/index on list) to
+    // store_var/load_var so SSA creates proper phi nodes at loop headers
+    // for cell variables. Currently opt-in via `MOLT_TIR_CELL_SSA=1`
+    // because the cell-detection heuristic still mis-classifies some
+    // is_prime / sieve patterns under default tuning; flipping to
+    // always-on requires the cell-detection tightening tracked alongside
+    // task #26 (see project_variable_shadow_plan memory entry).
     let _cell_rewrite_applied = if std::env::var("MOLT_TIR_CELL_SSA").is_ok() {
         rewrite_cell_locals_to_store_load(&mut working_ops)
     } else {
