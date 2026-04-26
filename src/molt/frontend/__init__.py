@@ -12256,17 +12256,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _can_inline_list_comp(self, node: ast.ListComp) -> bool:
         """Check whether a list comprehension can be lowered as an inline loop.
 
-        Requirements: single generator, no async, single target name, no
-        nested comprehensions in the element expression.  Multi-for
-        comprehensions use the GeneratorExp path which handles walrus
-        scope leaking separately.
+        Requirements: single generator, no async, simple target (Name or a
+        flat Tuple of Names), no nested comprehensions in the element
+        expression.  Multi-for comprehensions use the GeneratorExp path
+        which handles walrus scope leaking separately.
+
+        Tuple targets such as ``for i, value in enumerate(values)`` are
+        accepted: the inline emitter assigns to a temp Name and emits an
+        explicit unpack, matching the semantics of CPython's tuple-target
+        ``for`` loops without forcing the comprehension onto the
+        generator-poll path (which has known Cranelift codegen
+        fragility for large surrounding functions).
         """
         if len(node.generators) != 1:
             return False
         comp = node.generators[0]
         if comp.is_async:
             return False
-        if not isinstance(comp.target, ast.Name):
+        if isinstance(comp.target, ast.Name):
+            pass
+        elif isinstance(comp.target, ast.Tuple):
+            # Only accept flat tuples of plain Name elements (no nested
+            # tuples, no Starred/Subscript/Attribute targets).
+            if not comp.target.elts:
+                return False
+            for elt in comp.target.elts:
+                if not isinstance(elt, ast.Name):
+                    return False
+        else:
             return False
         # Reject element expressions that themselves contain comprehensions
         # (they would require their own generator and cannot be inlined).
@@ -12285,11 +12302,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         non-trivial element expressions produce corrupted state machines.
         """
         comp = node.generators[0]
-        if not isinstance(comp.target, ast.Name):
+        if isinstance(comp.target, ast.Name):
+            tuple_target_names: list[str] | None = None
+            target_name = comp.target.id
+        elif isinstance(comp.target, ast.Tuple) and all(
+            isinstance(e, ast.Name) for e in comp.target.elts
+        ):
+            # ``for a, b in iter`` — bind the iteration value to a hidden
+            # temp Name, then re-use the existing visit_Assign(target=Tuple)
+            # machinery to unpack it into the user-named locals.
+            tuple_target_names = [e.id for e in comp.target.elts]
+            # Use a synthetic local name keyed off `next_var()` so it
+            # cannot collide with any user-visible binding.
+            target_name = f"__molt_listcomp_unpack_{self.next_var()}"
+        else:
             raise NotImplementedError(
                 "Only simple list comprehension targets supported"
             )
-        target_name = comp.target.id
         # Collect walrus (:=) targets in the element expression and
         # filters. These must leak to the enclosing scope per PEP 572.
         walrus_names: set[str] = set()
@@ -12324,6 +12353,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             lambda_free_vars.add(inner.id)
         outer_boxed = self.boxed_locals.pop(target_name, None)
         outer_boxed_hint = self.boxed_local_hints.pop(target_name, None)
+        # When unpacking a tuple target, the user-named locals are bound
+        # inside the loop body too. Save their pre-comp values so we can
+        # restore them after the comprehension exits (CPython per-comp
+        # scoping: the iteration variables don't leak).
+        saved_tuple_locals: dict[str, MoltValue | None] = {}
+        if tuple_target_names is not None:
+            for tname in tuple_target_names:
+                saved_tuple_locals[tname] = self.locals.get(tname)
         comp_cell: MoltValue | None = None
         if target_name in lambda_free_vars:
             missing = MoltValue(self.next_var(), type_hint="missing")
@@ -12383,6 +12420,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
+        # If the original target was a tuple, unpack the synthetic temp
+        # Name into the user-facing locals.  ``_emit_unpack_assign`` handles
+        # length checks, starred expansion, and the per-element rebind.
+        if tuple_target_names is not None:
+            unpack_target = ast.Tuple(
+                elts=[
+                    ast.Name(id=name, ctx=ast.Store()) for name in tuple_target_names
+                ],
+                ctx=ast.Store(),
+            )
+            self._emit_unpack_assign(unpack_target, item)
         # Evaluate optional filter conditions.
         skip_label_needed = bool(comp.ifs)
         if skip_label_needed:
@@ -12413,6 +12461,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.locals[target_name] = old_local
         else:
             self.locals.pop(target_name, None)
+        # Restore any user-named locals bound by tuple-unpacking the
+        # iteration value.
+        if tuple_target_names is not None:
+            for tname in tuple_target_names:
+                prior = saved_tuple_locals.get(tname)
+                if prior is not None:
+                    self.locals[tname] = prior
+                else:
+                    self.locals.pop(tname, None)
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         # Post-loop: restore the saved cell value so that the outer scope sees
@@ -12522,6 +12579,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise SyntaxError(
                 "asynchronous comprehension outside of an asynchronous function"
             )
+        # When a generator expression is shape-equivalent to an inline
+        # list comprehension, materialise it eagerly as a list and let the
+        # consumer iterate that list. This sidesteps the Cranelift native
+        # backend's known fragility with complex genexpr poll functions
+        # (the state machine regularly trips a `Value::reserved_value()`
+        # entity-table panic in cranelift-codegen during alias resolution
+        # and at opt_level=none retry, leaving the function as a runtime
+        # trap stub). The lazy semantics are preserved for any genexpr
+        # that does not match the inline criteria — multi-generator,
+        # async, walrus-leaking, or nested-comprehension forms still flow
+        # through the poll-function path unchanged.
+        if not async_needed:
+            equivalent_listcomp = ast.ListComp(
+                elt=node.elt, generators=node.generators
+            )
+            if self._can_inline_list_comp(equivalent_listcomp):
+                return self._emit_inline_list_comp(equivalent_listcomp)
         cell_vars = self._collect_comprehension_cell_vars(node)
         func_symbol = self._genexpr_symbol()
         poll_func_name = f"{func_symbol}_poll"

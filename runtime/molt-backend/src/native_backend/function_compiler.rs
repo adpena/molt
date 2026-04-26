@@ -811,6 +811,7 @@ fn float_value_for_mixed(
 fn collect_slot_backed_join_names(
     ops: &[OpIR],
     exception_label_ids: &BTreeSet<i64>,
+    stateful: bool,
 ) -> BTreeSet<String> {
     let mut slot_backed_join_names: BTreeSet<String> = BTreeSet::new();
 
@@ -827,7 +828,17 @@ fn collect_slot_backed_join_names(
         }
     }
 
-    if exception_label_ids.is_empty() {
+    // Stateful functions (generators / async / comprehension polls) carry their
+    // SSA values across state_yield / state_label resume points the same way
+    // exception-bearing functions carry values across check_exception splits.
+    // The state machine generates many block edges that aren't eagerly sealed,
+    // so phi resolution at seal_all_blocks() time can explode block-parameter
+    // counts past regalloc2's u32-indexed entity tables (u32::MAX panic).
+    //
+    // Treat stateful functions like exception functions: route all store_var
+    // targets through stack slots so the state machine carries memory values,
+    // not SSA values, across resume edges.
+    if exception_label_ids.is_empty() && !stateful {
         return slot_backed_join_names;
     }
 
@@ -836,19 +847,20 @@ fn collect_slot_backed_join_names(
     let mut exception_written_locals: BTreeSet<String> = BTreeSet::new();
 
     // Collect ALL store_var targets that appear anywhere in a function with
-    // exception handling. When exception_label_ids is non-empty, block
-    // sealing is deferred to seal_all_blocks(), which means Cranelift must
-    // resolve SSA phi nodes for every variable that has definitions reaching
-    // from different predecessors. Each check_exception creates a new block
+    // exception handling or stateful resume points. When the function defers
+    // block sealing to seal_all_blocks(), Cranelift must resolve SSA phi
+    // nodes for every variable that has definitions reaching from different
+    // predecessors. Each check_exception or state_yield creates a new block
     // split, and variables carried across these splits become block
-    // parameters. In functions with many check_exceptions (e.g. try/except
-    // bodies), the block parameter count explodes and can overflow
-    // regalloc2's internal index tables (u32::MAX index panic).
+    // parameters. In functions with many such splits (e.g. try/except
+    // bodies, generator/async poll state machines), the block parameter
+    // count explodes and can overflow regalloc2's internal index tables
+    // (u32::MAX index panic).
     //
     // By routing ALL store_var targets through stack slots instead of SSA
     // variables, we eliminate the phi nodes entirely. Stack loads/stores
     // are slightly slower than register-to-register moves, but:
-    // 1. Exception-handling functions are already on the cold path
+    // 1. Exception-handling and poll functions are already on the cold path
     // 2. The alternative is a Cranelift panic and trap stub
     // 3. regalloc2 phi resolution for many-predecessor blocks is O(n^2)
     //
@@ -862,7 +874,8 @@ fn collect_slot_backed_join_names(
             }
         }
     }
-    // All store_var targets in exception-bearing functions use stack slots.
+    // All store_var targets in exception-bearing or stateful functions use
+    // stack slots.
     slot_backed_join_names.extend(all_store_var_targets);
 
     for op in ops {
@@ -2696,13 +2709,14 @@ impl SimpleBackend {
         // stored to heap, returned, or has explicit refcount ops, the slot
         // mechanism is needed for refcount correctness at phi-join boundaries.
         let mut slot_backed_join_names =
-            collect_slot_backed_join_names(&func_ir.ops, &exception_label_ids);
-        // In functions with exception handling, keep ALL store_var targets
-        // slot-backed to prevent regalloc2 block-parameter explosion.
-        // Scalar exclusion is only safe when blocks are eagerly sealed
-        // (no exception labels), because eager sealing resolves phi nodes
-        // incrementally without creating massive block parameter lists.
-        if scalar_fast_paths_enabled && exception_label_ids.is_empty() {
+            collect_slot_backed_join_names(&func_ir.ops, &exception_label_ids, stateful);
+        // In functions with exception handling or stateful resume points,
+        // keep ALL store_var targets slot-backed to prevent regalloc2
+        // block-parameter explosion. Scalar exclusion is only safe when
+        // blocks are eagerly sealed (no exception labels and not stateful),
+        // because eager sealing resolves phi nodes incrementally without
+        // creating massive block parameter lists.
+        if scalar_fast_paths_enabled && exception_label_ids.is_empty() && !stateful {
             slot_backed_join_names.retain(|name| {
                 let is_scalar = raw_int_shadow.contains_key(name)
                     || int_like_vars.contains(name)
@@ -24265,7 +24279,7 @@ mod tests {
             },
         ];
 
-        let names = collect_slot_backed_join_names(&ops, &BTreeSet::new());
+        let names = collect_slot_backed_join_names(&ops, &BTreeSet::new(), false);
 
         assert!(
             !names.contains("_bb4_arg0"),
@@ -24295,7 +24309,7 @@ mod tests {
             },
         ];
 
-        let names = collect_slot_backed_join_names(&ops, &BTreeSet::new());
+        let names = collect_slot_backed_join_names(&ops, &BTreeSet::new(), false);
 
         assert!(
             names.contains("_bb4_arg0"),
