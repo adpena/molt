@@ -426,6 +426,12 @@ pub(crate) const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 /// use the raw-alloc path rather than type-specific destructors.
 pub(crate) const HEADER_FLAG_RAW_ALLOC: u32 = 1 << 20;
 
+/// Object was bump-allocated inside a `ScopeArena`. Like
+/// [`HEADER_FLAG_NURSERY`], deallocation must NOT call `std::alloc::dealloc`:
+/// the arena reclaims memory in bulk when `molt_arena_free` runs at scope
+/// exit. Set by `molt_arena_alloc_object`.
+pub(crate) const HEADER_FLAG_ARENA: u32 = 1 << 21;
+
 /// Maximum total_size (header + payload) eligible for nursery allocation.
 /// Objects larger than this always go through the global allocator.
 const NURSERY_ALLOC_MAX: usize = 256;
@@ -2411,10 +2417,11 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             if total_size == 0 {
                 return;
             }
-            // Nursery-allocated objects live inside the bump region and must
-            // NOT be passed to the global allocator.  The nursery reclaims
-            // all its memory in one shot via `reset()`.
-            if (header_flags & HEADER_FLAG_NURSERY) != 0 {
+            // Nursery- or arena-allocated objects live inside a bump region
+            // and must NOT be passed to the global allocator.  The nursery
+            // reclaims its memory in one shot via `reset()`; the scope
+            // arena reclaims via `molt_arena_free` at scope exit.
+            if (header_flags & (HEADER_FLAG_NURSERY | HEADER_FLAG_ARENA)) != 0 {
                 return;
             }
             let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
