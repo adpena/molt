@@ -5058,6 +5058,14 @@ impl WasmBackend {
 
         let mut needs_field_fast = false;
         let mut needs_alloc_resolve = false;
+        // Scope arena eligibility: any op marked `arena_eligible` triggers
+        // a per-function ScopeArena lifecycle (arena_new at entry,
+        // arena_alloc_object at every eligible alloc site, arena_free before
+        // every return). Mirrors the native backend integration.
+        let has_arena_eligible = func_ir
+            .ops
+            .iter()
+            .any(|op| op.arena_eligible == Some(true));
         let mut stateful = false;
         let mut saw_jump_or_label = false;
         let mut fast_int_count: usize = 0;
@@ -5190,6 +5198,19 @@ impl WasmBackend {
             local_types.push(ValType::I32);
             local_count += 1;
         }
+
+        // Reserve a slot to hold the ScopeArena handle returned by
+        // `molt_arena_new`. The slot is initialised at function entry and
+        // consumed by every arena-eligible alloc + every return site.
+        let arena_local: Option<u32> = if has_arena_eligible {
+            let idx = local_count;
+            locals.insert("__wasm_scope_arena".to_string(), idx);
+            local_types.push(ValType::I64);
+            local_count += 1;
+            Some(idx)
+        } else {
+            None
+        };
 
         for name in ["__molt_tmp0", "__molt_tmp1", "__molt_tmp2", "__molt_tmp3"] {
             if let std::collections::btree_map::Entry::Vacant(entry) =
@@ -5543,6 +5564,16 @@ impl WasmBackend {
 
         // Initialize constant materialization cache (once per function entry).
         const_cache.emit_init(&mut func);
+
+        // Scope arena setup: invoke `molt_arena_new` once at function entry
+        // and stash the handle in the reserved local. Mirrors the native
+        // backend's MLKit-style region lifecycle so NoEscape allocations
+        // bypass the global allocator and the entire arena is freed in O(1)
+        // before each return.
+        if let Some(idx) = arena_local {
+            emit_call(&mut func, reloc_enabled, import_ids["arena_new"]);
+            func.instruction(&Instruction::LocalSet(idx));
+        }
 
         // Capture native_eh_enabled before the closure to avoid borrowing self.
         // Native EH requires non-relocatable output (wasm-ld doesn't support EH relocations)
@@ -7437,9 +7468,26 @@ impl WasmBackend {
                     "print_newline" => {
                         emit_call(func, reloc_enabled, import_ids["print_newline"]);
                     }
-                    "alloc" => {
-                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
-                        emit_call(func, reloc_enabled, import_ids["alloc"]);
+                    "alloc" | "stack_alloc" => {
+                        // Arena fast path: NoEscape allocations marked
+                        // `arena_eligible` go through `molt_arena_alloc_object`
+                        // (same NaN-boxed contract as `molt_alloc` but bumps
+                        // out of the per-function ScopeArena). The arena is
+                        // freed once at every return in O(1).
+                        if op.arena_eligible == Some(true)
+                            && let Some(arena_idx) = arena_local
+                        {
+                            func.instruction(&Instruction::LocalGet(arena_idx));
+                            func.instruction(&Instruction::I64Const(op.value.unwrap()));
+                            emit_call(
+                                func,
+                                reloc_enabled,
+                                import_ids["arena_alloc_object"],
+                            );
+                        } else {
+                            func.instruction(&Instruction::I64Const(op.value.unwrap()));
+                            emit_call(func, reloc_enabled, import_ids["alloc"]);
+                        }
                         if let Some(out) = op.out.as_ref() {
                             func.instruction(&Instruction::LocalSet(locals[out]));
                         } else {
@@ -11194,6 +11242,19 @@ impl WasmBackend {
                             // on the stack; a regular call+return handles mismatches.
                             && args_names.len() == func_ir.params.len();
 
+                        // Scope arena teardown before tail call: once
+                        // `return_call` replaces the current frame, the
+                        // arena handle local disappears — so we must free
+                        // the arena while it is still live. We do this
+                        // before pushing the callee args so the operand
+                        // stack discipline stays correct (`arena_free`
+                        // consumes exactly its own argument).
+                        if is_tail_call && arena_local.is_some() {
+                            let arena_idx = arena_local.unwrap();
+                            func.instruction(&Instruction::LocalGet(arena_idx));
+                            emit_call(func, reloc_enabled, import_ids["arena_free"]);
+                        }
+
                         for arg_name in args_names {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
@@ -12827,9 +12888,21 @@ impl WasmBackend {
                                 const_cache.emit_none(func);
                             }
                         }
+                        // Scope arena teardown: free the per-function arena
+                        // before returning. `arena_free` is `(i64) -> ()` so
+                        // it consumes the handle without disturbing the
+                        // return value already on the operand stack.
+                        if let Some(arena_idx) = arena_local {
+                            func.instruction(&Instruction::LocalGet(arena_idx));
+                            emit_call(func, reloc_enabled, import_ids["arena_free"]);
+                        }
                         func.instruction(&Instruction::Return);
                     }
                     "ret_void" => {
+                        if let Some(arena_idx) = arena_local {
+                            func.instruction(&Instruction::LocalGet(arena_idx));
+                            emit_call(func, reloc_enabled, import_ids["arena_free"]);
+                        }
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::Return);
                     }
@@ -13875,10 +13948,22 @@ impl WasmBackend {
                                 );
                                 const_cache.emit_none(func);
                             }
+                            // Defensive arena teardown: state-machine functions
+                            // do not currently produce arena-eligible allocs
+                            // (StateYield forces GlobalEscape), but symmetry
+                            // matters if escape analysis ever loosens.
+                            if let Some(arena_idx) = arena_local {
+                                func.instruction(&Instruction::LocalGet(arena_idx));
+                                emit_call(func, reloc_enabled, import_ids["arena_free"]);
+                            }
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
                         }
                         "ret_void" => {
+                            if let Some(arena_idx) = arena_local {
+                                func.instruction(&Instruction::LocalGet(arena_idx));
+                                emit_call(func, reloc_enabled, import_ids["arena_free"]);
+                            }
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
@@ -13917,6 +14002,11 @@ impl WasmBackend {
             const_cache.emit_none(func);
             func.instruction(&Instruction::LocalSet(return_local));
             func.instruction(&Instruction::End);
+            // Defensive arena teardown for the stateful trailing return.
+            if let Some(arena_idx) = arena_local {
+                func.instruction(&Instruction::LocalGet(arena_idx));
+                emit_call(func, reloc_enabled, import_ids["arena_free"]);
+            }
             func.instruction(&Instruction::LocalGet(return_local));
             func.instruction(&Instruction::Return);
             func.instruction(&Instruction::End);
@@ -14374,10 +14464,22 @@ impl WasmBackend {
                                 );
                                 const_cache.emit_none(func);
                             }
+                            // Defensive arena teardown: state-machine functions
+                            // do not currently produce arena-eligible allocs
+                            // (StateYield forces GlobalEscape), but symmetry
+                            // matters if escape analysis ever loosens.
+                            if let Some(arena_idx) = arena_local {
+                                func.instruction(&Instruction::LocalGet(arena_idx));
+                                emit_call(func, reloc_enabled, import_ids["arena_free"]);
+                            }
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
                         }
                         "ret_void" => {
+                            if let Some(arena_idx) = arena_local {
+                                func.instruction(&Instruction::LocalGet(arena_idx));
+                                emit_call(func, reloc_enabled, import_ids["arena_free"]);
+                            }
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
@@ -14412,6 +14514,11 @@ impl WasmBackend {
             }
             func.instruction(&Instruction::Br(0));
             func.instruction(&Instruction::End);
+            // Defensive arena teardown for the stateful trailing return.
+            if let Some(arena_idx) = arena_local {
+                func.instruction(&Instruction::LocalGet(arena_idx));
+                emit_call(func, reloc_enabled, import_ids["arena_free"]);
+            }
             const_cache.emit_none(func);
             func.instruction(&Instruction::Return);
             func.instruction(&Instruction::End);
@@ -14463,6 +14570,13 @@ impl WasmBackend {
             // Plain functions can legally rely on Python's implicit `None`
             // return. Match the stateful/jumpful lowering paths instead of
             // falling off the end of an i64-returning WASM function.
+            // Free the per-function ScopeArena before falling off the end —
+            // explicit `ret` ops free their own arena, but implicit-`None`
+            // fallthrough still needs the symmetric teardown.
+            if let Some(arena_idx) = arena_local {
+                func.instruction(&Instruction::LocalGet(arena_idx));
+                emit_call(func, reloc_enabled, import_ids["arena_free"]);
+            }
             const_cache.emit_none(func);
             func.instruction(&Instruction::End);
         }

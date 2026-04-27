@@ -15,6 +15,11 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("alloc_class", 3),
     ("alloc_class_static", 3),
     ("alloc_class_trusted", 3),
+    // Scope arena (MLKit-style region allocator). NoEscape allocations bypass
+    // the global allocator; the entire arena is freed in O(1) at scope exit.
+    ("arena_new", 0),          // () -> i64 (arena handle)
+    ("arena_alloc_object", 3), // (arena, size_bits) -> nan-boxed bits
+    ("arena_free", 1),         // (arena) -> ()
     ("dec_ref_obj", 1),
     ("inc_ref_obj", 1),
     ("obj_get_state", 14), // (i32) -> i64

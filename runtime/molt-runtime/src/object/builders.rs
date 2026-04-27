@@ -52,9 +52,13 @@ pub extern "C" fn molt_reuse_token(bits: u64) -> u64 {
             if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) != 0 {
                 return 0;
             }
-            // Nursery-allocated objects are bulk-reclaimed; individual reuse is
-            // unsafe because the nursery reset would invalidate the pointer.
-            if ((*header).flags & crate::object::HEADER_FLAG_NURSERY) != 0 {
+            // Nursery- or arena-allocated objects are bulk-reclaimed; individual
+            // reuse is unsafe because the bump region reset / arena free would
+            // invalidate the pointer.
+            if ((*header).flags
+                & (crate::object::HEADER_FLAG_NURSERY | crate::object::HEADER_FLAG_ARENA))
+                != 0
+            {
                 return 0;
             }
             // Unique reference: refcount == 1 means the caller is the sole owner.

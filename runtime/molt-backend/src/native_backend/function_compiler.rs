@@ -20900,6 +20900,10 @@ impl SimpleBackend {
 
                     // Scope arena path: NoEscape allocs use the bump
                     // allocator for O(1) allocation + O(1) bulk free.
+                    // `molt_arena_alloc_object` mirrors `molt_alloc`'s
+                    // contract: takes payload size, returns NaN-boxed bits
+                    // with an initialized MoltHeader (refcount 1, ARENA flag
+                    // set so dec_ref skips the global allocator).
                     let is_arena = op.arena_eligible == Some(true)
                         && scope_arena_ptr.is_some();
                     let res = if is_arena {
@@ -20907,7 +20911,7 @@ impl SimpleBackend {
                         let arena_alloc_id = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_arena_alloc",
+                            "molt_arena_alloc_object",
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
