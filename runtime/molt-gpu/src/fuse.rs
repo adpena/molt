@@ -278,35 +278,32 @@ fn identity_fold_kernel(kernel: &mut FusedKernel) -> usize {
 
     let mut replacements: Vec<Replacement> = vec![Replacement::Keep; n_ops];
 
-    for i in 0..n_ops {
-        let op = &kernel.ops[i];
+    for (op, replacement) in kernel.ops.iter().zip(replacements.iter_mut()) {
         match op.op {
             PrimitiveOp::Add => {
                 // ADD(x, 0) -> x, ADD(0, x) -> x
                 if is_const_val(&op.srcs[1], 0.0) {
-                    replacements[i] = Replacement::PassThrough(op.srcs[0].clone());
+                    *replacement = Replacement::PassThrough(op.srcs[0].clone());
                 } else if is_const_val(&op.srcs[0], 0.0) {
-                    replacements[i] = Replacement::PassThrough(op.srcs[1].clone());
+                    *replacement = Replacement::PassThrough(op.srcs[1].clone());
                 }
             }
             PrimitiveOp::Sub => {
                 // SUB(x, 0) -> x
                 if is_const_val(&op.srcs[1], 0.0) {
-                    replacements[i] = Replacement::PassThrough(op.srcs[0].clone());
+                    *replacement = Replacement::PassThrough(op.srcs[0].clone());
                 }
             }
             PrimitiveOp::Mul => {
                 // MUL(x, 1) -> x, MUL(1, x) -> x
                 if is_const_val(&op.srcs[1], 1.0) {
-                    replacements[i] = Replacement::PassThrough(op.srcs[0].clone());
+                    *replacement = Replacement::PassThrough(op.srcs[0].clone());
                 } else if is_const_val(&op.srcs[0], 1.0) {
-                    replacements[i] = Replacement::PassThrough(op.srcs[1].clone());
+                    *replacement = Replacement::PassThrough(op.srcs[1].clone());
                 }
                 // MUL(x, 0) -> 0, MUL(0, x) -> 0
-                else if is_const_val(&op.srcs[1], 0.0) {
-                    replacements[i] = Replacement::Const(0.0, op.dst_dtype);
-                } else if is_const_val(&op.srcs[0], 0.0) {
-                    replacements[i] = Replacement::Const(0.0, op.dst_dtype);
+                else if is_const_val(&op.srcs[1], 0.0) || is_const_val(&op.srcs[0], 0.0) {
+                    *replacement = Replacement::Const(0.0, op.dst_dtype);
                 }
             }
             _ => {}

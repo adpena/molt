@@ -444,7 +444,7 @@ pub mod interpret {
         let n_ops = kernel.ops.len();
 
         // Must have 2 ops (Mul + ReduceSum) or 3 ops (Mul + ReduceSum + Add for bias)
-        if n_ops < 2 || n_ops > 3 {
+        if !(2..=3).contains(&n_ops) {
             return None;
         }
 
@@ -521,7 +521,7 @@ pub mod interpret {
         }
 
         // K = logical_input_numel / output_numel
-        if output_numel == 0 || logical_input_numel % output_numel != 0 {
+        if output_numel == 0 || !logical_input_numel.is_multiple_of(output_numel) {
             return None;
         }
         let k = logical_input_numel / output_numel;
@@ -542,7 +542,7 @@ pub mod interpret {
         // Derive M and N from physical sizes:
         //   a_phys_elems == M * K  =>  M = a_phys_elems / K
         //   b_phys_elems == K * N  =>  N = b_phys_elems / K
-        if a_phys_elems % k != 0 || b_phys_elems % k != 0 {
+        if !a_phys_elems.is_multiple_of(k) || !b_phys_elems.is_multiple_of(k) {
             return None;
         }
         let m = a_phys_elems / k;
@@ -827,7 +827,7 @@ pub mod interpret {
             return None;
         }
         let reduce_size = input_numel / output_numel;
-        if reduce_size == 0 || input_numel % output_numel != 0 {
+        if reduce_size == 0 || !input_numel.is_multiple_of(output_numel) {
             return None;
         }
 
