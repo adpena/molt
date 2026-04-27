@@ -16438,6 +16438,130 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return res
 
+    def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
+        """Phase 1 (frontend variant) — direct call for monomorphic user methods.
+
+        Pattern: ``obj.method(args)`` where ``obj`` is a local with a
+        statically-known concrete class registered in ``exact_locals``,
+        the class is non-dynamic and non-dataclass, and ``method`` is a
+        regular function descriptor on that class with a clean signature
+        (no closure / vararg / varkw / kwonly / defaults).
+
+        Bypasses the bound-method allocation that the general dispatch
+        path performs at every call site.  In a tight loop this saves
+        N heap allocations + N IC dispatches (the allocation is the
+        dominant cost on bench_class_hierarchy, ~4.5s of the 5s
+        single-class-call overhead measured experimentally).
+
+        Bails out on any condition that would change the observable
+        binding semantics (descriptors, properties, dataclass, dynamic
+        class layout, kwargs, *args spread, default-spec evaluation).
+
+        Returns ``None`` on bail to signal the caller to fall through to
+        the general path.
+        """
+        if not isinstance(node.func, ast.Attribute):
+            return None
+        attr_node = node.func
+        if not isinstance(attr_node.value, ast.Name):
+            return None
+        obj_name = attr_node.value.id
+        class_name = self.exact_locals.get(obj_name)
+        if class_name is None:
+            return None
+        class_info = self.classes.get(class_name)
+        if class_info is None:
+            return None
+        # Conservative bail-outs: anything that touches the descriptor /
+        # attribute-resolution machinery other than a vanilla bound-method
+        # binding.
+        if class_info.get("dynamic"):
+            return None
+        if class_info.get("dataclass"):
+            return None
+        if class_info.get("metaclass"):
+            return None
+        method_name = attr_node.attr
+        method_info, owner_class = self._resolve_method_info(class_name, method_name)
+        if method_info is None or owner_class is None:
+            return None
+        if method_info.get("descriptor") != "function":
+            return None
+        if method_info.get("has_closure"):
+            return None
+        if method_info.get("has_vararg"):
+            return None
+        if method_info.get("has_varkw"):
+            return None
+        if method_info.get("kwonly_count"):
+            return None
+        if method_info.get("defaults"):
+            return None
+        # Honour __getattribute__ overrides: the runtime path goes
+        # through the override and could observe the bound-method
+        # construction.  Skip the fold for those.
+        getattribute_info, _ = self._resolve_method_info(class_name, "__getattribute__")
+        if getattribute_info is not None:
+            return None
+        # Same for __getattr__ (only fires when normal lookup misses,
+        # but a fold that bypasses the BoundMethod allocation could
+        # observably skip the lookup ordering).
+        getattr_info, _ = self._resolve_method_info(class_name, "__getattr__")
+        if getattr_info is not None:
+            return None
+        if node.keywords:
+            return None
+        for arg in node.args:
+            if isinstance(arg, ast.Starred):
+                return None
+        param_count = method_info.get("param_count")
+        if param_count is None:
+            return None
+        expected_positional = param_count - 1  # exclude self
+        if len(node.args) != expected_positional:
+            return None
+
+        receiver = self.visit(attr_node.value)
+        if receiver is None:
+            return None
+
+        # The method's symbol was registered when the ClassDef was
+        # compiled (frontend/__init__.py:14117).  `method_info["func"]`
+        # is the MoltValue produced for the method, with
+        # `type_hint=f"Func:{method_symbol}"`.  Extract the symbol from
+        # there rather than re-calling `_function_symbol` (which would
+        # increment the collision counter and create a fresh, dangling
+        # symbol → undefined-symbol link error).
+        func_val = method_info.get("func")
+        if (
+            func_val is None
+            or not getattr(func_val, "type_hint", "").startswith("Func:")
+        ):
+            return None
+        method_symbol = func_val.type_hint.split(":", 1)[1]
+        if method_symbol not in self.func_symbol_names:
+            return None
+
+        call_args = [self.visit(a) for a in node.args]
+        if any(a is None for a in call_args):
+            return None
+
+        res_hint = "Any"
+        return_hint = method_info.get("return_hint")
+        if return_hint and (
+            return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
+        ):
+            res_hint = return_hint
+        res = MoltValue(self.next_var(), type_hint=res_hint)
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=[method_symbol, receiver] + call_args,
+                result=res,
+            )
+        )
+        return res
+
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
         if gpu_launch is not None:
@@ -16446,6 +16570,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         gpu_intrinsic = self._is_gpu_intrinsic_call(node)
         if gpu_intrinsic is not None and self.current_gpu_kernel_context:
             return self._emit_gpu_kernel_intrinsic_op(gpu_intrinsic)
+
+        # Phase 1 (frontend variant) — monomorphic user-method direct call.
+        #
+        # Eliminates per-iteration BoundMethod allocation when
+        # ``obj.method(args)`` has a statically-known concrete receiver
+        # class.  Falls through to the general path on any signature
+        # complexity (kwargs, defaults, descriptors, dataclass, etc.).
+        user_method_fold = self._try_emit_user_method_static_call(node)
+        if user_method_fold is not None:
+            return user_method_fold
 
         # Phase 4a — static super().method(args) fold.
         #
@@ -30567,15 +30701,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "CALL":
                 target = op.args[0]
                 code_id = self.func_code_ids.get(target, 0)
-                json_ops.append(
-                    {
-                        "kind": "call",
-                        "s_value": target,
-                        "args": [arg.name for arg in op.args[1:]],
-                        "value": code_id,
-                        "out": op.result.name,
-                    }
-                )
+                entry = {
+                    "kind": "call",
+                    "s_value": target,
+                    "args": [arg.name for arg in op.args[1:]],
+                    "value": code_id,
+                    "out": op.result.name,
+                }
+                # Same lane-classification fix as CALL_BIND/CALL_METHOD —
+                # preserve a meaningful result type_hint so the backend's
+                # preanalysis (function_compiler.rs:1618-1624) can route
+                # the call result into int_like_vars / float_like_vars and
+                # avoid coercing tight-loop accumulators to NaN-boxed
+                # float.  Without this, `total += obj.method(i)` where
+                # the Phase 1 fold rewrote the call to a direct CALL
+                # op silently dropped the int return type.
+                result_hint = op.result.type_hint
+                if result_hint and result_hint != "Any":
+                    entry["type_hint"] = result_hint
+                json_ops.append(entry)
             elif op.kind == "CALL_INTERNAL":
                 target = op.args[0]
                 code_id = self.func_code_ids.get(target, 0)
