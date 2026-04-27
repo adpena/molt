@@ -30513,13 +30513,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     invoke_op["s_value"] = lane
                 json_ops.append(invoke_op)
             elif op.kind == "CALL_BIND":
-                json_ops.append(
-                    {
-                        "kind": "call_bind",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                entry = {
+                    "kind": "call_bind",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                # Propagate the result's type_hint so the backend's
+                # preanalysis can classify the call's lane (int/float/
+                # bool/str).  Without this, `total += obj.method(i)`
+                # in a tight loop falls through to the catch-all
+                # NaN-boxed accumulator and silently coerces to float.
+                # The frontend already populates `op.result.type_hint`
+                # from the method's `return_hint`; this serialises it.
+                result_hint = op.result.type_hint
+                if result_hint and result_hint != "Any":
+                    entry["type_hint"] = result_hint
+                json_ops.append(entry)
             elif op.kind == "CALL_METHOD":
                 entry = {
                     "kind": "call_method",
@@ -30536,6 +30545,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and callee_hint.startswith("BoundMethod:")
                 ):
                     entry["s_value"] = callee_hint
+                # Same lane-classification fix as CALL_BIND above.
+                result_hint = op.result.type_hint
+                if result_hint and result_hint != "Any":
+                    entry["type_hint"] = result_hint
                 json_ops.append(entry)
             elif op.kind == "BUILTIN_FUNC":
                 func_name, arity = op.args
