@@ -2585,6 +2585,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
     fn tuple_allocations_recycle_through_pool() {
         let _guard = crate::TEST_MUTEX
             .lock()
@@ -2625,6 +2626,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
     fn string_allocations_recycle_through_pool() {
         // Roadmap step #11 — verify TYPE_ID_STRING participates in pool reuse.
         // String content lives inline in the payload, so pool recycling is
@@ -2663,6 +2665,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
     fn dict_allocations_recycle_through_pool() {
         // Roadmap step #11 — verify TYPE_ID_DICT participates in pool reuse.
         // The dict destructor reads (zero-initialised) order/table pointer
@@ -2701,6 +2704,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
     fn pool_recycles_zero_payload_for_reuse() {
         // Roadmap step #11 invariant — when an allocation returns to the
         // pool, the entire slot (header + payload) must be zeroed before
@@ -2745,6 +2749,7 @@ mod tests {
     /// must reuse the same heap slot, proving the pool is collapsing the
     /// 10_000 tuple allocations down to a single fresh global allocation.
     #[test]
+    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
     fn tuple_loop_10k_collapses_to_single_allocation() {
         let _guard = crate::TEST_MUTEX
             .lock()
