@@ -70,4 +70,4 @@ pub mod loader;
 
 pub use abi_types::{Py_ssize_t, PyObject, PyTypeObject};
 pub use bridge::{AbiHandle, ObjectBridge};
-pub use hooks::{RuntimeHooks, hooks, hooks_or_stubs, set_runtime_hooks};
+pub use hooks::{RuntimeHooks, hooks, hooks_or_stubs, set_runtime_hooks, try_set_runtime_hooks};
