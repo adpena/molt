@@ -73,3 +73,34 @@
 # remote_dir = "/work"
 #
 # Fill in real entries below. Empty inventories are an error.
+
+# adpena LAN inventory (verified 2026-04-27)
+# molt   = Raspberry Pi (Debian 13 trixie, aarch64) at 192.168.1.213
+# macmini = Intel Mac mini (macOS 15.7.5, x86_64) at 192.168.1.112
+# bat00  = Windows machine at 192.168.1.216 (no ssh:22 listener — needs OpenSSH-Server enabled)
+
+[[host]]
+name = "macmini"
+hostname = "192.168.1.112"
+user = "adpena"
+target = "x86_64-apple-darwin"
+remote_dir = "/tmp/molt_test"
+
+# Pi disabled until disk is freed (was 100% full at audit time).
+# Re-enable after pruning ~/PycharmProjects (9.4G) or installing a USB SSD.
+# [[host]]
+# name = "molt-pi"
+# hostname = "192.168.1.213"
+# user = "adpena"
+# target = "aarch64-unknown-linux-gnu"
+# remote_dir = "/tmp/molt_test"
+
+# Windows disabled until OpenSSH Server feature is enabled in Settings →
+# Apps → Optional features. Then add:
+# [[host]]
+# name = "bat00"
+# hostname = "192.168.1.216"
+# user = "adpena"
+# target = "x86_64-pc-windows-msvc"
+# remote_dir = "C:\\Users\\adpena\\AppData\\Local\\molt_test"
+# shell = "powershell"
