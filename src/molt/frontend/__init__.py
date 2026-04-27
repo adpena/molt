@@ -19720,6 +19720,121 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     return res
                 _, new_returns_any = self._class_new_policy(class_id, class_info)
+
+                # Phase-1-sibling class-instantiation fold.
+                #
+                # When a class has a vanilla layout — no metaclass, no
+                # __new__ override (so `_class_new_policy` did not flag
+                # `new_returns_any`), no closures/varargs/kwargs/defaults
+                # on __init__, and the call site supplies positional args
+                # only — we can replace the `CALL_BIND(class_ref,
+                # callargs)` dispatch (which goes through
+                # `type.__call__` → `__new__` → bound-method-init →
+                # IC dispatch) with a structurally-equivalent two-op
+                # sequence: alloc instance, direct CALL to __init__.
+                # Targets bench_struct (`Point(0, 0)` per iter), bench_
+                # exception_heavy (`ValueError(i)` per iter), and any
+                # tight loop instantiating user types.  Each iteration
+                # saves a callargs-builder allocation, the IC slot
+                # probe, the bound-method allocation that
+                # `type.__call__` does on every call, and the sequence
+                # of dispatch-step trampolines around `__init__`.
+                if (
+                    not new_returns_any
+                    and not class_info.get("dynamic")
+                    and not class_info.get("dataclass")
+                    and not class_info.get("metaclass")
+                    and not node.keywords
+                    and all(not isinstance(a, ast.Starred) for a in node.args)
+                ):
+                    init_info, init_owner = self._resolve_method_info(
+                        class_id, "__init__"
+                    )
+                    # Treat "no __init__ on this class or any base except
+                    # object" as an instantiation that can run the alloc
+                    # alone — `object.__init__` is a no-op for the no-arg
+                    # case, and we'll only fold when the call has no args.
+                    init_is_default = init_info is None or init_owner == "object"
+                    if init_is_default and len(node.args) == 0:
+                        res = MoltValue(self.next_var(), type_hint=class_id)
+                        self.emit(
+                            MoltOp(
+                                kind="OBJECT_NEW_BOUND",
+                                args=[class_ref],
+                                result=res,
+                            )
+                        )
+                        return res
+                    if (
+                        init_info is not None
+                        and init_info.get("descriptor") == "function"
+                        and not init_info.get("has_closure")
+                        and not init_info.get("has_vararg")
+                        and not init_info.get("has_varkw")
+                        and not init_info.get("kwonly_count")
+                    ):
+                        # Defaults are fine ONLY if the call site supplies
+                        # all required positional args, so that no
+                        # default-spec evaluation is needed at runtime.
+                        # The arg-count match below enforces this.
+                        # Honour __new__ overrides on bases too:
+                        # `_resolve_method_info` walks MRO so an
+                        # __init__ resolved through the chain is the
+                        # one Python would dispatch to.
+                        getattribute_info, _ = self._resolve_method_info(
+                            class_id, "__getattribute__"
+                        )
+                        new_info, new_owner = self._resolve_method_info(
+                            class_id, "__new__"
+                        )
+                        new_is_default = new_info is None or new_owner == "object"
+                        if (
+                            getattribute_info is None
+                            and new_is_default
+                            and (init_owner or class_id) in self.classes
+                        ):
+                            init_func_val = init_info.get("func")
+                            if (
+                                init_func_val is not None
+                                and getattr(init_func_val, "type_hint", "").startswith(
+                                    "Func:"
+                                )
+                            ):
+                                init_symbol = init_func_val.type_hint.split(":", 1)[1]
+                                if init_symbol in self.func_symbol_names:
+                                    param_count = init_info.get("param_count")
+                                    if param_count is not None:
+                                        expected_positional = param_count - 1
+                                        if len(node.args) == expected_positional:
+                                            res = MoltValue(
+                                                self.next_var(),
+                                                type_hint=class_id,
+                                            )
+                                            self.emit(
+                                                MoltOp(
+                                                    kind="OBJECT_NEW_BOUND",
+                                                    args=[class_ref],
+                                                    result=res,
+                                                )
+                                            )
+                                            init_args = [
+                                                self.visit(a) for a in node.args
+                                            ]
+                                            if not any(a is None for a in init_args):
+                                                init_res = MoltValue(
+                                                    self.next_var(),
+                                                    type_hint="None",
+                                                )
+                                                self.emit(
+                                                    MoltOp(
+                                                        kind="CALL",
+                                                        args=[init_symbol, res]
+                                                        + init_args,
+                                                        result=init_res,
+                                                    )
+                                                )
+                                                return res
+
                 callargs = self._emit_call_args_builder(node)
                 res_hint = "Any" if new_returns_any else class_id
                 res = MoltValue(self.next_var(), type_hint=res_hint)
@@ -31028,6 +31143,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "OBJECT_NEW":
                 json_ops.append(
                     {"kind": "object_new", "args": [], "out": op.result.name}
+                )
+            elif op.kind == "OBJECT_NEW_BOUND":
+                # Phase-1-sibling class-instantiation fast path:
+                # `Point(args)` for a known non-dynamic class lowers to
+                # `OBJECT_NEW_BOUND(class_ref)` (allocates instance with
+                # the right type tag) followed by a direct `CALL` to
+                # `__init__`'s symbol — bypassing
+                # `type.__call__` → bound-method-init → CALL_BIND.
+                # See `_try_emit_class_static_call` for the predicates.
+                json_ops.append(
+                    {
+                        "kind": "object_new_bound",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
                 )
             elif op.kind == "CLASSMETHOD_NEW":
                 json_ops.append(

@@ -16942,6 +16942,34 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "object_new_bound" => {
+                    // Lower the frontend's class-instantiation fast path:
+                    // `Point(args)` where Point is a known non-dynamic class
+                    // becomes `OBJECT_NEW_BOUND(Point_class_ref)` + direct
+                    // CALL to `__init__`.  This bypasses
+                    // `type.__call__` → `__new__` → bound-method-init →
+                    // CALL_BIND IC dispatch — all of which the frontend
+                    // proves unnecessary for the known-class case.
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let cls_bits = var_get_boxed(
+                        &mut builder, &vars, &args[0],
+                        &raw_primary_int, &raw_primary_float,
+                        box_int_mask_var, box_int_tag_var,
+                    ).expect("Class ref not found for object_new_bound");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_object_new_bound",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*cls_bits]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "class_set_base" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
