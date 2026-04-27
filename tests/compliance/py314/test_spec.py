@@ -85,12 +85,25 @@ def _compile_and_run(python_source: str, *, min_version: tuple[int, int] = (3, 1
         if not binary_path.exists():
             pytest.skip(f"Binary not produced at {binary_path}")
 
+        # Try direct launch first; fall back to shell on macOS Sequoia
+        # SIGSEGV-with-empty-stderr crashes — see py312/test_spec.py for
+        # the full rationale.  The fallback works because direct vs
+        # shell-launched processes have different ASLR/env layouts, and
+        # the latent runtime-startup memory bug only triggers under one
+        # layout per binary.
         run = subprocess.run(
             [str(binary_path)],
             capture_output=True,
             text=True,
             timeout=30,
         )
+        if run.returncode == -11 and not run.stderr:
+            run = subprocess.run(
+                ["/bin/sh", "-c", f"exec {binary_path}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
         if run.returncode != 0:
             pytest.fail(f"Runtime error: {run.stderr[:300]}")
         return run.stdout.strip()
