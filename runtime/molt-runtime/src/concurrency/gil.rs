@@ -157,16 +157,29 @@ where
 // Non-wasm32: full mutex-based GIL implementation
 // ---------------------------------------------------------------------------
 
+/// The single global GIL mutex.
+///
+/// This is always a `'static` mutex shared across all phases of the runtime
+/// lifetime: pre-init, active, and post-shutdown.  Earlier designs returned
+/// `&state.gil` once the runtime state existed and `&PREINIT_GIL` otherwise,
+/// but that produced a synchronization gap: a thread that acquired the GIL
+/// before init (via `PREINIT_GIL`) and another thread that acquired it after
+/// init (via `state.gil`) were taking *different* mutexes, so neither
+/// happens-before-synchronized with the other.  Miri's data-race detector
+/// caught this in the `builtins::modules::tests` cross-test interaction:
+/// two test threads concurrently mutated `sys.modules`'s order Vec because
+/// the mutex they each held was distinct.
+///
+/// Keeping a single static mutex eliminates that gap entirely while still
+/// surviving `molt_runtime_shutdown` (the static is `'static` and is never
+/// dropped, unlike a mutex stored in the heap-allocated runtime state).
 #[cfg(not(target_arch = "wasm32"))]
 static PREINIT_GIL: Mutex<()> = Mutex::new(());
 
 #[cfg(not(target_arch = "wasm32"))]
+#[inline(always)]
 fn molt_gil() -> &'static Mutex<()> {
-    if let Some(state) = runtime_state_for_gil() {
-        &state.gil
-    } else {
-        &PREINIT_GIL
-    }
+    &PREINIT_GIL
 }
 
 #[cfg(not(target_arch = "wasm32"))]

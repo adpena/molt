@@ -1427,6 +1427,7 @@ fn importlib_stabilize_module_state_clears_internal_dunder_path_placeholder() {
     });
 }
 
+#[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn importlib_sha256_path_supports_zip_archive_members() {
@@ -1527,6 +1528,7 @@ fn importlib_find_in_path_resolves_sourceless_bytecode() {
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }
 
+#[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn importlib_find_in_path_resolves_zip_source_module_and_package() {
@@ -1586,6 +1588,7 @@ fn importlib_find_in_path_resolves_zip_source_module_and_package() {
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }
 
+#[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn importlib_zip_source_exec_payload_reads_source_and_resolution() {
@@ -1697,6 +1700,7 @@ fn importlib_namespace_paths_finds_namespace_dirs() {
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dirs");
 }
 
+#[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn importlib_namespace_paths_finds_zip_namespace_dirs() {
@@ -1792,6 +1796,7 @@ fn importlib_resources_path_payload_reports_entries_and_init_marker() {
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }
 
+#[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn importlib_resources_zip_payload_reports_entries_and_init_marker() {
@@ -1873,6 +1878,7 @@ fn importlib_resources_zip_payload_reports_entries_and_init_marker() {
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }
 
+#[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
 fn importlib_resources_whl_payload_reports_archive_member_flag() {
@@ -1962,6 +1968,7 @@ fn importlib_metadata_payload_parses_name_version_and_entry_points() {
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }
 
+#[cfg(feature = "stdlib_fs_extra")]
 #[test]
 fn importlib_metadata_record_payload_parses_rows() {
     let tmp = tempfile::Builder::new()

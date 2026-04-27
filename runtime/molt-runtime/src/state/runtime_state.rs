@@ -250,7 +250,6 @@ pub(crate) struct RuntimeState {
     pub(crate) thread_tasks: Mutex<HashMap<PtrSlot, Arc<ThreadTaskState>>>,
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
     pub(crate) code_slots: OnceLock<Vec<AtomicU64>>,
-    pub(crate) gil: Mutex<()>,
     pub(crate) start_time: OnceLock<Instant>,
     /// VFS state lazily initialized from environment variables on first access.
     pub(crate) vfs_state: OnceLock<Option<crate::vfs::VfsState>>,
@@ -330,7 +329,6 @@ impl RuntimeState {
             thread_tasks: Mutex::new(HashMap::new()),
             process_tasks: Mutex::new(HashMap::new()),
             code_slots: OnceLock::new(),
-            gil: Mutex::new(()),
             start_time: OnceLock::new(),
             vfs_state: OnceLock::new(),
         }

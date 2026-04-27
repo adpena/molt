@@ -124,15 +124,17 @@ use crate::{
     contextlib_async_exitstack_enter_context_task_drop,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_async_exitstack_exit_task_drop,
     contextlib_asyncgen_enter_poll_fn_addr, contextlib_asyncgen_enter_task_drop,
-    contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop, dict_order_ptr,
-    dict_table_ptr, dict_view_dict_bits, enumerate_index_bits, enumerate_target_bits,
+    contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop,
+    call_iter_cached_tuple, dict_order_ptr,
+    dict_table_ptr, dict_view_dict_bits, enumerate_cached_inner, enumerate_cached_outer,
+    enumerate_index_bits, enumerate_target_bits,
     exception_args_bits, exception_cause_bits, exception_class_bits, exception_context_bits,
     exception_kind_bits, exception_msg_bits, exception_suppress_bits, exception_trace_bits,
     exception_value_bits, filter_func_bits, filter_iter_bits, function_annotate_bits,
     function_annotations_bits, function_closure_bits, function_code_bits, function_dict_bits,
     generator_context_stack_drop, generator_exception_stack_drop, generic_alias_args_bits,
     generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits,
-    iter_cached_tuple, iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits,
+    iter_cached_tuple, iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr, module_dict_bits,
     module_name_bits, process_poll_fn_addr, profile_hit, profile_hit_bytes, property_del_bits,
     property_get_bits, property_set_bits, range_start_bits, range_step_bits, range_stop_bits,
     reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr, set_table_ptr,
@@ -846,6 +848,26 @@ fn object_pool_index(total_size: usize) -> Option<usize> {
     Some(total_size / 8)
 }
 
+/// Type-IDs whose freed allocations are recycled through the size-classed
+/// object pool.  Membership here means:
+///   - on `alloc`: try the pool first (pool > nursery > global).
+///   - on `dec_ref` to zero: zero the payload and push back into the pool.
+/// Limited to fixed-shape, high-churn types whose destructors release any
+/// owned heap state (Box/Vec) BEFORE the pool insert, so the pooled memory
+/// holds nothing but the zeroed header + payload region.
+#[inline]
+pub(crate) fn type_id_is_pool_eligible(type_id: u32) -> bool {
+    matches!(
+        type_id,
+        TYPE_ID_OBJECT
+            | TYPE_ID_BOUND_METHOD
+            | TYPE_ID_ITER
+            | TYPE_ID_TUPLE
+            | TYPE_ID_STRING
+            | TYPE_ID_DICT
+    )
+}
+
 fn object_pool_take(_py: &PyToken<'_>, total_size: usize) -> Option<*mut u8> {
     crate::gil_assert();
     if cfg!(miri) {
@@ -908,10 +930,7 @@ pub(crate) fn alloc_object_zeroed_with_pool(
 ) -> *mut u8 {
     crate::gil_assert();
     let alloc_size = allocated_size_for(total_size);
-    let pool_eligible = matches!(
-        type_id,
-        TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
-    ) && !cfg!(miri);
+    let pool_eligible = type_id_is_pool_eligible(type_id) && !cfg!(miri);
     let header_ptr = if pool_eligible {
         object_pool_take(_py, alloc_size)
     } else {
@@ -1033,8 +1052,10 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         );
     }
     // Try the object pool for fixed-size high-churn types (bound methods,
-    // iterators). These are allocated/freed once per call or loop iteration.
-    let pool_eligible = matches!(type_id, TYPE_ID_BOUND_METHOD | TYPE_ID_ITER);
+    // iterators, tuples, strings, dicts).  These are allocated/freed once per
+    // call or loop iteration.  See `type_id_is_pool_eligible` for the canonical
+    // membership predicate; both alloc and dec_ref-zero paths share it.
+    let pool_eligible = type_id_is_pool_eligible(type_id);
     let mut from_nursery = false;
     let header_ptr = if pool_eligible {
         object_pool_take(_py, alloc_size)
@@ -2128,6 +2149,17 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     if idx_bits != 0 && !obj_from_bits(idx_bits).is_none() {
                         dec_ref_bits(py, idx_bits);
                     }
+                    // Drop cached (idx, val) inner tuple — held by the
+                    // cache slot at refcount=1.
+                    let cached_inner = enumerate_cached_inner(ptr);
+                    if !cached_inner.is_null() {
+                        dec_ref_ptr(py, cached_inner);
+                    }
+                    // Drop cached (item, done) outer wrapper.
+                    let cached_outer = enumerate_cached_outer(ptr);
+                    if !cached_outer.is_null() {
+                        dec_ref_ptr(py, cached_outer);
+                    }
                 }
                 TYPE_ID_FILTER => {
                     let func_bits = filter_func_bits(ptr);
@@ -2150,6 +2182,11 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         for bits in iters.iter() {
                             dec_ref_bits(py, *bits);
                         }
+                    }
+                    // Drop cached (value, done) wrapper tuple.
+                    let cached = map_cached_tuple(ptr);
+                    if !cached.is_null() {
+                        dec_ref_ptr(py, cached);
                     }
                 }
                 TYPE_ID_ITER => {
@@ -2244,6 +2281,11 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     }
                     if callable_bits != 0 && !obj_from_bits(callable_bits).is_none() {
                         dec_ref_bits(py, callable_bits);
+                    }
+                    // Drop cached (value, done) wrapper tuple.
+                    let cached = call_iter_cached_tuple(ptr);
+                    if !cached.is_null() {
+                        dec_ref_ptr(py, cached);
                     }
                 }
                 TYPE_ID_OBJECT => {
@@ -2360,10 +2402,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // Notify the resource tracker that this object's memory is freed.
             crate::resource::with_tracker(|t| t.on_free(total_size));
             free_cold_header(header_cold_idx);
-            let should_pool = matches!(
-                type_id,
-                TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
-            ) && !cfg!(miri)
+            let should_pool = type_id_is_pool_eligible(type_id)
+                && !cfg!(miri)
                 && object_pool_put(py, total_size, header_ptr as *mut u8);
             if should_pool {
                 return;
@@ -2386,8 +2426,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        MoltHeader, OBJECT_POOL_TLS, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_object_zeroed_with_pool,
-        dec_ref_ptr, object_pool, object_pool_index, object_pool_take,
+        MoltHeader, OBJECT_POOL_TLS, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_TUPLE,
+        alloc_object_zeroed_with_pool, dec_ref_ptr, object_pool, object_pool_index,
+        object_pool_take,
     };
     use crate::PyToken;
     use std::alloc::Layout;
@@ -2490,7 +2531,10 @@ mod tests {
     }
 
     #[test]
-    fn non_object_allocations_do_not_fill_pool() {
+    fn ineligible_type_allocations_do_not_fill_pool() {
+        // Roadmap step #11 added TUPLE/STRING/DICT to the pool; pick a type
+        // that remains ineligible (e.g. TYPE_ID_LIST) to verify the gating
+        // predicate still rejects the long tail.
         let _guard = crate::TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2500,13 +2544,53 @@ mod tests {
             let idx = object_pool_index(total_size).expect("pool index should be valid");
             let tls_before = OBJECT_POOL_TLS.with(|pool| pool.borrow()[idx].len());
             let global_before = object_pool(_py).lock().unwrap()[idx].len();
-            let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
+            let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_LIST);
             assert!(!ptr.is_null());
             unsafe { dec_ref_ptr(_py, ptr) };
             let tls_after = OBJECT_POOL_TLS.with(|pool| pool.borrow()[idx].len());
             let global_after = object_pool(_py).lock().unwrap()[idx].len();
             assert_eq!(tls_after, tls_before);
             assert_eq!(global_after, global_before);
+        });
+    }
+
+    #[test]
+    fn tuple_allocations_recycle_through_pool() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            // alloc_object_zeroed_with_pool only initialises the header — the
+            // tuple destructor reads the (zero-initialised) `seq_vec_ptr` slot
+            // and treats null as "no Vec to drop".  That keeps this test off
+            // the real `alloc_tuple` path while still exercising pool recycling.
+            let total_size = std::mem::size_of::<MoltHeader>()
+                + std::mem::size_of::<*mut Vec<u64>>()
+                + std::mem::size_of::<u64>();
+            drain_pool(_py, total_size);
+            let idx = object_pool_index(total_size).expect("pool index should be valid");
+
+            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
+            assert!(!ptr1.is_null());
+            unsafe { dec_ref_ptr(_py, ptr1) };
+
+            let pooled = OBJECT_POOL_TLS
+                .with(|pool| pool.borrow()[idx].len())
+                + object_pool(_py).lock().unwrap()[idx].len();
+            assert!(
+                pooled >= 1,
+                "tuple dealloc should push at least one slot back to the pool"
+            );
+
+            // Next allocation of the same size class must come from the pool.
+            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
+            assert!(!ptr2.is_null());
+            assert_eq!(
+                ptr1, ptr2,
+                "second tuple alloc should reuse the slot freed by the first dealloc"
+            );
+            unsafe { dec_ref_ptr(_py, ptr2) };
+            drain_pool(_py, total_size);
         });
     }
 }

@@ -1628,13 +1628,10 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let bits = struct_unsigned_bits(_py, 0x0102_0304_0506_0708);
             let repr_bits = crate::molt_repr_from_obj(bits);
-            let Some(repr_ptr) = obj_from_bits(repr_bits).as_ptr() else {
-                panic!("repr must be a string object");
-            };
-            let rendered = unsafe { string_obj_to_owned(repr_ptr) };
+            let rendered = string_obj_to_owned(obj_from_bits(repr_bits));
             dec_ref_bits(_py, repr_bits);
             dec_ref_bits(_py, bits);
-            assert_eq!(rendered, expected);
+            assert_eq!(rendered.as_deref(), Some(expected));
         });
     }
 
