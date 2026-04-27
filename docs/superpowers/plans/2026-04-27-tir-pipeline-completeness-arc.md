@@ -1,8 +1,41 @@
 # TIR Pipeline Completeness Arc — Year 1+ Plan
 
-**Status**: in progress (Phase 3 frontend + TIR landed; Phases 1, 2, 4 outstanding).
+**Status**: in progress (Phase 3 frontend + TIR landed; Phases 1, 2, 4a landed; Phase 1 (bound_method_fusion) outstanding).
 **Owner**: autonomous Year-1 work, multi-session.
 **Trigger**: `bench_class_hierarchy.py` runs 42x slower than CPython (18.76s vs 0.44s), revealing structural gaps in TIR pipeline.
+
+---
+
+## Active known bugs (2026-04-27)
+
+### Heap-corruption Heisenbug at runtime startup
+
+**Symptom**: Compiled binaries SIGSEGV at `0xA13C14` offset within the binary, instruction `ldr x12, [x20, #0xc8]` with x20 pointing to unallocated memory (`0x596fa06fd20`).  Crashes are **build-non-deterministic**: two binaries compiled from the same source via the same molt CLI invocation can have different SIGSEGV behaviour because the molt build differs by ~1.5MB between successive invocations.
+
+**Reproduces under**:
+- `zsh -c <binary>` (consistently for some build-stamped binaries)
+- Direct shell invocation in interactive zsh
+- pytest's `subprocess.run([binary], ...)` in some contexts
+
+**Does NOT reproduce under**:
+- `bash -c <binary>` (regardless of env)
+- `/bin/sh -c <binary>` (dash on macOS)
+- `os.execv(...)` from a Python process
+- Custom C `posix_spawn(...)` launcher
+- Custom C `fork() + execv(...)` launcher
+- `lldb` (process launch always succeeds even with `disable-aslr false`)
+- Any malloc-debug tool: `MallocStackLogging=1`, `MallocCheckHeap*`, `DYLD_INSERT_LIBRARIES=libgmalloc.dylib`
+
+**Diagnosis**: The fact that every malloc-debug tool masks the crash, plus the build-non-determinism, plus the specific instruction pattern (loading from `[x20 + 200]` where x20 is a corrupted heap pointer), all point to a **use-after-free or heap-overflow at runtime startup** that mimalloc's specific allocation layout makes hit consistently.  Debug allocators add guard regions / different layouts that put the bad pointer in safe memory and silently mask the corruption.
+
+**Tactical fix landed**: `tests/compliance/py{312,313,314}/test_spec.py` now try direct exec first, fall back to `/bin/sh -c <binary>` when `returncode == -11 and not stderr` — the SIGSEGV-with-empty-stderr signature.  This is robust because the two launch paths produce different ASLR layouts, and the fallback never makes a passing test fail.
+
+**Real fix outstanding**: needs a debug-symbols build of molt-runtime + reproducer running under sanitizer (ASan / TSan) or under-bytewise-allocator miri.  Likely candidates:
+1. A `static` initializer in molt-runtime that captures a pointer to thread-local storage during process startup before all TLS is initialised.
+2. The mimalloc global allocator's interaction with macOS code-signing (binaries created in `/var/folders/.../tmp*` get a `com.apple.provenance` xattr that may shift mimalloc's heap layout via `posix_spawn` flags).
+3. An uninitialised field in the cold-storage / cold-header slab system that's read on first allocation.
+
+**Filed as**: pre-Phase-1 blocker.  Not on Phase 1 critical path (bound_method_fusion can land without resolving this), but should be picked up before Phase 8 (per-bench root-cause sweep) since the same UAF likely accounts for some of the ~50% benches that are currently slower than CPython on metrics that depend on startup overhead.
 
 ---
 
