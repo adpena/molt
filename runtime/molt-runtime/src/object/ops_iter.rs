@@ -569,13 +569,21 @@ pub(crate) unsafe fn enumerate_new_impl(
     }
 }
 
+#[inline]
+fn trace_iter_arg_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_ITER_ARG").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if matches!(
-            std::env::var("MOLT_TRACE_ITER_ARG").ok().as_deref(),
-            Some("1")
-        ) {
+        if trace_iter_arg_enabled() {
             let (frame_name, frame_line) = crate::state::tls::FRAME_STACK.with(|stack| {
                 let stack = stack.borrow();
                 if let Some(frame) = stack.last()

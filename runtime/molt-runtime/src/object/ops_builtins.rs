@@ -17,6 +17,58 @@ use super::ops::{as_float_extended, float_result_bits};
 use super::ops_arith::binary_type_error;
 use super::ops_sys::{decode_slice_bound, slice_error};
 
+// Cached debug/trace flags. Reading env vars on every call op (via libc
+// `getenv`, which acquires a process-wide mutex) was the dominant cost in
+// integer-loop benchmarks. Each flag is read exactly once at first use.
+
+#[inline]
+fn trace_enter_slot_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_TRACE_ENTER_SLOT").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
+#[inline]
+fn trace_exit_pending_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_TRACE_EXIT_PENDING")
+                .ok()
+                .as_deref(),
+            Some("1")
+        )
+    })
+}
+
+#[inline]
+fn trace_call_dispatch_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_CALL_DISPATCH").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
+#[inline]
+fn trace_call_dispatch_args_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_CALL_DISPATCH_ARGS")
+                .ok()
+                .as_deref(),
+            Some("1")
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -106,10 +158,7 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
         } else {
             MoltObject::none().bits()
         };
-        if matches!(
-            std::env::var("MOLT_TRACE_TRACE_ENTER_SLOT").ok().as_deref(),
-            Some("1")
-        ) {
+        if trace_enter_slot_enabled() {
             let mut name = "<none>".to_string();
             let mut file = "<none>".to_string();
             if code_bits != 0
@@ -136,12 +185,7 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_exit() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if matches!(
-            std::env::var("MOLT_TRACE_TRACE_EXIT_PENDING")
-                .ok()
-                .as_deref(),
-            Some("1")
-        ) && exception_pending(_py)
+        if trace_exit_pending_enabled() && exception_pending(_py)
             && let Some((file, line, func, _, _)) =
                 crate::builtins::exceptions::frame_stack_top_info(_py)
         {
@@ -740,10 +784,7 @@ pub extern "C" fn molt_call_func_dispatch(
         let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
         let func_arity = unsafe { function_arity(func_ptr) } as usize;
         let eff_nargs = effective_args.len();
-        let trace_dispatch = matches!(
-            std::env::var("MOLT_TRACE_CALL_DISPATCH").ok().as_deref(),
-            Some("1")
-        );
+        let trace_dispatch = trace_call_dispatch_enabled();
         if trace_dispatch {
             let name = unsafe {
                 function_name_bits(_py, func_ptr)
@@ -754,12 +795,7 @@ pub extern "C" fn molt_call_func_dispatch(
             eprintln!(
                 "[molt dispatch] call_func_dispatch name={name} fn_ptr={fn_ptr_val} has_trampoline={has_trampoline} has_closure={has_closure} arity={func_arity} nargs={eff_nargs}"
             );
-            if matches!(
-                std::env::var("MOLT_TRACE_CALL_DISPATCH_ARGS")
-                    .ok()
-                    .as_deref(),
-                Some("1")
-            ) {
+            if trace_call_dispatch_args_enabled() {
                 for (idx, &arg_bits) in effective_args.iter().enumerate() {
                     let arg_obj = obj_from_bits(arg_bits);
                     eprintln!(

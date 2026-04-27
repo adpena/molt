@@ -1296,11 +1296,17 @@ pub(crate) unsafe fn sum_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i6
 pub(super) use super::ops_sys::slice_error;
 use super::ops_sys::{collect_iterable_values, collect_slice_indices, normalize_slice_indices};
 
+#[inline]
+fn trace_len_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_LEN").as_deref() == Ok("1"))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_len(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
-        if std::env::var("MOLT_TRACE_LEN").as_deref() == Ok("1") {
+        if trace_len_enabled() {
             eprintln!(
                 "molt_len arg_type={} bits=0x{:x} pending={}",
                 type_name(_py, obj),

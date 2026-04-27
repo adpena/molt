@@ -3622,10 +3622,16 @@ pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
     })
 }
 
+#[inline]
+fn trace_bigint_shift_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_BIGINT_SHIFT").as_deref() == Ok("1"))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let trace_shift = std::env::var("MOLT_TRACE_BIGINT_SHIFT").as_deref() == Ok("1");
+        let trace_shift = trace_bigint_shift_enabled();
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let shift = index_i64_from_obj(_py, b, "shift count must be int");
