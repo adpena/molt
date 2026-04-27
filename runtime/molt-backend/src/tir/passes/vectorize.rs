@@ -1076,7 +1076,7 @@ mod tests {
         }
     }
 
-    fn header_op<'a>(func: &'a TirFunction, header_id: BlockId) -> &'a TirOp {
+    fn header_op(func: &TirFunction, header_id: BlockId) -> &TirOp {
         func.blocks[&header_id]
             .ops
             .iter()

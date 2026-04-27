@@ -137,7 +137,9 @@ fn init() {
     // Idempotent — only the first test in the run actually installs hooks;
     // subsequent calls observe the already-registered state and silently
     // no-op rather than panicking on `OnceLock::set` failure.
-    let _ = unsafe { molt_cpython_abi::try_set_runtime_hooks(TEST_HOOKS) };
+    unsafe {
+        molt_cpython_abi::try_set_runtime_hooks(TEST_HOOKS);
+    }
 }
 
 // ---------------------------------------------------------------------------

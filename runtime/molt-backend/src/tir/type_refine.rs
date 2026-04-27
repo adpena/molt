@@ -1496,7 +1496,7 @@ mod tests {
                 OpCode::ConstFloat,
                 vec![],
                 vec![ValueId(1)],
-                float_attr(3.14),
+                float_attr(2.5),
             ),
             make_op(
                 OpCode::ConstStr,
