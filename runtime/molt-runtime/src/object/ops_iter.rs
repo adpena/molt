@@ -269,9 +269,7 @@ pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: 
             }
             iters.push(iter_bits);
         }
-        let total = std::mem::size_of::<MoltHeader>()
-            + std::mem::size_of::<u64>()
-            + std::mem::size_of::<*mut Vec<u64>>();
+        let total = std::mem::size_of::<MoltHeader>() + MAP_PAYLOAD_SIZE;
         let map_ptr = alloc_object(_py, total, TYPE_ID_MAP);
         if map_ptr.is_null() {
             for iter_bits in iters {
@@ -282,6 +280,9 @@ pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: 
         let iters_ptr = Box::into_raw(Box::new(iters));
         *(map_ptr as *mut u64) = func_bits;
         *(map_ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = iters_ptr;
+        // Initialize cached-tuple slot to null (payload bytes are not
+        // zero-initialized when the nursery serves the allocation).
+        map_set_cached_tuple(map_ptr, std::ptr::null_mut());
         inc_ref_bits(_py, func_bits);
         MoltObject::from_ptr(map_ptr).bits()
     }
@@ -551,13 +552,17 @@ pub(crate) unsafe fn enumerate_new_impl(
         } else {
             MoltObject::from_int(0).bits()
         };
-        let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+        let total = std::mem::size_of::<MoltHeader>() + ENUMERATE_PAYLOAD_SIZE;
         let enum_ptr = alloc_object(_py, total, TYPE_ID_ENUMERATE);
         if enum_ptr.is_null() {
             return MoltObject::none().bits();
         }
         *(enum_ptr as *mut u64) = iter_bits;
         *(enum_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = index_bits;
+        // Initialize cached-tuple slots to null (alloc_object doesn't zero
+        // payload bytes when served from the nursery / pool).
+        enumerate_set_cached_inner(enum_ptr, std::ptr::null_mut());
+        enumerate_set_cached_outer(enum_ptr, std::ptr::null_mut());
         inc_ref_bits(_py, iter_bits);
         inc_ref_bits(_py, index_bits);
         MoltObject::from_ptr(enum_ptr).bits()
@@ -765,7 +770,7 @@ pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> 
         if !callable_ok {
             return raise_exception::<_>(_py, "TypeError", "iter(v, w): v must be callable");
         }
-        let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+        let total = std::mem::size_of::<MoltHeader>() + CALL_ITER_PAYLOAD_SIZE;
         let iter_ptr = alloc_object(_py, total, TYPE_ID_CALL_ITER);
         if iter_ptr.is_null() {
             return MoltObject::none().bits();
@@ -773,6 +778,8 @@ pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> 
         unsafe {
             *(iter_ptr as *mut u64) = callable_bits;
             *(iter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = sentinel_bits;
+            // Initialize cached-tuple slot to null.
+            call_iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
         }
         inc_ref_bits(_py, callable_bits);
         inc_ref_bits(_py, sentinel_bits);
@@ -806,19 +813,104 @@ pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
     })
 }
 
-/// Build or reuse a (value, done) 2-tuple from the iterator's cached slot.
+/// Build or reuse a 2-tuple from a cached slot.
 ///
 /// When the cached tuple exists and its refcount is exactly 1 (exclusively
-/// owned by the iterator), the elements are mutated in place — zero heap
-/// allocations.  Otherwise a fresh tuple is allocated and cached for next
-/// time.
+/// owned by the cache slot), the elements are mutated in place — zero heap
+/// allocations.  Otherwise a fresh tuple is allocated and stored in the
+/// cache slot for next time.
+///
+/// `slot_ptr` — pointer to the cache slot (`*mut *mut u8`) that stores the
+///              cached tuple's data pointer.  May be null on first call.
+/// `elem0`    — the element to place at index 0.
+/// `elem1`    — the element to place at index 1.
+/// `owns_elem0` — if true the caller holds a NEW reference to `elem0` that
+///                should be consumed (the helper will dec-ref it after the
+///                tuple inc-refs it).  Same semantics applies to `owns_elem1`.
+///
+/// Returns an owning reference (refcount bumped by +1 vs. the cache).
+///
+/// # Safety
+/// `slot_ptr` must point to a writable `*mut u8` slot whose lifetime
+/// extends until the next `cached_pair_return` call (or object dealloc).
+#[inline]
+unsafe fn cached_pair_return(
+    _py: &PyToken<'_>,
+    slot_ptr: *mut *mut u8,
+    elem0: u64,
+    elem1: u64,
+    owns_elem0: bool,
+    owns_elem1: bool,
+) -> u64 {
+    unsafe {
+        let cached = *slot_ptr;
+
+        if !cached.is_null() {
+            let header_ptr = cached.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
+            let rc = (*header_ptr)
+                .ref_count
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if rc == 1 {
+                // Exclusively owned — reuse by mutating elements in place.
+                let vec = seq_vec(cached);
+                let old0 = vec[0];
+                let old1 = vec[1];
+                vec[0] = elem0;
+                vec[1] = elem1;
+                inc_ref_bits(_py, elem0);
+                inc_ref_bits(_py, elem1);
+                dec_ref_bits(_py, old0);
+                dec_ref_bits(_py, old1);
+                if owns_elem0 {
+                    dec_ref_bits(_py, elem0);
+                }
+                if owns_elem1 {
+                    dec_ref_bits(_py, elem1);
+                }
+                // Bump refcount so the caller receives an owning reference
+                // (cache keeps rc=1, caller gets +1 → rc=2).
+                inc_ref_ptr(_py, cached);
+                return MoltObject::from_ptr(cached).bits();
+            }
+            // Someone else holds a reference to the old cached tuple; drop
+            // our cache reference and fall through to allocate a new one.
+            dec_ref_ptr(_py, cached);
+            *slot_ptr = std::ptr::null_mut();
+        }
+
+        // Allocate a fresh tuple and cache it.
+        let tuple_ptr = alloc_tuple(_py, &[elem0, elem1]);
+        if tuple_ptr.is_null() {
+            if owns_elem0 {
+                dec_ref_bits(_py, elem0);
+            }
+            if owns_elem1 {
+                dec_ref_bits(_py, elem1);
+            }
+            return MoltObject::none().bits();
+        }
+        if owns_elem0 {
+            dec_ref_bits(_py, elem0);
+        }
+        if owns_elem1 {
+            dec_ref_bits(_py, elem1);
+        }
+        // Cache: inc-ref so the tuple stays alive past the caller's dec-ref.
+        inc_ref_ptr(_py, tuple_ptr);
+        *slot_ptr = tuple_ptr;
+        // Return with the original refcount=1 as the caller's owning ref.
+        MoltObject::from_ptr(tuple_ptr).bits()
+    }
+}
+
+/// Build or reuse a (value, done) 2-tuple from the iterator's cached slot.
+///
+/// Thin wrapper around `cached_pair_return` for TYPE_ID_ITER objects.
 ///
 /// `iter_ptr` — data pointer of the TYPE_ID_ITER object (past the header).
 /// `val_bits` — the value element to place at index 0.
 /// `done`     — whether the iterator is exhausted.
-/// `owns_val` — if true the caller holds a NEW reference to `val_bits`
-///              that should be consumed (i.e. the helper will dec-ref it
-///              after the tuple inc-refs it).
+/// `owns_val` — if true the caller holds a NEW reference to `val_bits`.
 ///
 /// # Safety
 /// `iter_ptr` must point to valid TYPE_ID_ITER data.
@@ -831,58 +923,9 @@ unsafe fn iter_return_cached(
 ) -> u64 {
     unsafe {
         let done_bits = MoltObject::from_bool(done).bits();
-        let cached = iter_cached_tuple(iter_ptr);
-
-        if !cached.is_null() {
-            let header_ptr = cached.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
-            let rc = (*header_ptr)
-                .ref_count
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if rc == 1 {
-                // Exclusively owned — reuse by mutating elements in place.
-                let vec = seq_vec(cached);
-                // Dec-ref old elements before overwriting.
-                let old0 = vec[0];
-                let old1 = vec[1];
-                // Write new elements and inc-ref them (mirroring alloc_tuple
-                // semantics where elements are inc-ref'd on insertion).
-                vec[0] = val_bits;
-                vec[1] = done_bits;
-                inc_ref_bits(_py, val_bits);
-                inc_ref_bits(_py, done_bits);
-                // Now drop old refs.
-                dec_ref_bits(_py, old0);
-                dec_ref_bits(_py, old1);
-                if owns_val {
-                    dec_ref_bits(_py, val_bits);
-                }
-                // Bump refcount so the caller receives an owning reference
-                // (cache keeps rc=1, caller gets +1 → rc=2).
-                inc_ref_ptr(_py, cached);
-                return MoltObject::from_ptr(cached).bits();
-            }
-            // Someone else holds a reference to the old cached tuple; drop
-            // our cache reference and fall through to allocate a new one.
-            dec_ref_ptr(_py, cached);
-            iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
-        }
-
-        // Allocate a fresh tuple and cache it.
-        let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-        if tuple_ptr.is_null() {
-            if owns_val {
-                dec_ref_bits(_py, val_bits);
-            }
-            return MoltObject::none().bits();
-        }
-        if owns_val {
-            dec_ref_bits(_py, val_bits);
-        }
-        // Cache: inc-ref so the tuple stays alive past the caller's dec-ref.
-        inc_ref_ptr(_py, tuple_ptr);
-        iter_set_cached_tuple(iter_ptr, tuple_ptr);
-        // Return with the original refcount=1 as the caller's owning ref.
-        MoltObject::from_ptr(tuple_ptr).bits()
+        let slot_ptr = iter_ptr.add(std::mem::size_of::<u64>() + std::mem::size_of::<usize>())
+            as *mut *mut u8;
+        cached_pair_return(_py, slot_ptr, val_bits, done_bits, owns_val, false)
     }
 }
 
@@ -931,18 +974,25 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return pair_bits;
                     }
                     let idx_bits = enumerate_index_bits(ptr);
-                    let item_ptr = alloc_tuple(_py, &[idx_bits, val_bits]);
-                    if item_ptr.is_null() {
+                    // Build (or reuse) the inner (idx, val) user-visible tuple.
+                    let inner_slot = (ptr as *mut u8)
+                        .add(2 * std::mem::size_of::<u64>())
+                        as *mut *mut u8;
+                    let item_bits =
+                        cached_pair_return(_py, inner_slot, idx_bits, val_bits, false, false);
+                    if obj_from_bits(item_bits).is_none() {
                         return MoltObject::none().bits();
                     }
-                    let item_bits = MoltObject::from_ptr(item_ptr).bits();
                     let done_false = MoltObject::from_bool(false).bits();
-                    let out_ptr = alloc_tuple(_py, &[item_bits, done_false]);
-                    if out_ptr.is_null() {
-                        dec_ref_bits(_py, item_bits);
+                    // Build (or reuse) the outer (item, done_false) wrapper.
+                    let outer_slot = (ptr as *mut u8)
+                        .add(2 * std::mem::size_of::<u64>() + std::mem::size_of::<*mut u8>())
+                        as *mut *mut u8;
+                    let out_bits =
+                        cached_pair_return(_py, outer_slot, item_bits, done_false, true, false);
+                    if obj_from_bits(out_bits).is_none() {
                         return MoltObject::none().bits();
                     }
-                    dec_ref_bits(_py, item_bits);
                     // Integer increment — enumerate counter is always int.
                     // molt_add is polymorphic and promotes to float if idx is float.
                     let next_bits = if let Some(i) = to_i64(obj_from_bits(idx_bits)) {
@@ -955,7 +1005,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     }
                     dec_ref_bits(_py, idx_bits);
                     enumerate_set_index_bits(ptr, next_bits);
-                    return MoltObject::from_ptr(out_ptr).bits();
+                    return out_bits;
                 }
                 if object_type_id(ptr) == TYPE_ID_CALL_ITER {
                     let call_bits = call_iter_callable_bits(ptr);
@@ -970,13 +1020,11 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return generator_done_tuple(_py, MoltObject::none().bits());
                     }
                     let done_bits = MoltObject::from_bool(false).bits();
-                    let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                    if tuple_ptr.is_null() {
-                        dec_ref_bits(_py, val_bits);
-                        return MoltObject::none().bits();
-                    }
-                    dec_ref_bits(_py, val_bits);
-                    return MoltObject::from_ptr(tuple_ptr).bits();
+                    let slot_ptr = (ptr as *mut u8).add(2 * std::mem::size_of::<u64>())
+                        as *mut *mut u8;
+                    let out_bits =
+                        cached_pair_return(_py, slot_ptr, val_bits, done_bits, true, false);
+                    return out_bits;
                 }
                 if object_type_id(ptr) == TYPE_ID_MAP {
                     let func_bits = map_func_bits(ptr);
@@ -1032,13 +1080,12 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     let done_bits = MoltObject::from_bool(false).bits();
-                    let tuple_ptr = alloc_tuple(_py, &[res_bits, done_bits]);
-                    if tuple_ptr.is_null() {
-                        dec_ref_bits(_py, res_bits);
-                        return MoltObject::none().bits();
-                    }
-                    dec_ref_bits(_py, res_bits);
-                    return MoltObject::from_ptr(tuple_ptr).bits();
+                    let slot_ptr = (ptr as *mut u8)
+                        .add(std::mem::size_of::<u64>() + std::mem::size_of::<*mut Vec<u64>>())
+                        as *mut *mut u8;
+                    let out_bits =
+                        cached_pair_return(_py, slot_ptr, res_bits, done_bits, true, false);
+                    return out_bits;
                 }
                 if object_type_id(ptr) == TYPE_ID_FILTER {
                     let func_bits = filter_func_bits(ptr);

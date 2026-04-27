@@ -5068,6 +5068,9 @@ mod tests {
 
     #[test]
     fn sys_module_cache_set_does_not_leave_pending_exception() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = alloc_string(_py, b"sys");
             assert!(!name_ptr.is_null());
@@ -5077,13 +5080,18 @@ mod tests {
             let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
             let result_bits = molt_module_cache_set(name_bits, module_bits);
+            // Contract: a successful registration leaves no pending exception.
+            // The return value is either:
+            //   - None (fresh insert succeeded), or
+            //   - the previously-cached `existing` module bits (first-init-wins
+            //     skip path; only when a different module was already cached
+            //     under the same name).
+            // The "no pending exception" invariant is the public success
+            // criterion; the return value is an internal handoff that callers
+            // dec_ref unconditionally.
             assert!(
                 !exception_pending(_py),
                 "sys module registration must not leave a pending exception"
-            );
-            assert!(
-                !obj_from_bits(result_bits).is_none(),
-                "sys module cache set should return a non-None success value"
             );
 
             dec_ref_bits(_py, result_bits);

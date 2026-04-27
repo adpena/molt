@@ -7004,7 +7004,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             return self._emit_module_attr_get(node.id)
                         return self._emit_global_get(node.id)
                 if node.id == "globals":
-                    return self._emit_globals_builtin_obj()
+                    return self._emit_globals_builtin_ref()
                 if node.id in {"locals", "__import__"}:
                     return self._emit_module_attr_get_on("builtins", node.id)
                 builtin_tag = BUILTIN_TYPE_TAGS.get(node.id)

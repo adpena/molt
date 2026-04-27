@@ -1430,6 +1430,7 @@ mod tests {
 
         let (set_base_ok, set_base_pending, set_attr_ok, set_attr_pending, inherited) =
             crate::with_gil_entry_nopanic!(_py, {
+                (|| {
                 let builtins = builtin_classes(_py);
                 let none_bits = MoltObject::none().bits();
 
@@ -1559,6 +1560,7 @@ mod tests {
                     set_attr_pending,
                     inherited,
                 )
+                })()
             });
 
         assert!(set_base_ok, "class_set_base failed");
