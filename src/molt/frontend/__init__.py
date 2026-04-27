@@ -16203,7 +16203,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 if method_info:
                     return_hint = method_info["return_hint"]
-                    if return_hint and return_hint in self.classes:
+                    # Builtin scalar/container return types must propagate as
+                    # type hints — without this, method calls returning `int`
+                    # become type-erased `Any`, which forces the lane-inference
+                    # pass to fall back to a NaN-boxed (effectively float-coerced)
+                    # accumulator in tight loops like
+                    # `total += obj.compute(i)`.
+                    if return_hint and (
+                        return_hint in self.classes
+                        or return_hint in BUILTIN_TYPE_TAGS
+                    ):
                         res_hint = return_hint
         if needs_bind:
             callargs = self._emit_call_args_builder(node)
@@ -16770,7 +16779,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             args = args + [empty_kwargs]
                     res_hint = "Any"
                     return_hint = method_info["return_hint"]
-                    if return_hint and return_hint in self.classes:
+                    # Builtin scalar/container return types must propagate as
+                    # type hints — see _resolve_method_call_hints for the same
+                    # fix; lane inference falls back to NaN-boxed accumulator
+                    # if `int` returns are erased here.
+                    if return_hint and (
+                        return_hint in self.classes
+                        or return_hint in BUILTIN_TYPE_TAGS
+                    ):
                         res_hint = return_hint
                     res = MoltValue(self.next_var(), type_hint=res_hint)
                     # Route known-method calls through CALL_BIND so descriptor binding and
@@ -19750,7 +19766,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     if method_info:
                         return_hint = method_info["return_hint"]
-                    if return_hint and return_hint in self.classes:
+                    # Propagate builtin return types (int/float/bool/str/etc),
+                    # not just user classes — otherwise method-call results in
+                    # tight loops fall back to a NaN-boxed accumulator and the
+                    # downstream lane inference forces float arithmetic.
+                    if return_hint and (
+                        return_hint in self.classes
+                        or return_hint in BUILTIN_TYPE_TAGS
+                    ):
                         res_hint = return_hint
                 if needs_bind:
                     callargs = self._emit_call_args_builder(node)
