@@ -32,8 +32,13 @@ fn entry_block_params_compile_with_int_shadow_targets() {
         profile: None,
     };
 
-    let bytes = SimpleBackend::new().compile(ir);
-    assert!(!bytes.is_empty());
+    let output = SimpleBackend::new().compile(ir);
+    assert!(!output.bytes.is_empty());
+    assert!(
+        output.trap_stub_names.is_empty(),
+        "unexpected trap stubs: {:?}",
+        output.trap_stub_names
+    );
 }
 
 #[test]
@@ -78,8 +83,13 @@ fn structured_if_phi_merges_compile() {
         profile: None,
     };
 
-    let bytes = SimpleBackend::new().compile(ir);
-    assert!(!bytes.is_empty());
+    let output = SimpleBackend::new().compile(ir);
+    assert!(!output.bytes.is_empty());
+    assert!(
+        output.trap_stub_names.is_empty(),
+        "unexpected trap stubs: {:?}",
+        output.trap_stub_names
+    );
 }
 
 #[test]
@@ -153,6 +163,11 @@ fn nested_structured_if_phi_merges_compile() {
         profile: None,
     };
 
-    let bytes = SimpleBackend::new().compile(ir);
-    assert!(!bytes.is_empty());
+    let output = SimpleBackend::new().compile(ir);
+    assert!(!output.bytes.is_empty());
+    assert!(
+        output.trap_stub_names.is_empty(),
+        "unexpected trap stubs: {:?}",
+        output.trap_stub_names
+    );
 }

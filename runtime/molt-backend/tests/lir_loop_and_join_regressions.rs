@@ -3,7 +3,7 @@ use molt_backend::tir::lower_to_simple::lower_to_simple_ir;
 use molt_backend::tir::passes::run_pipeline;
 use molt_backend::tir::type_refine::{extract_type_map, refine_types};
 use molt_backend::tir::verify::verify_function;
-use molt_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
+use molt_backend::{CompileOutput, FunctionIR, OpIR, SimpleBackend, SimpleIR};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -12,7 +12,7 @@ fn op(kind: &str) -> OpIR {
     }
 }
 
-fn roundtrip_compile(func: FunctionIR) -> Vec<u8> {
+fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
     let mut typed = lower_to_tir(&func);
     refine_types(&mut typed);
     let _stats = run_pipeline(&mut typed);
@@ -192,8 +192,13 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
         profile: None,
     };
 
-    let bytes = SimpleBackend::new().compile(ir);
-    assert!(!bytes.is_empty());
+    let output = SimpleBackend::new().compile(ir);
+    assert!(!output.bytes.is_empty());
+    assert!(
+        output.trap_stub_names.is_empty(),
+        "unexpected trap stubs: {:?}",
+        output.trap_stub_names
+    );
 }
 
 #[test]
@@ -279,8 +284,13 @@ fn loop_body_if_join_then_continue_compiles() {
         profile: None,
     };
 
-    let bytes = SimpleBackend::new().compile(ir);
-    assert!(!bytes.is_empty());
+    let output = SimpleBackend::new().compile(ir);
+    assert!(!output.bytes.is_empty());
+    assert!(
+        output.trap_stub_names.is_empty(),
+        "unexpected trap stubs: {:?}",
+        output.trap_stub_names
+    );
 }
 
 #[test]
@@ -371,8 +381,13 @@ fn tir_roundtrip_loop_body_if_return_then_continue_compiles() {
         is_extern: false,
     };
 
-    let bytes = roundtrip_compile(func);
-    assert!(!bytes.is_empty());
+    let output = roundtrip_compile(func);
+    assert!(!output.bytes.is_empty());
+    assert!(
+        output.trap_stub_names.is_empty(),
+        "unexpected trap stubs: {:?}",
+        output.trap_stub_names
+    );
 }
 
 #[test]
