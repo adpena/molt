@@ -2593,4 +2593,160 @@ mod tests {
             drain_pool(_py, total_size);
         });
     }
+
+    #[test]
+    fn string_allocations_recycle_through_pool() {
+        // Roadmap step #11 — verify TYPE_ID_STRING participates in pool reuse.
+        // String content lives inline in the payload, so pool recycling is
+        // safe as long as the next allocator overwrites the bytes (which the
+        // real `alloc_string` path does after the pool returns the slot).
+        use super::TYPE_ID_STRING;
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let total_size = std::mem::size_of::<MoltHeader>() + 32;
+            drain_pool(_py, total_size);
+            let idx = object_pool_index(total_size).expect("pool index should be valid");
+
+            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_STRING);
+            assert!(!ptr1.is_null());
+            unsafe { dec_ref_ptr(_py, ptr1) };
+
+            let pooled = OBJECT_POOL_TLS
+                .with(|pool| pool.borrow()[idx].len())
+                + object_pool(_py).lock().unwrap()[idx].len();
+            assert!(
+                pooled >= 1,
+                "string dealloc should push at least one slot back to the pool"
+            );
+
+            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_STRING);
+            assert!(!ptr2.is_null());
+            assert_eq!(
+                ptr1, ptr2,
+                "second string alloc should reuse the slot freed by the first dealloc"
+            );
+            unsafe { dec_ref_ptr(_py, ptr2) };
+            drain_pool(_py, total_size);
+        });
+    }
+
+    #[test]
+    fn dict_allocations_recycle_through_pool() {
+        // Roadmap step #11 — verify TYPE_ID_DICT participates in pool reuse.
+        // The dict destructor reads (zero-initialised) order/table pointer
+        // slots and treats null as "no Box to drop", so this test exercises
+        // the pool path without going through `alloc_dict` directly.
+        use super::TYPE_ID_DICT;
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let total_size = std::mem::size_of::<MoltHeader>() + 64;
+            drain_pool(_py, total_size);
+            let idx = object_pool_index(total_size).expect("pool index should be valid");
+
+            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_DICT);
+            assert!(!ptr1.is_null());
+            unsafe { dec_ref_ptr(_py, ptr1) };
+
+            let pooled = OBJECT_POOL_TLS
+                .with(|pool| pool.borrow()[idx].len())
+                + object_pool(_py).lock().unwrap()[idx].len();
+            assert!(
+                pooled >= 1,
+                "dict dealloc should push at least one slot back to the pool"
+            );
+
+            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_DICT);
+            assert!(!ptr2.is_null());
+            assert_eq!(
+                ptr1, ptr2,
+                "second dict alloc should reuse the slot freed by the first dealloc"
+            );
+            unsafe { dec_ref_ptr(_py, ptr2) };
+            drain_pool(_py, total_size);
+        });
+    }
+
+    #[test]
+    fn pool_recycles_zero_payload_for_reuse() {
+        // Roadmap step #11 invariant — when an allocation returns to the
+        // pool, the entire slot (header + payload) must be zeroed before
+        // reuse so the next consumer sees null inner pointers.  We can
+        // verify the zeroing contract directly via `object_pool_take`
+        // without going through a destructor that would interpret stale
+        // payload bytes as live pointers.
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            use super::{object_pool_put, object_pool_take};
+            let total_size = std::mem::size_of::<MoltHeader>() + 24;
+            drain_pool(_py, total_size);
+
+            // Allocate a raw slot, stamp a non-zero pattern, then push it
+            // back through the pool API.  `object_pool_put` MUST zero the
+            // entire slot before storing it.
+            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+            let raw = unsafe { std::alloc::alloc(layout) };
+            assert!(!raw.is_null());
+            unsafe { std::ptr::write_bytes(raw, 0xAB, total_size) };
+            assert!(object_pool_put(_py, total_size, raw));
+
+            // Take it back out — every byte must be zero.
+            let recycled = object_pool_take(_py, total_size).expect("pool should hold the slot");
+            assert_eq!(recycled, raw, "pool must hand back the same slot we put in");
+            unsafe {
+                let bytes = std::slice::from_raw_parts(recycled, total_size);
+                assert!(
+                    bytes.iter().all(|&b| b == 0),
+                    "pool must zero the slot before returning it for reuse"
+                );
+                std::alloc::dealloc(recycled, layout);
+            }
+            drain_pool(_py, total_size);
+        });
+    }
+
+    /// Microbenchmark proxy for `for i in range(10000): t = (i, i*2)` —
+    /// after the first allocation, every subsequent alloc/dec_ref cycle
+    /// must reuse the same heap slot, proving the pool is collapsing the
+    /// 10_000 tuple allocations down to a single fresh global allocation.
+    #[test]
+    fn tuple_loop_10k_collapses_to_single_allocation() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let total_size = std::mem::size_of::<MoltHeader>()
+                + std::mem::size_of::<*mut Vec<u64>>()
+                + std::mem::size_of::<u64>();
+            drain_pool(_py, total_size);
+
+            let iterations = 10_000usize;
+            let first = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
+            assert!(!first.is_null());
+            unsafe { dec_ref_ptr(_py, first) };
+
+            let mut reused = 0usize;
+            for _ in 1..iterations {
+                let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
+                assert!(!ptr.is_null());
+                if ptr == first {
+                    reused += 1;
+                }
+                unsafe { dec_ref_ptr(_py, ptr) };
+            }
+            assert_eq!(
+                reused,
+                iterations - 1,
+                "tuple pool should reuse the same slot for {} of {} iterations",
+                iterations - 1,
+                iterations,
+            );
+            drain_pool(_py, total_size);
+        });
+    }
 }
