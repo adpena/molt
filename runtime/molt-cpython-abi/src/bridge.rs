@@ -41,9 +41,23 @@ pub type AbiHandle = u64;
 
 /// Mapping from MoltHandle bits → allocated PyObject header.
 /// Entries live until the extension signals dealloc via Py_DECREF → 0.
+///
+/// Each entry allocates a `PyObject` header *followed by* the 64-bit Molt
+/// handle bits in a single boxed memory block.  C extensions only see the
+/// `PyObject` prefix (matching CPython's binary layout), but our bridge can
+/// recover the original Molt handle by reading the trailing u64 — even from
+/// a separately loaded copy of the bridge that has no entry in its in-memory
+/// map.  This is the contract that makes the rlib/dylib split safe across
+/// the loader's `pyobj_to_handle` boundary.
+#[repr(C)]
+struct BridgeHeader {
+    py_obj: PyObject,
+    molt_bits: u64,
+}
+
 struct BridgeEntry {
-    /// The CPython-layout header C code sees.
-    py_obj: Box<PyObject>,
+    /// The CPython-layout header C code sees, plus the trailing handle bits.
+    header: Box<BridgeHeader>,
 }
 
 /// Global bridge — one per process (extensions are global singletons).
@@ -215,7 +229,7 @@ impl ObjectBridge {
     pub unsafe fn handle_to_pyobj(&mut self, bits: AbiHandle) -> *mut PyObject {
         // Fast path: already in map.
         if let Some(entry) = self.to_py.get(&bits) {
-            let ptr = entry.py_obj.as_ref() as *const PyObject as *mut PyObject;
+            let ptr = &entry.header.py_obj as *const PyObject as *mut PyObject;
             unsafe {
                 (*ptr).ob_refcnt += 1;
             }
@@ -240,13 +254,16 @@ impl ObjectBridge {
         let ob_type = unsafe { tag_to_type(tag) };
 
         let mut entry = Box::new(BridgeEntry {
-            py_obj: Box::new(PyObject {
-                ob_refcnt: 1,
-                ob_type,
+            header: Box::new(BridgeHeader {
+                py_obj: PyObject {
+                    ob_refcnt: 1,
+                    ob_type,
+                },
+                molt_bits: bits,
             }),
         });
 
-        let raw_ptr = entry.py_obj.as_mut() as *mut PyObject;
+        let raw_ptr = &mut entry.header.py_obj as *mut PyObject;
         self.from_py.insert(raw_ptr as usize, bits);
         self.to_py.insert(bits, entry);
         raw_ptr
@@ -256,20 +273,7 @@ impl ObjectBridge {
     ///
     /// Returns `None` for static singletons or unknown pointers.
     pub fn pyobj_to_handle(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
-        if ptr.is_null() {
-            return None;
-        }
-        // Singletons — compare against static addresses.
-        if std::ptr::eq(ptr, &raw const Py_None as *const _) {
-            return Some(MoltObject::none().bits());
-        }
-        if std::ptr::eq(ptr, &raw const Py_True as *const _) {
-            return Some(MoltObject::from_bool(true).bits());
-        }
-        if std::ptr::eq(ptr, &raw const Py_False as *const _) {
-            return Some(MoltObject::from_bool(false).bits());
-        }
-        self.from_py.get(&(ptr as usize)).copied()
+        unsafe { pyobj_to_handle_static(ptr) }.or_else(|| self.from_py.get(&(ptr as usize)).copied())
     }
 
     /// Called by `Py_DECREF` when ref count reaches zero — release bridge entry.
@@ -318,6 +322,56 @@ impl Default for ObjectBridge {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Stateless `*mut PyObject` → Molt handle translation for static singletons.
+///
+/// Recognises `Py_None` / `Py_True` / `Py_False` directly.  Returns `None`
+/// for non-singleton pointers; callers fall back to either the per-bridge
+/// map or the trailing-bits read in `read_bridge_header_bits`.
+///
+/// # Safety
+/// `ptr` must either be null or a non-null pointer.  Reads are limited to
+/// pointer-equality comparisons against fixed singleton addresses.
+unsafe fn pyobj_to_handle_static(ptr: *mut PyObject) -> Option<AbiHandle> {
+    if ptr.is_null() {
+        return None;
+    }
+    if std::ptr::eq(ptr, &raw const Py_None as *const _) {
+        return Some(MoltObject::none().bits());
+    }
+    if std::ptr::eq(ptr, &raw const Py_True as *const _) {
+        return Some(MoltObject::from_bool(true).bits());
+    }
+    if std::ptr::eq(ptr, &raw const Py_False as *const _) {
+        return Some(MoltObject::from_bool(false).bits());
+    }
+    None
+}
+
+/// Read the Molt handle bits encoded in a `*mut PyObject`.
+///
+/// Recognises bridge-static singletons (`Py_None`, `Py_True`, `Py_False`)
+/// directly.  For all other pointers the function reads the trailing u64
+/// stored immediately after the `PyObject` header in `BridgeHeader`, the
+/// layout used by every PyObject the bridge mints.
+///
+/// # Safety
+/// `ptr` must either be null, a `&Py_None` / `&Py_True` / `&Py_False` static,
+/// or a non-null pointer minted by `ObjectBridge::handle_to_pyobj` (in any
+/// copy of the bridge crate — the layout is `#[repr(C)]` and stable).
+pub unsafe fn read_bridge_header_bits(ptr: *mut PyObject) -> u64 {
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    if let Some(bits) = unsafe { pyobj_to_handle_static(ptr) } {
+        return bits;
+    }
+    let trailer = unsafe {
+        let raw = ptr as *const u8;
+        raw.add(std::mem::size_of::<PyObject>()) as *const u64
+    };
+    unsafe { *trailer }
 }
 
 // ─── Exported ABI initialiser ─────────────────────────────────────────────

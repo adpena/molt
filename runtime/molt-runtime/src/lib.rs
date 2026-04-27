@@ -119,7 +119,7 @@ mod tk_bridge;
 pub use molt_runtime_tk;
 pub mod audit;
 #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-mod cpython_abi_hooks;
+pub mod cpython_abi_hooks;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;

@@ -1,23 +1,50 @@
 //! Module API — PyModule_New, PyModule_AddObject, PyModuleDef_Init.
 
 use crate::abi_types::{PyModuleDef, PyObject};
-use crate::bridge::GLOBAL_BRIDGE;
+use crate::bridge::{GLOBAL_BRIDGE, read_bridge_header_bits};
+use crate::hooks;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
+
+/// Resolve a `*mut PyObject` produced by this bridge to its underlying Molt
+/// handle bits.
+///
+/// All PyObject blocks our bridge mints carry the canonical Molt handle in a
+/// trailing u64 (see `bridge::handle_to_pyobj`), so we can read it directly
+/// without any per-bridge state.  Foreign pointers fall back to the in-memory
+/// map maintained by this copy of the bridge.
+fn bridge_pyobj_to_bits(obj: *mut PyObject) -> u64 {
+    if obj.is_null() {
+        return MoltObject::none().bits();
+    }
+    if let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(obj) {
+        return bits;
+    }
+    // No singleton match and no entry in the local map — the pointer most
+    // likely came from another copy of this bridge.  Read the trailing
+    // handle bits directly.
+    unsafe { read_bridge_header_bits(obj) }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_New(name: *const c_char) -> *mut PyObject {
     if name.is_null() {
         return ptr::null_mut();
     }
-    let _name = unsafe { CStr::from_ptr(name).to_string_lossy() };
-    // Allocate a Molt module object via the bridge.  The runtime does not
-    // yet expose a dedicated module allocator hook, so we return a
-    // placeholder (None).  This is sufficient for extensions that only need
-    // a non-null module handle to attach attributes to.
-    let bits = MoltObject::none().bits(); // placeholder
+    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    let h = hooks::hooks_or_stubs();
+    // SAFETY: hook is initialised by molt-runtime at startup; stubs return 0 if not.
+    let bits = unsafe { (h.alloc_module)(name_bytes.as_ptr(), name_bytes.len()) };
+    if bits == 0 {
+        return ptr::null_mut();
+    }
+    // Wrap the Molt handle in a bridge `PyObject` block so the returned
+    // pointer survives the `*mut PyObject` narrowing (which only preserves
+    // 48 bits of address) and so the trailing handle bits give the loader a
+    // stateless way to recover the canonical handle even when called from a
+    // different copy of this bridge crate.
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
 
@@ -27,14 +54,16 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
         return ptr::null_mut();
     }
     // CPython returns module.__dict__ (a borrowed reference).  The bridge
-    // does not yet track per-module attribute dicts, so we return the module
-    // itself.  This is safe because the only C-level operations on the
-    // returned dict (PyDict_SetItemString, etc.) go through the bridge's
-    // mapping API which resolves the Molt handle.
+    // does not yet expose the module's underlying dict pointer through a
+    // hook; PyModule_AddObject below uses module_set_attr directly to store
+    // attributes on the module's __dict__, so callers that only use
+    // PyModule_AddObject / PyModule_AddStringConstant / PyModule_AddIntConstant
+    // never need to inspect the dict pointer.
     //
-    // Returning null would break extensions that unconditionally dereference
-    // the result, so returning the module pointer is the least-bad option
-    // until we add proper __dict__ support to the bridge.
+    // NOTE(c-extension-gap): Extensions that call PyDict_SetItemString on the
+    // result will currently set attributes on the module pointer, which the
+    // mapping bridge silently ignores.  Wire a dedicated `module_dict_bits`
+    // hook before claiming PyDict_SetItemString-on-module support.
     module
 }
 
@@ -47,31 +76,26 @@ pub unsafe extern "C" fn PyModule_AddObject(
     if module.is_null() || name.is_null() || value.is_null() {
         return -1;
     }
-    // Store the attribute on the module via setattr.  The bridge-level module
-    // objects use molt_object_setattr (exposed via the C header path in
-    // include/molt/Python.h).  At the Rust ABI layer we wire through the
-    // same mechanism: convert name to a PyObject, then call setattro.
-    let attr_name_ptr = unsafe { crate::api::strings::PyUnicode_FromString(name) };
-    if attr_name_ptr.is_null() {
-        return -1;
+    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    let module_bits = bridge_pyobj_to_bits(module);
+    let value_bits = bridge_pyobj_to_bits(value);
+    let h = hooks::hooks_or_stubs();
+    let rc = unsafe {
+        (h.module_set_attr)(
+            module_bits,
+            name_bytes.as_ptr(),
+            name_bytes.len(),
+            value_bits,
+        )
+    };
+    if rc != 0 {
+        // CPython contract: on failure the caller still owns the value
+        // reference — do NOT decref.
+        return rc;
     }
-    let tp = unsafe { (*module).ob_type };
-    if !tp.is_null()
-        && let Some(setattro) = unsafe { (*tp).tp_setattro }
-    {
-        let rc = unsafe { setattro(module, attr_name_ptr, value) };
-        unsafe { crate::api::refcount::Py_DECREF(attr_name_ptr) };
-        if rc < 0 {
-            return rc;
-        }
-        // Py_DECREF(value) on success per CPython convention.
-        unsafe { crate::api::refcount::Py_DECREF(value) };
-        return 0;
-    }
-    unsafe { crate::api::refcount::Py_DECREF(attr_name_ptr) };
-    // No setattro available — steals the reference but cannot store it.
-    // This is a known limitation of the minimal ABI bridge; extensions
-    // that rely on PyModule_AddObject must use the C header path instead.
+    // Per CPython: PyModule_AddObject steals the reference on success.
+    // The runtime hook took its own reference when storing the value, so we
+    // must drop the caller's reference here to balance the count.
     unsafe { crate::api::refcount::Py_DECREF(value) };
     0
 }
@@ -133,33 +157,66 @@ pub unsafe extern "C" fn PyModule_Create2(
     if module.is_null() {
         return ptr::null_mut();
     }
-    // Register methods from m_methods.
-    // Iterate the NULL-terminated PyMethodDef array and add each method to
-    // the module.  Without PyCFunction_New we cannot wrap arbitrary C
-    // function pointers into Molt callable objects, so we store the method
-    // table pointer on the module for later lookup by the loader.  The C
-    // header path (include/molt/Python.h) handles this via
-    // PyModule_AddFunctions which has full trampoline support.  Extensions
-    // linked through the Rust ABI path currently cannot expose callable
-    // methods — they must use the C header.  We log a diagnostic so this
-    // is not silently ignored.
+    // Iterate the NULL-terminated PyMethodDef array and register each method
+    // as a callable Molt function via the runtime hook.  Methods whose flags
+    // describe a calling convention the runtime does not yet support are
+    // skipped with a diagnostic — the loader caller surfaces this as a load
+    // error if the extension actually invokes the unsupported method.
     let m_methods = unsafe { (*def).m_methods };
     if !m_methods.is_null() {
+        let h = hooks::hooks_or_stubs();
+        let module_bits = bridge_pyobj_to_bits(module);
         let mut cursor = m_methods;
-        let mut count = 0usize;
         unsafe {
             while !(*cursor).ml_name.is_null() {
-                count += 1;
+                let entry = &*cursor;
+                let meth_name = CStr::from_ptr(entry.ml_name).to_bytes();
+                // PyMethodDef.ml_meth is `Option<unsafe extern "C" fn(...)>`
+                // for CPython compatibility; a NULL slot signals end-of-table
+                // (handled by the outer `ml_name.is_null()` check, but a
+                // mid-table NULL would be malformed input — skip silently
+                // rather than ferrying an invalid pointer through dispatch).
+                let Some(fn_ptr) = entry.ml_meth else {
+                    cursor = cursor.add(1);
+                    continue;
+                };
+                let meth_addr = fn_ptr as *const () as usize as u64;
+                let func_bits = (h.register_c_function)(
+                    meth_addr,
+                    entry.ml_flags,
+                    meth_name.as_ptr(),
+                    meth_name.len(),
+                );
+                if func_bits != 0 {
+                    let rc = (h.module_set_attr)(
+                        module_bits,
+                        meth_name.as_ptr(),
+                        meth_name.len(),
+                        func_bits,
+                    );
+                    // Drop our reference to the callable — module_set_attr
+                    // grabbed its own reference when storing into the dict.
+                    (h.dec_ref)(func_bits);
+                    if rc != 0 {
+                        let mod_name = CStr::from_ptr(name).to_string_lossy();
+                        let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");
+                        eprintln!(
+                            "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
+                             failed to register method {meth_name_str:?}",
+                        );
+                    }
+                } else {
+                    let mod_name = CStr::from_ptr(name).to_string_lossy();
+                    let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");
+                    eprintln!(
+                        "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
+                         method {meth_name_str:?} (flags 0x{:x}) uses an unsupported \
+                         calling convention; only METH_NOARGS is implemented today",
+                        entry.ml_flags,
+                    );
+                }
                 cursor = cursor.add(1);
             }
-        }
-        if count > 0 {
-            let mod_name = unsafe { CStr::from_ptr(name).to_string_lossy() };
-            eprintln!(
-                "molt_cpython_abi: PyModule_Create2 for '{}': {} m_methods registered \
-                 (callable dispatch requires C header path)",
-                mod_name, count
-            );
         }
     }
     module

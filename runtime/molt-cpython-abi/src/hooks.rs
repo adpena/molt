@@ -65,6 +65,28 @@ pub struct RuntimeHooks {
     pub inc_ref: unsafe extern "C" fn(bits: u64),
     /// Decrement the Molt reference count; deallocate if it reaches zero.
     pub dec_ref: unsafe extern "C" fn(bits: u64),
+    // ── Module / C-extension support ─────────────────────────────────────────
+    /// Allocate a new Molt module object whose `__name__` is the UTF-8 string
+    /// in `name_data[..name_len]`.  Returns module handle bits, 0 on failure.
+    pub alloc_module: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
+    /// Set `module_bits.__dict__[name_data[..name_len]] = value_bits`.
+    /// `module_bits` must be a Molt module handle.  Returns 0 on success, -1 on failure.
+    pub module_set_attr: unsafe extern "C" fn(
+        module_bits: u64,
+        name_data: *const u8,
+        name_len: usize,
+        value_bits: u64,
+    ) -> std::os::raw::c_int,
+    /// Register a `PyCFunction`-style C function pointer (`meth_addr`) as a
+    /// callable Molt function.  `flags` follows CPython's `METH_*` bitmask.
+    /// `name_data[..name_len]` is the function's `__name__`.  Returns the bits
+    /// of the resulting Molt callable, 0 on failure (e.g. unsupported flags).
+    pub register_c_function: unsafe extern "C" fn(
+        meth_addr: u64,
+        flags: std::os::raw::c_int,
+        name_data: *const u8,
+        name_len: usize,
+    ) -> u64,
 }
 
 /// Global hook table, set once by `molt-lang-runtime` at init time.
@@ -161,6 +183,25 @@ unsafe extern "C" fn stub_classify_heap(_bits: u64) -> u8 {
 }
 unsafe extern "C" fn stub_inc_ref(_bits: u64) {}
 unsafe extern "C" fn stub_dec_ref(_bits: u64) {}
+unsafe extern "C" fn stub_alloc_module(_data: *const u8, _len: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_module_set_attr(
+    _m: u64,
+    _data: *const u8,
+    _len: usize,
+    _v: u64,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_register_c_function(
+    _meth: u64,
+    _flags: std::os::raw::c_int,
+    _data: *const u8,
+    _len: usize,
+) -> u64 {
+    0
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
@@ -183,6 +224,9 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     classify_heap: stub_classify_heap,
     inc_ref: stub_inc_ref,
     dec_ref: stub_dec_ref,
+    alloc_module: stub_alloc_module,
+    module_set_attr: stub_module_set_attr,
+    register_c_function: stub_register_c_function,
 };
 
 /// Return the registered hooks or fall back to the no-op stubs.
