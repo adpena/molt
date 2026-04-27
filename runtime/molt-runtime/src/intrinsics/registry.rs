@@ -709,10 +709,19 @@ mod tests {
     use core::sync::atomic::Ordering;
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "function pointer identity assertion via `as *const () as usize as u64` is not supported under Miri's pointer-provenance model: separate casts of the same fn-pointer expose distinct addresses, so the stored payload won't equal a freshly-cast comparator"
+    )]
     fn register_intrinsics_module_exports_public_helpers() {
         let _guard = crate::TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Pending exceptions from prior parallel tests cause
+        // `molt_load_intrinsic_runtime`'s wrapper to early-return None via
+        // the GIL macro's exception fast-path; explicitly clear before
+        // exercising the resolver to keep this test independent of order.
+        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             register_intrinsics_module(_py);
 
