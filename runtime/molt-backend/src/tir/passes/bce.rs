@@ -384,8 +384,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 _ => continue,
             };
             // Trace the condition to a comparison op.
-            if let Some((opcode, operands)) = value_def_op.get(&cond_val) {
-                if operands.len() == 2 {
+            if let Some((opcode, operands)) = value_def_op.get(&cond_val)
+                && operands.len() == 2 {
                     match opcode {
                         OpCode::Le => {
                             while_guard_facts.insert(header, GuardFact {
@@ -404,7 +404,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         _ => {}
                     }
                 }
-            }
         }
     }
 
@@ -484,8 +483,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 // --- While-loop guard BCE (Phase 3 logic) ---
                 // Check if the index is bounded by a while-loop condition
                 // (Le or Lt) and the container length matches.
-                if !proven {
-                    if let Some(headers) = block_to_loop.get(bid) {
+                if !proven
+                    && let Some(headers) = block_to_loop.get(bid) {
                         for &header in headers {
                             if let Some(guard) = while_guard_facts.get(&header) {
                                 if guard.var != index_operand {
@@ -506,13 +505,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                                 // is trivially in-bounds: i < len(container).
                                 // This is the common case after iter_devirt rewrites
                                 // `for x in lst` into `while i < len(lst): lst[i]`.
-                                if !guard.is_le {
-                                    if let Some(&bound_container) = len_of_container.get(&guard.bound) {
-                                        if bound_container == container_operand {
+                                if !guard.is_le
+                                    && let Some(&bound_container) = len_of_container.get(&guard.bound)
+                                        && bound_container == container_operand {
                                             proven = true;
                                         }
-                                    }
-                                }
 
                                 if !proven {
                                     proven = prove_guard_bound(
@@ -529,7 +526,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             }
                         }
                     }
-                }
 
                 if proven {
                     op.attrs
@@ -570,7 +566,7 @@ fn prove_guard_bound(
             if let Some(&bound_const) = const_int_value.get(&guard.bound) {
                 if guard.is_le {
                     // i <= bound, need len > bound, i.e. len >= bound + 1.
-                    *len_const >= bound_const + 1
+                    *len_const > bound_const
                 } else {
                     // i < bound, need len >= bound.
                     *len_const >= bound_const

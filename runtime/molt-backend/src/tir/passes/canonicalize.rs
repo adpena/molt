@@ -128,8 +128,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             }
 
             // --- Rule 7: Comparison canonicalization (constant on right) ---
-            if op.operands.len() == 2 {
-                if let Some(swapped) = swap_comparison(op.opcode) {
+            if op.operands.len() == 2
+                && let Some(swapped) = swap_comparison(op.opcode) {
                     let lhs = op.operands[0];
                     let rhs = op.operands[1];
                     let lhs_is_const =
@@ -142,7 +142,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         stats.values_changed += 1;
                     }
                 }
-            }
 
             if op.operands.len() != 2 {
                 // Rules 1-3 apply to binary ops.
@@ -152,8 +151,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
                     // --- Rule 4: Double negation ---
                     // Not(Not(x)) → Copy(x)
-                    if op.opcode == OpCode::Not {
-                        if let Some(&inner_src) = not_source.get(&operand) {
+                    if op.opcode == OpCode::Not
+                        && let Some(&inner_src) = not_source.get(&operand) {
                             *op = TirOp {
                                 dialect: Dialect::Molt,
                                 opcode: OpCode::Copy,
@@ -164,11 +163,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             };
                             stats.values_changed += 1;
                         }
-                    }
 
                     // Neg(Neg(x)) → Copy(x)
-                    if op.opcode == OpCode::Neg {
-                        if let Some(&inner_src) = neg_source.get(&operand) {
+                    if op.opcode == OpCode::Neg
+                        && let Some(&inner_src) = neg_source.get(&operand) {
                             *op = TirOp {
                                 dialect: Dialect::Molt,
                                 opcode: OpCode::Copy,
@@ -179,11 +177,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             };
                             stats.values_changed += 1;
                         }
-                    }
 
                     // --- Rule 6: Boolean simplification (unary) ---
-                    if op.opcode == OpCode::Not {
-                        if let Some(&val) = bool_consts.get(&operand) {
+                    if op.opcode == OpCode::Not
+                        && let Some(&val) = bool_consts.get(&operand) {
                             *op = TirOp {
                                 dialect: Dialect::Molt,
                                 opcode: OpCode::ConstBool,
@@ -198,7 +195,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             };
                             stats.values_changed += 1;
                         }
-                    }
                 }
                 continue;
             }

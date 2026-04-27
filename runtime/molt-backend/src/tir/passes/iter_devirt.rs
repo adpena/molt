@@ -122,11 +122,10 @@ fn infer_container_type(func: &TirFunction, source_val: ValueId, block_ids: &[Bl
                 }
             }
             // Explicit container_type attr.
-            if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type") {
-                if ct.starts_with("list") {
+            if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type")
+                && ct.starts_with("list") {
                     return Some(ct.clone());
                 }
-            }
             return None;
         }
     }
@@ -156,11 +155,10 @@ fn is_list_source(func: &TirFunction, source_val: ValueId, block_ids: &[BlockId]
                 }
             }
             // Check container_type attr on the source op.
-            if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type") {
-                if ct.starts_with("list") {
+            if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type")
+                && ct.starts_with("list") {
                     return true;
                 }
-            }
             return false;
         }
     }
@@ -264,7 +262,7 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
                         for def_op in &block.ops {
                             if def_op.results.contains(&source_val) {
                                 // Check if this block is part of the loop.
-                                if func.loop_roles.get(&bid).is_some() && bid != header {
+                                if func.loop_roles.contains_key(&bid) && bid != header {
                                     // Defined in a loop-related block that isn't
                                     // the header — could be the body.
                                     in_loop = true;

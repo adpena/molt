@@ -736,15 +736,15 @@ pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64
                     let elems = seq_vec_ref(needle_ptr);
                     for &elem_bits in elems.iter() {
                         let elem = obj_from_bits(elem_bits);
-                        if let Some(elem_ptr) = elem.as_ptr() {
-                            if object_type_id(elem_ptr) == TYPE_ID_STRING {
-                                let elem_bytes = std::slice::from_raw_parts(
-                                    string_bytes(elem_ptr),
-                                    string_len(elem_ptr),
-                                );
-                                if hay_bytes.starts_with(elem_bytes) {
-                                    return MoltObject::from_bool(true).bits();
-                                }
+                        if let Some(elem_ptr) = elem.as_ptr()
+                            && object_type_id(elem_ptr) == TYPE_ID_STRING
+                        {
+                            let elem_bytes = std::slice::from_raw_parts(
+                                string_bytes(elem_ptr),
+                                string_len(elem_ptr),
+                            );
+                            if hay_bytes.starts_with(elem_bytes) {
+                                return MoltObject::from_bool(true).bits();
                             }
                         }
                     }
@@ -790,15 +790,15 @@ pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
                     let elems = seq_vec_ref(needle_ptr);
                     for &elem_bits in elems.iter() {
                         let elem = obj_from_bits(elem_bits);
-                        if let Some(elem_ptr) = elem.as_ptr() {
-                            if object_type_id(elem_ptr) == TYPE_ID_STRING {
-                                let elem_bytes = std::slice::from_raw_parts(
-                                    string_bytes(elem_ptr),
-                                    string_len(elem_ptr),
-                                );
-                                if hay_bytes.ends_with(elem_bytes) {
-                                    return MoltObject::from_bool(true).bits();
-                                }
+                        if let Some(elem_ptr) = elem.as_ptr()
+                            && object_type_id(elem_ptr) == TYPE_ID_STRING
+                        {
+                            let elem_bytes = std::slice::from_raw_parts(
+                                string_bytes(elem_ptr),
+                                string_len(elem_ptr),
+                            );
+                            if hay_bytes.ends_with(elem_bytes) {
+                                return MoltObject::from_bool(true).bits();
                             }
                         }
                     }
@@ -2752,7 +2752,7 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
                     is_ascii = false;
                     break;
                 }
-                if b >= b'A' && b <= b'Z' {
+                if b.is_ascii_uppercase() {
                     already_lower = false;
                 }
             }
@@ -2832,7 +2832,7 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
                     is_ascii = false;
                     break;
                 }
-                if b >= b'a' && b <= b'z' {
+                if b.is_ascii_lowercase() {
                     already_upper = false;
                 }
             }
@@ -3546,7 +3546,7 @@ pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
 /// Fast inline ASCII whitespace check matching Python's definition.
 #[inline(always)]
 fn is_ascii_whitespace(b: u8) -> bool {
-    b == b' ' || (b >= 0x09 && b <= 0x0D)
+    b == b' ' || (0x09..=0x0D).contains(&b)
 }
 
 /// Write ASCII-lowered bytes from `src` into `dst` using SIMD when available.

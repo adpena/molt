@@ -1032,7 +1032,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
             let tuple_val = op.operands[0];
 
             // Check if this tuple was built in the same block.
-            let (build_idx, ref tuple_elements) = match build_tuples.get(&tuple_val) {
+            let (build_idx, tuple_elements) = match build_tuples.get(&tuple_val) {
                 Some(entry) => (entry.0, &entry.1),
                 None => continue,
             };

@@ -414,13 +414,13 @@ mod vec_layout {
                 }
             }
 
-            let layout = VecLayout {
-                data_offset: data_offset.expect("Vec layout: data pointer field not found"),
-                len_offset: len_offset.expect("Vec layout: length field not found"),
-            };
+            
 
             // Intentionally NOT forgetting v — drop it normally.
-            layout
+            VecLayout {
+                data_offset: data_offset.expect("Vec layout: data pointer field not found"),
+                len_offset: len_offset.expect("Vec layout: length field not found"),
+            }
         })
     }
 }
@@ -1554,13 +1554,8 @@ fn var_get_raw(
 ) -> Option<(VarValue, bool)> {
     let var = *vars.get(name)?;
     let val = builder.use_var(var);
-    if raw_primary_int.contains(name) {
-        Some((VarValue(val), true)) // raw i64
-    } else if raw_primary_float.contains(name) {
-        Some((VarValue(val), true)) // raw f64
-    } else {
-        Some((VarValue(val), false)) // NaN-boxed
-    }
+    let is_raw = raw_primary_int.contains(name) || raw_primary_float.contains(name);
+    Some((VarValue(val), is_raw))
 }
 
 /// Store a raw value as the primary representation for a proven-type variable.

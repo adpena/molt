@@ -198,7 +198,7 @@ fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
             candidates.push(RangeLoopCandidate {
                 setup_block: call_block,
                 call_range_idx: call_idx,
-                get_iter_idx: get_iter_idx,
+                get_iter_idx,
                 _range_obj: source_val,
                 _iter_val: iter_val,
                 header_block: header,
@@ -279,11 +279,10 @@ fn build_const_map(func: &TirFunction, block_ids: &[BlockId]) -> HashMap<ValueId
     for &bid in block_ids {
         if let Some(block) = func.blocks.get(&bid) {
             for op in &block.ops {
-                if op.opcode == OpCode::ConstInt && !op.results.is_empty() {
-                    if let Some(AttrValue::Int(v)) = op.attrs.get("value") {
+                if op.opcode == OpCode::ConstInt && !op.results.is_empty()
+                    && let Some(AttrValue::Int(v)) = op.attrs.get("value") {
                         map.insert(op.results[0], *v);
                     }
-                }
             }
         }
     }
