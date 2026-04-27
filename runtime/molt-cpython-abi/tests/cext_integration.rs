@@ -114,10 +114,20 @@ fn test_loader_fails_loudly_for_foreign_unmapped_module_pointer() {
         "the rlib loader must not silently coerce a module object returned by \
          the separately loaded dylib bridge into None",
     );
+    // With the bridge running against the no-op stub `RuntimeHooks` (no
+    // runtime is registered in this rlib-only test binary), every Molt
+    // allocator hook returns 0, so `PyModule_New` returns NULL and the
+    // extension's `PyInit_*` returns NULL.  The loader surfaces this as
+    // `InitReturnedNull`.  In the legacy bridge — where `PyModule_New`
+    // returned a placeholder None header — the same uninitialised state
+    // surfaced as `InitReturnedUnmappedObject` instead.  Either is a
+    // legitimate "loud failure" outcome, and both must remain unmapped to
+    // a successful load.
+    use molt_cpython_abi::loader::LoadError;
     assert!(
         matches!(
             err,
-            molt_cpython_abi::loader::LoadError::InitReturnedUnmappedObject { .. }
+            LoadError::InitReturnedNull { .. } | LoadError::InitReturnedUnmappedObject { .. }
         ),
         "unexpected loader error: {err:?}",
     );

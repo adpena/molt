@@ -112,16 +112,30 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
         });
     }
 
-    // Convert the returned *mut PyObject to a Molt handle. Unknown pointers are
-    // a bridge contract violation and must fail loudly; returning None would
-    // hide an unsupported extension init path.
+    // Convert the returned `*mut PyObject` to a Molt handle.
+    //
+    // Bridge-minted PyObject blocks carry the original Molt handle bits in a
+    // trailing u64 field immediately after the `PyObject` header, so we can
+    // recover them without sharing any in-memory state across rlib / dylib
+    // copies of the bridge.  We validate the recovered bits by asking the
+    // runtime hook to classify them — only a `MoltTypeTag::Module` is a
+    // legitimate result for a `PyInit_<name>()` return value.
     let molt_bits = {
-        let bridge = GLOBAL_BRIDGE.lock();
-        bridge
-            .pyobj_to_handle(module_ptr)
-            .ok_or_else(|| LoadError::InitReturnedUnmappedObject {
-                name: name.to_owned(),
-            })?
+        let candidate_bits = unsafe { crate::bridge::read_bridge_header_bits(module_ptr) };
+        let h = crate::hooks::hooks_or_stubs();
+        let tag = unsafe { (h.classify_heap)(candidate_bits) };
+        if tag == crate::abi_types::MoltTypeTag::Module as u8 {
+            candidate_bits
+        } else {
+            // Fall through to the per-bridge map for foreign-object PyObject*
+            // headers (legacy callers that did not go through PyModule_New).
+            let bridge = GLOBAL_BRIDGE.lock();
+            bridge
+                .pyobj_to_handle(module_ptr)
+                .ok_or_else(|| LoadError::InitReturnedUnmappedObject {
+                    name: name.to_owned(),
+                })?
+        }
     };
 
     // Keep the library alive for the process lifetime; extension code/data may
