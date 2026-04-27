@@ -1,3 +1,4 @@
+use std::alloc::Layout;
 use std::mem::{align_of, size_of};
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -74,15 +75,70 @@ impl TempArena {
 // within a scope are freed in O(1) by resetting the bump pointer.
 
 const SCOPE_ARENA_CHUNK_SIZE: usize = 4096;
+const SCOPE_ARENA_ALIGN: usize = 8;
+
+/// Owned arena chunk with guaranteed `SCOPE_ARENA_ALIGN`-byte alignment.
+///
+/// Backed by `std::alloc::alloc_zeroed` rather than `Vec<u8>` because the
+/// Vec allocator only guarantees `align_of::<u8>() == 1`, while
+/// `MoltHeader` requires ≥ 4-byte alignment for its `u32`/`AtomicU32`
+/// fields and the bump allocator promises 8-byte aligned hand-outs.
+///
+/// `Drop` releases the chunk via `std::alloc::dealloc` with the same
+/// `Layout` used to allocate it.
+struct ArenaChunk {
+    ptr: *mut u8,
+    capacity: usize,
+}
+
+impl ArenaChunk {
+    fn new(capacity: usize) -> Self {
+        // Layout panics on overflow / zero alignment; both are precluded
+        // here: `capacity > 0` (callers pass `>= SCOPE_ARENA_CHUNK_SIZE`)
+        // and `SCOPE_ARENA_ALIGN` is a non-zero power of two.
+        let layout = Layout::from_size_align(capacity, SCOPE_ARENA_ALIGN)
+            .expect("arena chunk layout must be valid");
+        // SAFETY: `layout.size() > 0`.  Returns a non-null, aligned,
+        // zeroed pointer or `handle_alloc_error` aborts.
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Self { ptr, capacity }
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr
+    }
+}
+
+impl Drop for ArenaChunk {
+    fn drop(&mut self) {
+        let layout = Layout::from_size_align(self.capacity, SCOPE_ARENA_ALIGN)
+            .expect("arena chunk layout must be valid");
+        // SAFETY: `ptr` was returned by `alloc_zeroed` with this exact
+        // `layout` and has not been freed.
+        unsafe {
+            std::alloc::dealloc(self.ptr, layout);
+        }
+    }
+}
+
+// SAFETY: `ArenaChunk` owns its allocation and exposes no shared
+// references; sending it across threads is sound.  `ScopeArena` itself
+// is not Sync (it has interior mutation), but Send lets the arena be
+// transferred to a worker thread for scope execution.
+unsafe impl Send for ArenaChunk {}
 
 /// Per-scope bump allocator for NoEscape values.
 ///
-/// All allocations are 8-byte aligned. At scope exit the entire arena is
-/// freed in O(1) by resetting the bump pointer (or dropping the arena).
-/// Chunks are allocated on demand and reused across resets.
+/// All allocations are `SCOPE_ARENA_ALIGN` (8) byte aligned. At scope
+/// exit the entire arena is freed in O(1) by resetting the bump pointer
+/// (or dropping the arena). Chunks are allocated on demand and reused
+/// across resets.
 pub struct ScopeArena {
-    /// Backing storage. Each entry is a heap-allocated chunk.
-    chunks: Vec<Vec<u8>>,
+    /// Backing storage. Each entry is an aligned heap-allocated chunk.
+    chunks: Vec<ArenaChunk>,
     /// Next free byte in the current (last) chunk.
     current: *mut u8,
     /// Bytes remaining in the current chunk.
@@ -91,17 +147,16 @@ pub struct ScopeArena {
 
 impl ScopeArena {
     pub fn new() -> Self {
-        let mut chunk = Vec::<u8>::with_capacity(SCOPE_ARENA_CHUNK_SIZE);
+        let mut chunk = ArenaChunk::new(SCOPE_ARENA_CHUNK_SIZE);
         let ptr = chunk.as_mut_ptr();
-        let cap = chunk.capacity();
         Self {
             chunks: vec![chunk],
             current: ptr,
-            remaining: cap,
+            remaining: SCOPE_ARENA_CHUNK_SIZE,
         }
     }
 
-    /// Bump-allocate `size` bytes with 8-byte alignment.
+    /// Bump-allocate `size` bytes with `SCOPE_ARENA_ALIGN`-byte alignment.
     ///
     /// Returns a null pointer only if `size` is zero.
     #[inline]
@@ -109,11 +164,11 @@ impl ScopeArena {
         if size == 0 {
             return std::ptr::null_mut();
         }
-        let aligned_size = (size + 7) & !7;
+        let aligned_size = (size + SCOPE_ARENA_ALIGN - 1) & !(SCOPE_ARENA_ALIGN - 1);
         if aligned_size <= self.remaining {
             let ptr = self.current;
-            // SAFETY: `current` points into a live Vec allocation and
-            // `aligned_size <= remaining` guarantees we stay in bounds.
+            // SAFETY: `current` points into the active chunk's allocation
+            // and `aligned_size <= remaining` keeps us inside it.
             self.current = unsafe { self.current.add(aligned_size) };
             self.remaining -= aligned_size;
             ptr
@@ -125,12 +180,11 @@ impl ScopeArena {
     #[cold]
     fn alloc_slow(&mut self, aligned_size: usize) -> *mut u8 {
         let chunk_cap = aligned_size.max(SCOPE_ARENA_CHUNK_SIZE);
-        let mut chunk = Vec::<u8>::with_capacity(chunk_cap);
+        let mut chunk = ArenaChunk::new(chunk_cap);
         let ptr = chunk.as_mut_ptr();
-        let cap = chunk.capacity();
-        // SAFETY: `aligned_size <= cap` by construction above.
+        // SAFETY: `aligned_size <= chunk_cap` by construction above.
         self.current = unsafe { ptr.add(aligned_size) };
-        self.remaining = cap - aligned_size;
+        self.remaining = chunk_cap - aligned_size;
         self.chunks.push(chunk);
         ptr
     }
@@ -143,7 +197,7 @@ impl ScopeArena {
         self.chunks.truncate(1);
         if let Some(first) = self.chunks.first_mut() {
             self.current = first.as_mut_ptr();
-            self.remaining = first.capacity();
+            self.remaining = SCOPE_ARENA_CHUNK_SIZE;
         }
     }
 }
