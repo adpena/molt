@@ -35,10 +35,10 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
         profile: None,
     };
 
-    let bytes = SimpleBackend::new().compile(ir);
+    let output = SimpleBackend::new().compile(ir);
 
-    assert!(!bytes.is_empty());
-    let file = cranelift_object::object::File::parse(&*bytes).expect("parse object");
+    assert!(!output.bytes.is_empty());
+    let file = cranelift_object::object::File::parse(&*output.bytes).expect("parse object");
     assert!(
         !file
             .symbols()

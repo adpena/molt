@@ -77,6 +77,7 @@ fn verify_lir_accepts_matching_branch_argument_representations() {
         return_types: vec![TirType::I64],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     assert!(
@@ -116,6 +117,7 @@ fn verify_lir_rejects_branch_argument_repr_mismatch() {
         return_types: vec![TirType::I64],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let err = verify_lir_function(&func).expect_err("expected repr mismatch");
@@ -177,6 +179,7 @@ fn verify_lir_rejects_non_bool_branch_condition() {
         return_types: vec![TirType::I64],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let err = verify_lir_function(&func).expect_err("expected bool condition error");
@@ -210,6 +213,7 @@ fn verify_lir_rejects_entry_block_arity_mismatch() {
         return_types: vec![],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let err = verify_lir_function(&func).expect_err("expected entry arity mismatch");
@@ -243,6 +247,7 @@ fn verify_lir_rejects_entry_block_repr_mismatch() {
         return_types: vec![],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let err = verify_lir_function(&func).expect_err("expected entry repr mismatch");
@@ -299,6 +304,7 @@ fn verify_lir_accepts_loop_carried_i64_block_params() {
         return_types: vec![],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     assert!(
@@ -361,6 +367,7 @@ fn verify_lir_rejects_non_dominating_branch_value_use() {
         return_types: vec![TirType::I64],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let err = verify_lir_function(&func).expect_err("expected dominance violation");
@@ -426,6 +433,7 @@ fn verify_lir_rejects_conditional_branch_with_non_bool_semantic_type() {
         return_types: vec![TirType::I64],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let err = verify_lir_function(&func).expect_err("expected bool type error");
@@ -472,6 +480,7 @@ fn verify_lir_accepts_explicit_box_unbox_ops() {
         return_types: vec![TirType::I64],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     assert!(
@@ -506,6 +515,7 @@ fn verify_lir_rejects_result_id_drift_between_tir_and_lir_op_surfaces() {
         return_types: vec![],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let err = verify_lir_function(&func).expect_err("expected op result drift");
@@ -552,6 +562,7 @@ fn print_lir_function_emits_representation_annotations() {
         return_types: vec![TirType::I64],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let rendered = print_lir_function(&func);
@@ -610,6 +621,7 @@ fn verify_lir_rejects_malformed_checked_i64_arithmetic_contract() {
         return_types: vec![TirType::I64],
         blocks,
         entry_block: BlockId(0),
+        label_id_map: HashMap::new(),
     };
 
     let err = verify_lir_function(&func).expect_err("expected malformed checked add");

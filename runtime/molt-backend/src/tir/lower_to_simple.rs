@@ -2875,6 +2875,34 @@ fn op_kind_already_classified(kind: &str) -> bool {
             | "gpu_block_id"
             | "gpu_block_dim"
             | "gpu_grid_dim"
+            // Heap-allocating container constructors — kind alone fully
+            // determines the output type, so propagating a scalar type_hint
+            // ("int"/"float"/...) would lie to the backend.  The TIR type
+            // map can spuriously bind I64 to these results through SSA
+            // aliasing of constant operands; classifying them here ensures
+            // we never reseed legacy container hints.
+            | "list_new"
+            | "dict_new"
+            | "set_new"
+            | "tuple_new"
+            | "frozenset_new"
+            | "build_list"
+            | "build_dict"
+            | "build_tuple"
+            | "build_set"
+            | "build_slice"
+            // Container side-effect ops — return None or a container handle
+            // whose type is structurally implied; never benefit from a
+            // scalar type_hint.
+            | "list_append"
+            | "list_extend"
+            | "dict_set"
+            | "set_add"
+            | "store_attr"
+            | "store_index"
+            | "del_attr"
+            | "del_index"
+            | "store_var"
     )
 }
 

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{GIL_DEPTH, runtime_state_for_gil};
+use crate::GIL_DEPTH;
 
 // ---------------------------------------------------------------------------
 // Single-threaded fast-path: when only one thread currently owns GIL-capable
