@@ -331,12 +331,63 @@ pub(crate) unsafe fn enumerate_set_index_bits(ptr: *mut u8, idx_bits: u64) {
     }
 }
 
+/// Offset of the cached inner `(idx, val)` 2-tuple pointer inside a
+/// TYPE_ID_ENUMERATE object. This is the user-visible tuple yielded
+/// from each `next()` call.
+const ENUMERATE_CACHED_INNER_OFFSET: usize = 2 * std::mem::size_of::<u64>();
+/// Offset of the cached outer `(item, done_false)` wrapper tuple pointer
+/// inside a TYPE_ID_ENUMERATE object.
+const ENUMERATE_CACHED_OUTER_OFFSET: usize =
+    ENUMERATE_CACHED_INNER_OFFSET + std::mem::size_of::<*mut u8>();
+
+/// Total payload bytes for a TYPE_ID_ENUMERATE object (after the header).
+pub(crate) const ENUMERATE_PAYLOAD_SIZE: usize =
+    ENUMERATE_CACHED_OUTER_OFFSET + std::mem::size_of::<*mut u8>();
+
+pub(crate) unsafe fn enumerate_cached_inner(ptr: *mut u8) -> *mut u8 {
+    unsafe { *(ptr.add(ENUMERATE_CACHED_INNER_OFFSET) as *const *mut u8) }
+}
+
+pub(crate) unsafe fn enumerate_set_cached_inner(ptr: *mut u8, tuple_ptr: *mut u8) {
+    unsafe {
+        *(ptr.add(ENUMERATE_CACHED_INNER_OFFSET) as *mut *mut u8) = tuple_ptr;
+    }
+}
+
+pub(crate) unsafe fn enumerate_cached_outer(ptr: *mut u8) -> *mut u8 {
+    unsafe { *(ptr.add(ENUMERATE_CACHED_OUTER_OFFSET) as *const *mut u8) }
+}
+
+pub(crate) unsafe fn enumerate_set_cached_outer(ptr: *mut u8, tuple_ptr: *mut u8) {
+    unsafe {
+        *(ptr.add(ENUMERATE_CACHED_OUTER_OFFSET) as *mut *mut u8) = tuple_ptr;
+    }
+}
+
 pub(crate) unsafe fn call_iter_callable_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
 
 pub(crate) unsafe fn call_iter_sentinel_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
+}
+
+/// Offset of the cached `(value, done)` wrapper tuple pointer inside a
+/// TYPE_ID_CALL_ITER object.
+const CALL_ITER_CACHED_OFFSET: usize = 2 * std::mem::size_of::<u64>();
+
+/// Total payload bytes for a TYPE_ID_CALL_ITER object (after the header).
+pub(crate) const CALL_ITER_PAYLOAD_SIZE: usize =
+    CALL_ITER_CACHED_OFFSET + std::mem::size_of::<*mut u8>();
+
+pub(crate) unsafe fn call_iter_cached_tuple(ptr: *mut u8) -> *mut u8 {
+    unsafe { *(ptr.add(CALL_ITER_CACHED_OFFSET) as *const *mut u8) }
+}
+
+pub(crate) unsafe fn call_iter_set_cached_tuple(ptr: *mut u8, tuple_ptr: *mut u8) {
+    unsafe {
+        *(ptr.add(CALL_ITER_CACHED_OFFSET) as *mut *mut u8) = tuple_ptr;
+    }
 }
 
 pub(crate) unsafe fn reversed_target_bits(ptr: *mut u8) -> u64 {
@@ -376,6 +427,24 @@ pub(crate) unsafe fn map_func_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn map_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
     unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) }
+}
+
+/// Offset of the cached `(value, done)` wrapper tuple pointer inside a
+/// TYPE_ID_MAP object.
+const MAP_CACHED_OFFSET: usize = std::mem::size_of::<u64>() + std::mem::size_of::<*mut Vec<u64>>();
+
+/// Total payload bytes for a TYPE_ID_MAP object (after the header).
+pub(crate) const MAP_PAYLOAD_SIZE: usize =
+    MAP_CACHED_OFFSET + std::mem::size_of::<*mut u8>();
+
+pub(crate) unsafe fn map_cached_tuple(ptr: *mut u8) -> *mut u8 {
+    unsafe { *(ptr.add(MAP_CACHED_OFFSET) as *const *mut u8) }
+}
+
+pub(crate) unsafe fn map_set_cached_tuple(ptr: *mut u8, tuple_ptr: *mut u8) {
+    unsafe {
+        *(ptr.add(MAP_CACHED_OFFSET) as *mut *mut u8) = tuple_ptr;
+    }
 }
 
 pub(crate) unsafe fn filter_func_bits(ptr: *mut u8) -> u64 {

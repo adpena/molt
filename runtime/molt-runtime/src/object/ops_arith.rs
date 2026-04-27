@@ -3754,6 +3754,13 @@ mod tests {
 
     #[test]
     fn molt_lshift_promotes_bigint_operand_correctly() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Clear any pending exception leaked from prior tests so that
+        // `molt_repr_from_obj`'s pending-exception fast path doesn't return
+        // None and trip the assertion below.
+        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             let lhs = int_bits_from_i128(_py, 283686952306183);
             let rhs = MoltObject::from_int(8).bits();

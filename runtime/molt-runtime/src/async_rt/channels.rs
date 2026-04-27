@@ -2436,7 +2436,7 @@ pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
     })
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32"), molt_has_net_io))]
 mod tests {
     use super::ws_url_has_supported_scheme;
 

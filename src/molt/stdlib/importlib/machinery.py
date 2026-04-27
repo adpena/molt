@@ -146,6 +146,54 @@ class _FileLoader:
     def create_module(self, _spec: ModuleSpec):
         return None
 
+    def load_module(self, fullname: str | None = None):
+        """Load and return the module identified by ``fullname``.
+
+        Mirrors CPython's ``importlib._bootstrap._load_module_shim`` for the
+        Molt file-loader hierarchy: build a ``ModuleSpec`` from this loader and
+        the loader's ``path``, materialise a fresh module object via
+        ``module_from_spec``, register it in ``sys.modules``, and run
+        ``exec_module``.  Restores the previous ``sys.modules`` entry on
+        failure so partially initialised modules are not left visible.
+        """
+        if fullname is None:
+            fullname = self.name
+        else:
+            fullname = str(fullname)
+        # Lazy import to avoid the ``importlib.util``/``importlib.machinery``
+        # bootstrap cycle: ``util`` re-imports ``machinery``.
+        from . import util as _util
+
+        spec = _util.spec_from_file_location(fullname, self.path, loader=self)
+        if spec is None:
+            raise ImportError(f"could not build spec for {fullname!r} from {self.path!r}")
+        module = _util.module_from_spec(spec)
+        if module is None:
+            raise ImportError(
+                f"could not create module {fullname!r} from {self.path!r}"
+            )
+        modules = getattr(_sys, "modules", None)
+        previous = None
+        had_previous = False
+        if isinstance(modules, dict):
+            had_previous = fullname in modules
+            previous = modules.get(fullname)
+            modules[fullname] = module
+        try:
+            self.exec_module(module)
+        except BaseException:
+            if isinstance(modules, dict):
+                if had_previous:
+                    modules[fullname] = previous
+                else:
+                    modules.pop(fullname, None)
+            raise
+        # exec_module is allowed to substitute the canonical module object via
+        # ``sys.modules``; honour CPython's ``_load_module_shim`` semantics.
+        if isinstance(modules, dict) and fullname in modules:
+            return modules[fullname]
+        return module
+
 
 class _SourceLoader(_FileLoader):
     pass
