@@ -10,7 +10,7 @@
 
 use std::cell::RefCell;
 use std::fmt;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -482,9 +482,21 @@ impl ResourceTracker for UnlimitedTracker {
 /// [`set_tracker`] would silently get an [`UnlimitedTracker`] even when the
 /// host intended to enforce limits.
 ///
-/// Set once via [`set_global_tracker_factory`]; all threads created afterwards
-/// will use it to initialize their thread-local tracker.
-static GLOBAL_TRACKER_FACTORY: OnceLock<fn() -> Box<dyn ResourceTracker>> = OnceLock::new();
+/// Installed via [`set_global_tracker_factory`] and cleared via
+/// [`clear_global_tracker_factory`]; all threads created afterwards
+/// initialise their thread-local tracker through this factory (or fall
+/// back to [`UnlimitedTracker`] when unset).
+///
+/// Factory `fn` pointer alias — lifted out to keep
+/// `static GLOBAL_TRACKER_FACTORY` readable and to satisfy
+/// `clippy::type_complexity`.
+type TrackerFactory = fn() -> Box<dyn ResourceTracker>;
+
+/// `RwLock` rather than `OnceLock` because hosts (and tests) need to be
+/// able to swap or clear the factory across the process lifetime — e.g.
+/// to drop a per-test memory cap before the next test runs on the same
+/// thread pool.
+static GLOBAL_TRACKER_FACTORY: RwLock<Option<TrackerFactory>> = RwLock::new(None);
 
 // ---------------------------------------------------------------------------
 // Thread-local accessor
@@ -494,8 +506,12 @@ static GLOBAL_TRACKER_FACTORY: OnceLock<fn() -> Box<dyn ResourceTracker>> = Once
 /// (by another thread calling [`set_global_tracker_factory`]), use it to
 /// create a fresh tracker; otherwise fall back to [`UnlimitedTracker`].
 fn make_default_tracker() -> Box<dyn ResourceTracker> {
-    match GLOBAL_TRACKER_FACTORY.get() {
-        Some(factory) => factory(),
+    let factory = match GLOBAL_TRACKER_FACTORY.read() {
+        Ok(guard) => *guard,
+        Err(poisoned) => *poisoned.into_inner(),
+    };
+    match factory {
+        Some(f) => f(),
         None => Box::new(UnlimitedTracker),
     }
 }
@@ -542,8 +558,11 @@ pub fn set_tracker(tracker: Box<dyn ResourceTracker>) {
 /// Set a global factory function that creates a fresh [`ResourceTracker`]
 /// for every new thread.
 ///
-/// This uses [`OnceLock`], so only the first call takes effect.  Typically
-/// called once during host initialization, before spawning worker threads.
+/// Replaces any previously installed factory.  Typically called once during
+/// host initialization, before spawning worker threads, but tests and
+/// long-lived hosts may swap factories at lifecycle boundaries — pair with
+/// [`clear_global_tracker_factory`] when tearing down a scope so threads
+/// started afterwards revert to the default [`UnlimitedTracker`].
 ///
 /// Unlike [`set_tracker`] (which only affects the calling thread), this
 /// ensures every thread created *after* this call gets a properly configured
@@ -565,8 +584,25 @@ pub fn set_tracker(tracker: Box<dyn ResourceTracker>) {
 /// Note: the factory is a `fn()` pointer (not a closure) to keep it `Send +
 /// Sync` without boxing.  If you need captured state, use a static or
 /// `OnceLock` for the configuration.
-pub fn set_global_tracker_factory(factory: fn() -> Box<dyn ResourceTracker>) {
-    let _ = GLOBAL_TRACKER_FACTORY.set(factory);
+pub fn set_global_tracker_factory(factory: TrackerFactory) {
+    if let Ok(mut guard) = GLOBAL_TRACKER_FACTORY.write() {
+        *guard = Some(factory);
+    }
+}
+
+/// Remove the global tracker factory installed by
+/// [`set_global_tracker_factory`].  Threads spawned after this call fall
+/// back to [`UnlimitedTracker`].
+///
+/// Lock poisoning (panic while another thread held the write lock) is
+/// recovered into the inner guard — clearing on a poisoned lock leaves
+/// the factory unset, which is the safe default.
+pub fn clear_global_tracker_factory() {
+    let mut guard = match GLOBAL_TRACKER_FACTORY.write() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *guard = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -780,7 +816,12 @@ mod tests {
         for _ in 0..(TIME_CHECK_INTERVAL - 1) {
             assert!(t.check_time().is_ok());
         }
-        // 10th call samples Instant::elapsed(), which will exceed 0ms.
+        // 10th call samples Instant::elapsed(), which must exceed 0ns.
+        // Sleep past mach_continuous_time's ~24ns resolution so the
+        // elapsed measurement is deterministic on warm CPUs (the bare
+        // 10-call sequence can fit inside a single clock tick on
+        // AArch64 macOS, making elapsed read as Duration::ZERO).
+        std::thread::sleep(Duration::from_micros(1));
         let err = t.check_time().unwrap_err();
         assert!(matches!(err, ResourceError::Time { .. }));
     }
@@ -948,6 +989,12 @@ mod tests {
             with_tracker(|t| t.on_allocate(256))
         });
         let result = handle.join().expect("child thread panicked");
+        // Clear the factory before asserting so a panic from the assert
+        // leaves no leaked global state behind to poison parallel test
+        // siblings (cargo test runs many tests on a shared thread pool;
+        // a permanent 128-byte memory cap turns later tests' alloc_string
+        // calls into spurious null returns).
+        clear_global_tracker_factory();
         assert!(
             result.is_err(),
             "spawned thread should have inherited the limited tracker \
