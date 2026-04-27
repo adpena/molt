@@ -273,7 +273,7 @@ impl ObjectBridge {
     ///
     /// Returns `None` for static singletons or unknown pointers.
     pub fn pyobj_to_handle(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
-        unsafe { pyobj_to_handle_static(ptr) }.or_else(|| self.from_py.get(&(ptr as usize)).copied())
+        pyobj_to_handle_static(ptr).or_else(|| self.from_py.get(&(ptr as usize)).copied())
     }
 
     /// Called by `Py_DECREF` when ref count reaches zero — release bridge entry.
@@ -330,10 +330,9 @@ impl Default for ObjectBridge {
 /// for non-singleton pointers; callers fall back to either the per-bridge
 /// map or the trailing-bits read in `read_bridge_header_bits`.
 ///
-/// # Safety
-/// `ptr` must either be null or a non-null pointer.  Reads are limited to
-/// pointer-equality comparisons against fixed singleton addresses.
-unsafe fn pyobj_to_handle_static(ptr: *mut PyObject) -> Option<AbiHandle> {
+/// Pointer-equality only — no dereference — so this function is safe to
+/// call with any `*mut PyObject` value (including dangling).
+fn pyobj_to_handle_static(ptr: *mut PyObject) -> Option<AbiHandle> {
     if ptr.is_null() {
         return None;
     }
@@ -364,7 +363,7 @@ pub unsafe fn read_bridge_header_bits(ptr: *mut PyObject) -> u64 {
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
-    if let Some(bits) = unsafe { pyobj_to_handle_static(ptr) } {
+    if let Some(bits) = pyobj_to_handle_static(ptr) {
         return bits;
     }
     let trailer = unsafe {

@@ -3640,7 +3640,7 @@ fn urllib_https_send_over_tls(
     let server_name_owned = ServerName::try_from(server_name.to_string())
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidInput, format!("{e}")))?;
     let conn = ClientConnection::new(shared_client_config(), server_name_owned)
-        .map_err(|e| std::io::Error::new(ErrorKind::Other, format!("TLS init failed: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("TLS init failed: {e}")))?;
     let mut tls = StreamOwned::new(conn, tcp);
 
     tls.write_all(request)?;
