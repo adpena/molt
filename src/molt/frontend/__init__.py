@@ -16341,6 +16341,103 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return res
 
+    def _try_emit_super_static_call(self, node: ast.Call) -> "MoltValue | None":
+        """Phase 4a: fold `super().method(args)` to a direct CALL when the
+        MRO is statically resolvable.  Returns the result MoltValue on
+        success or None to signal the caller should fall through to the
+        general dispatch path.
+
+        Bails out (returns None) on any of:
+          - `node.func` is not `Attribute(Call(super, []), method)`
+          - super() has args / kwargs (typed-super: out of scope)
+          - current method's class or first-parameter is unknown
+          - MRO walk doesn't find the method (dispatch error path)
+          - method is a property/classmethod/staticmethod descriptor
+          - method has *args/**kwargs/closure/defaults (defer to general
+            path which handles default-binding correctly)
+          - call site has *args/**kwargs/keyword args (the static fold
+            is positional-only)
+        """
+        if not isinstance(node.func, ast.Attribute):
+            return None
+        super_call = node.func.value
+        if not isinstance(super_call, ast.Call):
+            return None
+        if not isinstance(super_call.func, ast.Name) or super_call.func.id != "super":
+            return None
+        if super_call.args or super_call.keywords:
+            return None  # typed super(T, obj) — leave to general path
+        if self.current_class is None or self.current_method_first_param is None:
+            return None
+        if node.keywords:
+            return None  # kwargs hit defaults / kwonly machinery
+        for arg in node.args:
+            if isinstance(arg, (ast.Starred,)):
+                return None  # *args spread — needs builder
+        method_name = node.func.attr
+        method_info, owner_class = self._resolve_super_method_info(
+            self.current_class, method_name
+        )
+        if method_info is None or owner_class is None:
+            return None
+        if method_info.get("descriptor") != "function":
+            return None
+        if method_info.get("has_closure"):
+            return None
+        if method_info.get("has_vararg"):
+            return None
+        if method_info.get("has_varkw"):
+            return None
+        if method_info.get("kwonly_count"):
+            return None
+        defaults = method_info.get("defaults") or []
+        # Param count includes self; call site provides only positional
+        # args, so required positional count is param_count - 1.  We
+        # require an exact match (no defaults filled) to keep this fold
+        # purely structural — anything else routes through the general
+        # path that knows how to evaluate default-spec expressions.
+        param_count = method_info.get("param_count")
+        if param_count is None:
+            return None
+        if defaults:
+            return None
+        expected_positional = param_count - 1  # exclude self
+        if len(node.args) != expected_positional:
+            return None
+
+        self_val = self._load_local_value(self.current_method_first_param)
+        if self_val is None and self.current_method_first_param in self.free_vars:
+            self_val = self._emit_free_var_load(self.current_method_first_param)
+        if self_val is None:
+            return None
+
+        method_symbol = self._function_symbol(f"{owner_class}_{method_name}")
+        # Symbol must actually be registered as a callable in the module.
+        if method_symbol not in self.func_symbol_names.values() and method_symbol not in self.globals:
+            # The owner class's method hasn't been emitted yet — this
+            # can happen for forward-reference scenarios.  Fall back.
+            return None
+
+        call_args = [self.visit(a) for a in node.args]
+        if any(a is None for a in call_args):
+            return None
+
+        res_hint = "Any"
+        return_hint = method_info.get("return_hint")
+        if return_hint and (
+            return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
+        ):
+            res_hint = return_hint
+        res = MoltValue(self.next_var(), type_hint=res_hint)
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=[method_symbol, self_val] + call_args,
+                result=res,
+            )
+        )
+        return res
+
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
         if gpu_launch is not None:
@@ -16349,6 +16446,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         gpu_intrinsic = self._is_gpu_intrinsic_call(node)
         if gpu_intrinsic is not None and self.current_gpu_kernel_context:
             return self._emit_gpu_kernel_intrinsic_op(gpu_intrinsic)
+
+        # Phase 4a — static super().method(args) fold.
+        #
+        # Pattern: bare `super()` (no args) called inside a method body
+        # whose class and first-parameter are both known statically, and
+        # whose MRO is statically resolvable (no metaclass / dynamic
+        # bases / __init_subclass__ surprises).
+        #
+        # Eliminates per-iteration:
+        #   - SUPER_NEW heap allocation (super object)
+        #   - GETATTR_GENERIC_OBJ heap allocation (bound method)
+        #   - CALL_BIND IC dispatch overhead
+        # Replaces all three with a single direct CALL to the parent
+        # class's method symbol with `self` prepended — which is what
+        # Python semantics require but the dynamic dispatch path was
+        # discovering at runtime per call.
+        super_fold = self._try_emit_super_static_call(node)
+        if super_fold is not None:
+            return super_fold
 
         needs_bind = self._call_needs_bind(node)
         if isinstance(node.func, ast.Attribute):
