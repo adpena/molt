@@ -1395,7 +1395,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         let j1 = i + 1;
         if j1 < len && ops[j1].kind == "if" {
             let if_args = ops[j1].args.as_ref();
-            let if_matches = if_args.map_or(false, |a| !a.is_empty() && a[0] == is_out);
+            let if_matches = if_args.is_some_and(|a| !a.is_empty() && a[0] == is_out);
             if if_matches {
                 // Scan forward for tuple_new → exception_new → raise → end_if
                 let mut k = j1 + 1;
@@ -1408,11 +1408,10 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
                     match ops[k].kind.as_str() {
                         "tuple_new" if !found_tuple_new => found_tuple_new = true,
                         "exception_new" if found_tuple_new && !found_exc_new => {
-                            if let Some(args) = ops[k].args.as_ref() {
-                                if !args.is_empty() && unbound_error_names.contains(args[0].as_str()) {
+                            if let Some(args) = ops[k].args.as_ref()
+                                && !args.is_empty() && unbound_error_names.contains(args[0].as_str()) {
                                     found_exc_new = true;
                                 }
-                            }
                         }
                         "raise" if found_exc_new && !found_raise => found_raise = true,
                         "end_if" | "else" if found_raise => {
@@ -1552,13 +1551,11 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             })
             .collect();
         for (idx, op) in ops.iter().enumerate() {
-            if op.kind == "missing" {
-                if let Some(out) = op.out.as_deref() {
-                    if !surviving_args.contains(out) {
+            if op.kind == "missing"
+                && let Some(out) = op.out.as_deref()
+                    && !surviving_args.contains(out) {
                         remove[idx] = true;
                     }
-                }
-            }
         }
     }
 
@@ -1620,11 +1617,10 @@ pub fn eliminate_redundant_guard_tags(func_ir: &mut FunctionIR) {
                 | "list_new" | "tuple_new" | "dict_new" | "set_new"
                 | "list_getitem" | "tuple_getitem" | "dict_getitem"
         );
-        if guaranteed {
-            if let Some(out) = op.out.as_ref() {
+        if guaranteed
+            && let Some(out) = op.out.as_ref() {
                 typed_outputs.insert(out.clone());
             }
-        }
     }
 
     let mut remove = vec![false; len];

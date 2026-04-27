@@ -162,25 +162,25 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                     return MoltObject::from_ptr(ptr).bits();
                 }
                 // Mixed BigInt + inline int: promote inline to BigInt ref-add
-                if ltype == TYPE_ID_BIGINT {
-                    if let Some(ri) = to_i64(rhs) {
-                        let l_ref = bigint_ref(lp);
-                        let res: BigInt = l_ref + BigInt::from(ri);
-                        if let Some(i) = bigint_to_inline(&res) {
-                            return MoltObject::from_int(i).bits();
-                        }
-                        return bigint_bits(_py, res);
+                if ltype == TYPE_ID_BIGINT
+                    && let Some(ri) = to_i64(rhs)
+                {
+                    let l_ref = bigint_ref(lp);
+                    let res: BigInt = l_ref + BigInt::from(ri);
+                    if let Some(i) = bigint_to_inline(&res) {
+                        return MoltObject::from_int(i).bits();
                     }
+                    return bigint_bits(_py, res);
                 }
-                if rtype == TYPE_ID_BIGINT {
-                    if let Some(li) = to_i64(lhs) {
-                        let r_ref = bigint_ref(rp);
-                        let res: BigInt = BigInt::from(li) + r_ref;
-                        if let Some(i) = bigint_to_inline(&res) {
-                            return MoltObject::from_int(i).bits();
-                        }
-                        return bigint_bits(_py, res);
+                if rtype == TYPE_ID_BIGINT
+                    && let Some(li) = to_i64(lhs)
+                {
+                    let r_ref = bigint_ref(rp);
+                    let res: BigInt = BigInt::from(li) + r_ref;
+                    if let Some(i) = bigint_to_inline(&res) {
+                        return MoltObject::from_int(i).bits();
                     }
+                    return bigint_bits(_py, res);
                 }
             }
         }
