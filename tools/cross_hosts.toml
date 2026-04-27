@@ -1,0 +1,75 @@
+# cross_hosts.toml — inventory for tools/cross_run.py
+#
+# Lists each remote machine reachable from this build host (LAN, VPN, or
+# Docker) along with the rust target triple it expects. The runner reads
+# this file, cross-compiles `molt`-produced binaries for each target,
+# ships them + a smoke corpus to the host, executes the corpus, and
+# aggregates pass/fail results into a single matrix.
+#
+# Schema (one [[host]] table per remote):
+#
+#   name        (str, required)   Short label used in matrix output.
+#   target      (str, required)   Rust target triple. Forwarded to
+#                                 `molt build --target <triple>`.
+#                                 Common values:
+#                                   aarch64-apple-darwin
+#                                   x86_64-apple-darwin
+#                                   aarch64-unknown-linux-gnu
+#                                   x86_64-unknown-linux-gnu
+#                                   x86_64-pc-windows-msvc
+#                                   x86_64-pc-windows-gnu
+#
+#   transport   (str, optional)   "ssh" (default) or "docker".
+#
+#   # ssh transport fields ---------------------------------------------
+#   hostname    (str)             Hostname or IP for ssh.
+#   user        (str)             Remote username.
+#   ssh_key     (str, optional)   Path to private key (~ expanded).
+#   ssh_port    (int, optional)   Defaults to 22.
+#   shell       (str, optional)   "bash" (default), "sh", or "powershell".
+#                                 Picks the remote command shape and
+#                                 path separators.
+#   remote_dir  (str)             Absolute path the runner may write to.
+#                                 Will be created. Cleaned up on exit
+#                                 unless --keep-remote is passed.
+#
+#   # docker transport fields ------------------------------------------
+#   container   (str)             Image:tag. Runner does
+#                                   docker run --rm -v <stage>:<remote_dir>
+#                                 mounting the staged artefacts.
+#   remote_dir  (str, optional)   Mount point inside container.
+#                                 Defaults to /work.
+#
+# Example, fully populated:
+#
+# [[host]]
+# name = "raspi"
+# hostname = "raspberrypi.local"
+# user = "pi"
+# ssh_key = "~/.ssh/id_ed25519"
+# target = "aarch64-unknown-linux-gnu"
+# remote_dir = "/tmp/molt_test"
+#
+# [[host]]
+# name = "intel-mac"
+# hostname = "intel-mac.local"
+# user = "adpena"
+# target = "x86_64-apple-darwin"
+# remote_dir = "/tmp/molt_test"
+#
+# [[host]]
+# name = "windows"
+# hostname = "windows.local"
+# user = "adpena"
+# target = "x86_64-pc-windows-msvc"
+# remote_dir = "C:\\Users\\adpena\\AppData\\Local\\molt_test"
+# shell = "powershell"
+#
+# [[host]]
+# name = "linux-amd64-container"
+# transport = "docker"
+# container = "debian:bookworm-slim"
+# target = "x86_64-unknown-linux-gnu"
+# remote_dir = "/work"
+#
+# Fill in real entries below. Empty inventories are an error.
