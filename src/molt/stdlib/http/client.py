@@ -15,6 +15,7 @@ _require_intrinsic("molt_stdlib_probe")
 
 _MOLT_HTTP_EXECUTE = _require_intrinsic("molt_http_client_execute")
 _MOLT_HTTP_CONN_NEW = _require_intrinsic("molt_http_client_connection_new")
+_MOLT_HTTP_CONN_NEW_HTTPS = _require_intrinsic("molt_http_client_connection_new_https")
 _MOLT_HTTP_CONN_PUTREQUEST = _require_intrinsic(
     "molt_http_client_connection_putrequest"
 )
@@ -432,14 +433,18 @@ class HTTPConnection:
     timeout: float | None
     _conn_handle: int
     _response: HTTPResponse | None
+    # Subclasses (HTTPSConnection) flip this to swap the constructor intrinsic.
+    _MOLT_TLS = False
 
     def __init__(
         self, host: str, port: int | None = None, timeout: float | None = None
     ) -> None:
         self.host = str(host)
-        self.port = int(port) if port is not None else HTTP_PORT
+        default_port = HTTPS_PORT if self._MOLT_TLS else HTTP_PORT
+        self.port = int(port) if port is not None else default_port
         self.timeout = None if timeout is None else float(timeout)
-        self._conn_handle = int(_MOLT_HTTP_CONN_NEW(self.host, self.port, self.timeout))
+        ctor = _MOLT_HTTP_CONN_NEW_HTTPS if self._MOLT_TLS else _MOLT_HTTP_CONN_NEW
+        self._conn_handle = int(ctor(self.host, self.port, self.timeout))
         self._response = None
 
     @property
@@ -549,9 +554,33 @@ class HTTPConnection:
 
 
 class HTTPSConnection(HTTPConnection):
+    """`HTTPConnection` subclass that negotiates TLS via the rustls-backed runtime.
+
+    The intrinsic constructor is swapped via the `_MOLT_TLS` class flag so that
+    request execution dispatches over rustls + webpki-roots. Hostname is used
+    as the SNI server name for default-secure cert verification.
+    """
+
+    _MOLT_TLS = True
+
     def __init__(
-        self, host: str, port: int | None = None, timeout: float | None = None
+        self,
+        host: str,
+        port: int | None = None,
+        key_file: str | None = None,
+        cert_file: str | None = None,
+        timeout: float | None = None,
+        source_address: object | None = None,
+        *,
+        context: object | None = None,
+        check_hostname: bool | None = None,
+        blocksize: int = 8192,
     ) -> None:
+        # The rustls backend uses webpki-roots and verifies the SNI hostname
+        # by default. Custom contexts / client cert chains are accepted but
+        # only a subset is honored today (forwarded through the Rust SSLContext
+        # registry when wrapping a raw socket via ssl.SSLContext.wrap_socket).
+        del key_file, cert_file, source_address, context, check_hostname, blocksize
         super().__init__(host, HTTPS_PORT if port is None else port, timeout)
 
 

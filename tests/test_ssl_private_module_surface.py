@@ -37,12 +37,14 @@ def _ctx(handle):
     return _STATE["contexts"][handle]
 
 
-def _new_socket(_ctx_handle, _sock, _server_side, _server_hostname):
+def _new_socket(*args):
+    # Real intrinsic: (sock_fd, ctx_handle, server_hostname, server_side)
     handle = f"sock:{{_STATE['next_socket']}}"
     _STATE["next_socket"] += 1
     _STATE["sockets"][handle] = {{
         "read": b"peer-bytes",
         "written": bytearray(),
+        "args": args,
     }}
     return handle
 
@@ -123,7 +125,12 @@ for name, type_name, is_callable in rows:
 ctx = _private.SSLContext()
 ctx.verify_mode = _private.CERT_REQUIRED
 ctx.check_hostname = True
-wrapped = ctx.wrap_socket(object(), server_hostname="example.com")
+class _StubSocket:
+    def fileno(self): return 7
+    def getpeername(self): return ("example.com", 443)
+    def getsockname(self): return ("127.0.0.1", 12345)
+_stub_sock = _StubSocket()
+wrapped = ctx.wrap_socket(_stub_sock, server_hostname="example.com")
 
 checks = {{
     "constants": (
@@ -148,7 +155,8 @@ checks = {{
         and wrapped.cipher() == ("TLS_AES_256_GCM_SHA384", "TLSv1.3", 256)
         and wrapped.version() == "TLSv1.3"
         and wrapped.getpeercert(binary_form=True) == b"cert"
-        and wrapped.unwrap() == "raw-socket"
+        and wrapped.unwrap() is _stub_sock
+        and wrapped.fileno() == 7
     ),
     "default_context": isinstance(_private.create_default_context(), _private.SSLContext),
 }}

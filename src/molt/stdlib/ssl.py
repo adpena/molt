@@ -92,8 +92,14 @@ class MemoryBIO:
 
 
 class SSLSocket:
-    def __init__(self, handle: object) -> None:
+    def __init__(self, handle: object, sock: object | None = None) -> None:
         self._handle = handle
+        # Hold a reference to the underlying transport socket so it stays
+        # alive for the lifetime of the SSL session. The Rust intrinsic dups
+        # the file descriptor at wrap time, but keeping the Python object
+        # pinned matches CPython semantics (SSLSocket.unwrap returns it).
+        self._sock = sock
+        self._closed = False
 
     def do_handshake(self) -> None:
         try:
@@ -102,10 +108,47 @@ class SSLSocket:
             raise SSLError(str(exc)) from exc
 
     def read(self, length: int = 16384) -> bytes:
-        return bytes(_MOLT_SSL_SOCKET_READ(self._handle, length))
+        return bytes(_MOLT_SSL_SOCKET_READ(self._handle, int(length)))
 
     def write(self, data: bytes) -> int:
         return int(_MOLT_SSL_SOCKET_WRITE(self._handle, data))
+
+    # CPython exposes both read/write and the socket-style recv/send/sendall
+    # surface; libraries like urllib3, httpx, requests and aiohttp call into
+    # the latter. Forward to the same intrinsics so all callers work.
+    def recv(self, buflen: int = 1024, flags: int = 0) -> bytes:
+        if flags:
+            raise NotImplementedError("ssl.SSLSocket.recv flags are not supported")
+        return self.read(buflen)
+
+    def recv_into(self, buffer, nbytes: int = 0, flags: int = 0) -> int:
+        if flags:
+            raise NotImplementedError("ssl.SSLSocket.recv_into flags are not supported")
+        view = memoryview(buffer)
+        size = int(nbytes) if nbytes else len(view)
+        if size <= 0:
+            return 0
+        data = self.read(size)
+        n = len(data)
+        view[:n] = data
+        return n
+
+    def send(self, data: bytes, flags: int = 0) -> int:
+        if flags:
+            raise NotImplementedError("ssl.SSLSocket.send flags are not supported")
+        return self.write(data)
+
+    def sendall(self, data: bytes, flags: int = 0) -> None:
+        if flags:
+            raise NotImplementedError("ssl.SSLSocket.sendall flags are not supported")
+        view = memoryview(data)
+        total = len(view)
+        sent = 0
+        while sent < total:
+            n = self.write(bytes(view[sent:]))
+            if n <= 0:
+                raise SSLError("ssl.SSLSocket.sendall short write")
+            sent += n
 
     def cipher(self) -> tuple[str, str, int] | None:
         return _MOLT_SSL_SOCKET_CIPHER(self._handle)
@@ -117,14 +160,56 @@ class SSLSocket:
         return _MOLT_SSL_SOCKET_GETPEERCERT(self._handle, binary_form)
 
     def unwrap(self) -> object:
-        return _MOLT_SSL_SOCKET_UNWRAP(self._handle)
+        # Returns the raw fd of the underlying socket; matches the Rust
+        # intrinsic contract. CPython returns the unwrapped socket object,
+        # but our SSL layer dup'd the fd, so we hand back the original
+        # transport socket which still owns the original fd.
+        _MOLT_SSL_SOCKET_UNWRAP(self._handle)
+        self._closed = True
+        return self._sock
+
+    def fileno(self) -> int:
+        if self._sock is not None and hasattr(self._sock, "fileno"):
+            try:
+                return int(self._sock.fileno())
+            except Exception:
+                return -1
+        return -1
+
+    def getpeername(self):
+        if self._sock is not None and hasattr(self._sock, "getpeername"):
+            return self._sock.getpeername()
+        raise OSError("SSLSocket has no peer name")
+
+    def getsockname(self):
+        if self._sock is not None and hasattr(self._sock, "getsockname"):
+            return self._sock.getsockname()
+        raise OSError("SSLSocket has no socket name")
+
+    def selected_alpn_protocol(self) -> str | None:
+        return None
+
+    def pending(self) -> int:
+        return 0
 
     def close(self) -> None:
-        _MOLT_SSL_SOCKET_CLOSE(self._handle)
+        if self._closed:
+            return
+        try:
+            _MOLT_SSL_SOCKET_CLOSE(self._handle)
+        finally:
+            self._closed = True
+
+    def __enter__(self) -> "SSLSocket":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
     def __del__(self) -> None:
         try:
-            _MOLT_SSL_SOCKET_DROP(self._handle)
+            if not self._closed:
+                _MOLT_SSL_SOCKET_DROP(self._handle)
         except Exception:
             pass
 
@@ -180,17 +265,44 @@ class SSLContext:
         sock: object,
         *,
         server_side: bool = False,
+        do_handshake_on_connect: bool = True,
+        suppress_ragged_eofs: bool = True,
         server_hostname: str | None = None,
+        session: object | None = None,
     ) -> SSLSocket:
-        handle = _MOLT_SSL_WRAP_SOCKET(self._handle, sock, server_side, server_hostname)
-        return SSLSocket(handle)
+        # Suppress-ragged-eofs is a hint to the read path for early EOF
+        # tolerance; we model it implicitly in the rustls read loop. Session
+        # resumption is not supported by the rustls-backed runtime yet.
+        del suppress_ragged_eofs, session
+        # Extract the underlying file descriptor; the Rust intrinsic dups it
+        # so the SSLSocket owns its own copy of the kernel handle.
+        fileno_attr = getattr(sock, "fileno", None)
+        if not callable(fileno_attr):
+            raise TypeError("wrap_socket() requires a socket-like object with fileno()")
+        fd = int(fileno_attr())
+        if fd < 0:
+            raise OSError("wrap_socket() got a closed socket (fileno < 0)")
+        # Match the C ABI signature exactly:
+        #   molt_ssl_wrap_socket(sock_fd, ctx_handle, server_hostname, server_side)
+        handle = _MOLT_SSL_WRAP_SOCKET(
+            fd,
+            self._handle,
+            server_hostname,
+            bool(server_side),
+        )
+        ssock = SSLSocket(handle, sock=sock)
+        if do_handshake_on_connect:
+            ssock.do_handshake()
+        return ssock
 
     def wrap_bio(
         self, incoming: MemoryBIO, outgoing: MemoryBIO, *, server_side: bool = False
     ) -> SSLSocket:
-        # MemoryBIO wrapping delegates through the same socket intrinsic
-        handle = _MOLT_SSL_WRAP_SOCKET(self._handle, None, server_side, None)
-        return SSLSocket(handle)
+        # MemoryBIO wrapping is not yet supported by the rustls-backed runtime.
+        del incoming, outgoing, server_side
+        raise NotImplementedError(
+            "ssl.SSLContext.wrap_bio is not yet supported on the Molt rustls backend"
+        )
 
     def __del__(self) -> None:
         try:
