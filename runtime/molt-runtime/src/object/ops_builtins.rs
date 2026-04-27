@@ -667,7 +667,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 // molt_call_func_dispatch handles arbitrary arities via callargs,
                 // so this should never be reached in practice.
                 crate::with_gil_entry_nopanic!(_py, {
-                    return raise_exception::<u64>(
+                    raise_exception::<u64>(
                         _py,
                         "RuntimeError",
                         &format!(
@@ -675,7 +675,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                              use callargs dispatch for functions with >16 parameters",
                             n
                         ),
-                    );
+                    )
                 })
             }
         }
@@ -1982,9 +1982,8 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 let type_id = unsafe { object_type_id(ptr) };
                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                     let elems = unsafe { seq_vec_ref(ptr) };
-                    let start_int = to_i64(start_obj);
-                    if start_int.is_some() {
-                        let mut acc128 = start_int.unwrap() as i128;
+                    if let Some(start_int) = to_i64(start_obj) {
+                        let mut acc128 = start_int as i128;
                         let mut all_int = true;
                         for &bits in elems.iter() {
                             let elem = obj_from_bits(bits);

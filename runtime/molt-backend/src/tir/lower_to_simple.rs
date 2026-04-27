@@ -2782,8 +2782,7 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
     if opir.type_hint.is_none()
         && !tir_op.results.is_empty()
         && !op_kind_already_classified(opir.kind.as_str())
-    {
-        if let Some(ty) = tir_op
+        && let Some(ty) = tir_op
             .results
             .first()
             .and_then(|r| types.get(r))
@@ -2804,7 +2803,6 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
                 _ => {}
             }
         }
-    }
 }
 
 /// Returns true if the SimpleIR op kind is already classified by the native

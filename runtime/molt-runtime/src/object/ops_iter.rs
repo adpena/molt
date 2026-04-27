@@ -983,9 +983,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     }
                     let idx_bits = enumerate_index_bits(ptr);
                     // Build (or reuse) the inner (idx, val) user-visible tuple.
-                    let inner_slot = (ptr as *mut u8)
-                        .add(2 * std::mem::size_of::<u64>())
-                        as *mut *mut u8;
+                    let inner_slot = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
                     let item_bits =
                         cached_pair_return(_py, inner_slot, idx_bits, val_bits, false, false);
                     if obj_from_bits(item_bits).is_none() {
@@ -993,7 +991,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     }
                     let done_false = MoltObject::from_bool(false).bits();
                     // Build (or reuse) the outer (item, done_false) wrapper.
-                    let outer_slot = (ptr as *mut u8)
+                    let outer_slot = ptr
                         .add(2 * std::mem::size_of::<u64>() + std::mem::size_of::<*mut u8>())
                         as *mut *mut u8;
                     let out_bits =
@@ -1028,8 +1026,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return generator_done_tuple(_py, MoltObject::none().bits());
                     }
                     let done_bits = MoltObject::from_bool(false).bits();
-                    let slot_ptr = (ptr as *mut u8).add(2 * std::mem::size_of::<u64>())
-                        as *mut *mut u8;
+                    let slot_ptr = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
                     let out_bits =
                         cached_pair_return(_py, slot_ptr, val_bits, done_bits, true, false);
                     return out_bits;
@@ -1088,7 +1085,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     let done_bits = MoltObject::from_bool(false).bits();
-                    let slot_ptr = (ptr as *mut u8)
+                    let slot_ptr = ptr
                         .add(std::mem::size_of::<u64>() + std::mem::size_of::<*mut Vec<u64>>())
                         as *mut *mut u8;
                     let out_bits =
@@ -2055,23 +2052,23 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
             }
             // pair_bits should be a 2-tuple: (key, value).
             let pair_obj = obj_from_bits(pair_bits);
-            if let Some(pair_ptr) = pair_obj.as_ptr() {
-                if object_type_id(pair_ptr) == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(pair_ptr);
-                    if elems.len() >= 2 {
-                        let kb = elems[0];
-                        let vb = elems[1];
-                        if crate::object::refcount_opt::is_heap_ref(kb) {
-                            inc_ref_bits(_py, kb);
-                        }
-                        if crate::object::refcount_opt::is_heap_ref(vb) {
-                            inc_ref_bits(_py, vb);
-                        }
-                        *key_out = kb;
-                        *value_out = vb;
-                        dec_ref_bits(_py, pair_bits);
-                        return done_false;
+            if let Some(pair_ptr) = pair_obj.as_ptr()
+                && object_type_id(pair_ptr) == TYPE_ID_TUPLE
+            {
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() >= 2 {
+                    let kb = elems[0];
+                    let vb = elems[1];
+                    if crate::object::refcount_opt::is_heap_ref(kb) {
+                        inc_ref_bits(_py, kb);
                     }
+                    if crate::object::refcount_opt::is_heap_ref(vb) {
+                        inc_ref_bits(_py, vb);
+                    }
+                    *key_out = kb;
+                    *value_out = vb;
+                    dec_ref_bits(_py, pair_bits);
+                    return done_false;
                 }
             }
             dec_ref_bits(_py, pair_bits);

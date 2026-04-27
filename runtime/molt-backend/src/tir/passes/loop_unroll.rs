@@ -87,11 +87,10 @@ fn build_const_int_map(func: &TirFunction) -> HashMap<ValueId, i64> {
     let mut map = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if op.opcode == OpCode::ConstInt && op.results.len() == 1 {
-                if let Some(AttrValue::Int(v)) = op.attrs.get("value") {
+            if op.opcode == OpCode::ConstInt && op.results.len() == 1
+                && let Some(AttrValue::Int(v)) = op.attrs.get("value") {
                     map.insert(op.results[0], *v);
                 }
-            }
         }
     }
     map
@@ -629,7 +628,7 @@ fn unroll_candidate(func: &mut TirFunction, c: &UnrollCandidate, stats: &mut Pas
     // If any exit arg references the induction variable, materialise the
     // post-loop final value (start + trip_count * step) as a ConstInt in the
     // landing block and use it as the substitution target.
-    let final_value_id: Option<ValueId> = if orig_exit_args.iter().any(|v| *v == c.induction_var) {
+    let final_value_id: Option<ValueId> = if orig_exit_args.contains(&c.induction_var) {
         let final_value = c.start + c.trip_count * c.step;
         let final_id = func.fresh_value();
         let mut final_attrs = AttrDict::new();
@@ -663,13 +662,11 @@ fn unroll_candidate(func: &mut TirFunction, c: &UnrollCandidate, stats: &mut Pas
             // back-edge as body_back_args[k]. The exit edge gets the same
             // value as the LAST iteration's body produced, which is
             // last_iter_remap[body_back_args[k]].
-            if let Some(arg_idx) = header_arg_ids.iter().position(|&id| id == v) {
-                if let Some(&body_value) = body_back_args.get(arg_idx) {
-                    if let Some(&remapped) = last_iter_remap.get(&body_value) {
+            if let Some(arg_idx) = header_arg_ids.iter().position(|&id| id == v)
+                && let Some(&body_value) = body_back_args.get(arg_idx)
+                    && let Some(&remapped) = last_iter_remap.get(&body_value) {
                         return remapped;
                     }
-                }
-            }
             v
         })
         .collect();

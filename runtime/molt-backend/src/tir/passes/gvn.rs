@@ -162,11 +162,10 @@ fn build_dom_children(
         children.entry(bid).or_default();
     }
     for (&child, parent) in idoms {
-        if let Some(parent) = parent {
-            if *parent != child {
+        if let Some(parent) = parent
+            && *parent != child {
                 children.entry(*parent).or_default().push(child);
             }
-        }
     }
     // Sort children for deterministic traversal order.
     for kids in children.values_mut() {
@@ -403,7 +402,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         // effects (__add__, __eq__, etc.).
                         op.operands
                             .iter()
-                            .all(|v| value_type.get(v).map_or(false, is_primitive_type))
+                            .all(|v| value_type.get(v).is_some_and(is_primitive_type))
                     } else {
                         false
                     };
@@ -493,8 +492,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
     // Apply replacements (replace redundant ops with Copy).
     for (bid, op_idx, leader) in &replacements {
-        if let Some(block) = func.blocks.get_mut(bid) {
-            if *op_idx < block.ops.len() {
+        if let Some(block) = func.blocks.get_mut(bid)
+            && *op_idx < block.ops.len() {
                 let result = block.ops[*op_idx].results[0];
                 block.ops[*op_idx] = TirOp {
                     dialect: Dialect::Molt,
@@ -506,7 +505,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 };
                 stats.values_changed += 1;
             }
-        }
     }
 
     // Operand renaming is deferred to copy_prop + DCE.  Direct operand

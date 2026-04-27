@@ -54,12 +54,11 @@ fn build_copy_map(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, 
         let keys: Vec<ValueId> = copy_of.keys().copied().collect();
         for k in keys {
             let v = copy_of[&k];
-            if let Some(&deeper) = copy_of.get(&v) {
-                if deeper != v {
+            if let Some(&deeper) = copy_of.get(&v)
+                && deeper != v {
                     copy_of.insert(k, deeper);
                     changed = true;
                 }
-            }
         }
         if !changed {
             break;

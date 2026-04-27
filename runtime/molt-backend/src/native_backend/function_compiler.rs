@@ -868,11 +868,10 @@ fn collect_slot_backed_join_names(
     // exception handling: keep values in memory across EH boundaries.
     let mut all_store_var_targets: BTreeSet<String> = BTreeSet::new();
     for op in ops {
-        if op.kind == "store_var" {
-            if let Some(name) = op.var.as_ref().or(op.out.as_ref()) {
+        if op.kind == "store_var"
+            && let Some(name) = op.var.as_ref().or(op.out.as_ref()) {
                 all_store_var_targets.insert(name.clone());
             }
-        }
     }
     // All store_var targets in exception-bearing or stateful functions use
     // stack slots.
@@ -1533,8 +1532,8 @@ fn preanalyze_function_ir(
             // variables (e.g. _bb1_arg0) that are only written via
             // store_var and read via load_var.
             if op.kind == "store_var" {
-                if let Some(target) = op.var.as_ref().or(op.out.as_ref()) {
-                    if let Some(src) = op.args.as_ref().and_then(|a| a.first()) {
+                if let Some(target) = op.var.as_ref().or(op.out.as_ref())
+                    && let Some(src) = op.args.as_ref().and_then(|a| a.first()) {
                         let inserted = if int_like_vars.contains(src) {
                             int_like_vars.insert(target.clone())
                         } else if bool_like_vars.contains(src) {
@@ -1552,7 +1551,6 @@ fn preanalyze_function_ir(
                             changed_types = true;
                         }
                     }
-                }
                 continue;
             }
             let Some(out) = op.out.as_ref() else {
@@ -1692,24 +1690,21 @@ fn preanalyze_function_ir(
                     // store_index on list_int is fine (raw i64 storage), but
                     // anything else needs the boxed value to be refcount-correct.
                     let is_list_int = op.container_type.as_deref() == Some("list_int");
-                    if !is_list_int {
-                        if let Some(args) = &op.args {
+                    if !is_list_int
+                        && let Some(args) = &op.args {
                             // args[2] is the value being stored
-                            if let Some(val_name) = args.get(2) {
-                                if is_scalar(val_name) {
+                            if let Some(val_name) = args.get(2)
+                                && is_scalar(val_name) {
                                     unsafe_set.insert(val_name.clone());
                                 }
-                            }
                         }
-                    }
                 }
                 // Condition 4: returned from the function
                 "ret" => {
-                    if let Some(var) = &op.var {
-                        if is_scalar(var) {
+                    if let Some(var) = &op.var
+                        && is_scalar(var) {
                             unsafe_set.insert(var.clone());
                         }
-                    }
                     if let Some(args) = &op.args {
                         for arg in args {
                             if is_scalar(arg) {
@@ -1731,11 +1726,10 @@ fn preanalyze_function_ir(
                             }
                         }
                     }
-                    if let Some(var) = &op.var {
-                        if is_scalar(var) {
+                    if let Some(var) = &op.var
+                        && is_scalar(var) {
                             unsafe_set.insert(var.clone());
                         }
-                    }
                 }
                 // yield/send_yield escape the variable across suspension points
                 "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
@@ -1746,11 +1740,10 @@ fn preanalyze_function_ir(
                             }
                         }
                     }
-                    if let Some(var) = &op.var {
-                        if is_scalar(var) {
+                    if let Some(var) = &op.var
+                        && is_scalar(var) {
                             unsafe_set.insert(var.clone());
                         }
-                    }
                 }
                 _ => {}
             }
@@ -2137,11 +2130,10 @@ impl SimpleBackend {
                 if op.kind == "store_var" {
                     let target = op.var.as_ref().or(op.out.as_ref());
                     let source = op.args.as_ref().and_then(|a| a.first());
-                    if let (Some(t), Some(s)) = (target, source) {
-                        if !float_like_vars.contains(s) {
+                    if let (Some(t), Some(s)) = (target, source)
+                        && !float_like_vars.contains(s) {
                             non_float.insert(t.clone());
                         }
-                    }
                 }
                 // Any op with an output: if the op doesn't produce a float value
                 // AND the output is in float_like_vars, it's a mixed-type variable.
@@ -2516,15 +2508,13 @@ impl SimpleBackend {
                     // essential for loop phi variables (e.g. _bb1_arg0) that
                     // are only written via store_var and read via load_var.
                     if op.kind == "store_var" {
-                        if let Some(target) = op.var.as_ref().or(op.out.as_ref()) {
-                            if let Some(src) = op.args.as_ref().and_then(|a| a.first()) {
-                                if int_valued_outputs.contains(src)
+                        if let Some(target) = op.var.as_ref().or(op.out.as_ref())
+                            && let Some(src) = op.args.as_ref().and_then(|a| a.first())
+                                && int_valued_outputs.contains(src)
                                     && int_valued_outputs.insert(target.clone())
                                 {
                                     changed = true;
                                 }
-                            }
-                        }
                         continue;
                     }
                     let Some(ref out) = op.out else {
@@ -9314,8 +9304,8 @@ impl SimpleBackend {
                                 // When known, the cache-miss path skips the type_id
                                 // check + dual-layout loads, and the fast path skips
                                 // the per-access is_bool branch entirely.
-                                let getitem_out_is_bool = op.out.as_ref().map_or(false, |o| var_is_bool(o));
-                                let getitem_out_is_non_bool = op.out.as_ref().map_or(false, |o| {
+                                let getitem_out_is_bool = op.out.as_ref().is_some_and(|o| var_is_bool(o));
+                                let getitem_out_is_non_bool = op.out.as_ref().is_some_and(|o| {
                                     var_is_int(o) || var_is_str(o) || float_like_vars.contains(o.as_str())
                                 });
                                 // Extract data_ptr, len, and is_bool flag (cached across loop iterations).
@@ -18275,8 +18265,8 @@ impl SimpleBackend {
                         // When the list IS list_bool the shadow is the raw boolean
                         // (0 or 1) and we skip the NaN-box tag extraction entirely.
                         let raw_shadow_info = list_bool_raw_shadow.get(&args[0]).cloned();
-                        if let Some((ref list_var, raw_shadow)) = raw_shadow_info {
-                            if let Some(&ibvar) = list_is_bool_cache.get(list_var) {
+                        if let Some((ref list_var, raw_shadow)) = raw_shadow_info
+                            && let Some(&ibvar) = list_is_bool_cache.get(list_var) {
                                 let ib = builder.use_var(ibvar);
                                 let zero_i8 = builder.ins().iconst(types::I8, 0);
                                 let is_bool_check =
@@ -18322,7 +18312,6 @@ impl SimpleBackend {
                                     speculative_block,
                                 );
                             }
-                        }
 
                         let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
                         let masked = builder.ins().band(*cond, mask);
@@ -22443,8 +22432,8 @@ impl SimpleBackend {
 
                         // Peephole: raw-bool shadow from list getitem.
                         let raw_shadow_info = list_bool_raw_shadow.get(cond_name).cloned();
-                        if let Some((ref list_var, raw_shadow)) = raw_shadow_info {
-                            if let Some(&ibvar) = list_is_bool_cache.get(list_var) {
+                        if let Some((ref list_var, raw_shadow)) = raw_shadow_info
+                            && let Some(&ibvar) = list_is_bool_cache.get(list_var) {
                                 let ib = builder.use_var(ibvar);
                                 let zero_i8 = builder.ins().iconst(types::I8, 0);
                                 let is_bool_check =
@@ -22487,7 +22476,6 @@ impl SimpleBackend {
                                     speculative_block,
                                 );
                             }
-                        }
 
                         let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
                         let masked = builder.ins().band(*cond, mask);
@@ -22999,7 +22987,7 @@ impl SimpleBackend {
                         // transfer raw i64 directly -- no boxing, no refcount.
                         if raw_primary_int.contains(var_name.as_str())
                             && scalar_fast_paths_enabled
-                            && op.out.as_ref().map_or(false, |o| int_like_vars.contains(o))
+                            && op.out.as_ref().is_some_and(|o| int_like_vars.contains(o))
                         {
                             let in_loop = !loop_stack.is_empty();
                             let raw_val = if in_loop {
@@ -23046,7 +23034,7 @@ impl SimpleBackend {
                         }
                         // --- Raw-primary float fast path ---
                         // When output is float-primary, transfer raw f64 directly.
-                        if op.out.as_ref().map_or(false, |o| float_primary_vars.contains(o))
+                        if op.out.as_ref().is_some_and(|o| float_primary_vars.contains(o))
                             && scalar_fast_paths_enabled
                         {
                             let raw_f64 = float_value_for(
@@ -23177,7 +23165,7 @@ impl SimpleBackend {
                         // --- Raw-primary int fast path (args-based copy_var) ---
                         if raw_primary_int.contains(&args[0])
                             && scalar_fast_paths_enabled
-                            && op.out.as_ref().map_or(false, |o| int_like_vars.contains(o))
+                            && op.out.as_ref().is_some_and(|o| int_like_vars.contains(o))
                         {
                             let in_loop = !loop_stack.is_empty();
                             let raw_val = if in_loop {
@@ -23678,19 +23666,16 @@ impl SimpleBackend {
                 eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
             }
         }
-        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF_FUNC") {
-            if func_ir.name == filter || func_ir.name.contains(&filter) {
+        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF_FUNC")
+            && (func_ir.name == filter || func_ir.name.contains(&filter)) {
                 eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
             }
-        }
-        if let Ok(path) = std::env::var("MOLT_DUMP_CLIF_FILE") {
-            if let Ok(clif_filter) = std::env::var("MOLT_DUMP_CLIF_FILE_FILTER") {
-                if func_ir.name.contains(&clif_filter) {
+        if let Ok(path) = std::env::var("MOLT_DUMP_CLIF_FILE")
+            && let Ok(clif_filter) = std::env::var("MOLT_DUMP_CLIF_FILE_FILTER")
+                && func_ir.name.contains(&clif_filter) {
                     let clif_text = format!("CLIF {}:\n{}", func_ir.name, builder.func.display());
                     let _ = std::fs::write(&path, &clif_text);
                 }
-            }
-        }
 
         // Eliminate unreachable blocks BEFORE sealing.  Cranelift's SSA
         // builder can create alias cycles (v1 -> v2 -> v1) when use_var is

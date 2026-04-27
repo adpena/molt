@@ -887,6 +887,7 @@ fn object_pool_index(total_size: usize) -> Option<usize> {
 /// object pool.  Membership here means:
 ///   - on `alloc`: try the pool first (pool > nursery > global).
 ///   - on `dec_ref` to zero: zero the payload and push back into the pool.
+///
 /// Limited to fixed-shape, high-churn types whose destructors release any
 /// owned heap state (Box/Vec) BEFORE the pool insert, so the pooled memory
 /// holds nothing but the zeroed header + payload region.

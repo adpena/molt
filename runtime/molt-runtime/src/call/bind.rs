@@ -494,7 +494,7 @@ unsafe fn call_type_with_builder(
                         if object_type_id(p) != TYPE_ID_FUNCTION {
                             return false;
                         }
-                        function_fn_ptr(p) == fn_addr!(molt_type_new) as u64
+                        function_fn_ptr(p) == fn_addr!(molt_type_new)
                     })
                     .unwrap_or(true);
 
