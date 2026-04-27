@@ -344,13 +344,21 @@ pub(crate) fn alloc_set_with_entries(_py: &PyToken<'_>, entries: &[u64]) -> *mut
     alloc_set_like_with_entries(_py, entries, TYPE_ID_SET)
 }
 
+#[inline]
+fn debug_list_builder_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_DEBUG_LIST_BUILDER").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let debug = matches!(
-            std::env::var("MOLT_DEBUG_LIST_BUILDER").ok().as_deref(),
-            Some("1")
-        );
+        let debug = debug_list_builder_enabled();
         if debug {
             eprintln!(
                 "molt debug list_builder_new capacity_bits=0x{:016x}",

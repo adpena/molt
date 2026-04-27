@@ -793,10 +793,16 @@ pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
     })
 }
 
+#[inline]
+fn trace_eq_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_EQ").is_ok())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if std::env::var("MOLT_TRACE_EQ").is_ok() {
+        if trace_eq_enabled() {
             eprintln!("molt_eq: a=0x{:016x} b=0x{:016x}", a, b);
         }
         let lhs = obj_from_bits(a);
