@@ -3285,6 +3285,8 @@ dependencies = [
  "libc",
  "molt-lang-obj-model",
  "molt-runtime-core",
+ "rustls",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]

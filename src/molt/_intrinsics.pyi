@@ -609,6 +609,9 @@ def molt_http_client_execute(
     body: Any = ...,
 ) -> int: ...
 def molt_http_client_connection_new(host: Any, port: Any, timeout: Any) -> int: ...
+def molt_http_client_connection_new_https(
+    host: Any, port: Any, timeout: Any
+) -> int: ...
 def molt_http_client_connection_putrequest(
     handle: Any,
     method: Any,

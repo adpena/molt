@@ -196,6 +196,9 @@ struct UrllibHttpRequest {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     timeout: Option<f64>,
+    /// When `Some(server_name)`, the request is sent over TLS using rustls
+    /// with the given SNI server name. Required for `https://` URLs.
+    tls_server_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -210,6 +213,10 @@ struct MoltHttpClientConnection {
     buffer: Vec<Vec<u8>>,
     skip_host: bool,
     skip_accept_encoding: bool,
+    /// Set when the connection was created via `molt_http_client_connection_new_https`
+    /// (i.e. backing an `http.client.HTTPSConnection`). Causes request execution
+    /// to negotiate TLS via rustls.
+    use_tls: bool,
 }
 
 struct MoltHttpClientConnectionRuntime {
@@ -1844,7 +1851,12 @@ fn http_client_connection_runtime() -> &'static Mutex<MoltHttpClientConnectionRu
     })
 }
 
-fn http_client_connection_store(host: String, port: u16, timeout: Option<f64>) -> Option<i64> {
+fn http_client_connection_store(
+    host: String,
+    port: u16,
+    timeout: Option<f64>,
+    use_tls: bool,
+) -> Option<i64> {
     let Ok(mut guard) = http_client_connection_runtime().lock() else {
         return None;
     };
@@ -1863,6 +1875,7 @@ fn http_client_connection_store(host: String, port: u16, timeout: Option<f64>) -
             buffer: Vec::new(),
             skip_host: false,
             skip_accept_encoding: false,
+            use_tls,
         },
     );
     i64::try_from(handle).ok()
@@ -2399,6 +2412,9 @@ struct HttpClientExecuteInput {
     body: Vec<u8>,
     skip_host: bool,
     skip_accept_encoding: bool,
+    /// When true, the request is sent over TLS (HTTPS). The SNI server name is
+    /// taken from `host`.
+    use_tls: bool,
 }
 
 fn urllib_http_extract_headers_mapping(
@@ -2861,10 +2877,16 @@ fn http_client_execute_request(
     } else {
         input.url.clone()
     };
-    let host_header = if input.port == 80 {
+    let default_port: u16 = if input.use_tls { 443 } else { 80 };
+    let host_header = if input.port == default_port {
         input.host.clone()
     } else {
         format!("{}:{}", input.host, input.port)
+    };
+    let tls_server_name = if input.use_tls {
+        Some(input.host.clone())
+    } else {
+        None
     };
     let req = UrllibHttpRequest {
         host: input.host.clone(),
@@ -2874,6 +2896,7 @@ fn http_client_execute_request(
         headers: input.headers,
         body: input.body,
         timeout: input.timeout,
+        tls_server_name,
     };
     let (code, reason, resp_headers, resp_body) =
         match urllib_http_try_inmemory_dispatch(_py, &req, &request_target, &host_header) {
@@ -2889,12 +2912,13 @@ fn http_client_execute_request(
             },
             Err(bits) => return Err(bits),
         };
+    let scheme_prefix = if input.use_tls { "https" } else { "http" };
     let response_url = if input.url.starts_with("http://") || input.url.starts_with("https://") {
         input.url
     } else if request_target.starts_with('/') {
-        format!("http://{host_header}{request_target}")
+        format!("{scheme_prefix}://{host_header}{request_target}")
     } else {
-        format!("http://{host_header}/{request_target}")
+        format!("{scheme_prefix}://{host_header}/{request_target}")
     };
     let Some(handle) = urllib_response_store(urllib_response_from_parts(
         resp_body,
@@ -3550,21 +3574,90 @@ fn urllib_http_send_request(
             stream.set_read_timeout(Some(timeout))?;
             stream.set_write_timeout(Some(timeout))?;
         }
-        stream.write_all(&request)?;
-        if let Err(err) = stream.read_to_end(&mut raw) {
-            if (err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock)
-                && !raw.is_empty()
-                && let Ok(parsed) = urllib_http_parse_response_bytes(&raw)
+        if let Some(server_name) = req.tls_server_name.as_deref() {
+            #[cfg(feature = "tls")]
             {
-                return Ok(parsed);
+                urllib_https_send_over_tls(stream, server_name, &request, &mut raw)?;
             }
-            return Err(err);
+            #[cfg(not(feature = "tls"))]
+            {
+                let _ = (stream, server_name);
+                return Err(std::io::Error::new(
+                    ErrorKind::Unsupported,
+                    "https requires the molt-runtime-http `tls` feature (rustls)",
+                ));
+            }
+        } else {
+            stream.write_all(&request)?;
+            if let Err(err) = stream.read_to_end(&mut raw) {
+                if (err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock)
+                    && !raw.is_empty()
+                    && let Ok(parsed) = urllib_http_parse_response_bytes(&raw)
+                {
+                    return Ok(parsed);
+                }
+                return Err(err);
+            }
         }
     }
     match urllib_http_parse_response_bytes(&raw) {
         Ok(parsed) => Ok(parsed),
         Err(msg) => Err(std::io::Error::new(ErrorKind::InvalidData, msg)),
     }
+}
+
+/// Send an HTTP request over TLS using rustls and read the full response into `out`.
+///
+/// Uses `webpki-roots` for trust anchors and the supplied `server_name` for SNI
+/// and certificate hostname verification (default-secure rustls config).
+#[cfg(feature = "tls")]
+fn urllib_https_send_over_tls(
+    tcp: TcpStream,
+    server_name: &str,
+    request: &[u8],
+    out: &mut Vec<u8>,
+) -> std::io::Result<()> {
+    use std::sync::Arc;
+
+    use rustls::pki_types::ServerName;
+    use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+
+    fn shared_client_config() -> Arc<ClientConfig> {
+        use std::sync::OnceLock;
+        static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+        CONFIG
+            .get_or_init(|| {
+                let mut roots = RootCertStore::empty();
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                let cfg = ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth();
+                Arc::new(cfg)
+            })
+            .clone()
+    }
+
+    let server_name_owned = ServerName::try_from(server_name.to_string())
+        .map_err(|e| std::io::Error::new(ErrorKind::InvalidInput, format!("{e}")))?;
+    let conn = ClientConnection::new(shared_client_config(), server_name_owned)
+        .map_err(|e| std::io::Error::new(ErrorKind::Other, format!("TLS init failed: {e}")))?;
+    let mut tls = StreamOwned::new(conn, tcp);
+
+    tls.write_all(request)?;
+    if let Err(err) = tls.read_to_end(out) {
+        if (err.kind() == ErrorKind::UnexpectedEof
+            || err.kind() == ErrorKind::TimedOut
+            || err.kind() == ErrorKind::WouldBlock
+            || err.kind() == ErrorKind::ConnectionAborted
+            || err.kind() == ErrorKind::ConnectionReset)
+            && !out.is_empty()
+            && urllib_http_parse_response_bytes(out).is_ok()
+        {
+            return Ok(());
+        }
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn urllib_http_make_response_bits(_py: &molt_runtime_core::CoreGilToken, handle: i64) -> u64 {
@@ -5682,6 +5775,10 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                             },
                             body: body.clone(),
                             timeout,
+                            // Proxies always speak plain HTTP to the proxy peer
+                            // (CONNECT tunneling for https proxies is rejected
+                            // above), so no TLS termination at this hop.
+                            tls_server_name: None,
                         }
                     } else {
                         UrllibHttpRequest {
@@ -5696,6 +5793,11 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                             },
                             body: body.clone(),
                             timeout,
+                            tls_server_name: if scheme == "https" {
+                                Some(host_now.clone())
+                            } else {
+                                None
+                            },
                         }
                     };
                     let host_header = if port_now == default_port {
@@ -6682,6 +6784,27 @@ pub extern "C" fn molt_http_client_connection_new(
     port_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
+    http_client_connection_new_impl(host_bits, port_bits, timeout_bits, false)
+}
+
+/// Constructor for `http.client.HTTPSConnection` — same shape as
+/// `molt_http_client_connection_new` but marks the connection as TLS so that
+/// request execution dispatches over rustls.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_http_client_connection_new_https(
+    host_bits: u64,
+    port_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    http_client_connection_new_impl(host_bits, port_bits, timeout_bits, true)
+}
+
+fn http_client_connection_new_impl(
+    host_bits: u64,
+    port_bits: u64,
+    timeout_bits: u64,
+    use_tls: bool,
+) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(host) = string_obj_to_owned(obj_from_bits(host_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "host must be str");
@@ -6702,7 +6825,9 @@ pub extern "C" fn molt_http_client_connection_new(
             };
             Some(value)
         };
-        let Some(handle) = http_client_connection_store(host, port_value as u16, timeout) else {
+        let Some(handle) =
+            http_client_connection_store(host, port_value as u16, timeout, use_tls)
+        else {
             return MoltObject::none().bits();
         };
         MoltObject::from_int(handle).bits()
@@ -6948,9 +7073,10 @@ pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u
                 url,
                 conn.headers.clone(),
                 conn.body.clone(),
+                conn.use_tls,
             ))
         });
-        let (host, port, timeout, method, url, headers, body) = match state {
+        let (host, port, timeout, method, url, headers, body, use_tls) = match state {
             Some(Ok(value)) => value,
             Some(Err(msg)) => return raise_exception::<_>(_py, "OSError", msg),
             None => {
@@ -6969,6 +7095,7 @@ pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u
                 body,
                 skip_host: true,
                 skip_accept_encoding: true,
+                use_tls,
             },
         ) {
             Ok(value) => value,
@@ -7080,6 +7207,7 @@ pub extern "C" fn molt_http_client_execute(
                 body,
                 skip_host: true,
                 skip_accept_encoding: true,
+                use_tls: false,
             },
         ) {
             Ok(handle) => MoltObject::from_int(handle).bits(),

@@ -268,6 +268,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_ctypes_sizeof", symbol: "molt_ctypes_sizeof", arity: 1 },
     IntrinsicSpec { name: "molt_http_client_execute", symbol: "molt_http_client_execute", arity: 7 },
     IntrinsicSpec { name: "molt_http_client_connection_new", symbol: "molt_http_client_connection_new", arity: 3 },
+    IntrinsicSpec { name: "molt_http_client_connection_new_https", symbol: "molt_http_client_connection_new_https", arity: 3 },
     IntrinsicSpec { name: "molt_http_client_connection_putrequest", symbol: "molt_http_client_connection_putrequest", arity: 5 },
     IntrinsicSpec { name: "molt_http_client_connection_putheader", symbol: "molt_http_client_connection_putheader", arity: 3 },
     IntrinsicSpec { name: "molt_http_client_connection_endheaders", symbol: "molt_http_client_connection_endheaders", arity: 2 },
@@ -4500,6 +4501,8 @@ fn resolve_http_symbol(symbol: &str) -> Option<u64> {
         "molt_http_client_execute" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_http_client_execute", crate::molt_http_client_execute as *const ())),
         #[cfg(feature = "stdlib_net")]
         "molt_http_client_connection_new" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_http_client_connection_new", crate::molt_http_client_connection_new as *const ())),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_new_https" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_http_client_connection_new_https", crate::molt_http_client_connection_new_https as *const ())),
         #[cfg(feature = "stdlib_net")]
         "molt_http_client_connection_putrequest" => Some(crate::builtins::functions::runtime_fn_addr("crate::molt_http_client_connection_putrequest", crate::molt_http_client_connection_putrequest as *const ())),
         #[cfg(feature = "stdlib_net")]
