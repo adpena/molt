@@ -26143,13 +26143,37 @@ def _append_darwin_runtime_frameworks(
     *,
     target_triple: str | None = None,
 ) -> None:
-    """Append macOS framework flags when targeting Darwin."""
+    """Append macOS framework flags when targeting Darwin.
+
+    For cross-target builds (e.g. building x86_64-apple-darwin from an
+    aarch64 host) the linker is invoked without rustc's host-SDK
+    auto-discovery, so the framework search path is empty and `-framework
+    Security` fails to resolve. Inject `-F <sdk>/System/Library/Frameworks`
+    explicitly when we have a target triple in hand.
+    """
     is_darwin = False
     if target_triple:
         is_darwin = "apple" in target_triple or "darwin" in target_triple
     else:
         is_darwin = sys.platform == "darwin"
     if is_darwin:
+        # Only inject SDK paths when cross-targeting; native builds get
+        # the search paths for free from rustc's default SDK probing.
+        if target_triple:
+            sdk_root = _resolve_macos_sdk_root()
+            if sdk_root:
+                # -isysroot points the linker at the cross-target SDK so
+                # libSystem / libobjc / libc++ resolve from the SDK's
+                # usr/lib instead of the host's /usr/lib (which is a
+                # different ABI on a non-host arch).
+                if "-isysroot" not in args:
+                    args.extend(["-isysroot", sdk_root])
+                framework_dir = f"{sdk_root}/System/Library/Frameworks"
+                if framework_dir not in args:
+                    args.extend(["-F", framework_dir])
+                lib_dir = f"{sdk_root}/usr/lib"
+                if lib_dir not in args:
+                    args.extend(["-L", lib_dir])
         args.extend(["-framework", "Security", "-framework", "CoreFoundation"])
         if _coerce_bool(os.environ.get("MOLT_RUNTIME_GPU_METAL"), False):
             args.extend(["-framework", "Metal", "-lobjc"])
@@ -26167,6 +26191,18 @@ def _append_darwin_runtime_frameworks(
                     "-lobjc",
                 ]
             )
+
+
+def _resolve_macos_sdk_root() -> str | None:
+    """Return the active macOS SDK root via xcrun, or None if unavailable."""
+    try:
+        return subprocess.check_output(
+            ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+            text=True,
+            timeout=5,
+        ).strip() or None
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
 
 
 def build(
