@@ -103,6 +103,26 @@ pub unsafe fn set_runtime_hooks(hooks: RuntimeHooks) {
         .unwrap_or_else(|_| panic!("molt_cpython_abi: runtime hooks already registered"));
 }
 
+/// Idempotent variant of [`set_runtime_hooks`] that silently no-ops when the
+/// hook vtable has already been registered.
+///
+/// Intended for test setup paths where multiple integration tests in the same
+/// crate each call `init()` on a shared `OnceLock` — the first wins, the rest
+/// observe the already-registered state without panicking.  Production hosts
+/// should prefer [`set_runtime_hooks`] so that double-registration with
+/// mismatched hooks is caught loudly.
+///
+/// Returns `Ok(())` if this call installed the hooks, or `Err(hooks)`
+/// (returning the rejected vtable) if a prior registration was already
+/// in effect.
+///
+/// # Safety
+/// Same as [`set_runtime_hooks`]: every function pointer in `hooks` must
+/// remain valid for the lifetime of the process.
+pub unsafe fn try_set_runtime_hooks(hooks: RuntimeHooks) -> Result<(), RuntimeHooks> {
+    RUNTIME_HOOKS.set(hooks)
+}
+
 /// C-callable registration entry point for `molt-lang-runtime`.
 ///
 /// # Safety

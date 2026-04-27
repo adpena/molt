@@ -5,10 +5,139 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::*;
+use molt_cpython_abi::hooks::RuntimeHooks;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// ─── Test hook implementations ───────────────────────────────────────────────
+//
+// `molt-lang-cpython-abi` deliberately does not depend on `molt-lang-runtime`
+// (avoids a circular dep), so integration tests in this crate cannot pull in
+// the real runtime's hook implementations.  Instead we install a minimal
+// counter-backed vtable that hands out monotonically increasing non-zero
+// "handle bits" — enough for `PyModule_New` / `PyModule_Create2` to return a
+// non-null wrapped `*mut PyObject` so the bridge logic itself can be exercised.
+//
+// The real runtime overrides this in production via
+// `molt_cpython_abi_register_hooks`.
+
+static FAKE_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0x1000);
+
+fn next_fake_handle() -> u64 {
+    // NaN-boxed pointers are 50-bit aligned to ≥2-byte boundaries; bumping
+    // by 8 keeps the sequence well clear of inline-int / inline-bool / None
+    // bit patterns and stays inside the heap-pointer space.
+    FAKE_HANDLE_COUNTER.fetch_add(8, Ordering::Relaxed)
+}
+
+unsafe extern "C" fn fake_alloc_str(_data: *const u8, _len: usize) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_alloc_list() -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_list_append(_list_bits: u64, _item_bits: u64) {}
+unsafe extern "C" fn fake_list_len(_bits: u64) -> usize {
+    0
+}
+unsafe extern "C" fn fake_list_item(_bits: u64, _i: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_alloc_tuple(_arity: usize) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_tuple_set(_bits: u64, _i: usize, _value: u64) {}
+unsafe extern "C" fn fake_tuple_len(_bits: u64) -> usize {
+    0
+}
+unsafe extern "C" fn fake_tuple_item(_bits: u64, _i: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_alloc_dict() -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_dict_set(_d: u64, _k: u64, _v: u64) {}
+unsafe extern "C" fn fake_dict_get(_d: u64, _k: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_dict_len(_bits: u64) -> usize {
+    0
+}
+unsafe extern "C" fn fake_str_data(_bits: u64, out_len: *mut usize) -> *const u8 {
+    if !out_len.is_null() {
+        unsafe {
+            *out_len = 0;
+        }
+    }
+    b"".as_ptr()
+}
+unsafe extern "C" fn fake_bytes_data(_bits: u64, out_len: *mut usize) -> *const u8 {
+    if !out_len.is_null() {
+        unsafe {
+            *out_len = 0;
+        }
+    }
+    std::ptr::null()
+}
+unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
+    MoltTypeTag::Other as u8
+}
+unsafe extern "C" fn fake_inc_ref(_bits: u64) {}
+unsafe extern "C" fn fake_dec_ref(_bits: u64) {}
+unsafe extern "C" fn fake_alloc_module(_data: *const u8, _len: usize) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_module_set_attr(
+    _m: u64,
+    _data: *const u8,
+    _len: usize,
+    _v: u64,
+) -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn fake_register_c_function(
+    _meth: u64,
+    _flags: std::os::raw::c_int,
+    _data: *const u8,
+    _len: usize,
+) -> u64 {
+    next_fake_handle()
+}
+
+const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
+    alloc_str: fake_alloc_str,
+    alloc_bytes: fake_alloc_bytes,
+    alloc_list: fake_alloc_list,
+    list_append: fake_list_append,
+    list_len: fake_list_len,
+    list_item: fake_list_item,
+    alloc_tuple: fake_alloc_tuple,
+    tuple_set: fake_tuple_set,
+    tuple_len: fake_tuple_len,
+    tuple_item: fake_tuple_item,
+    alloc_dict: fake_alloc_dict,
+    dict_set: fake_dict_set,
+    dict_get: fake_dict_get,
+    dict_len: fake_dict_len,
+    str_data: fake_str_data,
+    bytes_data: fake_bytes_data,
+    classify_heap: fake_classify_heap,
+    inc_ref: fake_inc_ref,
+    dec_ref: fake_dec_ref,
+    alloc_module: fake_alloc_module,
+    module_set_attr: fake_module_set_attr,
+    register_c_function: fake_register_c_function,
+};
 
 fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
+    // Idempotent — only the first test in the run actually installs hooks;
+    // subsequent calls observe the already-registered state and silently
+    // no-op rather than panicking on `OnceLock::set` failure.
+    let _ = unsafe { molt_cpython_abi::try_set_runtime_hooks(TEST_HOOKS) };
 }
 
 // ---------------------------------------------------------------------------
