@@ -55,7 +55,9 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .iter()
                 .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
-            if let Some(inferred) = infer_result_type(op.opcode, &operand_types) {
+            if let Some(inferred) =
+                infer_result_type_with_attrs(op.opcode, &operand_types, Some(&op.attrs))
+            {
                 for &result_id in &op.results {
                     env.insert(result_id, inferred.clone());
                 }
@@ -119,13 +121,45 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
 
     // Pre-compute op snapshots once (ops don't change during refinement,
     // only the type environment does). Avoids O(ops × rounds) Vec allocations.
-    let ops_by_block: HashMap<BlockId, Vec<(OpCode, Vec<ValueId>, Vec<ValueId>)>> = block_order
+    //
+    // We snapshot the `return_type` attr (when present) into a typed
+    // `TirType` rather than carrying the full `AttrDict` — the attr is
+    // immutable across rounds and cloning AttrDict per op per round
+    // would dominate the refinement cost.
+    let ops_by_block: HashMap<
+        BlockId,
+        Vec<(OpCode, Vec<ValueId>, Vec<ValueId>, Option<TirType>)>,
+    > = block_order
         .iter()
         .map(|&bid| {
             let ops = func.blocks[&bid]
                 .ops
                 .iter()
-                .map(|op| (op.opcode, op.operands.clone(), op.results.clone()))
+                .map(|op| {
+                    let return_type = if matches!(
+                        op.opcode,
+                        OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
+                    ) {
+                        // Priority: explicit `return_type` (Year-1 Typed-IR
+                        // direction) → legacy `_type_hint` round-tripped
+                        // from SimpleIR.
+                        op.attrs
+                            .get("return_type")
+                            .and_then(|v| match v {
+                                AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                                _ => None,
+                            })
+                            .or_else(|| {
+                                op.attrs.get("_type_hint").and_then(|v| match v {
+                                    AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                                    _ => None,
+                                })
+                            })
+                    } else {
+                        None
+                    };
+                    (op.opcode, op.operands.clone(), op.results.clone(), return_type)
+                })
                 .collect();
             (bid, ops)
         })
@@ -176,7 +210,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         for &block_id in &block_order {
             let ops_snapshot = &ops_by_block[&block_id];
 
-            for (opcode, operands, results) in ops_snapshot {
+            for (opcode, operands, results, return_type_hint) in ops_snapshot {
                 if results.is_empty() {
                     continue;
                 }
@@ -198,7 +232,12 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                     .collect();
 
-                let inferred = infer_result_type(*opcode, &operand_types);
+                // Frontend-provided return-type hint takes precedence for
+                // opaque call-like opcodes; falls back to operand-based
+                // inference for everything else.
+                let inferred = return_type_hint
+                    .clone()
+                    .or_else(|| infer_result_type(*opcode, &operand_types));
 
                 // For ops with a single result (the common case).
                 if results.len() == 1 {
@@ -614,7 +653,9 @@ fn propagate_guard_types(
                         .unwrap_or_else(|| env.get(id).cloned().unwrap_or(TirType::DynBox))
                 })
                 .collect();
-            if let Some(result_ty) = infer_result_type(op.opcode, &operand_types) {
+            if let Some(result_ty) =
+                infer_result_type_with_attrs(op.opcode, &operand_types, Some(&op.attrs))
+            {
                 for &result_id in &op.results {
                     proven_types.insert(result_id, result_ty.clone());
                     let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
@@ -712,7 +753,9 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .iter()
                 .map(|id| proven.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
-            if let Some(result_ty) = infer_result_type(op.opcode, &operand_types) {
+            if let Some(result_ty) =
+                infer_result_type_with_attrs(op.opcode, &operand_types, Some(&op.attrs))
+            {
                 for &result_id in &op.results {
                     proven.insert(result_id, result_ty.clone());
                 }
@@ -723,9 +766,70 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     proven
 }
 
+/// Parse a frontend `return_type` string ("int", "float", "bool", "str",
+/// "bytes", "None") into a [`TirType`] for opaque-call type seeding.
+/// Container/user types are not promoted to `TirType` here — they remain
+/// `DynBox` for now; lane inference cares mostly about the scalar lanes.
+fn parse_return_type_str(name: &str) -> Option<TirType> {
+    match name {
+        "int" => Some(TirType::I64),
+        "float" => Some(TirType::F64),
+        "bool" => Some(TirType::Bool),
+        "str" => Some(TirType::Str),
+        "bytes" => Some(TirType::Bytes),
+        "None" | "NoneType" => Some(TirType::None),
+        _ => None,
+    }
+}
+
 /// Infer the result type of an operation from its operand types.
 /// Returns `None` if the result type cannot be determined (stays as-is).
 fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirType> {
+    infer_result_type_with_attrs(opcode, operand_types, None)
+}
+
+/// Variant of [`infer_result_type`] that consults a `return_type`
+/// `AttrValue::Str` (set by the frontend for opaque opcodes like `Call`,
+/// `CallMethod`, `CallBuiltin` that the operand-only inference cannot
+/// resolve).  Without this seed, a method call returning `int` produces
+/// `TirType::DynBox`, lane inference falls back to NaN-boxed accumulator
+/// in tight loops, and `total += obj.method(i)` silently coerces to float.
+fn infer_result_type_with_attrs(
+    opcode: OpCode,
+    operand_types: &[TirType],
+    attrs: Option<&super::ops::AttrDict>,
+) -> Option<TirType> {
+    // Frontend-provided return-type hint takes precedence for opaque
+    // call-like opcodes — the frontend has the function/method signature
+    // and operand inference cannot recover it.
+    //
+    // Two attr keys are consulted in priority order:
+    //   1. `return_type`: an explicit, structurally-encoded return type
+    //      (the Year-1 Typed-IR direction; preferred when populated).
+    //   2. `_type_hint`: the legacy SimpleIR `type_hint` round-tripped
+    //      through SSA lift.  The frontend already populates this on
+    //      method-call results when the method's `return_hint` is
+    //      a builtin scalar (`int`/`float`/`bool`/`str`/`bytes`) or a
+    //      user class.  Without this fallback, `total += obj.method(i)`
+    //      where `method` returns `int` infers `DynBox` for the call,
+    //      lane analysis falls back to NaN-boxed accumulator, and the
+    //      sum is silently coerced to float.
+    if matches!(
+        opcode,
+        OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
+    ) && let Some(attrs) = attrs
+    {
+        if let Some(AttrValue::Str(name)) = attrs.get("return_type")
+            && let Some(ty) = parse_return_type_str(name)
+        {
+            return Some(ty);
+        }
+        if let Some(AttrValue::Str(hint)) = attrs.get("_type_hint")
+            && let Some(ty) = parse_return_type_str(hint)
+        {
+            return Some(ty);
+        }
+    }
     match opcode {
         // Constants — always produce a known type regardless of operands.
         OpCode::ConstInt => Some(TirType::I64),
