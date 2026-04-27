@@ -453,10 +453,13 @@ unsafe fn call_type_with_builder(
                 );
             }
             // Custom metaclass (subclass of type) with 3 args:
-            // Meta(name, bases, namespace). Chain type.__new__ → Meta.__init__
-            // so the metaclass __init__ can set class attributes.
+            // Meta(name, bases, namespace).  CPython's `type.__call__` dispatches
+            // to `Meta.__new__(Meta, name, bases, namespace, **kwds)` and then
+            // `Meta.__init__(cls, name, bases, namespace, **kwds)`.  Honor user
+            // overrides of either method.
             if pos_args.len() == 3 && issubclass_bits(class_bits, builtins.type_obj) {
-                // Call type.__new__(Meta, name, bases, namespace) to create the class.
+                // Build the kwargs dict once; reused for the fast path
+                // (`molt_type_new`) and to dec-ref at exit.
                 let kwargs_bits = if kw_names.is_empty() {
                     MoltObject::none().bits()
                 } else {
@@ -471,36 +474,119 @@ unsafe fn call_type_with_builder(
                     }
                     MoltObject::from_ptr(ptr).bits()
                 };
-                let new_class_bits = molt_type_new(
-                    class_bits,
-                    pos_args[0],
-                    pos_args[1],
-                    pos_args[2],
-                    kwargs_bits,
+
+                // Look up `__new__` on the metaclass.  If the user did not
+                // override it, the lookup resolves to the inherited
+                // `type.__new__` (intrinsic `molt_type_new`); use the fast
+                // path that also runs `__init_subclass__` and class slot
+                // setup inline.  Otherwise dispatch to the user's override.
+                let new_name_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.new_name,
+                    b"__new__",
                 );
-                if !kw_names.is_empty() {
-                    dec_ref_bits(_py, kwargs_bits);
-                }
+                let new_lookup =
+                    class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
+                let new_is_default = new_lookup
+                    .map(|bits| {
+                        let obj = obj_from_bits(bits);
+                        let Some(p) = obj.as_ptr() else { return true };
+                        if object_type_id(p) != TYPE_ID_FUNCTION {
+                            return false;
+                        }
+                        function_fn_ptr(p) == fn_addr!(molt_type_new) as u64
+                    })
+                    .unwrap_or(true);
+
+                // `class_attr_lookup_raw_mro` returns borrowed bits.  Match
+                // the OLD code path's lifetime contract: never dec-ref the
+                // looked-up function bits.
+                let new_class_bits = if new_is_default {
+                    molt_type_new(
+                        class_bits,
+                        pos_args[0],
+                        pos_args[1],
+                        pos_args[2],
+                        kwargs_bits,
+                    )
+                } else {
+                    let new_bits = new_lookup.expect("non-default __new__ must resolve");
+                    let new_builder = molt_callargs_new(
+                        (4 + kw_names.len()) as u64,
+                        kw_names.len() as u64,
+                    );
+                    if new_builder == 0 {
+                        if !kw_names.is_empty() {
+                            dec_ref_bits(_py, kwargs_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    let _ = molt_callargs_push_pos(new_builder, class_bits);
+                    let _ = molt_callargs_push_pos(new_builder, pos_args[0]);
+                    let _ = molt_callargs_push_pos(new_builder, pos_args[1]);
+                    let _ = molt_callargs_push_pos(new_builder, pos_args[2]);
+                    for (&k, &v) in kw_names.iter().zip(kw_values.iter()) {
+                        let _ = molt_callargs_push_kw(new_builder, k, v);
+                    }
+                    molt_call_bind(new_bits, new_builder)
+                };
+
                 if exception_pending(_py) {
+                    if !kw_names.is_empty() {
+                        dec_ref_bits(_py, kwargs_bits);
+                    }
                     return MoltObject::none().bits();
                 }
-                // Call Meta.__init__(new_class, name, bases, namespace).
-                let init_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.init_name,
-                    b"__init__",
-                );
-                if let Some(init_bits) =
-                    class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)
-                {
-                    let init_builder = molt_callargs_new(5, 0);
-                    if init_builder != 0 {
-                        let _ = molt_callargs_push_pos(init_builder, new_class_bits);
-                        let _ = molt_callargs_push_pos(init_builder, pos_args[0]);
-                        let _ = molt_callargs_push_pos(init_builder, pos_args[1]);
-                        let _ = molt_callargs_push_pos(init_builder, pos_args[2]);
-                        let _init_result = molt_call_bind(init_bits, init_builder);
+
+                // CPython: only invoke `__init__` when `__new__` returned an
+                // instance of `cls` (here, of the metaclass).  This matches
+                // `type.__call__` semantics.
+                let new_class_obj = obj_from_bits(new_class_bits);
+                let returned_instance = if let Some(p) = new_class_obj.as_ptr() {
+                    let inst_class_bits = object_class_bits(p);
+                    inst_class_bits != 0
+                        && issubclass_bits(inst_class_bits, class_bits)
+                } else {
+                    false
+                };
+
+                if returned_instance {
+                    // Call Meta.__init__(new_class, name, bases, namespace, **kwds).
+                    // `class_attr_lookup_raw_mro` returns borrowed bits — do
+                    // not dec-ref.
+                    let init_name_bits = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.init_name,
+                        b"__init__",
+                    );
+                    if let Some(init_bits) =
+                        class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)
+                    {
+                        let init_builder = molt_callargs_new(
+                            (4 + kw_names.len()) as u64,
+                            kw_names.len() as u64,
+                        );
+                        if init_builder != 0 {
+                            let _ = molt_callargs_push_pos(init_builder, new_class_bits);
+                            let _ = molt_callargs_push_pos(init_builder, pos_args[0]);
+                            let _ = molt_callargs_push_pos(init_builder, pos_args[1]);
+                            let _ = molt_callargs_push_pos(init_builder, pos_args[2]);
+                            for (&k, &v) in kw_names.iter().zip(kw_values.iter()) {
+                                let _ = molt_callargs_push_kw(init_builder, k, v);
+                            }
+                            let _init_result = molt_call_bind(init_bits, init_builder);
+                        }
+                        if exception_pending(_py) {
+                            if !kw_names.is_empty() {
+                                dec_ref_bits(_py, kwargs_bits);
+                            }
+                            return MoltObject::none().bits();
+                        }
                     }
+                }
+
+                if !kw_names.is_empty() {
+                    dec_ref_bits(_py, kwargs_bits);
                 }
                 return new_class_bits;
             }

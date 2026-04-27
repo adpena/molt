@@ -277,6 +277,51 @@ BUILTIN_LAYOUT_MIN = {
     "dict": 16,
 }
 
+# Method names that are implicitly classmethods (CPython treats them as
+# classmethod-like even without an explicit @classmethod decorator).  Inside
+# these methods, the first parameter (`cls`) is the class itself, not an
+# instance, so attribute assignments through that name must NOT be collected
+# as instance fields or as `__static_attributes__` entries.
+IMPLICIT_CLASSMETHOD_NAMES = frozenset({
+    "__init_subclass__",
+    "__class_getitem__",
+})
+
+# Method names that are implicitly staticmethods (CPython treats `__new__` as
+# a staticmethod implicitly).  The first parameter is the class but the method
+# is unbound; same exclusion rules apply for instance-field collection.
+IMPLICIT_STATICMETHOD_NAMES = frozenset({
+    "__new__",
+    "__init_subclass__",
+    "__class_getitem__",
+})
+
+
+def _function_is_instance_method(item: ast.AST) -> bool:
+    """Return True iff `item` is a regular instance method.
+
+    Excludes `@classmethod`, `@staticmethod`, and the implicit-classmethod /
+    implicit-staticmethod names (`__new__`, `__init_subclass__`,
+    `__class_getitem__`).  Only instance methods may legitimately collect
+    field/static-attribute names from `self.X = ...` assignments — using `cls`
+    inside a classmethod must not feed the instance-layout machinery.
+    """
+    if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    if item.name in IMPLICIT_CLASSMETHOD_NAMES:
+        return False
+    if item.name in IMPLICIT_STATICMETHOD_NAMES:
+        return False
+    for deco in item.decorator_list:
+        # `@classmethod`, `@staticmethod` directly applied at the bare-name level.
+        if isinstance(deco, ast.Name) and deco.id in {"classmethod", "staticmethod"}:
+            return False
+        # `@functools.classmethod` etc. — not standard, but matching attribute
+        # form keeps us conservative.
+        if isinstance(deco, ast.Attribute) and deco.attr in {"classmethod", "staticmethod"}:
+            return False
+    return True
+
 # Methods on built-in types that the native backend can fast-dispatch when the
 # callee's type_hint is "BoundMethod:<type>:<method>".  The value is the set of
 # method names supported per type.  Only methods that have a corresponding
@@ -7997,6 +8042,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         for item in class_node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # CPython's `__static_attributes__` only records attributes
+                # assigned via `self.X = ...` from regular instance methods.
+                # `@classmethod`, `@staticmethod`, and the implicit-classmethod
+                # methods (`__new__`, `__init_subclass__`, `__class_getitem__`)
+                # do NOT contribute — their first parameter binds to the class
+                # itself, not to an instance.
+                if not _function_is_instance_method(item):
+                    continue
                 # First parameter is self
                 self_name = "self"
                 if item.args.args:
@@ -13627,8 +13680,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         return
 
                 for method in methods_in_body:
-                    # Use the actual first parameter name (e.g. "self", "s",
-                    # "cls") so that ``def __init__(s, x): s.x = x`` correctly
+                    # Field discovery is for INSTANCE attributes — only
+                    # regular instance methods feed the field layout.
+                    # `@classmethod`, `@staticmethod`, and implicit-classmethod
+                    # methods (`__new__`, `__init_subclass__`,
+                    # `__class_getitem__`) take a class as their first
+                    # argument; assignments through it set class attributes
+                    # via the dict, never instance fields.
+                    if not _function_is_instance_method(method):
+                        continue
+                    # Use the actual first parameter name (e.g. "self", "s")
+                    # so that ``def __init__(s, x): s.x = x`` correctly
                     # discovers field ``x``.
                     self_param = "self"
                     if method.args.args:
