@@ -193,6 +193,35 @@ fn debug_file_rc() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_FILE_RC").as_deref() == Ok("1"))
 }
 
+/// Cached debug flag for tracing BigInt refcount inc/dec on the hot path.
+/// Reading the env var on every refcount op would call libc `getenv` (mutex-
+/// guarded), which dominates throughput on integer-heavy benchmarks even
+/// when the var is unset. Cache once at first use.
+#[inline]
+fn debug_bigint_rc() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_BIGINT_RC").is_ok())
+}
+
+#[inline]
+fn debug_object_rc() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_OBJECT_RC").is_ok())
+}
+
+#[inline]
+fn trace_decref_zero_function_all() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL")
+                .ok()
+                .as_deref(),
+            Some("1")
+        )
+    })
+}
+
 fn flush_file_handle_on_drop(_py: &PyToken<'_>, handle: &mut MoltFileHandle) {
     if handle.write_buf.is_empty() {
         return;
@@ -1473,7 +1502,7 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
             return;
         }
         // Debug: trace bigint refcount increments
-        if type_id == TYPE_ID_BIGINT && std::env::var("MOLT_DEBUG_BIGINT_RC").is_ok() {
+        if type_id == TYPE_ID_BIGINT && debug_bigint_rc() {
             let old = (*header_ptr).ref_count.load(AtomicOrdering::Relaxed);
             eprintln!(
                 "BIGINT_RC_INC ptr=0x{:x} count={} → {}",
@@ -1651,7 +1680,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             return; // Already freed — no-op
         }
         let prev = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
-        if type_id == TYPE_ID_OBJECT && std::env::var("MOLT_DEBUG_OBJECT_RC").is_ok() {
+        if type_id == TYPE_ID_OBJECT && debug_object_rc() {
             if prev == 1 {
                 eprintln!("[OBJECT DEC→0 FREE] ptr=0x{:x}", ptr as usize);
             } else {
@@ -1664,7 +1693,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             }
         }
         // Debug: trace bigint refcount decrements
-        if type_id == TYPE_ID_BIGINT && std::env::var("MOLT_DEBUG_BIGINT_RC").is_ok() {
+        if type_id == TYPE_ID_BIGINT && debug_bigint_rc() {
             eprintln!(
                 "BIGINT_RC_DEC ptr=0x{:x} count={} → {}",
                 ptr as usize,
@@ -1751,14 +1780,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     );
                 }
             }
-            if type_id == TYPE_ID_FUNCTION
-                && matches!(
-                    std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL")
-                        .ok()
-                        .as_deref(),
-                    Some("1")
-                )
-            {
+            if type_id == TYPE_ID_FUNCTION && trace_decref_zero_function_all() {
                 // Debug-only: when chasing refcount bugs, print which function is being freed.
                 let freed_fn_ptr = crate::function_fn_ptr(ptr);
                 let name_bits = crate::function_name_bits(py, ptr);
