@@ -579,14 +579,34 @@ def _run_wrapper_build(
     # Fast-path: if the cached binary exists and is newer than the source,
     # skip the build subprocess entirely. This brings `molt run` for
     # unchanged files from ~20s to <1s (matching `go run` behaviour).
+    #
+    # The cache is keyed on a SHA-256 hash of the source file's absolute
+    # path to avoid cross-file poisoning when multiple source files share
+    # the same basename (e.g. pytest tempdirs all create `test_input.py`).
+    # Without this, two unrelated sources both named `test_input.py`
+    # would race for the same cache slot — the second compilation would
+    # overwrite the first's cached binary, then a third with stale-on-
+    # disk mtime semantics could pick up the wrong binary.  Using the
+    # absolute path as cache key is sufficient because the path is
+    # unique per source location, and the mtime check (below) handles
+    # in-place modification of the same file.
     if file_path and "--no-cache" not in build_args and "--rebuild" not in build_args:
         _xdg = os.environ.get("XDG_CACHE_HOME")
         _cache_root = (
             Path(_xdg) / "molt" if _xdg else Path.home() / "Library" / "Caches" / "molt"
         )
         if _cache_root is not None:
+            import hashlib as _hashlib
+
+            try:
+                _abs_path = str(Path(file_path).resolve())
+            except OSError:
+                _abs_path = file_path
+            _path_digest = _hashlib.sha256(_abs_path.encode("utf-8")).hexdigest()[:16]
             stem = Path(file_path).stem
-            cached_bin = _cache_root / "home" / "bin" / f"{stem}_molt"
+            cached_bin = (
+                _cache_root / "home" / "bin" / f"{stem}_{_path_digest}_molt"
+            )
             if cached_bin.exists():
                 try:
                     src_mtime = Path(file_path).stat().st_mtime
