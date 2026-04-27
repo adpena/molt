@@ -365,7 +365,7 @@ mod tests {
             // Header is 24 bytes, payload 32 bytes — consecutive object
             // pointers must be at least header + payload apart so the
             // memory regions cannot overlap.
-            let distance = if p2 > p1 { p2 - p1 } else { p1 - p2 };
+            let distance = p1.abs_diff(p2);
             assert!(
                 distance >= size_of::<MoltHeader>() + 32,
                 "arena allocations must not overlap: distance={distance}"

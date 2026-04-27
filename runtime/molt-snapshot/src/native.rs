@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn truncated_data_detected() {
-        let err = NativeSnapshot::deserialize(&[b'M', b'S', b'N', b'P']).unwrap_err();
+        let err = NativeSnapshot::deserialize(b"MSNP").unwrap_err();
         assert!(matches!(err, NativeSnapshotError::DeserializeError(_)));
     }
 
