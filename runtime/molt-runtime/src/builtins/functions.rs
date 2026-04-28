@@ -67,6 +67,7 @@ use memchr::{memchr, memmem};
 #[cfg(target_arch = "wasm32")]
 const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 33;
 const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;
+const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = RUNTIME_CALLABLE_KEY_BASE + 0x100;
 
 #[derive(Copy, Clone)]
 struct NativeCallableTarget(*const ());
@@ -95,34 +96,63 @@ pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
 }
 
 fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    if symbol_name == "molt_type_call" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE);
+    runtime_core_callable_key_from_symbol_name(symbol_name)
+        .or_else(|| runtime_poll_callable_key_from_symbol_name(symbol_name))
+}
+
+fn runtime_core_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
+    match symbol_name {
+        "molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE),
+        "molt_type_new" => Some(RUNTIME_CALLABLE_KEY_BASE + 1),
+        "molt_type_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 2),
+        "molt_object_new_bound" => Some(RUNTIME_CALLABLE_KEY_BASE + 3),
+        "molt_object_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 4),
+        "molt_object_init_subclass" => Some(RUNTIME_CALLABLE_KEY_BASE + 5),
+        "molt_exception_new_bound" => Some(RUNTIME_CALLABLE_KEY_BASE + 6),
+        "molt_exception_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 7),
+        "molt_exceptiongroup_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 8),
+        _ => None,
     }
-    if symbol_name == "molt_type_new" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 1);
+}
+
+fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
+    match symbol_name {
+        "molt_async_sleep" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 1),
+        "molt_anext_default_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 2),
+        "molt_asyncgen_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 3),
+        "molt_promise_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 4),
+        "molt_io_wait" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 5),
+        "molt_thread_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 6),
+        "molt_process_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 7),
+        "molt_ws_wait" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 8),
+        "molt_asyncio_wait_for_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 9),
+        "molt_asyncio_wait_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 10),
+        "molt_asyncio_gather_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 11),
+        "molt_asyncio_socket_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 12),
+        "molt_asyncio_socket_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 13),
+        "molt_asyncio_stream_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 14),
+        "molt_asyncio_stream_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 15),
+        "molt_asyncio_stream_send_all_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 16),
+        "molt_asyncio_sock_recv_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 17),
+        "molt_asyncio_sock_connect_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 18),
+        "molt_asyncio_sock_accept_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 19),
+        "molt_asyncio_sock_recv_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 20),
+        "molt_asyncio_sock_sendall_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 21),
+        "molt_asyncio_sock_recvfrom_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 22),
+        "molt_asyncio_sock_recvfrom_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 23),
+        "molt_asyncio_sock_sendto_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 24),
+        "molt_asyncio_timer_handle_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 25),
+        "molt_asyncio_fd_watcher_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 26),
+        "molt_asyncio_server_accept_loop_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 27),
+        "molt_asyncio_ready_runner_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 28),
+        "molt_contextlib_asyncgen_enter_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 29),
+        "molt_contextlib_asyncgen_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 30),
+        "molt_contextlib_async_exitstack_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 31),
+        "molt_contextlib_async_exitstack_enter_context_poll" => {
+            Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 32)
+        }
+        _ => None,
     }
-    if symbol_name == "molt_type_init" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 2);
-    }
-    if symbol_name == "molt_object_new_bound" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 3);
-    }
-    if symbol_name == "molt_object_init" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 4);
-    }
-    if symbol_name == "molt_object_init_subclass" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 5);
-    }
-    if symbol_name == "molt_exception_new_bound" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 6);
-    }
-    if symbol_name == "molt_exception_init" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 7);
-    }
-    if symbol_name == "molt_exceptiongroup_init" {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 8);
-    }
-    None
 }
 
 pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
@@ -157,6 +187,52 @@ fn runtime_callable_key_from_raw(fn_ptr: u64) -> Option<u64> {
     if fn_ptr == (molt_exceptiongroup_init as *const () as usize as u64) {
         return Some(RUNTIME_CALLABLE_KEY_BASE + 8);
     }
+    runtime_poll_callable_key_from_raw(fn_ptr)
+}
+
+fn runtime_poll_callable_key_from_raw(fn_ptr: u64) -> Option<u64> {
+    macro_rules! poll_key {
+        ($func:path, $slot:expr) => {
+            if fn_ptr == ($func as *const () as usize as u64) {
+                return Some(RUNTIME_POLL_CALLABLE_KEY_BASE + $slot);
+            }
+        };
+    }
+    poll_key!(crate::molt_async_sleep, 1);
+    poll_key!(crate::molt_anext_default_poll, 2);
+    poll_key!(crate::molt_asyncgen_poll, 3);
+    poll_key!(crate::molt_promise_poll, 4);
+    poll_key!(crate::molt_io_wait, 5);
+    poll_key!(crate::molt_thread_poll, 6);
+    poll_key!(crate::molt_process_poll, 7);
+    poll_key!(crate::molt_ws_wait, 8);
+    poll_key!(crate::molt_asyncio_wait_for_poll, 9);
+    poll_key!(crate::molt_asyncio_wait_poll, 10);
+    poll_key!(crate::molt_asyncio_gather_poll, 11);
+    poll_key!(crate::molt_asyncio_socket_reader_read_poll, 12);
+    poll_key!(crate::molt_asyncio_socket_reader_readline_poll, 13);
+    poll_key!(crate::molt_asyncio_stream_reader_read_poll, 14);
+    poll_key!(crate::molt_asyncio_stream_reader_readline_poll, 15);
+    poll_key!(crate::molt_asyncio_stream_send_all_poll, 16);
+    poll_key!(crate::molt_asyncio_sock_recv_poll, 17);
+    poll_key!(crate::molt_asyncio_sock_connect_poll, 18);
+    poll_key!(crate::molt_asyncio_sock_accept_poll, 19);
+    poll_key!(crate::molt_asyncio_sock_recv_into_poll, 20);
+    poll_key!(crate::molt_asyncio_sock_sendall_poll, 21);
+    poll_key!(crate::molt_asyncio_sock_recvfrom_poll, 22);
+    poll_key!(crate::molt_asyncio_sock_recvfrom_into_poll, 23);
+    poll_key!(crate::molt_asyncio_sock_sendto_poll, 24);
+    poll_key!(crate::molt_asyncio_timer_handle_poll, 25);
+    poll_key!(crate::molt_asyncio_fd_watcher_poll, 26);
+    poll_key!(crate::molt_asyncio_server_accept_loop_poll, 27);
+    poll_key!(crate::molt_asyncio_ready_runner_poll, 28);
+    poll_key!(crate::molt_contextlib_asyncgen_enter_poll, 29);
+    poll_key!(crate::molt_contextlib_asyncgen_exit_poll, 30);
+    poll_key!(crate::molt_contextlib_async_exitstack_exit_poll, 31);
+    poll_key!(
+        crate::molt_contextlib_async_exitstack_enter_context_poll,
+        32
+    );
     None
 }
 
@@ -258,7 +334,8 @@ pub(crate) fn runtime_callable_represents_symbol(
     symbol_fn_ptr: u64,
 ) -> bool {
     let _ = tramp_ptr;
-    if fn_ptr == symbol_fn_ptr {
+    if canonicalize_runtime_callable_key(fn_ptr) == canonicalize_runtime_callable_key(symbol_fn_ptr)
+    {
         return true;
     }
     #[cfg(target_arch = "wasm32")]
@@ -312,7 +389,45 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 8 {
         return Some(molt_exceptiongroup_init as *const ());
     }
-    None
+    runtime_poll_callable_target_ptr(fn_ptr)
+}
+
+fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
+    match fn_ptr.checked_sub(RUNTIME_POLL_CALLABLE_KEY_BASE)? {
+        1 => Some(crate::molt_async_sleep as *const ()),
+        2 => Some(crate::molt_anext_default_poll as *const ()),
+        3 => Some(crate::molt_asyncgen_poll as *const ()),
+        4 => Some(crate::molt_promise_poll as *const ()),
+        5 => Some(crate::molt_io_wait as *const ()),
+        6 => Some(crate::molt_thread_poll as *const ()),
+        7 => Some(crate::molt_process_poll as *const ()),
+        8 => Some(crate::molt_ws_wait as *const ()),
+        9 => Some(crate::molt_asyncio_wait_for_poll as *const ()),
+        10 => Some(crate::molt_asyncio_wait_poll as *const ()),
+        11 => Some(crate::molt_asyncio_gather_poll as *const ()),
+        12 => Some(crate::molt_asyncio_socket_reader_read_poll as *const ()),
+        13 => Some(crate::molt_asyncio_socket_reader_readline_poll as *const ()),
+        14 => Some(crate::molt_asyncio_stream_reader_read_poll as *const ()),
+        15 => Some(crate::molt_asyncio_stream_reader_readline_poll as *const ()),
+        16 => Some(crate::molt_asyncio_stream_send_all_poll as *const ()),
+        17 => Some(crate::molt_asyncio_sock_recv_poll as *const ()),
+        18 => Some(crate::molt_asyncio_sock_connect_poll as *const ()),
+        19 => Some(crate::molt_asyncio_sock_accept_poll as *const ()),
+        20 => Some(crate::molt_asyncio_sock_recv_into_poll as *const ()),
+        21 => Some(crate::molt_asyncio_sock_sendall_poll as *const ()),
+        22 => Some(crate::molt_asyncio_sock_recvfrom_poll as *const ()),
+        23 => Some(crate::molt_asyncio_sock_recvfrom_into_poll as *const ()),
+        24 => Some(crate::molt_asyncio_sock_sendto_poll as *const ()),
+        25 => Some(crate::molt_asyncio_timer_handle_poll as *const ()),
+        26 => Some(crate::molt_asyncio_fd_watcher_poll as *const ()),
+        27 => Some(crate::molt_asyncio_server_accept_loop_poll as *const ()),
+        28 => Some(crate::molt_asyncio_ready_runner_poll as *const ()),
+        29 => Some(crate::molt_contextlib_asyncgen_enter_poll as *const ()),
+        30 => Some(crate::molt_contextlib_asyncgen_exit_poll as *const ()),
+        31 => Some(crate::molt_contextlib_async_exitstack_exit_poll as *const ()),
+        32 => Some(crate::molt_contextlib_async_exitstack_enter_context_poll as *const ()),
+        _ => None,
+    }
 }
 
 #[inline]
