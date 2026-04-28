@@ -770,15 +770,29 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
 /// "bytes", "None") into a [`TirType`] for opaque-call type seeding.
 /// Container/user types are not promoted to `TirType` here — they remain
 /// `DynBox` for now; lane inference cares mostly about the scalar lanes.
+/// Parse a return-type hint string into a `TirType`, returning
+/// `None` when the hint carries no useful refinement (so callers
+/// fall through to operand-based inference instead of forcing the
+/// result to `DynBox`).
+///
+/// Routes through `TirType::from_type_hint` so the *single* helper
+/// in `tir/types.rs` defines the contract for all hint-to-type
+/// mappings (builtin scalars, containers, user classes, BigInt).
+/// The post-process here translates `from_type_hint`'s `DynBox`
+/// fallback into `None` to preserve the "fall through to inference"
+/// semantics this function had before the centralization.
+///
+/// Practical effect of routing through `from_type_hint`:
+///   - Methods returning `list` / `dict` / `set` / `tuple` /
+///     `BigInt` now refine to the corresponding container/special
+///     type (was previously DynBox, leaving lane inference blind).
+///   - Methods returning a user class (e.g. `factory() -> Point`)
+///     refine the call result to `UserClass("Point")`, propagating
+///     the typed-IR foundation through the type-refine fixpoint.
 fn parse_return_type_str(name: &str) -> Option<TirType> {
-    match name {
-        "int" => Some(TirType::I64),
-        "float" => Some(TirType::F64),
-        "bool" => Some(TirType::Bool),
-        "str" => Some(TirType::Str),
-        "bytes" => Some(TirType::Bytes),
-        "None" | "NoneType" => Some(TirType::None),
-        _ => None,
+    match TirType::from_type_hint(name) {
+        TirType::DynBox => None,
+        ty => Some(ty),
     }
 }
 
@@ -1684,5 +1698,75 @@ mod tests {
         let mut attrs = AttrDict::new();
         attrs.insert("ty".into(), AttrValue::Str("INT".into()));
         assert_eq!(parse_guard_type(&attrs), Some(TirType::I64));
+    }
+
+    // ---- Test: parse_return_type_str routes through TirType::from_type_hint ----
+    /// Pin the contract that `parse_return_type_str` uses the
+    /// centralized `TirType::from_type_hint` helper, so any future
+    /// hint added there (e.g. richer `Func:<sig>` parsing) is
+    /// automatically picked up by the type-refine seeding path.
+    /// Builtin scalars + None / NoneType keep their existing
+    /// behavior; containers + BigInt + user classes are newly
+    /// refined (previously returned None and stayed DynBox).
+    #[test]
+    fn parse_return_type_str_uses_centralized_helper() {
+        // Existing builtin-scalar contracts (preserved).
+        assert_eq!(parse_return_type_str("int"), Some(TirType::I64));
+        assert_eq!(parse_return_type_str("float"), Some(TirType::F64));
+        assert_eq!(parse_return_type_str("bool"), Some(TirType::Bool));
+        assert_eq!(parse_return_type_str("str"), Some(TirType::Str));
+        assert_eq!(parse_return_type_str("bytes"), Some(TirType::Bytes));
+        assert_eq!(parse_return_type_str("None"), Some(TirType::None));
+        assert_eq!(parse_return_type_str("NoneType"), Some(TirType::None));
+
+        // Newly refined container/special types.
+        assert_eq!(
+            parse_return_type_str("list"),
+            Some(TirType::List(Box::new(TirType::DynBox))),
+            "method returning `list` must seed type-refine with \
+             List(DynBox), not DynBox — otherwise lane inference \
+             never sees the container type"
+        );
+        assert_eq!(
+            parse_return_type_str("dict"),
+            Some(TirType::Dict(
+                Box::new(TirType::DynBox),
+                Box::new(TirType::DynBox)
+            ))
+        );
+        assert_eq!(
+            parse_return_type_str("set"),
+            Some(TirType::Set(Box::new(TirType::DynBox)))
+        );
+        assert_eq!(
+            parse_return_type_str("tuple"),
+            Some(TirType::Tuple(Vec::new()))
+        );
+        assert_eq!(parse_return_type_str("BigInt"), Some(TirType::BigInt));
+
+        // User-class refinement: the live use of TirType::UserClass
+        // through the type-refine seeding path.
+        assert_eq!(
+            parse_return_type_str("Point"),
+            Some(TirType::UserClass("Point".into())),
+            "method returning a user class must propagate UserClass \
+             through type-refine — enables direct dispatch / \
+             escape analysis precision on the result of factory \
+             methods"
+        );
+        assert_eq!(
+            parse_return_type_str("MyDataClass"),
+            Some(TirType::UserClass("MyDataClass".into()))
+        );
+
+        // Compound / unknown hints fall through to None so the
+        // caller's operand-based inference takes over (rather than
+        // forcing DynBox).
+        assert_eq!(parse_return_type_str("Any"), None);
+        assert_eq!(parse_return_type_str("Unknown"), None);
+        assert_eq!(parse_return_type_str(""), None);
+        assert_eq!(parse_return_type_str("Func:foo"), None);
+        assert_eq!(parse_return_type_str("BoundMethod:list:append"), None);
+        assert_eq!(parse_return_type_str("list[int]"), None);
     }
 }
