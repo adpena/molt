@@ -681,6 +681,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::DelIndex
         | OpCode::Alloc
         | OpCode::StackAlloc
+        | OpCode::ObjectNewBound
+        | OpCode::ObjectNewBoundStack
         | OpCode::Free
         | OpCode::GetIter
         | OpCode::IterNext

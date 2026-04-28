@@ -76,6 +76,12 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         | OpCode::Free
         // Allocation may trigger a finalizer / GC hook.
         | OpCode::Alloc
+        // Class-instance allocation: same finalizer-effect concern as
+        // Alloc.  ObjectNewBoundStack is intentionally NOT side-
+        // effecting — escape-analysis only converts to it when the
+        // result provably does not escape, and the lowered Cranelift
+        // StackSlot has no finalizer to run.
+        | OpCode::ObjectNewBound
         // Import has module-level side effects.
         | OpCode::Import
         | OpCode::ImportFrom
