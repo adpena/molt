@@ -8,6 +8,7 @@ pub mod canonicalize;
 pub mod check_exception_elim;
 pub mod copy_prop;
 pub mod dce;
+pub mod dead_store_elim;
 pub mod deforestation;
 pub mod gvn;
 pub mod licm;
@@ -189,6 +190,14 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     run_pass!("escape_analysis", escape_analysis::run(func));
     run_pass!("refcount_elim", refcount_elim::run(func));
     run_pass!("reuse_analysis", reuse_analysis::run(func));
+    // Dead-store elimination: drop redundant `store`/`store_init`
+    // ops whose written slot is overwritten before any observer
+    // could read it (within the same block).  Targets the frontend's
+    // class-instantiation pattern where `__init__` zeros each field
+    // immediately before user code overwrites them with non-default
+    // values - saves up to 2 stores per typed-class instance per
+    // iteration on tight allocation loops.
+    run_pass!("dead_store_elim", dead_store_elim::run(func));
 
     // ── Value optimization ─────────────────────────────────────
     run_pass!("type_guard_hoist", type_guard_hoist::run(func));
