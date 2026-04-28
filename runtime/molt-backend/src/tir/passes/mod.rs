@@ -5,6 +5,7 @@ pub mod bce;
 pub mod block_versioning;
 pub mod branchless_count;
 pub mod canonicalize;
+pub mod check_exception_elim;
 pub mod copy_prop;
 pub mod dce;
 pub mod deforestation;
@@ -38,7 +39,7 @@ pub struct PassStats {
 
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// 24 passes organized in 6 phases (all unconditional unless skipped via
+/// 25 passes organized in 6 phases (all unconditional unless skipped via
 /// `MOLT_TIR_SKIP=name1,name2,…`):
 ///
 /// **Lowering** (5): range_devirt → iter_devirt → tuple_scalarize →
@@ -49,7 +50,7 @@ pub struct PassStats {
 /// **Memory** (3): escape_analysis → refcount_elim → reuse_analysis
 /// **Value** (8): type_guard_hoist → sccp → strength_reduction → fast_math →
 ///   branchless_count → bce → vectorize → polyhedral
-/// **Cleanup** (2): copy_prop → dce
+/// **Cleanup** (3): check_exception_elim → copy_prop → dce
 ///
 /// Dual canonicalization follows LLVM instcombine: unboxing reveals type
 /// information that creates new normalization opportunities. GVN runs
@@ -206,6 +207,14 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     run_pass!("polyhedral", polyhedral::run(func));
 
     // ── Cleanup ────────────────────────────────────────────────
+    // CheckException elim: drop redundant `check_exception` ops that
+    // follow only non-raising ops since the previous check.  Runs
+    // before copy_prop/DCE so they see a leaner CFG.  Targets the
+    // frontend's per-statement check_exception emission, which is
+    // structurally correct but produces a check after every line
+    // even when the intervening op (load_var, const, pure
+    // arithmetic) provably cannot raise.
+    run_pass!("check_exception_elim", check_exception_elim::run(func));
     // Copy propagation resolves chains introduced by prior passes.
     // DCE removes everything left dead.
     run_pass!("copy_prop", copy_prop::run(func));
