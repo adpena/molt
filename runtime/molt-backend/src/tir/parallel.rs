@@ -137,6 +137,17 @@ mod tests {
         }
     }
 
+    fn expected_pipeline_pass_counts() -> (usize, HashMap<&'static str, usize>) {
+        let mut func = make_add_func("expected_pipeline_shape");
+        super::super::type_refine::refine_types(&mut func);
+        let stats = super::super::passes::run_pipeline(&mut func);
+        let mut counts = HashMap::new();
+        for stat in &stats {
+            *counts.entry(stat.name).or_insert(0) += 1;
+        }
+        (stats.len(), counts)
+    }
+
     // -----------------------------------------------------------------------
     // Test 1: Module with 3 functions — all optimized in parallel, no panic.
     // -----------------------------------------------------------------------
@@ -155,7 +166,26 @@ mod tests {
 
         // Zero-delta pipelines now restore the original snapshot but still
         // return per-pass stats so the caller keeps the strict TIR roundtrip.
-        assert_eq!(stats.len(), 3 * 25, "expected 25 pass stats per function");
+        // Derive the pipeline shape from the canonical sequential pipeline so
+        // adding a real pass does not stale a parallelism test.
+        let function_count = module.functions.len();
+        let (passes_per_function, expected_counts) = expected_pipeline_pass_counts();
+        assert_eq!(
+            stats.len(),
+            function_count * passes_per_function,
+            "parallel pipeline should return one stat per pass per function"
+        );
+        let mut actual_counts = HashMap::new();
+        for stat in &stats {
+            *actual_counts.entry(stat.name).or_insert(0) += 1;
+        }
+        for (name, expected_per_function) in expected_counts {
+            assert_eq!(
+                actual_counts.get(name).copied().unwrap_or(0),
+                expected_per_function * function_count,
+                "pass {name} should appear once per function"
+            );
+        }
 
         // Verify all functions still have their entry blocks intact.
         for func in &module.functions {
