@@ -23,9 +23,20 @@ all-features = true
 db-path = "~/.cargo/advisory-db"
 # Update the advisory database on every check
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Treat unmaintained crates as warnings, not errors — many ecosystem crates
-# go through quiet maintenance periods without being abandoned.
-ignore = []
+# Keep unmaintained advisories in scope so newly introduced unmaintained crates
+# fail the gate unless they are explicitly reviewed in the ignore list below.
+unmaintained = "all"
+ignore = [
+    { id = "RUSTSEC-2021-0127", reason = "Reviewed: serde_cbor is used for existing CBOR compatibility; replacement is tracked as dependency modernization, not a silent security bypass." },
+    { id = "RUSTSEC-2024-0436", reason = "Reviewed: paste is transitive through Metal/MLX GPU crates; no patched upstream release is available." },
+    { id = "RUSTSEC-2025-0075", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
+    { id = "RUSTSEC-2025-0080", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
+    { id = "RUSTSEC-2025-0081", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
+    { id = "RUSTSEC-2025-0090", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
+    { id = "RUSTSEC-2025-0098", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
+    { id = "RUSTSEC-2025-0100", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
+    { id = "RUSTSEC-2025-0134", reason = "Reviewed: rustls-pemfile is retained until direct rustls-pki-types parsing is migrated." },
+]
 
 # --------------------------------------------------------------------------- #
 # Licenses — Molt is Apache-2.0; only allow permissive dependency licenses
@@ -33,6 +44,8 @@ ignore = []
 [licenses]
 # Confidence threshold for license detection
 confidence-threshold = 0.8
+unused-allowed-license = "allow"
+unused-license-exception = "allow"
 
 # Permissive licenses allowed for all dependencies
 allow = [
@@ -46,7 +59,8 @@ allow = [
     "Zlib",
     "Unicode-DFS-2016",
     "Unicode-3.0",
-    "OpenSSL",
+    "bzip2-1.0.6",
+    "CDLA-Permissive-2.0",
     "0BSD",
     "CC0-1.0",
     "Unlicense",
@@ -64,27 +78,40 @@ allow = [
 # cargo-deny cannot always detect cleanly from Cargo.toml alone.
 # ring: ISC-style license (OpenSSL + ISC + MIT components)
 # encoding_rs: (Apache-2.0 OR MIT) AND BSD-3-Clause
-# These are all permissive and compatible with Apache-2.0.
+# bitmaps/im-rc/sized-chunks: MPL-2.0+ transitive dependencies of
+# wasmtime's WASI P1 host path. The exception is crate-scoped so the
+# workspace-wide default remains permissive-only.
+# These are reviewed and compatible with Apache-2.0 for Molt distribution.
 exceptions = [
     { allow = ["ISC", "MIT", "OpenSSL"], name = "ring" },
     { allow = ["Apache-2.0", "MIT", "BSD-3-Clause"], name = "encoding_rs" },
+    { allow = ["MPL-2.0"], name = "bitmaps" },
+    { allow = ["MPL-2.0"], name = "im-rc" },
+    { allow = ["MPL-2.0"], name = "sized-chunks" },
+]
+
+clarify = [
+    { name = "mach-sys", expression = "Apache-2.0", license-files = [{ path = "LICENSE-APACHE-2.0", hash = 0xb5518783 }] },
 ]
 
 # --------------------------------------------------------------------------- #
 # Bans — control dependency duplication and deny problematic crates
 # --------------------------------------------------------------------------- #
 [bans]
-# Warn on multiple versions of the same crate (don't hard-block yet; the Rust
-# ecosystem frequently has transient version splits during major bumps).
-multiple-versions = "warn"
+# Do not use cargo-deny as the duplicate-version gate; the current GPU/WASM
+# stack intentionally spans multiple major ecosystem lines. Vulnerabilities,
+# source policy, license policy, and wildcard registry dependencies remain hard
+# failures.
+multiple-versions = "allow"
 
-# Deny wildcard dependencies (version = "*") — these are unpinned and
-# dangerous for reproducible builds.
+# Deny wildcard registry dependencies (version = "*") — these are unpinned and
+# dangerous for reproducible builds. Workspace-local path dependencies are
+# pinned by the checked-in repository state and Cargo.lock.
 wildcards = "deny"
 
 # Allow specific duplicates that are known ecosystem version-split situations.
 # Each entry silences the multiple-versions warning for that crate.
-allow-wildcard-paths = false
+allow-wildcard-paths = true
 skip = []
 skip-tree = []
 

@@ -1425,6 +1425,22 @@ fn map_io_error(err: &std::io::Error) -> i32 {
     libc::EIO
 }
 
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+type MsgControlLen = usize;
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+type MsgControlLen = libc::socklen_t;
+
+#[cfg(unix)]
+fn msg_controllen_from_usize(len: usize) -> Option<MsgControlLen> {
+    MsgControlLen::try_from(len).ok()
+}
+
+#[cfg(unix)]
+fn msg_controllen_to_guest_len(len: MsgControlLen) -> Option<u32> {
+    u32::try_from(len).ok()
+}
+
 fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;
@@ -2621,7 +2637,10 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     }
                     if !ancillary.is_empty() {
                         msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
-                        msg.msg_controllen = ancillary.len() as libc::socklen_t;
+                        msg.msg_controllen = match msg_controllen_from_usize(ancillary.len()) {
+                            Some(len) => len,
+                            None => return -libc::EOVERFLOW,
+                        };
                     }
                     unsafe { libc::sendmsg(fd, &msg as *const libc::msghdr, flags) }
                 }
@@ -2755,7 +2774,10 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     msg.msg_iovlen = 1;
                     if !ancillary.is_empty() {
                         msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
-                        msg.msg_controllen = ancillary.len() as libc::socklen_t;
+                        msg.msg_controllen = match msg_controllen_from_usize(ancillary.len()) {
+                            Some(len) => len,
+                            None => return -libc::EOVERFLOW,
+                        };
                     }
                     let rc = unsafe { libc::recvmsg(fd, &mut msg as *mut libc::msghdr, flags) };
                     name_len = msg.msg_namelen;
@@ -2768,8 +2790,11 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                         );
                     }
                     if out_anc_len_ptr != 0 {
-                        let _ =
-                            write_u32(&mut caller, &memory, out_anc_len_ptr, msg.msg_controllen);
+                        let Some(guest_anc_len) = msg_controllen_to_guest_len(msg.msg_controllen)
+                        else {
+                            return -libc::EOVERFLOW;
+                        };
+                        let _ = write_u32(&mut caller, &memory, out_anc_len_ptr, guest_anc_len);
                     }
                     rc
                 }

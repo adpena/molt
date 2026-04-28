@@ -138,59 +138,63 @@ unsafe fn simd_find_first_byte_diff_wasm(a: *const u8, b: *const u8, len: usize)
 #[cfg(target_arch = "x86_64")]
 #[inline]
 unsafe fn simd_find_first_byte_diff_sse2(a: *const u8, b: *const u8, len: usize) -> usize {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    while i + 16 <= len {
-        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
-        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
-        let cmp = _mm_cmpeq_epi8(va, vb);
-        let mask = _mm_movemask_epi8(cmp) as u32;
-        if mask != 0xFFFF {
-            // Find first differing byte via trailing zeros of negated mask
-            return i + (!mask).trailing_zeros() as usize;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        while i + 16 <= len {
+            let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+            let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+            let cmp = _mm_cmpeq_epi8(va, vb);
+            let mask = _mm_movemask_epi8(cmp) as u32;
+            if mask != 0xFFFF {
+                // Find first differing byte via trailing zeros of negated mask
+                return i + (!mask).trailing_zeros() as usize;
+            }
+            i += 16;
         }
-        i += 16;
-    }
-    for j in i..len {
-        if *a.add(j) != *b.add(j) {
-            return j;
+        for j in i..len {
+            if *a.add(j) != *b.add(j) {
+                return j;
+            }
         }
+        len
     }
-    len
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
 unsafe fn simd_find_first_byte_diff_avx2(a: *const u8, b: *const u8, len: usize) -> usize {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    while i + 32 <= len {
-        let va = _mm256_loadu_si256(a.add(i) as *const __m256i);
-        let vb = _mm256_loadu_si256(b.add(i) as *const __m256i);
-        let cmp = _mm256_cmpeq_epi8(va, vb);
-        let mask = _mm256_movemask_epi8(cmp) as u32;
-        if mask != 0xFFFFFFFF {
-            return i + (!mask).trailing_zeros() as usize;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        while i + 32 <= len {
+            let va = _mm256_loadu_si256(a.add(i) as *const __m256i);
+            let vb = _mm256_loadu_si256(b.add(i) as *const __m256i);
+            let cmp = _mm256_cmpeq_epi8(va, vb);
+            let mask = _mm256_movemask_epi8(cmp) as u32;
+            if mask != 0xFFFFFFFF {
+                return i + (!mask).trailing_zeros() as usize;
+            }
+            i += 32;
         }
-        i += 32;
-    }
-    // SSE2 tail
-    if i + 16 <= len {
-        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
-        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
-        let cmp = _mm_cmpeq_epi8(va, vb);
-        let mask = _mm_movemask_epi8(cmp) as u32;
-        if mask != 0xFFFF {
-            return i + (!mask).trailing_zeros() as usize;
+        // SSE2 tail
+        if i + 16 <= len {
+            let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+            let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+            let cmp = _mm_cmpeq_epi8(va, vb);
+            let mask = _mm_movemask_epi8(cmp) as u32;
+            if mask != 0xFFFF {
+                return i + (!mask).trailing_zeros() as usize;
+            }
+            i += 16;
         }
-        i += 16;
-    }
-    for j in i..len {
-        if *a.add(j) != *b.add(j) {
-            return j;
+        for j in i..len {
+            if *a.add(j) != *b.add(j) {
+                return j;
+            }
         }
+        len
     }
-    len
 }
 
 #[cfg(target_arch = "aarch64")]

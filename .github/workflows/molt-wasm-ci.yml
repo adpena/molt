@@ -62,13 +62,18 @@ jobs:
         with:
           targets: wasm32-wasip1
 
-      - name: Install mold linker
+      - name: Install native and wasm linkers
         run: |
           if ! command -v mold >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y mold
           fi
+          if ! command -v wasm-ld >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y lld
+          fi
           mold --version
+          wasm-ld --version
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2

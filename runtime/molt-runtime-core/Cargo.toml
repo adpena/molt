@@ -1,7 +1,9 @@
 [package]
 name = "molt-runtime-core"
 version = "0.1.0"
+publish = false
 edition = "2021"
+license = "Apache-2.0"
 
 [dependencies]
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }

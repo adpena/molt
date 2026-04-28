@@ -746,41 +746,45 @@ fn kahan_sum_sq_diff(values: &[f64], mean: f64) -> f64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn sum_f64_simd_x86_avx(values: &[f64]) -> f64 {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut acc = _mm256_setzero_pd();
-    while i + 4 <= values.len() {
-        let v = _mm256_loadu_pd(values.as_ptr().add(i));
-        acc = _mm256_add_pd(acc, v);
-        i += 4;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut acc = _mm256_setzero_pd();
+        while i + 4 <= values.len() {
+            let v = _mm256_loadu_pd(values.as_ptr().add(i));
+            acc = _mm256_add_pd(acc, v);
+            i += 4;
+        }
+        let mut lanes = [0.0_f64; 4];
+        _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
+        let mut sum = lanes.iter().sum::<f64>();
+        for &v in &values[i..] {
+            sum += v;
+        }
+        sum
     }
-    let mut lanes = [0.0_f64; 4];
-    _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
-    let mut sum = lanes.iter().sum::<f64>();
-    for &v in &values[i..] {
-        sum += v;
-    }
-    sum
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn sum_f64_simd_x86_sse2(values: &[f64]) -> f64 {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut acc = _mm_setzero_pd();
-    while i + 2 <= values.len() {
-        let v = _mm_loadu_pd(values.as_ptr().add(i));
-        acc = _mm_add_pd(acc, v);
-        i += 2;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut acc = _mm_setzero_pd();
+        while i + 2 <= values.len() {
+            let v = _mm_loadu_pd(values.as_ptr().add(i));
+            acc = _mm_add_pd(acc, v);
+            i += 2;
+        }
+        let mut lanes = [0.0_f64; 2];
+        _mm_storeu_pd(lanes.as_mut_ptr(), acc);
+        let mut sum = lanes[0] + lanes[1];
+        for &v in &values[i..] {
+            sum += v;
+        }
+        sum
     }
-    let mut lanes = [0.0_f64; 2];
-    _mm_storeu_pd(lanes.as_mut_ptr(), acc);
-    let mut sum = lanes[0] + lanes[1];
-    for &v in &values[i..] {
-        sum += v;
-    }
-    sum
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -852,47 +856,51 @@ fn sum_f64_simd(values: &[f64]) -> f64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn sum_sq_diff_f64_simd_x86_avx(values: &[f64], mean: f64) -> f64 {
-    use std::arch::x86_64::*;
-    let mean_v = _mm256_set1_pd(mean);
-    let mut i = 0usize;
-    let mut acc = _mm256_setzero_pd();
-    while i + 4 <= values.len() {
-        let v = _mm256_loadu_pd(values.as_ptr().add(i));
-        let d = _mm256_sub_pd(v, mean_v);
-        acc = _mm256_add_pd(acc, _mm256_mul_pd(d, d));
-        i += 4;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mean_v = _mm256_set1_pd(mean);
+        let mut i = 0usize;
+        let mut acc = _mm256_setzero_pd();
+        while i + 4 <= values.len() {
+            let v = _mm256_loadu_pd(values.as_ptr().add(i));
+            let d = _mm256_sub_pd(v, mean_v);
+            acc = _mm256_add_pd(acc, _mm256_mul_pd(d, d));
+            i += 4;
+        }
+        let mut lanes = [0.0_f64; 4];
+        _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
+        let mut sum = lanes.iter().sum::<f64>();
+        for &v in &values[i..] {
+            let d = v - mean;
+            sum += d * d;
+        }
+        sum
     }
-    let mut lanes = [0.0_f64; 4];
-    _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
-    let mut sum = lanes.iter().sum::<f64>();
-    for &v in &values[i..] {
-        let d = v - mean;
-        sum += d * d;
-    }
-    sum
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn sum_sq_diff_f64_simd_x86_sse2(values: &[f64], mean: f64) -> f64 {
-    use std::arch::x86_64::*;
-    let mean_v = _mm_set1_pd(mean);
-    let mut i = 0usize;
-    let mut acc = _mm_setzero_pd();
-    while i + 2 <= values.len() {
-        let v = _mm_loadu_pd(values.as_ptr().add(i));
-        let d = _mm_sub_pd(v, mean_v);
-        acc = _mm_add_pd(acc, _mm_mul_pd(d, d));
-        i += 2;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mean_v = _mm_set1_pd(mean);
+        let mut i = 0usize;
+        let mut acc = _mm_setzero_pd();
+        while i + 2 <= values.len() {
+            let v = _mm_loadu_pd(values.as_ptr().add(i));
+            let d = _mm_sub_pd(v, mean_v);
+            acc = _mm_add_pd(acc, _mm_mul_pd(d, d));
+            i += 2;
+        }
+        let mut lanes = [0.0_f64; 2];
+        _mm_storeu_pd(lanes.as_mut_ptr(), acc);
+        let mut sum = lanes[0] + lanes[1];
+        for &v in &values[i..] {
+            let d = v - mean;
+            sum += d * d;
+        }
+        sum
     }
-    let mut lanes = [0.0_f64; 2];
-    _mm_storeu_pd(lanes.as_mut_ptr(), acc);
-    let mut sum = lanes[0] + lanes[1];
-    for &v in &values[i..] {
-        let d = v - mean;
-        sum += d * d;
-    }
-    sum
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2417,31 +2425,27 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
             #[cfg(target_arch = "x86_64")]
             {
                 if n >= 4 && std::arch::is_x86_feature_detected!("avx2") {
-                    unsafe {
-                        use std::arch::x86_64::*;
-                        let mut vec_sum = _mm256_setzero_pd();
-                        while i + 4 <= n {
-                            let v = _mm256_loadu_pd(vals.as_ptr().add(i));
-                            vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(v, v));
-                            i += 4;
-                        }
-                        let mut lanes = [0.0f64; 4];
-                        _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
-                        sum_sq = lanes[0] + lanes[1] + lanes[2] + lanes[3];
+                    use std::arch::x86_64::*;
+                    let mut vec_sum = _mm256_setzero_pd();
+                    while i + 4 <= n {
+                        let v = _mm256_loadu_pd(vals.as_ptr().add(i));
+                        vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(v, v));
+                        i += 4;
                     }
+                    let mut lanes = [0.0f64; 4];
+                    _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1] + lanes[2] + lanes[3];
                 } else if n >= 2 && std::arch::is_x86_feature_detected!("sse2") {
-                    unsafe {
-                        use std::arch::x86_64::*;
-                        let mut vec_sum = _mm_setzero_pd();
-                        while i + 2 <= n {
-                            let v = _mm_loadu_pd(vals.as_ptr().add(i));
-                            vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(v, v));
-                            i += 2;
-                        }
-                        let mut lanes = [0.0f64; 2];
-                        _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
-                        sum_sq = lanes[0] + lanes[1];
+                    use std::arch::x86_64::*;
+                    let mut vec_sum = _mm_setzero_pd();
+                    while i + 2 <= n {
+                        let v = _mm_loadu_pd(vals.as_ptr().add(i));
+                        vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(v, v));
+                        i += 2;
                     }
+                    let mut lanes = [0.0f64; 2];
+                    _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1];
                 }
             }
             #[cfg(target_arch = "wasm32")]

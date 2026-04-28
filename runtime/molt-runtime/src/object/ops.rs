@@ -701,44 +701,6 @@ pub extern "C" fn molt_profile_dump() {
 // SIMD-accelerated float sum: SSE2 (2×f64), AVX2 (4×f64), NEON (2×f64)
 // ---------------------------------------------------------------------------
 
-#[cfg(target_arch = "x86_64")]
-unsafe fn sum_f64_simd_x86_64(vals: &[f64], acc: f64) -> f64 {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_sum = _mm_set1_pd(0.0);
-    while i + 2 <= vals.len() {
-        let vec = _mm_loadu_pd(vals.as_ptr().add(i));
-        vec_sum = _mm_add_pd(vec_sum, vec);
-        i += 2;
-    }
-    let mut lanes = [0.0f64; 2];
-    _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
-    let mut sum = acc + lanes[0] + lanes[1];
-    for &v in &vals[i..] {
-        sum += v;
-    }
-    sum
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn sum_f64_simd_x86_64_avx2(vals: &[f64], acc: f64) -> f64 {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_sum = _mm256_setzero_pd();
-    while i + 4 <= vals.len() {
-        let vec = _mm256_loadu_pd(vals.as_ptr().add(i));
-        vec_sum = _mm256_add_pd(vec_sum, vec);
-        i += 4;
-    }
-    let mut lanes = [0.0f64; 4];
-    _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
-    let mut sum = acc + lanes[0] + lanes[1] + lanes[2] + lanes[3];
-    for &v in &vals[i..] {
-        sum += v;
-    }
-    sum
-}
-
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 unsafe fn sum_f64_simd_aarch64(vals: &[f64], acc: f64) -> f64 {
@@ -849,72 +811,76 @@ fn find_first_mismatch_scalar(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn find_first_mismatch_sse2(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    // Process 2 u64s (128 bits) per iteration
-    while i + 2 <= len {
-        let l_vec = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
-        let r_vec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
-        let cmp = _mm_cmpeq_epi8(l_vec, r_vec);
-        let mask = _mm_movemask_epi8(cmp);
-        if mask != 0xFFFF {
-            // Mismatch in this 128-bit block — find which u64
-            if lhs[i] != rhs[i] {
-                return i;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        // Process 2 u64s (128 bits) per iteration
+        while i + 2 <= len {
+            let l_vec = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
+            let r_vec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
+            let cmp = _mm_cmpeq_epi8(l_vec, r_vec);
+            let mask = _mm_movemask_epi8(cmp);
+            if mask != 0xFFFF {
+                // Mismatch in this 128-bit block — find which u64
+                if lhs[i] != rhs[i] {
+                    return i;
+                }
+                return i + 1;
             }
-            return i + 1;
+            i += 2;
         }
-        i += 2;
-    }
-    // Remainder
-    for j in i..len {
-        if lhs[j] != rhs[j] {
-            return j;
+        // Remainder
+        for j in i..len {
+            if lhs[j] != rhs[j] {
+                return j;
+            }
         }
+        len
     }
-    len
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn find_first_mismatch_avx2(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    // Process 4 u64s (256 bits) per iteration
-    while i + 4 <= len {
-        let l_vec = _mm256_loadu_si256(lhs.as_ptr().add(i) as *const __m256i);
-        let r_vec = _mm256_loadu_si256(rhs.as_ptr().add(i) as *const __m256i);
-        let cmp = _mm256_cmpeq_epi64(l_vec, r_vec);
-        let mask = _mm256_movemask_epi8(cmp);
-        if mask != -1i32 {
-            // Mismatch in this 256-bit block — find which u64
-            for j in 0..4 {
-                if lhs[i + j] != rhs[i + j] {
-                    return i + j;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        // Process 4 u64s (256 bits) per iteration
+        while i + 4 <= len {
+            let l_vec = _mm256_loadu_si256(lhs.as_ptr().add(i) as *const __m256i);
+            let r_vec = _mm256_loadu_si256(rhs.as_ptr().add(i) as *const __m256i);
+            let cmp = _mm256_cmpeq_epi64(l_vec, r_vec);
+            let mask = _mm256_movemask_epi8(cmp);
+            if mask != -1i32 {
+                // Mismatch in this 256-bit block — find which u64
+                for j in 0..4 {
+                    if lhs[i + j] != rhs[i + j] {
+                        return i + j;
+                    }
                 }
             }
+            i += 4;
         }
-        i += 4;
-    }
-    // Remainder with SSE2
-    while i + 2 <= len {
-        let l_vec = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
-        let r_vec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
-        let cmp = _mm_cmpeq_epi8(l_vec, r_vec);
-        let mask = _mm_movemask_epi8(cmp);
-        if mask != 0xFFFF {
-            if lhs[i] != rhs[i] {
-                return i;
+        // Remainder with SSE2
+        while i + 2 <= len {
+            let l_vec = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
+            let r_vec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
+            let cmp = _mm_cmpeq_epi8(l_vec, r_vec);
+            let mask = _mm_movemask_epi8(cmp);
+            if mask != 0xFFFF {
+                if lhs[i] != rhs[i] {
+                    return i;
+                }
+                return i + 1;
             }
-            return i + 1;
+            i += 2;
         }
-        i += 2;
-    }
-    for j in i..len {
-        if lhs[j] != rhs[j] {
-            return j;
+        for j in i..len {
+            if lhs[j] != rhs[j] {
+                return j;
+            }
         }
+        len
     }
-    len
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -949,56 +915,60 @@ unsafe fn find_first_mismatch_neon(lhs: &[u64], rhs: &[u64], len: usize) -> usiz
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn sum_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_sum = _mm_setzero_si128();
-    while i + 2 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let v0 = obj0.as_int()?;
-        let v1 = obj1.as_int()?;
-        let vec = _mm_set_epi64x(v1, v0);
-        vec_sum = _mm_add_epi64(vec_sum, vec);
-        i += 2;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vec_sum = _mm_setzero_si128();
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let vec = _mm_set_epi64x(v1, v0);
+            vec_sum = _mm_add_epi64(vec_sum, vec);
+            i += 2;
+        }
+        let mut lanes = [0i64; 2];
+        _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_sum);
+        let mut sum = acc + lanes[0] + lanes[1];
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            sum += val;
+        }
+        Some(sum)
     }
-    let mut lanes = [0i64; 2];
-    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_sum);
-    let mut sum = acc + lanes[0] + lanes[1];
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int()?;
-        sum += val;
-    }
-    Some(sum)
 }
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn sum_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_sum = _mm256_setzero_si256();
-    while i + 4 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let obj2 = MoltObject::from_bits(elems[i + 2]);
-        let obj3 = MoltObject::from_bits(elems[i + 3]);
-        let v0 = obj0.as_int()?;
-        let v1 = obj1.as_int()?;
-        let v2 = obj2.as_int()?;
-        let v3 = obj3.as_int()?;
-        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
-        vec_sum = _mm256_add_epi64(vec_sum, vec);
-        i += 4;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vec_sum = _mm256_setzero_si256();
+        while i + 4 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let obj2 = MoltObject::from_bits(elems[i + 2]);
+            let obj3 = MoltObject::from_bits(elems[i + 3]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let v2 = obj2.as_int()?;
+            let v3 = obj3.as_int()?;
+            let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+            vec_sum = _mm256_add_epi64(vec_sum, vec);
+            i += 4;
+        }
+        let mut lanes = [0i64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_sum);
+        let mut sum = acc + lanes.iter().sum::<i64>();
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            sum += val;
+        }
+        Some(sum)
     }
-    let mut lanes = [0i64; 4];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_sum);
-    let mut sum = acc + lanes.iter().sum::<i64>();
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int()?;
-        sum += val;
-    }
-    Some(sum)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1029,102 +999,108 @@ pub(crate) unsafe fn sum_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn prod_ints_unboxed_avx2_trivial(elems: &[i64]) -> Option<i64> {
-    use std::arch::x86_64::*;
-    let mut idx = 0usize;
-    let ones = _mm256_set1_epi64x(1);
-    let zeros = _mm256_setzero_si256();
-    let mut all_ones = true;
-    while idx + 4 <= elems.len() {
-        let vec = _mm256_loadu_si256(elems.as_ptr().add(idx) as *const __m256i);
-        let eq_zero = _mm256_cmpeq_epi64(vec, zeros);
-        if _mm256_movemask_epi8(eq_zero) != 0 {
-            return Some(0);
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut idx = 0usize;
+        let ones = _mm256_set1_epi64x(1);
+        let zeros = _mm256_setzero_si256();
+        let mut all_ones = true;
+        while idx + 4 <= elems.len() {
+            let vec = _mm256_loadu_si256(elems.as_ptr().add(idx) as *const __m256i);
+            let eq_zero = _mm256_cmpeq_epi64(vec, zeros);
+            if _mm256_movemask_epi8(eq_zero) != 0 {
+                return Some(0);
+            }
+            if all_ones {
+                let eq_one = _mm256_cmpeq_epi64(vec, ones);
+                if _mm256_movemask_epi8(eq_one) != -1 {
+                    all_ones = false;
+                }
+            }
+            idx += 4;
         }
-        if all_ones {
-            let eq_one = _mm256_cmpeq_epi64(vec, ones);
-            if _mm256_movemask_epi8(eq_one) != -1 {
+        for &val in &elems[idx..] {
+            if val == 0 {
+                return Some(0);
+            }
+            if val != 1 {
                 all_ones = false;
             }
         }
-        idx += 4;
-    }
-    for &val in &elems[idx..] {
-        if val == 0 {
-            return Some(0);
+        if all_ones {
+            return Some(1);
         }
-        if val != 1 {
-            all_ones = false;
-        }
+        None
     }
-    if all_ones {
-        return Some(1);
-    }
-    None
 }
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn min_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_min = _mm_set1_epi64x(acc);
-    while i + 2 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let v0 = obj0.as_int()?;
-        let v1 = obj1.as_int()?;
-        let vec = _mm_set_epi64x(v1, v0);
-        let cmp = _mm_cmpgt_epi64(vec_min, vec);
-        vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
-        i += 2;
-    }
-    let mut lanes = [0i64; 2];
-    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
-    let mut min_val = acc.min(lanes[0]).min(lanes[1]);
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int()?;
-        if val < min_val {
-            min_val = val;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vec_min = _mm_set1_epi64x(acc);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let vec = _mm_set_epi64x(v1, v0);
+            let cmp = _mm_cmpgt_epi64(vec_min, vec);
+            vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
+            i += 2;
         }
+        let mut lanes = [0i64; 2];
+        _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
+        let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            if val < min_val {
+                min_val = val;
+            }
+        }
+        Some(min_val)
     }
-    Some(min_val)
 }
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn min_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_min = _mm256_set1_epi64x(acc);
-    while i + 4 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let obj2 = MoltObject::from_bits(elems[i + 2]);
-        let obj3 = MoltObject::from_bits(elems[i + 3]);
-        let v0 = obj0.as_int()?;
-        let v1 = obj1.as_int()?;
-        let v2 = obj2.as_int()?;
-        let v3 = obj3.as_int()?;
-        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
-        let cmp = _mm256_cmpgt_epi64(vec_min, vec);
-        vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
-        i += 4;
-    }
-    let mut lanes = [0i64; 4];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
-    let mut min_val = acc;
-    for lane in lanes {
-        if lane < min_val {
-            min_val = lane;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vec_min = _mm256_set1_epi64x(acc);
+        while i + 4 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let obj2 = MoltObject::from_bits(elems[i + 2]);
+            let obj3 = MoltObject::from_bits(elems[i + 3]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let v2 = obj2.as_int()?;
+            let v3 = obj3.as_int()?;
+            let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+            let cmp = _mm256_cmpgt_epi64(vec_min, vec);
+            vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
+            i += 4;
         }
-    }
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int()?;
-        if val < min_val {
-            min_val = val;
+        let mut lanes = [0i64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
+        let mut min_val = acc;
+        for lane in lanes {
+            if lane < min_val {
+                min_val = lane;
+            }
         }
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            if val < min_val {
+                min_val = val;
+            }
+        }
+        Some(min_val)
     }
-    Some(min_val)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1142,67 +1118,71 @@ pub(crate) unsafe fn min_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn max_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_max = _mm_set1_epi64x(acc);
-    while i + 2 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let v0 = obj0.as_int()?;
-        let v1 = obj1.as_int()?;
-        let vec = _mm_set_epi64x(v1, v0);
-        let cmp = _mm_cmpgt_epi64(vec, vec_max);
-        vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
-        i += 2;
-    }
-    let mut lanes = [0i64; 2];
-    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
-    let mut max_val = acc.max(lanes[0]).max(lanes[1]);
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int()?;
-        if val > max_val {
-            max_val = val;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vec_max = _mm_set1_epi64x(acc);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let vec = _mm_set_epi64x(v1, v0);
+            let cmp = _mm_cmpgt_epi64(vec, vec_max);
+            vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
+            i += 2;
         }
+        let mut lanes = [0i64; 2];
+        _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
+        let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            if val > max_val {
+                max_val = val;
+            }
+        }
+        Some(max_val)
     }
-    Some(max_val)
 }
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn max_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_max = _mm256_set1_epi64x(acc);
-    while i + 4 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let obj2 = MoltObject::from_bits(elems[i + 2]);
-        let obj3 = MoltObject::from_bits(elems[i + 3]);
-        let v0 = obj0.as_int()?;
-        let v1 = obj1.as_int()?;
-        let v2 = obj2.as_int()?;
-        let v3 = obj3.as_int()?;
-        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
-        let cmp = _mm256_cmpgt_epi64(vec, vec_max);
-        vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
-        i += 4;
-    }
-    let mut lanes = [0i64; 4];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
-    let mut max_val = acc;
-    for lane in lanes {
-        if lane > max_val {
-            max_val = lane;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vec_max = _mm256_set1_epi64x(acc);
+        while i + 4 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let obj2 = MoltObject::from_bits(elems[i + 2]);
+            let obj3 = MoltObject::from_bits(elems[i + 3]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let v2 = obj2.as_int()?;
+            let v3 = obj3.as_int()?;
+            let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+            let cmp = _mm256_cmpgt_epi64(vec, vec_max);
+            vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
+            i += 4;
         }
-    }
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int()?;
-        if val > max_val {
-            max_val = val;
+        let mut lanes = [0i64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
+        let mut max_val = acc;
+        for lane in lanes {
+            if lane > max_val {
+                max_val = lane;
+            }
         }
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            if val > max_val {
+                max_val = val;
+            }
+        }
+        Some(max_val)
     }
-    Some(max_val)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1220,54 +1200,58 @@ pub(crate) unsafe fn max_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn sum_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_sum = _mm_setzero_si128();
-    while i + 2 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let v0 = obj0.as_int_unchecked();
-        let v1 = obj1.as_int_unchecked();
-        let vec = _mm_set_epi64x(v1, v0);
-        vec_sum = _mm_add_epi64(vec_sum, vec);
-        i += 2;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vec_sum = _mm_setzero_si128();
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let vec = _mm_set_epi64x(v1, v0);
+            vec_sum = _mm_add_epi64(vec_sum, vec);
+            i += 2;
+        }
+        let mut lanes = [0i64; 2];
+        _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_sum);
+        let mut sum = acc + lanes[0] + lanes[1];
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            sum += obj.as_int_unchecked();
+        }
+        sum
     }
-    let mut lanes = [0i64; 2];
-    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_sum);
-    let mut sum = acc + lanes[0] + lanes[1];
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        sum += obj.as_int_unchecked();
-    }
-    sum
 }
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) unsafe fn sum_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_sum = _mm256_setzero_si256();
-    while i + 4 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let obj2 = MoltObject::from_bits(elems[i + 2]);
-        let obj3 = MoltObject::from_bits(elems[i + 3]);
-        let v0 = obj0.as_int_unchecked();
-        let v1 = obj1.as_int_unchecked();
-        let v2 = obj2.as_int_unchecked();
-        let v3 = obj3.as_int_unchecked();
-        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
-        vec_sum = _mm256_add_epi64(vec_sum, vec);
-        i += 4;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vec_sum = _mm256_setzero_si256();
+        while i + 4 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let obj2 = MoltObject::from_bits(elems[i + 2]);
+            let obj3 = MoltObject::from_bits(elems[i + 3]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let v2 = obj2.as_int_unchecked();
+            let v3 = obj3.as_int_unchecked();
+            let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+            vec_sum = _mm256_add_epi64(vec_sum, vec);
+            i += 4;
+        }
+        let mut lanes = [0i64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_sum);
+        let mut sum = acc + lanes.iter().sum::<i64>();
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            sum += obj.as_int_unchecked();
+        }
+        sum
     }
-    let mut lanes = [0i64; 4];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_sum);
-    let mut sum = acc + lanes.iter().sum::<i64>();
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        sum += obj.as_int_unchecked();
-    }
-    sum
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1338,7 +1322,10 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                     }
                     return MoltObject::from_int(memoryview_len(ptr) as i64).bits();
                 }
-                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_LIST_INT || type_id == TYPE_ID_LIST_BOOL {
+                if type_id == TYPE_ID_LIST
+                    || type_id == TYPE_ID_LIST_INT
+                    || type_id == TYPE_ID_LIST_BOOL
+                {
                     return MoltObject::from_int(list_len(ptr) as i64).bits();
                 }
                 if type_id == TYPE_ID_TUPLE {
@@ -6338,35 +6325,37 @@ fn is_ascii_split_whitespace_byte(byte: u8) -> bool {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn find_ascii_split_whitespace_sse2(bytes: &[u8], start: usize) -> usize {
-    use std::arch::x86_64::*;
-    let mut i = start;
-    let len = bytes.len();
-    let sp = _mm_set1_epi8(b' ' as i8);
-    let nl = _mm_set1_epi8(b'\n' as i8);
-    let cr = _mm_set1_epi8(b'\r' as i8);
-    let tab = _mm_set1_epi8(b'\t' as i8);
-    let vt = _mm_set1_epi8(0x0b_i8);
-    let ff = _mm_set1_epi8(0x0c_i8);
-    while i + 16 <= len {
-        let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
-        let mut mask_vec = _mm_or_si128(_mm_cmpeq_epi8(chunk, sp), _mm_cmpeq_epi8(chunk, nl));
-        mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, cr));
-        mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, tab));
-        mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, vt));
-        mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, ff));
-        let mask = _mm_movemask_epi8(mask_vec) as u32;
-        if mask != 0 {
-            return i + mask.trailing_zeros() as usize;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = start;
+        let len = bytes.len();
+        let sp = _mm_set1_epi8(b' ' as i8);
+        let nl = _mm_set1_epi8(b'\n' as i8);
+        let cr = _mm_set1_epi8(b'\r' as i8);
+        let tab = _mm_set1_epi8(b'\t' as i8);
+        let vt = _mm_set1_epi8(0x0b_i8);
+        let ff = _mm_set1_epi8(0x0c_i8);
+        while i + 16 <= len {
+            let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+            let mut mask_vec = _mm_or_si128(_mm_cmpeq_epi8(chunk, sp), _mm_cmpeq_epi8(chunk, nl));
+            mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, cr));
+            mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, tab));
+            mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, vt));
+            mask_vec = _mm_or_si128(mask_vec, _mm_cmpeq_epi8(chunk, ff));
+            let mask = _mm_movemask_epi8(mask_vec) as u32;
+            if mask != 0 {
+                return i + mask.trailing_zeros() as usize;
+            }
+            i += 16;
         }
-        i += 16;
-    }
-    while i < len {
-        if is_ascii_split_whitespace_byte(bytes[i]) {
-            return i;
+        while i < len {
+            if is_ascii_split_whitespace_byte(bytes[i]) {
+                return i;
+            }
+            i += 1;
         }
-        i += 1;
+        len
     }
-    len
 }
 
 /// NEON variant: find first ASCII whitespace byte in slice starting at `start`.
@@ -8353,20 +8342,22 @@ unsafe fn simd_bytes_eq_short_neon(a: *const u8, b: *const u8, len: usize) -> bo
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 unsafe fn simd_bytes_eq_short_sse2(a: *const u8, b: *const u8, len: usize) -> bool {
-    use std::arch::x86_64::*;
-    debug_assert!(len >= 16 && len < 32);
-    // Load from the start
-    let va0 = _mm_loadu_si128(a as *const __m128i);
-    let vb0 = _mm_loadu_si128(b as *const __m128i);
-    let cmp0 = _mm_cmpeq_epi8(va0, vb0);
-    // Load from (end - 16), overlapping with the first load
-    let va1 = _mm_loadu_si128(a.add(len - 16) as *const __m128i);
-    let vb1 = _mm_loadu_si128(b.add(len - 16) as *const __m128i);
-    let cmp1 = _mm_cmpeq_epi8(va1, vb1);
-    // Both must be all-equal: AND the masks
-    let mask0 = _mm_movemask_epi8(cmp0);
-    let mask1 = _mm_movemask_epi8(cmp1);
-    (mask0 & mask1) == 0xFFFF
+    unsafe {
+        use std::arch::x86_64::*;
+        debug_assert!(len >= 16 && len < 32);
+        // Load from the start
+        let va0 = _mm_loadu_si128(a as *const __m128i);
+        let vb0 = _mm_loadu_si128(b as *const __m128i);
+        let cmp0 = _mm_cmpeq_epi8(va0, vb0);
+        // Load from (end - 16), overlapping with the first load
+        let va1 = _mm_loadu_si128(a.add(len - 16) as *const __m128i);
+        let vb1 = _mm_loadu_si128(b.add(len - 16) as *const __m128i);
+        let cmp1 = _mm_cmpeq_epi8(va1, vb1);
+        // Both must be all-equal: AND the masks
+        let mask0 = _mm_movemask_epi8(cmp0);
+        let mask1 = _mm_movemask_epi8(cmp1);
+        (mask0 & mask1) == 0xFFFF
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -8444,55 +8435,59 @@ unsafe fn simd_contains_u64_neon(haystack: &[u64], needle: u64) -> bool {
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 unsafe fn simd_contains_u64_sse2(haystack: &[u64], needle: u64) -> bool {
-    use std::arch::x86_64::*;
-    let ptr = haystack.as_ptr() as *const __m128i;
-    let len = haystack.len();
-    let needle_vec = _mm_set1_epi64x(needle as i64);
-    let mut i = 0usize;
-    // Process 2 u64s at a time (128-bit register = 2 x u64).
-    while i + 2 <= len {
-        let chunk = _mm_loadu_si128(ptr.add(i / 2));
-        let cmp = _mm_cmpeq_epi32(chunk, needle_vec);
-        // For 64-bit equality, both 32-bit halves must match.
-        // Shuffle to align adjacent 32-bit results and AND them.
-        let shuffled = _mm_shuffle_epi32(cmp, 0b10_11_00_01);
-        let both = _mm_and_si128(cmp, shuffled);
-        if _mm_movemask_epi8(both) != 0 {
+    unsafe {
+        use std::arch::x86_64::*;
+        let ptr = haystack.as_ptr() as *const __m128i;
+        let len = haystack.len();
+        let needle_vec = _mm_set1_epi64x(needle as i64);
+        let mut i = 0usize;
+        // Process 2 u64s at a time (128-bit register = 2 x u64).
+        while i + 2 <= len {
+            let chunk = _mm_loadu_si128(ptr.add(i / 2));
+            let cmp = _mm_cmpeq_epi32(chunk, needle_vec);
+            // For 64-bit equality, both 32-bit halves must match.
+            // Shuffle to align adjacent 32-bit results and AND them.
+            let shuffled = _mm_shuffle_epi32(cmp, 0b10_11_00_01);
+            let both = _mm_and_si128(cmp, shuffled);
+            if _mm_movemask_epi8(both) != 0 {
+                return true;
+            }
+            i += 2;
+        }
+        if i < len && haystack[i] == needle {
             return true;
         }
-        i += 2;
+        false
     }
-    if i < len && haystack[i] == needle {
-        return true;
-    }
-    false
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 unsafe fn simd_contains_u64_avx2(haystack: &[u64], needle: u64) -> bool {
-    use std::arch::x86_64::*;
-    let ptr = haystack.as_ptr() as *const __m256i;
-    let len = haystack.len();
-    let needle_vec = _mm256_set1_epi64x(needle as i64);
-    let mut i = 0usize;
-    // Process 4 u64s at a time (256-bit register = 4 x u64).
-    while i + 4 <= len {
-        let chunk = _mm256_loadu_si256(ptr.add(i / 4));
-        let cmp = _mm256_cmpeq_epi64(chunk, needle_vec);
-        if _mm256_movemask_epi8(cmp) != 0 {
-            return true;
+    unsafe {
+        use std::arch::x86_64::*;
+        let ptr = haystack.as_ptr() as *const __m256i;
+        let len = haystack.len();
+        let needle_vec = _mm256_set1_epi64x(needle as i64);
+        let mut i = 0usize;
+        // Process 4 u64s at a time (256-bit register = 4 x u64).
+        while i + 4 <= len {
+            let chunk = _mm256_loadu_si256(ptr.add(i / 4));
+            let cmp = _mm256_cmpeq_epi64(chunk, needle_vec);
+            if _mm256_movemask_epi8(cmp) != 0 {
+                return true;
+            }
+            i += 4;
         }
-        i += 4;
-    }
-    // Tail: scalar check for remaining 0-3 elements.
-    while i < len {
-        if haystack[i] == needle {
-            return true;
+        // Tail: scalar check for remaining 0-3 elements.
+        while i < len {
+            if haystack[i] == needle {
+                return true;
+            }
+            i += 1;
         }
-        i += 1;
+        false
     }
-    false
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -8518,46 +8513,52 @@ unsafe fn simd_bytes_eq_wasm32(a: *const u8, b: *const u8, len: usize) -> bool {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 unsafe fn simd_bytes_eq_sse2(a: *const u8, b: *const u8, len: usize) -> bool {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    while i + 16 <= len {
-        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
-        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
-        let cmp = _mm_cmpeq_epi8(va, vb);
-        if _mm_movemask_epi8(cmp) != 0xFFFF {
-            return false;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        while i + 16 <= len {
+            let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+            let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+            let cmp = _mm_cmpeq_epi8(va, vb);
+            if _mm_movemask_epi8(cmp) != 0xFFFF {
+                return false;
+            }
+            i += 16;
         }
-        i += 16;
+        // Tail: compare remaining bytes
+        std::slice::from_raw_parts(a.add(i), len - i)
+            == std::slice::from_raw_parts(b.add(i), len - i)
     }
-    // Tail: compare remaining bytes
-    std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
 unsafe fn simd_bytes_eq_avx2(a: *const u8, b: *const u8, len: usize) -> bool {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    while i + 32 <= len {
-        let va = _mm256_loadu_si256(a.add(i) as *const __m256i);
-        let vb = _mm256_loadu_si256(b.add(i) as *const __m256i);
-        let cmp = _mm256_cmpeq_epi8(va, vb);
-        if _mm256_movemask_epi8(cmp) != -1i32 {
-            return false;
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        while i + 32 <= len {
+            let va = _mm256_loadu_si256(a.add(i) as *const __m256i);
+            let vb = _mm256_loadu_si256(b.add(i) as *const __m256i);
+            let cmp = _mm256_cmpeq_epi8(va, vb);
+            if _mm256_movemask_epi8(cmp) != -1i32 {
+                return false;
+            }
+            i += 32;
         }
-        i += 32;
-    }
-    // SSE2 tail for 16-byte remainder
-    if i + 16 <= len {
-        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
-        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
-        let cmp = _mm_cmpeq_epi8(va, vb);
-        if _mm_movemask_epi8(cmp) != 0xFFFF {
-            return false;
+        // SSE2 tail for 16-byte remainder
+        if i + 16 <= len {
+            let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+            let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+            let cmp = _mm_cmpeq_epi8(va, vb);
+            if _mm_movemask_epi8(cmp) != 0xFFFF {
+                return false;
+            }
+            i += 16;
         }
-        i += 16;
+        std::slice::from_raw_parts(a.add(i), len - i)
+            == std::slice::from_raw_parts(b.add(i), len - i)
     }
-    std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -10893,7 +10894,9 @@ fn list_specialized_index_from_bits(index_bits: u64) -> Option<i64> {
 
 #[inline]
 fn list_index_out_of_range_error() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { raise_exception::<_>(_py, "IndexError", "list index out of range") })
+    crate::with_gil_entry_nopanic!(_py, {
+        raise_exception::<_>(_py, "IndexError", "list index out of range")
+    })
 }
 
 #[inline]
@@ -10994,7 +10997,9 @@ pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 
         if let Some(slice_ptr) = index_obj.as_ptr()
             && object_type_id(slice_ptr) == TYPE_ID_SLICE
         {
-            return crate::with_gil_entry_nopanic!(_py, { list_int_slice_to_boxed_list(_py, ptr, slice_ptr) });
+            return crate::with_gil_entry_nopanic!(_py, {
+                list_int_slice_to_boxed_list(_py, ptr, slice_ptr)
+            });
         }
         let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
             return MoltObject::none().bits();
@@ -11181,7 +11186,9 @@ pub extern "C" fn molt_list_bool_getitem(list_bits: u64, index_bits: u64) -> u64
         if let Some(slice_ptr) = index_obj.as_ptr()
             && object_type_id(slice_ptr) == TYPE_ID_SLICE
         {
-            return crate::with_gil_entry_nopanic!(_py, { list_bool_slice_to_boxed_list(_py, ptr, slice_ptr) });
+            return crate::with_gil_entry_nopanic!(_py, {
+                list_bool_slice_to_boxed_list(_py, ptr, slice_ptr)
+            });
         }
         let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
             return MoltObject::none().bits();
@@ -11203,11 +11210,7 @@ pub extern "C" fn molt_list_bool_getitem(list_bits: u64, index_bits: u64) -> u64
 /// Accepts NaN-boxed bool or int value -- converts to u8 (0 or 1).
 /// No refcounting needed -- bools are inline NaN-boxed values.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_list_bool_setitem(
-    list_bits: u64,
-    index_bits: u64,
-    value_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_list_bool_setitem(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
     let list_obj = obj_from_bits(list_bits);
     let Some(ptr) = list_obj.as_ptr() else {
         return MoltObject::none().bits();
