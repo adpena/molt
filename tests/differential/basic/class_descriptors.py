@@ -19,6 +19,9 @@ class Widget:
     def value(self) -> int:
         return self.x + 1
 
+    def touch(self):
+        self.x + 1
+
 
 w = Widget(2)
 print(Widget.kind)
@@ -28,6 +31,7 @@ print(w.make(4).x)
 print(Widget.add(1, 2))
 print(w.add(2, 3))
 print(w.value)
+print(w.touch())
 
 print(getattr(w, "x"))
 setattr(w, "x", 9)

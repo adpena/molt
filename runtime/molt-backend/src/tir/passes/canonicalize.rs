@@ -23,6 +23,8 @@ use std::collections::HashMap;
 use super::PassStats;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::type_refine::extract_type_map;
+use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 /// Returns `true` if the opcode is commutative (operand order doesn't matter).
@@ -55,6 +57,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         name: "canonicalize",
         ..Default::default()
     };
+    let type_map = extract_type_map(func);
 
     // Build constant map: ValueId → i64 for ConstInt, ValueId → bool for ConstBool.
     let mut int_consts: HashMap<ValueId, i64> = HashMap::new();
@@ -88,16 +91,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let mut neg_source: HashMap<ValueId, ValueId> = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if op.opcode == OpCode::Not
-                && op.operands.len() == 1
-                && op.results.len() == 1
-            {
+            if op.opcode == OpCode::Not && op.operands.len() == 1 && op.results.len() == 1 {
                 not_source.insert(op.results[0], op.operands[0]);
             }
-            if op.opcode == OpCode::Neg
-                && op.operands.len() == 1
-                && op.results.len() == 1
-            {
+            if op.opcode == OpCode::Neg && op.operands.len() == 1 && op.results.len() == 1 {
                 neg_source.insert(op.results[0], op.operands[0]);
             }
         }
@@ -121,7 +118,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 let rhs = op.operands[1];
                 let lhs_is_const = int_consts.contains_key(&lhs) || bool_consts.contains_key(&lhs);
                 let rhs_is_const = int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
-                if lhs_is_const && !rhs_is_const {
+                if lhs_is_const
+                    && !rhs_is_const
+                    && can_reorder_commutative(op.opcode, lhs, rhs, &type_map)
+                {
                     op.operands.swap(0, 1);
                     stats.values_changed += 1;
                 }
@@ -129,19 +129,21 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
             // --- Rule 7: Comparison canonicalization (constant on right) ---
             if op.operands.len() == 2
-                && let Some(swapped) = swap_comparison(op.opcode) {
-                    let lhs = op.operands[0];
-                    let rhs = op.operands[1];
-                    let lhs_is_const =
-                        int_consts.contains_key(&lhs) || bool_consts.contains_key(&lhs);
-                    let rhs_is_const =
-                        int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
-                    if lhs_is_const && !rhs_is_const {
-                        op.opcode = swapped;
-                        op.operands.swap(0, 1);
-                        stats.values_changed += 1;
-                    }
+                && let Some(swapped) = swap_comparison(op.opcode)
+            {
+                let lhs = op.operands[0];
+                let rhs = op.operands[1];
+                let lhs_is_const = int_consts.contains_key(&lhs) || bool_consts.contains_key(&lhs);
+                let rhs_is_const = int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
+                if lhs_is_const
+                    && !rhs_is_const
+                    && can_reorder_comparison(op.opcode, lhs, rhs, &type_map)
+                {
+                    op.opcode = swapped;
+                    op.operands.swap(0, 1);
+                    stats.values_changed += 1;
                 }
+            }
 
             if op.operands.len() != 2 {
                 // Rules 1-3 apply to binary ops.
@@ -152,49 +154,52 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     // --- Rule 4: Double negation ---
                     // Not(Not(x)) → Copy(x)
                     if op.opcode == OpCode::Not
-                        && let Some(&inner_src) = not_source.get(&operand) {
-                            *op = TirOp {
-                                dialect: Dialect::Molt,
-                                opcode: OpCode::Copy,
-                                operands: vec![inner_src],
-                                results: vec![result],
-                                attrs: Default::default(),
-                                source_span: op.source_span,
-                            };
-                            stats.values_changed += 1;
-                        }
+                        && let Some(&inner_src) = not_source.get(&operand)
+                    {
+                        *op = TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::Copy,
+                            operands: vec![inner_src],
+                            results: vec![result],
+                            attrs: Default::default(),
+                            source_span: op.source_span,
+                        };
+                        stats.values_changed += 1;
+                    }
 
                     // Neg(Neg(x)) → Copy(x)
                     if op.opcode == OpCode::Neg
-                        && let Some(&inner_src) = neg_source.get(&operand) {
-                            *op = TirOp {
-                                dialect: Dialect::Molt,
-                                opcode: OpCode::Copy,
-                                operands: vec![inner_src],
-                                results: vec![result],
-                                attrs: Default::default(),
-                                source_span: op.source_span,
-                            };
-                            stats.values_changed += 1;
-                        }
+                        && let Some(&inner_src) = neg_source.get(&operand)
+                    {
+                        *op = TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::Copy,
+                            operands: vec![inner_src],
+                            results: vec![result],
+                            attrs: Default::default(),
+                            source_span: op.source_span,
+                        };
+                        stats.values_changed += 1;
+                    }
 
                     // --- Rule 6: Boolean simplification (unary) ---
                     if op.opcode == OpCode::Not
-                        && let Some(&val) = bool_consts.get(&operand) {
-                            *op = TirOp {
-                                dialect: Dialect::Molt,
-                                opcode: OpCode::ConstBool,
-                                operands: vec![],
-                                results: vec![result],
-                                attrs: {
-                                    let mut m = crate::tir::ops::AttrDict::new();
-                                    m.insert("value".into(), AttrValue::Bool(!val));
-                                    m
-                                },
-                                source_span: op.source_span,
-                            };
-                            stats.values_changed += 1;
-                        }
+                        && let Some(&val) = bool_consts.get(&operand)
+                    {
+                        *op = TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::ConstBool,
+                            operands: vec![],
+                            results: vec![result],
+                            attrs: {
+                                let mut m = crate::tir::ops::AttrDict::new();
+                                m.insert("value".into(), AttrValue::Bool(!val));
+                                m
+                            },
+                            source_span: op.source_span,
+                        };
+                        stats.values_changed += 1;
+                    }
                 }
                 continue;
             }
@@ -208,63 +213,77 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
             match op.opcode {
                 // --- Rule 1: Identity elimination ---
-                OpCode::Add | OpCode::InplaceAdd if rhs_int == Some(0) => {
+                OpCode::Add | OpCode::InplaceAdd
+                    if rhs_int == Some(0) && is_i64_value(lhs, &type_map) =>
+                {
                     replace_with_copy(op, lhs, result);
                     stats.values_changed += 1;
                 }
-                OpCode::Add | OpCode::InplaceAdd if lhs_int == Some(0) => {
+                OpCode::Add | OpCode::InplaceAdd
+                    if lhs_int == Some(0) && is_i64_value(rhs, &type_map) =>
+                {
                     replace_with_copy(op, rhs, result);
                     stats.values_changed += 1;
                 }
-                OpCode::Sub | OpCode::InplaceSub if rhs_int == Some(0) => {
+                OpCode::Sub | OpCode::InplaceSub
+                    if rhs_int == Some(0) && is_i64_value(lhs, &type_map) =>
+                {
                     replace_with_copy(op, lhs, result);
                     stats.values_changed += 1;
                 }
-                OpCode::Mul | OpCode::InplaceMul if rhs_int == Some(1) => {
+                OpCode::Mul | OpCode::InplaceMul
+                    if rhs_int == Some(1) && is_i64_value(lhs, &type_map) =>
+                {
                     replace_with_copy(op, lhs, result);
                     stats.values_changed += 1;
                 }
-                OpCode::Mul | OpCode::InplaceMul if lhs_int == Some(1) => {
+                OpCode::Mul | OpCode::InplaceMul
+                    if lhs_int == Some(1) && is_i64_value(rhs, &type_map) =>
+                {
                     replace_with_copy(op, rhs, result);
                     stats.values_changed += 1;
                 }
-                OpCode::BitOr if rhs_int == Some(0) => {
+                OpCode::BitOr if rhs_int == Some(0) && is_i64_value(lhs, &type_map) => {
                     replace_with_copy(op, lhs, result);
                     stats.values_changed += 1;
                 }
-                OpCode::BitXor if rhs_int == Some(0) => {
+                OpCode::BitXor if rhs_int == Some(0) && is_i64_value(lhs, &type_map) => {
                     replace_with_copy(op, lhs, result);
                     stats.values_changed += 1;
                 }
-                OpCode::BitAnd if rhs_int == Some(-1) => {
+                OpCode::BitAnd if rhs_int == Some(-1) && is_i64_value(lhs, &type_map) => {
                     replace_with_copy(op, lhs, result);
                     stats.values_changed += 1;
                 }
 
                 // --- Rule 2: Absorbing element ---
-                OpCode::Mul | OpCode::InplaceMul if rhs_int == Some(0) => {
+                OpCode::Mul | OpCode::InplaceMul
+                    if rhs_int == Some(0) && is_i64_value(lhs, &type_map) =>
+                {
                     replace_with_const_int(op, 0, result);
                     stats.values_changed += 1;
                 }
-                OpCode::Mul | OpCode::InplaceMul if lhs_int == Some(0) => {
+                OpCode::Mul | OpCode::InplaceMul
+                    if lhs_int == Some(0) && is_i64_value(rhs, &type_map) =>
+                {
                     replace_with_const_int(op, 0, result);
                     stats.values_changed += 1;
                 }
-                OpCode::BitAnd if rhs_int == Some(0) => {
+                OpCode::BitAnd if rhs_int == Some(0) && is_i64_value(lhs, &type_map) => {
                     replace_with_const_int(op, 0, result);
                     stats.values_changed += 1;
                 }
-                OpCode::BitAnd if lhs_int == Some(0) => {
+                OpCode::BitAnd if lhs_int == Some(0) && is_i64_value(rhs, &type_map) => {
                     replace_with_const_int(op, 0, result);
                     stats.values_changed += 1;
                 }
 
                 // --- Rule 3: Self-inverse ---
-                OpCode::Sub | OpCode::InplaceSub if lhs == rhs => {
+                OpCode::Sub | OpCode::InplaceSub if lhs == rhs && is_i64_value(lhs, &type_map) => {
                     replace_with_const_int(op, 0, result);
                     stats.values_changed += 1;
                 }
-                OpCode::BitXor if lhs == rhs => {
+                OpCode::BitXor if lhs == rhs && is_i64_value(lhs, &type_map) => {
                     replace_with_const_int(op, 0, result);
                     stats.values_changed += 1;
                 }
@@ -293,6 +312,55 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     }
 
     stats
+}
+
+fn is_i64_value(value: ValueId, type_map: &HashMap<ValueId, TirType>) -> bool {
+    matches!(type_map.get(&value), Some(TirType::I64))
+}
+
+fn is_numeric_value(value: ValueId, type_map: &HashMap<ValueId, TirType>) -> bool {
+    matches!(type_map.get(&value), Some(TirType::I64 | TirType::F64))
+}
+
+fn both_numeric(lhs: ValueId, rhs: ValueId, type_map: &HashMap<ValueId, TirType>) -> bool {
+    is_numeric_value(lhs, type_map) && is_numeric_value(rhs, type_map)
+}
+
+fn both_i64(lhs: ValueId, rhs: ValueId, type_map: &HashMap<ValueId, TirType>) -> bool {
+    is_i64_value(lhs, type_map) && is_i64_value(rhs, type_map)
+}
+
+fn both_unboxed_scalar(lhs: ValueId, rhs: ValueId, type_map: &HashMap<ValueId, TirType>) -> bool {
+    matches!(
+        (type_map.get(&lhs), type_map.get(&rhs)),
+        (Some(TirType::I64), Some(TirType::I64))
+            | (Some(TirType::F64), Some(TirType::F64))
+            | (Some(TirType::Bool), Some(TirType::Bool))
+            | (Some(TirType::None), Some(TirType::None))
+    )
+}
+
+fn can_reorder_commutative(
+    opcode: OpCode,
+    lhs: ValueId,
+    rhs: ValueId,
+    type_map: &HashMap<ValueId, TirType>,
+) -> bool {
+    match opcode {
+        OpCode::Add | OpCode::Mul => both_numeric(lhs, rhs, type_map),
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => both_i64(lhs, rhs, type_map),
+        OpCode::Eq | OpCode::Ne => both_unboxed_scalar(lhs, rhs, type_map),
+        _ => false,
+    }
+}
+
+fn can_reorder_comparison(
+    _opcode: OpCode,
+    lhs: ValueId,
+    rhs: ValueId,
+    type_map: &HashMap<ValueId, TirType>,
+) -> bool {
+    both_numeric(lhs, rhs, type_map)
 }
 
 fn replace_with_copy(op: &mut TirOp, source: ValueId, result: ValueId) {
@@ -384,9 +452,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_const_int(0, zero));
-        entry
-            .ops
-            .push(make_binop(OpCode::Add, param, zero, result));
+        entry.ops.push(make_binop(OpCode::Add, param, zero, result));
         entry.terminator = Terminator::Return {
             values: vec![result],
         };
@@ -409,9 +475,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_const_int(0, zero));
-        entry
-            .ops
-            .push(make_binop(OpCode::Mul, param, zero, result));
+        entry.ops.push(make_binop(OpCode::Mul, param, zero, result));
         entry.terminator = Terminator::Return {
             values: vec![result],
         };
@@ -421,6 +485,66 @@ mod tests {
 
         let mul_op = &func.blocks[&func.entry_block].ops[1];
         assert_eq!(mul_op.opcode, OpCode::ConstInt);
+    }
+
+    #[test]
+    fn arithmetic_identities_preserve_dynbox_dispatch() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+        let param = ValueId(0);
+        let zero = func.fresh_value();
+        let one = func.fresh_value();
+        let add_result = func.fresh_value();
+        let mul_one_result = func.fresh_value();
+        let mul_zero_result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(0, zero));
+        entry.ops.push(make_const_int(1, one));
+        entry
+            .ops
+            .push(make_binop(OpCode::Add, param, zero, add_result));
+        entry
+            .ops
+            .push(make_binop(OpCode::Mul, param, one, mul_one_result));
+        entry
+            .ops
+            .push(make_binop(OpCode::Mul, param, zero, mul_zero_result));
+        entry.terminator = Terminator::Return {
+            values: vec![mul_zero_result],
+        };
+
+        let stats = run(&mut func);
+        assert_eq!(stats.values_changed, 0);
+
+        let ops = &func.blocks[&func.entry_block].ops;
+        assert_eq!(ops[2].opcode, OpCode::Add);
+        assert_eq!(ops[2].operands, vec![param, zero]);
+        assert_eq!(ops[3].opcode, OpCode::Mul);
+        assert_eq!(ops[3].operands, vec![param, one]);
+        assert_eq!(ops[4].opcode, OpCode::Mul);
+        assert_eq!(ops[4].operands, vec![param, zero]);
+    }
+
+    #[test]
+    fn arithmetic_identities_preserve_float_signed_zero() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::F64], TirType::F64);
+        let param = ValueId(0);
+        let zero = func.fresh_value();
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_int(0, zero));
+        entry.ops.push(make_binop(OpCode::Add, param, zero, result));
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let stats = run(&mut func);
+        assert_eq!(stats.values_changed, 0);
+
+        let ops = &func.blocks[&func.entry_block].ops;
+        assert_eq!(ops[1].opcode, OpCode::Add);
+        assert_eq!(ops[1].operands, vec![param, zero]);
     }
 
     #[test]
@@ -454,9 +578,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_const_int(1, one));
         // 1 + param → should be canonicalized to param + 1
-        entry
-            .ops
-            .push(make_binop(OpCode::Add, one, param, result));
+        entry.ops.push(make_binop(OpCode::Add, one, param, result));
         entry.terminator = Terminator::Return {
             values: vec![result],
         };

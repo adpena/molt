@@ -355,12 +355,8 @@ impl<'a> SsaContext<'a> {
         }
 
         self.aug_predecessors = aug_preds;
-        self.aug_dominators = compute_dominators_from(
-            n,
-            &aug_succs,
-            &self.aug_predecessors,
-            self.cfg.entry,
-        );
+        self.aug_dominators =
+            compute_dominators_from(n, &aug_succs, &self.aug_predecessors, self.cfg.entry);
     }
 
     // -- Phase 2: dominance frontiers ----------------------------------------
@@ -904,6 +900,7 @@ impl<'a> SsaContext<'a> {
                 | "set_attr_generic_obj"
                 | "guarded_field_set"
                 | "guarded_field_set_init"
+                | "module_set_attr"
                 | "store"
                 | "store_init"
                 | "store_index"
@@ -1710,6 +1707,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         | "set_attr_generic_obj"
         | "guarded_field_set"
         | "guarded_field_set_init"
+        | "module_set_attr"
         | "store"
         | "store_init" => OpCode::StoreAttr,
         "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
@@ -1927,6 +1925,46 @@ mod tests {
             "expected module_import to lower to OpCode::Import, got {:?}",
             entry.ops.iter().map(|op| op.opcode).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn module_set_attr_lowers_to_store_attr_instead_of_copy_fallback() {
+        let ops = vec![
+            op_args_out("module_import", &["builtins"], "mod"),
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("answer".to_string()),
+                out: Some("name".to_string()),
+                ..OpIR::default()
+            },
+            op_val_out("const", 42, "value"),
+            OpIR {
+                kind: "module_set_attr".to_string(),
+                args: Some(vec![
+                    "mod".to_string(),
+                    "name".to_string(),
+                    "value".to_string(),
+                ]),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+        let entry = &output.blocks[0];
+        let module_store = entry
+            .ops
+            .iter()
+            .find(|op| {
+                op.attrs.get("_original_kind").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.as_str()),
+                    _ => None,
+                }) == Some("module_set_attr")
+            })
+            .expect("expected module_set_attr to preserve its original kind");
+        assert_eq!(module_store.opcode, OpCode::StoreAttr);
+        assert_eq!(module_store.operands.len(), 3, "{module_store:?}");
     }
 
     #[test]
@@ -2795,9 +2833,9 @@ mod tests {
             .find(|b| matches!(b.terminator, Terminator::Return { .. }))
             .expect("must produce at least one return block");
         let returned_value = match &return_block.terminator {
-            Terminator::Return { values } => *values
-                .first()
-                .expect("return must carry one value (r)"),
+            Terminator::Return { values } => {
+                *values.first().expect("return must carry one value (r)")
+            }
             _ => unreachable!(),
         };
 
@@ -2885,8 +2923,7 @@ mod tests {
              try-body assignment leaks past the handler-side control \
              flow into a return that the success-path definition does \
              not actually dominate at runtime.",
-            def_bid.0,
-            return_block.id.0,
+            def_bid.0, return_block.id.0,
         );
     }
 
@@ -2934,11 +2971,7 @@ mod tests {
         // slot).  Not strictly required for the type-refine test
         // but matches what the frontend actually emits.
         alloc_op.value = Some(24);
-        let ops = vec![
-            op_val_out("const", 0, "cls"),
-            alloc_op,
-            op("ret_void"),
-        ];
+        let ops = vec![op_val_out("const", 0, "cls"), alloc_op, op("ret_void")];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
 
