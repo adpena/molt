@@ -19,6 +19,28 @@ pub enum TirType {
     Box(Box<TirType>),
     /// NaN-boxed, type unknown.
     DynBox,
+    /// A user-defined class instance, identified by the qualified
+    /// class name (matching the frontend's `_type_hint` and
+    /// `res_hint` conventions).  Carries the same NaN-boxed
+    /// representation as `DynBox` today, but the type-refine pass
+    /// can use it to:
+    ///   - prove monomorphic method receivers for direct dispatch
+    ///     (skip CallMethod IC lookup),
+    ///   - prove static field offsets for direct load/store (skip
+    ///     `class_layout_size` runtime lookup),
+    ///   - tighten escape analysis (instances of a class with no
+    ///     `__del__` and no weakref support can be stack-allocated
+    ///     without per-instance cold-header allocation — Phase 5
+    ///     step 3 prepared the runtime side; future commits wire
+    ///     codegen).
+    ///
+    /// Two `UserClass` values meet to themselves when their ids
+    /// match, otherwise they fall through to the standard Union /
+    /// DynBox lattice machinery.
+    ///
+    /// Class identity is the qualified class name (e.g.
+    /// `"mymodule.Point"`); the frontend already deduplicates these.
+    UserClass(String),
     // Callable
     Func(FuncSignature),
     // Special
@@ -213,5 +235,79 @@ mod tests {
         assert!(!TirType::Str.is_unboxed());
         assert!(!TirType::Str.is_numeric());
         assert!(!TirType::DynBox.is_unboxed());
+    }
+
+    /// Same-id `UserClass` meets to itself — the existing `self
+    /// == other` early return in `meet()` handles this without a
+    /// dedicated arm.  Pin the contract so future refactors don't
+    /// drop the `PartialEq` derive that makes it work.
+    #[test]
+    fn meet_user_class_same_id_preserves() {
+        let a = TirType::UserClass("Point".into());
+        let b = TirType::UserClass("Point".into());
+        assert_eq!(a.meet(&b), TirType::UserClass("Point".into()));
+    }
+
+    /// Different `UserClass` ids fall through to the existing
+    /// Union/DynBox lattice machinery — no special-case logic.
+    /// Two distinct user classes form a 2-member union; canonical
+    /// ordering uses Debug-string sort so the result is
+    /// deterministic regardless of operand order.
+    #[test]
+    fn meet_user_class_different_ids_unions() {
+        let a = TirType::UserClass("Point".into());
+        let b = TirType::UserClass("Line".into());
+        let result = a.meet(&b);
+        // "UserClass(\"Line\")" < "UserClass(\"Point\")" by Debug
+        // string sort, so Line comes first.
+        assert_eq!(
+            result,
+            TirType::Union(vec![
+                TirType::UserClass("Line".into()),
+                TirType::UserClass("Point".into()),
+            ])
+        );
+        // Commutativity guard.
+        assert_eq!(b.meet(&a), result);
+    }
+
+    /// `UserClass` meet `DynBox` collapses to `DynBox` — the
+    /// existing absorption rule applies.  Critical: a refined
+    /// type joining a path that doesn't refine must lose
+    /// precision, otherwise the type-refine pass could promote
+    /// type-erased exception handler args from DynBox to a
+    /// specific class and miscompile the catch site.
+    #[test]
+    fn meet_user_class_with_dynbox_collapses() {
+        let cls = TirType::UserClass("Point".into());
+        assert_eq!(cls.meet(&TirType::DynBox), TirType::DynBox);
+        assert_eq!(TirType::DynBox.meet(&cls), TirType::DynBox);
+    }
+
+    /// `UserClass` is **not unboxed** — instances are NaN-boxed
+    /// today (Phase 5 step 3 stack-allocates the *backing*, but
+    /// the value carried at the SSA level is still a tagged 64-bit
+    /// pointer).  When direct stack-passable representation lands
+    /// (analogous to Mojo's `@register_passable("trivial")`), this
+    /// will flip — and `is_unboxed` must be revisited at every
+    /// site that branches on it for register allocation choices.
+    #[test]
+    fn user_class_is_neither_unboxed_nor_numeric() {
+        let cls = TirType::UserClass("Point".into());
+        assert!(!cls.is_unboxed());
+        assert!(!cls.is_numeric());
+    }
+
+    /// Hash + Eq derives must round-trip identical class ids
+    /// without surprises — the type lives in `HashMap<ValueId,
+    /// TirType>` in the SSA value-types map and any divergence
+    /// would silently desynchronize.
+    #[test]
+    fn user_class_eq_and_hash_match_on_id() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(TirType::UserClass("Point".into()));
+        assert!(set.contains(&TirType::UserClass("Point".into())));
+        assert!(!set.contains(&TirType::UserClass("Line".into())));
     }
 }

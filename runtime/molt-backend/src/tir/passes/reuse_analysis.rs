@@ -94,6 +94,14 @@ fn size_class(ty: &crate::tir::types::TirType) -> SizeClass {
         )),
         // Boxed values: all NaN-boxes have the same size.
         TirType::Box(_) | TirType::DynBox => SizeClass::Typed(TirType::DynBox),
+        // User classes: same class id ⇒ identical instance layout
+        // (frontend's `class_info["size"]` is determined statically
+        // from `field_order`).  Different class ids may have
+        // different field counts and therefore different layouts —
+        // only same-id instances are reuse-compatible.  Encoding the
+        // class id directly in the size class delegates the
+        // equality check to the existing `Eq` impl on `TirType`.
+        TirType::UserClass(_) => SizeClass::Typed(ty.clone()),
         // Func, Ptr, Union — conservative, treat as unique.
         TirType::Func(_) => SizeClass::Typed(ty.clone()),
         TirType::Ptr(_) => SizeClass::Dynamic,
@@ -638,5 +646,31 @@ mod tests {
         );
         assert_eq!(candidates[0].decref_value, alloc_x);
         assert_eq!(candidates[0].alloc_value, alloc_y);
+    }
+
+    /// `UserClass` size classes: same class id ⇒ identical size
+    /// class (instances are layout-compatible and reuse-eligible).
+    /// Different class ids ⇒ distinct size classes (different
+    /// `class_info["size"]` values produce different instance
+    /// payloads, so a `DecRef(Point)` cannot back a `Alloc(Line)`
+    /// reuse).
+    #[test]
+    fn user_class_size_class_matches_on_id() {
+        let point_a = TirType::UserClass("Point".into());
+        let point_b = TirType::UserClass("Point".into());
+        let line = TirType::UserClass("Line".into());
+
+        // Same class ⇒ same size class ⇒ reuse-compatible.
+        assert_eq!(size_class(&point_a), size_class(&point_b));
+        // Different classes ⇒ distinct size classes.
+        assert_ne!(size_class(&point_a), size_class(&line));
+        // Both should be `Typed`, not `Dynamic` — typed classes
+        // have static layouts derived from `class_info["size"]`,
+        // so the reuse machinery can match on the class id.
+        assert!(
+            matches!(size_class(&point_a), SizeClass::Typed(_)),
+            "UserClass should classify as Typed (static layout), \
+             not Dynamic"
+        );
     }
 }
