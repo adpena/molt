@@ -84,7 +84,7 @@ wildcards = "deny"
 
 # Allow specific duplicates that are known ecosystem version-split situations.
 # Each entry silences the multiple-versions warning for that crate.
-allow-wildcard-paths = []
+allow-wildcard-paths = false
 skip = []
 skip-tree = []
 
