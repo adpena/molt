@@ -16950,22 +16950,54 @@ impl SimpleBackend {
                     // `type.__call__` → `__new__` → bound-method-init →
                     // CALL_BIND IC dispatch — all of which the frontend
                     // proves unnecessary for the known-class case.
+                    //
+                    // When the frontend carries the static instance
+                    // payload size on `op.value` (set from
+                    // `class_info["size"]` in the class-instantiation
+                    // fold), we route through the sized entry point
+                    // `molt_object_new_bound_sized` which skips the
+                    // runtime `class_layout_size` lookup entirely
+                    // (~5 dict probes + name interning + MRO walks
+                    // saved per allocation).  The frontend always
+                    // emits the size for the typed-class fold; the
+                    // unsized path remains for any hand-built
+                    // SimpleIR that lacks the hint.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cls_bits = var_get_boxed(
                         &mut builder, &vars, &args[0],
                         &raw_primary_int, &raw_primary_float,
                         box_int_mask_var, box_int_tag_var,
                     ).expect("Class ref not found for object_new_bound");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_object_new_bound",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*cls_bits]);
-                    let res = builder.inst_results(call)[0];
+                    let payload_size = op.value.unwrap_or(0);
+                    let res = if payload_size > 0 {
+                        let payload_size_val =
+                            builder.ins().iconst(types::I64, payload_size);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_object_new_bound_sized",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder
+                            .ins()
+                            .call(local_callee, &[*cls_bits, payload_size_val]);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_object_new_bound",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*cls_bits]);
+                        builder.inst_results(call)[0]
+                    };
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
@@ -24151,6 +24183,73 @@ mod tests {
         assert!(
             !preanalyze_function_ir(&void_ret, &BTreeMap::new()).has_ret,
             "`ret_void` must not mark the function as value-returning"
+        );
+    }
+
+    #[test]
+    fn preanalysis_treats_immediate_stack_object_field_stores_as_direct() {
+        let func = FunctionIR {
+            name: "stack_field_store".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("cls".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "object_new_bound_stack".to_string(),
+                    out: Some("obj".to_string()),
+                    args: Some(vec!["cls".to_string()]),
+                    value: Some(24),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("zero".to_string()),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_init".to_string(),
+                    args: Some(vec!["obj".to_string(), "zero".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy".to_string(),
+                    out: Some("alias".to_string()),
+                    args: Some(vec!["obj".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("one".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store".to_string(),
+                    args: Some(vec!["alias".to_string(), "one".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+
+        assert!(
+            !analysis.has_store,
+            "immediate stores into fresh stack object slots should lower as direct field writes"
         );
     }
 
