@@ -53,7 +53,7 @@ def test_bench_no_cpython_sets_null_baseline(tmp_path: Path) -> None:
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     entry = payload["benchmarks"][script.name]
     assert entry["cpython_time_s"] is None
-    assert entry["molt_ok"] is True
+    assert entry["molt_ok"] is True, res.stderr
     assert entry["molt_speedup"] is None
 
 
