@@ -74,6 +74,34 @@ print("slice_assign", a_slice.tolist())
 a_slice[::2] = array("i", [7, 8])
 print("slice_assign_step", a_slice.tolist())
 
+# mutator returns
+a_mut_ret = array("i", [1, 2])
+print("append_ret", a_mut_ret.append(3))
+print("setitem_ret", a_mut_ret.__setitem__(0, 9))
+
+# deletion
+a_del = array("i", [1, 2, 3, 4, 5])
+print("del_index_ret", a_del.__delitem__(1))
+print("after_del_index", a_del.tolist())
+a_del.__delitem__(-1)
+print("after_del_negative", a_del.tolist())
+
+a_del_slice = array("i", [1, 2, 3, 4, 5])
+del a_del_slice[1:4]
+print("after_del_slice", a_del_slice.tolist())
+
+a_del_step = array("i", [1, 2, 3, 4, 5, 6])
+del a_del_step[::2]
+print("after_del_step", a_del_step.tolist())
+
+a_del_reverse_step = array("i", [1, 2, 3, 4, 5, 6])
+del a_del_reverse_step[5:0:-2]
+print("after_del_reverse_step", a_del_reverse_step.tolist())
+
+a_del_empty_slice = array("i", [1, 2, 3])
+del a_del_empty_slice[2:1]
+print("after_del_empty_slice", a_del_empty_slice.tolist())
+
 # tobytes / frombytes round-trip
 a5 = array("i", [10, 20, 30])
 raw = a5.tobytes()
@@ -109,3 +137,24 @@ try:
     a_slice[1:3] = [1, 2]
 except TypeError as exc:
     print("slice_assign_list_err", type(exc).__name__, str(exc))
+
+# error: deletion index out of range
+try:
+    a_del_error = array("i", [1, 2, 3])
+    del a_del_error[5]
+except IndexError as exc:
+    print("del_oob_err", type(exc).__name__, str(exc))
+
+# error: deletion index must be an integer
+try:
+    a_del_error = array("i", [1, 2, 3])
+    a_del_error.__delitem__("x")
+except TypeError as exc:
+    print("del_str_err", type(exc).__name__, str(exc))
+
+# error: deletion slice step cannot be zero
+try:
+    a_del_error = array("i", [1, 2, 3])
+    del a_del_error[::0]
+except ValueError as exc:
+    print("del_zero_step_err", type(exc).__name__, str(exc))

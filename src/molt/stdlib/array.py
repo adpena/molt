@@ -9,6 +9,7 @@ _MOLT_ARRAY_FROM_LIST = _require_intrinsic("molt_array_from_list")
 _MOLT_ARRAY_APPEND = _require_intrinsic("molt_array_append")
 _MOLT_ARRAY_BUFFER_INFO = _require_intrinsic("molt_array_buffer_info")
 _MOLT_ARRAY_COUNT = _require_intrinsic("molt_array_count")
+_MOLT_ARRAY_DELITEM = _require_intrinsic("molt_array_delitem")
 _MOLT_ARRAY_DROP = _require_intrinsic("molt_array_drop")
 _MOLT_ARRAY_EXTEND = _require_intrinsic("molt_array_extend")
 _MOLT_ARRAY_FROMBYTES = _require_intrinsic("molt_array_frombytes")
@@ -162,6 +163,9 @@ class array:
             _MOLT_ARRAY_SETITEM(self._handle, index, value._handle)
             return
         _MOLT_ARRAY_SETITEM(self._handle, index, value)
+
+    def __delitem__(self, index) -> None:
+        _MOLT_ARRAY_DELITEM(self._handle, index)
 
     def __repr__(self) -> str:
         tc = self.typecode
