@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "1"
+  MOLT_BACKEND_DAEMON_CACHE_MB: "128"
 
 jobs:
   docs-gates:
