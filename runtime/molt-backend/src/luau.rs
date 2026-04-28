@@ -855,6 +855,15 @@ impl LuauBackend {
         for escaped_var in &pcall_escaped_vars {
             self.hoisted_vars.insert(sanitize_ident(escaped_var));
         }
+        // TIR store_var/load_var represent named storage slots that must remain
+        // visible across structured control-flow edges in the emitted function.
+        for op in &ops {
+            if op.kind == "store_var"
+                && let Some(name) = op.var.as_deref().or(op.out.as_deref())
+            {
+                self.hoisted_vars.insert(sanitize_ident(name));
+            }
+        }
 
         // Emit pre-declarations for hoisted variables.  Cap at 150 to stay
         // within Luau's ~200 local register limit.  Variables beyond the cap
@@ -1099,6 +1108,17 @@ impl LuauBackend {
             "const_float" => {
                 let out = self.out_var(op);
                 let val = op.f_value.unwrap_or(0.0);
+                if let Some(ref n) = op.out {
+                    self.var_type_hints.insert(n.clone(), "float".to_string());
+                }
+                self.emit_line(&format!("local {out}: number = {val}"));
+            }
+            "const_int" => {
+                let out = self.out_var(op);
+                let val = op.value.unwrap_or(0);
+                if let Some(ref n) = op.out {
+                    self.var_type_hints.insert(n.clone(), "int".to_string());
+                }
                 self.emit_line(&format!("local {out}: number = {val}"));
             }
             "const_str" => {
@@ -1168,6 +1188,25 @@ impl LuauBackend {
                 let var = self.var_ref(op);
                 self.emit_line(&format!("local {out} = {var}"));
             }
+            "load_var" | "copy_var" => {
+                let out = self.out_var(op);
+                let var = op
+                    .var
+                    .as_deref()
+                    .or_else(|| {
+                        op.args
+                            .as_deref()
+                            .and_then(|args| args.first().map(String::as_str))
+                    })
+                    .map(sanitize_ident)
+                    .unwrap_or_else(|| "_".to_string());
+                if let Some(hint) = self.var_type_hints.get(&var).cloned()
+                    && let Some(ref out_name) = op.out
+                {
+                    self.var_type_hints.insert(out_name.clone(), hint);
+                }
+                self.emit_line(&format!("local {out} = {var}"));
+            }
             "load" | "guarded_load" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -1206,6 +1245,29 @@ impl LuauBackend {
                         self.tuple_vars.insert(var_name.clone());
                     }
                     // Propagate type hints through copies.
+                    if let Some(hint) = self.var_type_hints.get(src).cloned()
+                        && let Some(ref var_name) = op.var
+                    {
+                        self.var_type_hints.insert(var_name.clone(), hint);
+                    }
+                    self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
+                }
+            }
+            "store_var" => {
+                let var = op
+                    .var
+                    .as_deref()
+                    .or(op.out.as_deref())
+                    .map(sanitize_ident)
+                    .unwrap_or_else(|| "_".to_string());
+                if let Some(ref args) = op.args
+                    && let Some(src) = args.first()
+                {
+                    if self.tuple_vars.contains(src)
+                        && let Some(ref var_name) = op.var
+                    {
+                        self.tuple_vars.insert(var_name.clone());
+                    }
                     if let Some(hint) = self.var_type_hints.get(src).cloned()
                         && let Some(ref var_name) = op.var
                     {
@@ -3441,7 +3503,11 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil -- [exception_message]"));
                 }
             }
-            "exception_stack_depth" | "exceptiongroup_match" | "exceptiongroup_combine" => {
+            "exception_stack_depth" => {
+                let out = self.out_var(op);
+                self.emit_line(&format!("local {out} = 0"));
+            }
+            "exceptiongroup_match" | "exceptiongroup_combine" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
             }
@@ -4043,6 +4109,26 @@ impl LuauBackend {
                 if let Some(iter_var) = args.first() {
                     let iter_var = sanitize_ident(iter_var);
                     self.emit_line(&format!("local {out} = {iter_var}()"));
+                }
+            }
+            "iter_next_unboxed" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(iter_var) = args.first() {
+                    let iter_var = sanitize_ident(iter_var);
+                    let done_out = op.out.as_deref().map(sanitize_ident);
+                    let value_out = op.var.as_deref().map(sanitize_ident);
+                    let tmp_seed = done_out
+                        .as_deref()
+                        .or(value_out.as_deref())
+                        .unwrap_or("iter");
+                    let tmp = format!("__next_{tmp_seed}");
+                    self.emit_line(&format!("local {tmp} = {iter_var}()"));
+                    if let Some(done) = done_out {
+                        self.emit_line(&format!("local {done} = {tmp}[2]"));
+                    }
+                    if let Some(value) = value_out {
+                        self.emit_line(&format!("local {value} = {tmp}[1]"));
+                    }
                 }
             }
 
@@ -9180,6 +9266,132 @@ mod tests {
             "labels must not be comments"
         );
         assert!(!source.contains("-- goto"), "gotos must not be comments");
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_store_var_and_load_var() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "slot_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_int".to_string(),
+                        out: Some("v0".to_string()),
+                        value: Some(42),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "store_var".to_string(),
+                        var: Some("slot".to_string()),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "load_var".to_string(),
+                        out: Some("v1".to_string()),
+                        var: Some("slot".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v1".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("store_var/load_var should lower without stub markers");
+        assert!(source.contains("\tlocal slot\n"));
+        assert!(source.contains("\tslot = "));
+        assert!(source.contains("return slot") || source.contains("local v1 = slot"));
+        assert!(!source.contains("[unsupported op: store_var]"));
+        assert!(!source.contains("[unsupported op: load_var]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_exception_stack_depth_to_value() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "exception_depth_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "exception_stack_depth".to_string(),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_set_depth".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("exception stack depth bookkeeping should lower");
+        assert!(source.contains("\tlocal v0 = 0\n"));
+        assert!(!source.contains("[exception_stack_depth]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_iter_next_unboxed() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "iter_unboxed_test".to_string(),
+                params: vec!["xs".to_string()],
+                param_types: Some(vec!["list[int]".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "iter".to_string(),
+                        out: Some("it".to_string()),
+                        args: Some(vec!["xs".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "iter_next_unboxed".to_string(),
+                        args: Some(vec!["it".to_string()]),
+                        var: Some("value".to_string()),
+                        out: Some("done".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["value".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("iter_next_unboxed should lower without stub markers");
+        assert!(source.contains("local __next_done = it()"));
+        assert!(source.contains("local done = __next_done[2]"));
+        assert!(source.contains("local value = __next_done[1]"));
+        assert!(!source.contains("[unsupported op: iter_next_unboxed]"));
     }
 
     #[test]
