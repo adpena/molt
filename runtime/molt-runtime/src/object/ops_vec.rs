@@ -257,66 +257,70 @@ fn min_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
 #[cfg(target_arch = "x86_64")]
 unsafe fn min_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
     use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_min = _mm_set1_epi64x(acc);
-    while i + 2 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let v0 = obj0.as_int_unchecked();
-        let v1 = obj1.as_int_unchecked();
-        let vec = _mm_set_epi64x(v1, v0);
-        let cmp = _mm_cmpgt_epi64(vec_min, vec);
-        vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
-        i += 2;
-    }
-    let mut lanes = [0i64; 2];
-    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
-    let mut min_val = acc.min(lanes[0]).min(lanes[1]);
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int_unchecked();
-        if val < min_val {
-            min_val = val;
+    unsafe {
+        let mut i = 0usize;
+        let mut vec_min = _mm_set1_epi64x(acc);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let vec = _mm_set_epi64x(v1, v0);
+            let cmp = _mm_cmpgt_epi64(vec_min, vec);
+            vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
+            i += 2;
         }
+        let mut lanes = [0i64; 2];
+        _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
+        let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int_unchecked();
+            if val < min_val {
+                min_val = val;
+            }
+        }
+        min_val
     }
-    min_val
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn min_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
     use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_min = _mm256_set1_epi64x(acc);
-    while i + 4 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let obj2 = MoltObject::from_bits(elems[i + 2]);
-        let obj3 = MoltObject::from_bits(elems[i + 3]);
-        let v0 = obj0.as_int_unchecked();
-        let v1 = obj1.as_int_unchecked();
-        let v2 = obj2.as_int_unchecked();
-        let v3 = obj3.as_int_unchecked();
-        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
-        let cmp = _mm256_cmpgt_epi64(vec_min, vec);
-        vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
-        i += 4;
-    }
-    let mut lanes = [0i64; 4];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
-    let mut min_val = acc;
-    for lane in lanes {
-        if lane < min_val {
-            min_val = lane;
+    unsafe {
+        let mut i = 0usize;
+        let mut vec_min = _mm256_set1_epi64x(acc);
+        while i + 4 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let obj2 = MoltObject::from_bits(elems[i + 2]);
+            let obj3 = MoltObject::from_bits(elems[i + 3]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let v2 = obj2.as_int_unchecked();
+            let v3 = obj3.as_int_unchecked();
+            let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+            let cmp = _mm256_cmpgt_epi64(vec_min, vec);
+            vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
+            i += 4;
         }
-    }
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int_unchecked();
-        if val < min_val {
-            min_val = val;
+        let mut lanes = [0i64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
+        let mut min_val = acc;
+        for lane in lanes {
+            if lane < min_val {
+                min_val = lane;
+            }
         }
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int_unchecked();
+            if val < min_val {
+                min_val = val;
+            }
+        }
+        min_val
     }
-    min_val
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -403,66 +407,70 @@ fn max_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
 #[cfg(target_arch = "x86_64")]
 unsafe fn max_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
     use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_max = _mm_set1_epi64x(acc);
-    while i + 2 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let v0 = obj0.as_int_unchecked();
-        let v1 = obj1.as_int_unchecked();
-        let vec = _mm_set_epi64x(v1, v0);
-        let cmp = _mm_cmpgt_epi64(vec, vec_max);
-        vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
-        i += 2;
-    }
-    let mut lanes = [0i64; 2];
-    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
-    let mut max_val = acc.max(lanes[0]).max(lanes[1]);
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int_unchecked();
-        if val > max_val {
-            max_val = val;
+    unsafe {
+        let mut i = 0usize;
+        let mut vec_max = _mm_set1_epi64x(acc);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let vec = _mm_set_epi64x(v1, v0);
+            let cmp = _mm_cmpgt_epi64(vec, vec_max);
+            vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
+            i += 2;
         }
+        let mut lanes = [0i64; 2];
+        _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
+        let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int_unchecked();
+            if val > max_val {
+                max_val = val;
+            }
+        }
+        max_val
     }
-    max_val
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn max_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
     use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vec_max = _mm256_set1_epi64x(acc);
-    while i + 4 <= elems.len() {
-        let obj0 = MoltObject::from_bits(elems[i]);
-        let obj1 = MoltObject::from_bits(elems[i + 1]);
-        let obj2 = MoltObject::from_bits(elems[i + 2]);
-        let obj3 = MoltObject::from_bits(elems[i + 3]);
-        let v0 = obj0.as_int_unchecked();
-        let v1 = obj1.as_int_unchecked();
-        let v2 = obj2.as_int_unchecked();
-        let v3 = obj3.as_int_unchecked();
-        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
-        let cmp = _mm256_cmpgt_epi64(vec, vec_max);
-        vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
-        i += 4;
-    }
-    let mut lanes = [0i64; 4];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
-    let mut max_val = acc;
-    for lane in lanes {
-        if lane > max_val {
-            max_val = lane;
+    unsafe {
+        let mut i = 0usize;
+        let mut vec_max = _mm256_set1_epi64x(acc);
+        while i + 4 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let obj2 = MoltObject::from_bits(elems[i + 2]);
+            let obj3 = MoltObject::from_bits(elems[i + 3]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let v2 = obj2.as_int_unchecked();
+            let v3 = obj3.as_int_unchecked();
+            let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+            let cmp = _mm256_cmpgt_epi64(vec, vec_max);
+            vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
+            i += 4;
         }
-    }
-    for &bits in &elems[i..] {
-        let obj = MoltObject::from_bits(bits);
-        let val = obj.as_int_unchecked();
-        if val > max_val {
-            max_val = val;
+        let mut lanes = [0i64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
+        let mut max_val = acc;
+        for lane in lanes {
+            if lane > max_val {
+                max_val = lane;
+            }
         }
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int_unchecked();
+            if val > max_val {
+                max_val = val;
+            }
+        }
+        max_val
     }
-    max_val
 }
 
 #[cfg(target_arch = "aarch64")]

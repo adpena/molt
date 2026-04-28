@@ -13,6 +13,8 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 #[cfg(molt_has_net_io)]
 use socket2::{Domain, Socket};
+#[cfg(target_os = "linux")]
+use std::ffi::c_void;
 use std::ffi::{CStr, CString};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -35,6 +37,63 @@ use super::sockets::{
 };
 #[cfg(all(molt_has_net_io, windows))]
 use super::sockets::{socket_close_raw_windows, socketpair_windows_loopback_raw};
+
+#[cfg(molt_has_net_io)]
+const GETNAMEINFO_SERVICE_BUFFER_LEN: usize = 33;
+
+#[cfg(molt_has_net_io)]
+fn getnameinfo_service_buffer_len() -> usize {
+    // POSIX NI_MAXSERV is 32 bytes; libc does not expose it on every target.
+    GETNAMEINFO_SERVICE_BUFFER_LEN
+}
+
+#[cfg(all(
+    unix,
+    any(
+        target_os = "android",
+        target_os = "cygwin",
+        target_os = "haiku",
+        target_os = "hurd",
+        target_os = "linux",
+        target_os = "netbsd",
+        target_os = "nto"
+    )
+))]
+fn sethostname_platform(name: &[u8]) -> std::io::Result<c_int> {
+    Ok(unsafe { libc::sethostname(name.as_ptr().cast::<libc::c_char>(), name.len()) })
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "android",
+        target_os = "cygwin",
+        target_os = "haiku",
+        target_os = "hurd",
+        target_os = "linux",
+        target_os = "netbsd",
+        target_os = "nto"
+    ))
+))]
+fn sethostname_platform(name: &[u8]) -> std::io::Result<c_int> {
+    let len =
+        c_int::try_from(name.len()).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    Ok(unsafe { libc::sethostname(name.as_ptr().cast::<libc::c_char>(), len) })
+}
+
+#[cfg(target_os = "linux")]
+fn bytes_like_obj_to_vec(obj: MoltObject) -> Option<Vec<u8>> {
+    let ptr = obj.as_ptr()?;
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
+            return None;
+        }
+        let len = bytes_len(ptr);
+        let data = bytes_data(ptr);
+        Some(std::slice::from_raw_parts(data, len).to_vec())
+    }
+}
 
 #[cfg(molt_has_net_io)]
 /// # Safety
@@ -680,7 +739,7 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
                 Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
             };
             let mut host_buf = vec![0u8; libc::NI_MAXHOST as usize + 1];
-            let mut serv_buf = vec![0u8; libc::NI_MAXSERV as usize + 1];
+            let mut serv_buf = vec![0u8; getnameinfo_service_buffer_len()];
             let ret = libc::getnameinfo(
                 sockaddr.as_ptr() as *const libc::sockaddr,
                 sockaddr.len(),
@@ -2796,28 +2855,26 @@ pub extern "C" fn molt_socket_sendfile(
 /// Caller must pass valid runtime-encoded arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_sethostname(name_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
-                Some(s) => s,
-                None => {
-                    return raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "sethostname() argument must be str",
-                    );
-                }
-            };
-            let ret = libc::sethostname(
-                name.as_ptr() as *const libc::c_char,
-                name.len() as libc::c_int,
-            );
-            if ret != 0 {
-                return raise_os_error::<u64>(_py, std::io::Error::last_os_error(), "sethostname");
+    crate::with_gil_entry_nopanic!(_py, {
+        let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
+            Some(s) => s,
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "sethostname() argument must be str",
+                );
             }
-            MoltObject::none().bits()
-        })
-    }
+        };
+        let ret = match sethostname_platform(name.as_bytes()) {
+            Ok(ret) => ret,
+            Err(err) => return raise_os_error::<u64>(_py, err, "sethostname"),
+        };
+        if ret != 0 {
+            return raise_os_error::<u64>(_py, std::io::Error::last_os_error(), "sethostname");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(not(unix))]
@@ -2863,23 +2920,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
 
         // Extract message data
         let msg_obj = obj_from_bits(msg_bits);
-        let msg_data: Vec<u8> = if msg_obj.is_none() {
-            Vec::new()
-        } else {
-            let msg_ptr = msg_obj.as_ptr();
-            if msg_ptr.is_null() {
-                Vec::new()
-            } else {
-                let type_id = unsafe { object_type_id(msg_ptr) };
-                if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                    let len = unsafe { bytes_len(msg_ptr) };
-                    let data = unsafe { bytes_data(msg_ptr) };
-                    unsafe { std::slice::from_raw_parts(data, len).to_vec() }
-                } else {
-                    Vec::new()
-                }
-            }
-        };
+        let msg_data: Vec<u8> = bytes_like_obj_to_vec(msg_obj).unwrap_or_default();
 
         // Build ancillary data (cmsg)
         let op = to_i64(obj_from_bits(op_bits)).unwrap_or(0) as u32;
@@ -2889,29 +2930,13 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
         let mut ancdata_size = unsafe { libc::CMSG_SPACE(4) } as usize; // ALG_SET_OP (u32)
 
         let iv_obj = obj_from_bits(iv_bits);
-        let iv_data: Option<Vec<u8>> = if iv_obj.is_none() {
-            None
-        } else {
-            let iv_ptr = iv_obj.as_ptr();
-            if iv_ptr.is_null() {
-                None
-            } else {
-                let type_id = unsafe { object_type_id(iv_ptr) };
-                if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                    let len = unsafe { bytes_len(iv_ptr) };
-                    let data = unsafe { bytes_data(iv_ptr) };
-                    let raw = unsafe { std::slice::from_raw_parts(data, len) };
-                    // AF_ALG IV header: 4 bytes length prefix + iv data
-                    let mut iv_buf = Vec::with_capacity(4 + raw.len());
-                    iv_buf.extend_from_slice(&(raw.len() as u32).to_ne_bytes());
-                    iv_buf.extend_from_slice(raw);
-                    ancdata_size += unsafe { libc::CMSG_SPACE(iv_buf.len() as u32) } as usize;
-                    Some(iv_buf)
-                } else {
-                    None
-                }
-            }
-        };
+        let iv_data: Option<Vec<u8>> = bytes_like_obj_to_vec(iv_obj).map(|raw| {
+            let mut iv_buf = Vec::with_capacity(4 + raw.len());
+            iv_buf.extend_from_slice(&(raw.len() as u32).to_ne_bytes());
+            iv_buf.extend_from_slice(&raw);
+            ancdata_size += unsafe { libc::CMSG_SPACE(iv_buf.len() as u32) } as usize;
+            iv_buf
+        });
 
         let assoclen = to_i64(obj_from_bits(assoclen_bits)).unwrap_or(-1);
         let assoclen_bytes: Option<[u8; 4]> = if assoclen >= 0 {
