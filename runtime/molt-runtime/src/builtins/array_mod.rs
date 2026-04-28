@@ -777,10 +777,46 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(handle) = array_handle_from_bits(handle_bits) else {
+        let handle_ptr = array_handle_ptr_from_bits(handle_bits);
+        if handle_ptr.is_null() {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
-        };
-        let Some(idx_raw) = to_i64(obj_from_bits(index_bits)) else {
+        }
+        let index_obj = obj_from_bits(index_bits);
+        unsafe {
+            if let Some(slice_ptr) = index_obj.as_ptr()
+                && crate::object_type_id(slice_ptr) == TYPE_ID_SLICE
+            {
+                let handle = &mut *handle_ptr;
+                let len = handle.len() as isize;
+                let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                let (start, stop, step) =
+                    match normalize_slice_indices(_py, len, start_obj, stop_obj, step_obj) {
+                        Ok(value) => value,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                let itemsize = handle.typecode.itemsize();
+                if step == 1 {
+                    if start < stop {
+                        let start_byte = start as usize * itemsize;
+                        let stop_byte = stop as usize * itemsize;
+                        handle.data.drain(start_byte..stop_byte);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let mut indices = collect_slice_indices(start, stop, step);
+                indices.sort_unstable_by(|a, b| b.cmp(a));
+                for idx in indices {
+                    let start_byte = idx * itemsize;
+                    let end_byte = start_byte + itemsize;
+                    handle.data.drain(start_byte..end_byte);
+                }
+                return MoltObject::none().bits();
+            }
+        }
+        let handle = unsafe { &mut *handle_ptr };
+        let Some(idx_raw) = to_i64(index_obj) else {
             return raise_exception::<u64>(_py, "TypeError", "array indices must be integers");
         };
         let len = handle.len() as i64;
