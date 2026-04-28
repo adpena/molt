@@ -30,7 +30,106 @@
 use super::PassStats;
 use super::dce::is_potentially_throwing;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
+
+/// SimpleIR op kinds that fall through to `OpCode::Copy` in the SSA lift
+/// (so they carry `_original_kind`) but are nevertheless provably
+/// non-throwing.  Hoisted into a const set here so the per-op check is
+/// O(1).  Anything *not* on this list is treated as throwing — a
+/// conservative choice consistent with DCE's safety policy.
+fn original_kind_is_provably_nonthrowing(kind: &str) -> bool {
+    matches!(
+        kind,
+        // Type-tag / layout guards: emit a typed branch on mismatch
+        // but never raise; the slow path falls through to the
+        // polymorphic op which the pass already sees separately.
+        "guard_tag"
+            | "guard_layout"
+            | "guard_int"
+            | "guard_float"
+            | "guard_str"
+            | "guard_bool"
+            | "guard_none"
+            // Field-offset stores/loads against a layout-guarded
+            // object are pure memory ops by construction.
+            | "store"
+            | "load"
+            // Exception-state queries that read or clear pending
+            // state without raising.
+            | "exception_clear"
+            | "exception_last"
+            | "exception_pop"
+            | "exception_push"
+            | "exception_stack_enter"
+            | "exception_stack_clear"
+            | "exception_stack_depth"
+            | "exception_context_set"
+            // Try/with control-flow markers — the structured
+            // try/except wraps potentially-raising body ops which
+            // appear separately in the linear IR; the markers
+            // themselves don't raise.
+            | "try_start"
+            | "try_end"
+            | "context_depth"
+            // Diagnostic / metadata markers.
+            | "trace_enter_slot"
+            | "trace_exit"
+            | "line"
+            | "code_slots_init"
+            | "code_slot_set"
+            | "code_new"
+            // Comparison / boolean ops on already-typed values.
+            // (Untyped variants land on the dedicated
+            // OpCode::Lt/Eq/etc. paths and are gated by
+            // is_potentially_throwing instead.)
+            | "is"
+            | "is_not"
+            | "not"
+            | "and"
+            | "or"
+            | "bool"
+            // Loop bookkeeping markers — control flow without
+            // exception semantics.
+            | "loop_start"
+            | "loop_end"
+            | "loop_continue"
+            | "loop_break"
+            | "loop_break_if_false"
+            | "loop_index_start"
+            | "loop_index_next"
+            // Identity helpers introduced by lowering.
+            | "missing"
+            | "phi"
+            | "identity_alias"
+            | "copy_var"
+    )
+}
+
+/// Returns `true` if this op may raise an exception.
+///
+/// Wraps `dce::is_potentially_throwing` with an `_original_kind`
+/// classifier for unmapped SimpleIR ops.  A `Copy` op carrying
+/// `_original_kind` represents an op the SSA lift did not have a
+/// dedicated `OpCode` for; whether it can raise depends on the
+/// original SimpleIR kind, not on `OpCode::Copy` itself.  Without this
+/// classifier the predicate would either over-approximate (treating
+/// every unmapped op as raising and producing zero `check_exception`
+/// elision in fast-int loops) or under-approximate (treating them all
+/// as non-raising and dropping the safety guards that protect
+/// `exception_new` / `exception_class` etc.).
+fn op_may_raise(op: &TirOp) -> bool {
+    if is_potentially_throwing(op.opcode) {
+        return true;
+    }
+    if op.opcode == OpCode::Copy {
+        if let Some(AttrValue::Str(orig)) = op.attrs.get("_original_kind") {
+            return !original_kind_is_provably_nonthrowing(orig);
+        }
+        // No `_original_kind` → real Copy / store_var / load_var, all safe.
+        return false;
+    }
+    false
+}
 
 pub fn run(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
@@ -60,7 +159,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     }
                 }
                 _ => {
-                    if is_potentially_throwing(op.opcode) {
+                    if op_may_raise(&op) {
                         pending_exception_possible = true;
                     }
                     new_ops.push(op);
