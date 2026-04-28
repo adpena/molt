@@ -21121,6 +21121,9 @@ impl SimpleBackend {
                     let val = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
+
+                    // Profile hook: gated on profile_enabled_val so it's
+                    // a single branch when profiling is off.
                     let profile_block = builder.create_block();
                     let profile_cont = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
@@ -21140,6 +21143,99 @@ impl SimpleBackend {
                     jump_block(&mut builder, profile_cont, &[]);
                     switch_to_block_materialized(&mut builder, profile_cont);
                     seal_block_once(&mut builder, &mut sealed_blocks, profile_cont);
+
+                    // Fast path: when (HEADER_FLAG_HAS_PTRS is clear)
+                    // AND (new value is immediate), emit a direct
+                    // memory write at obj_ptr + offset, skipping the
+                    // `molt_object_field_set_ptr` runtime call.
+                    //
+                    // Soundness rests on three invariants from the
+                    // runtime contract:
+                    //  1. `HEADER_FLAG_HAS_PTRS` is set whenever any
+                    //     pointer is stored into ANY slot of the
+                    //     object — including the trailing `__dict__`
+                    //     slot, after the `instance_set_dict_bits`
+                    //     change in `runtime/molt-runtime/src/object/mod.rs`.
+                    //     With the flag clear, every slot holds an
+                    //     immediate (or zero) and no live pointer
+                    //     needs decref.
+                    //  2. The new value being immediate (tag != PTR)
+                    //     means no `inc_ref` is needed for the new
+                    //     content.  When the flag is clear AND the
+                    //     new value is immediate, the runtime helper
+                    //     would just have written `*slot = val` and
+                    //     called `sync_materialized_instance_dict_for_field_offset`,
+                    //     which itself early-returns when
+                    //     `instance_dict_bits == 0` (held by
+                    //     invariant 1).
+                    //  3. `unbox_ptr_value` returns a pointer that
+                    //     is past the `MoltHeader` (it points to the
+                    //     payload start; see `lib.rs:1480` and the
+                    //     `header_from_obj_ptr` helper at
+                    //     `runtime/molt-runtime/src/object/mod.rs:1185`
+                    //     which subtracts `size_of::<MoltHeader>()`
+                    //     to get back to the header).  `MoltHeader`
+                    //     is 24 bytes (`object/mod.rs:289-298`) with
+                    //     `flags: u32` at field offset 8, so the
+                    //     absolute offset of `flags` from `obj_ptr`
+                    //     (which points to payload start) is
+                    //     `-24 + 8 = -16`.  `HEADER_FLAG_HAS_PTRS = 1`
+                    //     (bit 0; same file at line 423).
+                    //
+                    // The slow path remains the existing runtime
+                    // call and is reached on flag-set or pointer
+                    // value — the runtime helper handles decref of
+                    // the old slot, inc_ref of the new value, the
+                    // has-ptrs flag transition, and dict sync.
+                    const MOLT_HEADER_FLAGS_OFFSET_FROM_PAYLOAD: i32 = -16;
+                    const HEADER_FLAG_HAS_PTRS: i64 = 1;
+
+                    let flags_val = builder.ins().load(
+                        types::I32,
+                        MemFlags::trusted(),
+                        obj_ptr,
+                        MOLT_HEADER_FLAGS_OFFSET_FROM_PAYLOAD,
+                    );
+                    let flags_64 = builder.ins().uextend(types::I64, flags_val);
+                    let has_ptrs_bit = builder.ins().band_imm(flags_64, HEADER_FLAG_HAS_PTRS);
+                    let has_ptrs_set =
+                        builder.ins().icmp_imm(IntCC::NotEqual, has_ptrs_bit, 0);
+
+                    let tag_mask =
+                        builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+                    let tag_bits = builder.ins().band(*val, tag_mask);
+                    let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+                    let new_is_ptr =
+                        builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
+
+                    let go_slow = builder.ins().bor(has_ptrs_set, new_is_ptr);
+
+                    let fast_block = builder.create_block();
+                    let slow_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(fast_block, current_block);
+                        builder.insert_block_after(slow_block, fast_block);
+                        builder.insert_block_after(merge_block, slow_block);
+                    }
+                    builder.set_cold_block(slow_block);
+                    builder
+                        .ins()
+                        .brif(go_slow, slow_block, &[], fast_block, &[]);
+
+                    // Fast path: direct store at obj_ptr + offset, no
+                    // GIL acquire, no runtime call.
+                    switch_to_block_materialized(&mut builder, fast_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                    jump_block(&mut builder, merge_block, &[]);
+
+                    // Slow path: existing runtime helper handles all
+                    // refcount + dict sync semantics.
+                    switch_to_block_materialized(&mut builder, slow_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                     let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
                     let callee = Self::import_func_id_split(
                         &mut self.module,
@@ -21149,14 +21245,24 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
+                    builder
                         .ins()
                         .call(local_callee, &[obj_ptr, offset_bits, *val]);
+                    jump_block(&mut builder, merge_block, &[]);
+
+                    // Merge: continue downstream IR.  The runtime
+                    // helper returns `MoltObject::none().bits()`; the
+                    // fast path returns nothing, but `out` (when
+                    // present) is bound to box_none() which is
+                    // structurally identical to the helper's return
+                    // for the "side-effect, no value" contract.
+                    switch_to_block_materialized(&mut builder, merge_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                     if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
-                        let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, out_name.clone(), res);
+                        let none_val = builder.ins().iconst(types::I64, box_none());
+                        def_var_named(&mut builder, &vars, out_name.clone(), none_val);
                     }
                 }
                 "store_init" => {

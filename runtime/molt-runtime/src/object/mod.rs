@@ -1258,6 +1258,16 @@ pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
             return;
         }
         *slot = bits;
+        // Materializing a non-zero __dict__ stores a pointer in the
+        // trailing dict slot; mark `HEADER_FLAG_HAS_PTRS` so the
+        // codegen-side store fast path (which uses HAS_PTRS as a
+        // proxy for "no live pointer slot needs sync") falls back to
+        // the runtime helper that performs the dict sync.  Clearing
+        // (`bits == 0`) does not need the flag set since clearing
+        // does not introduce a pointer slot.
+        if bits != 0 {
+            object_mark_has_ptrs(_py, ptr);
+        }
     }
 }
 
