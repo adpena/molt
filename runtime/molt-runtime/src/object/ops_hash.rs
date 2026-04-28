@@ -343,80 +343,84 @@ fn simd_max_byte_value(bytes: &[u8]) -> u32 {
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn simd_max_byte_sse2(bytes: &[u8]) -> u32 {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vmax = _mm_setzero_si128();
-    while i + 16 <= bytes.len() {
-        let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
-        vmax = _mm_max_epu8(vmax, v);
-        i += 16;
-    }
-    // Horizontal max: fold 128 bits down to a single max byte
-    let hi64 = _mm_srli_si128(vmax, 8);
-    vmax = _mm_max_epu8(vmax, hi64);
-    let hi32 = _mm_srli_si128(vmax, 4);
-    vmax = _mm_max_epu8(vmax, hi32);
-    let hi16 = _mm_srli_si128(vmax, 2);
-    vmax = _mm_max_epu8(vmax, hi16);
-    let hi8 = _mm_srli_si128(vmax, 1);
-    vmax = _mm_max_epu8(vmax, hi8);
-    let mut max = (_mm_extract_epi8(vmax, 0) & 0xFF) as u32;
-    // Tail bytes
-    for &b in &bytes[i..] {
-        max = max.max(b as u32);
-    }
-    // If all bytes < 0x80, return the byte max directly (it's ASCII, so codepoint == byte)
-    // If any byte >= 0x80, fall back to full codepoint scan since UTF-8 multi-byte chars
-    // could have codepoints > 0xFF
-    if max >= 0x80 {
-        let mut cp_max = 0u32;
-        if let Ok(text) = std::str::from_utf8(bytes) {
-            for ch in text.chars() {
-                cp_max = cp_max.max(ch as u32);
-            }
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vmax = _mm_setzero_si128();
+        while i + 16 <= bytes.len() {
+            let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+            vmax = _mm_max_epu8(vmax, v);
+            i += 16;
         }
-        return cp_max;
+        // Horizontal max: fold 128 bits down to a single max byte
+        let hi64 = _mm_srli_si128(vmax, 8);
+        vmax = _mm_max_epu8(vmax, hi64);
+        let hi32 = _mm_srli_si128(vmax, 4);
+        vmax = _mm_max_epu8(vmax, hi32);
+        let hi16 = _mm_srli_si128(vmax, 2);
+        vmax = _mm_max_epu8(vmax, hi16);
+        let hi8 = _mm_srli_si128(vmax, 1);
+        vmax = _mm_max_epu8(vmax, hi8);
+        let mut max = (_mm_extract_epi8(vmax, 0) & 0xFF) as u32;
+        // Tail bytes
+        for &b in &bytes[i..] {
+            max = max.max(b as u32);
+        }
+        // If all bytes < 0x80, return the byte max directly (it's ASCII, so codepoint == byte)
+        // If any byte >= 0x80, fall back to full codepoint scan since UTF-8 multi-byte chars
+        // could have codepoints > 0xFF
+        if max >= 0x80 {
+            let mut cp_max = 0u32;
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                for ch in text.chars() {
+                    cp_max = cp_max.max(ch as u32);
+                }
+            }
+            return cp_max;
+        }
+        max
     }
-    max
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn simd_max_byte_avx2(bytes: &[u8]) -> u32 {
-    use std::arch::x86_64::*;
-    let mut i = 0usize;
-    let mut vmax = _mm256_setzero_si256();
-    while i + 32 <= bytes.len() {
-        let v = _mm256_loadu_si256(bytes.as_ptr().add(i) as *const __m256i);
-        vmax = _mm256_max_epu8(vmax, v);
-        i += 32;
-    }
-    // Fold 256 to 128
-    let lo = _mm256_castsi256_si128(vmax);
-    let hi = _mm256_extracti128_si256(vmax, 1);
-    let mut v128 = _mm_max_epu8(lo, hi);
-    // Fold 128 to single byte
-    let hi64 = _mm_srli_si128(v128, 8);
-    v128 = _mm_max_epu8(v128, hi64);
-    let hi32 = _mm_srli_si128(v128, 4);
-    v128 = _mm_max_epu8(v128, hi32);
-    let hi16 = _mm_srli_si128(v128, 2);
-    v128 = _mm_max_epu8(v128, hi16);
-    let hi8 = _mm_srli_si128(v128, 1);
-    v128 = _mm_max_epu8(v128, hi8);
-    let mut max = (_mm_extract_epi8(v128, 0) & 0xFF) as u32;
-    for &b in &bytes[i..] {
-        max = max.max(b as u32);
-    }
-    if max >= 0x80 {
-        let mut cp_max = 0u32;
-        if let Ok(text) = std::str::from_utf8(bytes) {
-            for ch in text.chars() {
-                cp_max = cp_max.max(ch as u32);
-            }
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0usize;
+        let mut vmax = _mm256_setzero_si256();
+        while i + 32 <= bytes.len() {
+            let v = _mm256_loadu_si256(bytes.as_ptr().add(i) as *const __m256i);
+            vmax = _mm256_max_epu8(vmax, v);
+            i += 32;
         }
-        return cp_max;
+        // Fold 256 to 128
+        let lo = _mm256_castsi256_si128(vmax);
+        let hi = _mm256_extracti128_si256(vmax, 1);
+        let mut v128 = _mm_max_epu8(lo, hi);
+        // Fold 128 to single byte
+        let hi64 = _mm_srli_si128(v128, 8);
+        v128 = _mm_max_epu8(v128, hi64);
+        let hi32 = _mm_srli_si128(v128, 4);
+        v128 = _mm_max_epu8(v128, hi32);
+        let hi16 = _mm_srli_si128(v128, 2);
+        v128 = _mm_max_epu8(v128, hi16);
+        let hi8 = _mm_srli_si128(v128, 1);
+        v128 = _mm_max_epu8(v128, hi8);
+        let mut max = (_mm_extract_epi8(v128, 0) & 0xFF) as u32;
+        for &b in &bytes[i..] {
+            max = max.max(b as u32);
+        }
+        if max >= 0x80 {
+            let mut cp_max = 0u32;
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                for ch in text.chars() {
+                    cp_max = cp_max.max(ch as u32);
+                }
+            }
+            return cp_max;
+        }
+        max
     }
-    max
 }
 
 #[cfg(target_arch = "aarch64")]

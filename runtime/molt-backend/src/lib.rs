@@ -4043,7 +4043,10 @@ impl SimpleBackend {
 
         let emit_start = std::time::Instant::now();
         let SimpleBackend { module, .. } = self;
+        #[cfg(target_os = "macos")]
         let mut product = module.finish();
+        #[cfg(not(target_os = "macos"))]
+        let product = module.finish();
         // Set MachO platform load command so ld doesn't emit
         // "no platform load command found" warnings on macOS.
         #[cfg(target_os = "macos")]
