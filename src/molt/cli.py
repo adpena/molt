@@ -16586,11 +16586,12 @@ def _build_native_link_driver_command(
     cflags = os.environ.get("CFLAGS", "")
     if cflags:
         link_cmd.extend(shlex.split(cflags))
-    linker_hint: str | None = None
-    if profile == "dev":
-        linker_hint = _resolve_dev_linker()
-        if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
-            link_cmd.append(f"-fuse-ld={linker_hint}")
+    linker_hint = _resolve_native_linker_hint(
+        profile=profile,
+        target_triple=target_triple,
+    )
+    if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
+        link_cmd.append(f"-fuse-ld={linker_hint}")
     if sys.platform == "darwin" and not target_triple:
         link_cmd = _strip_arch_flags(link_cmd)
         arch = (
@@ -16747,8 +16748,11 @@ def _build_native_link_command(
         link_cmd.append("-Wl,--strip-all")
         # Skip linking unused shared libraries.
         link_cmd.append("-Wl,--as-needed")
-        # Identical code folding — deduplicates functions with same body.
-        link_cmd.append("-Wl,--icf=safe")
+        # Identical code folding deduplicates same-body functions, but GNU
+        # ld.bfd does not support --icf. Keep this optimization tied to an
+        # explicitly selected linker with safe-ICF support.
+        if _native_link_cmd_supports_safe_icf(link_cmd, linker_hint):
+            link_cmd.append("-Wl,--icf=safe")
         # Linker optimization level for layout and relaxation.
         link_cmd.append("-Wl,-O2")
         # Version script: restrict all symbols to local scope except main.
@@ -16908,7 +16912,11 @@ def _retry_native_link_without_hint(
 ) -> tuple[subprocess.CompletedProcess[str] | None, list[str]]:
     if linker_hint is None:
         return None, list(link_cmd)
-    retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
+    retry_cmd = [
+        arg
+        for arg in link_cmd
+        if arg != f"-fuse-ld={linker_hint}" and arg != "-Wl,--icf=safe"
+    ]
     if retry_cmd == list(link_cmd):
         return None, retry_cmd
     retry_process = _run_native_link_command(
@@ -25442,6 +25450,14 @@ def _phase_timeout(timeout_s: float | None, *, phase_name: str):
             signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 
+def _resolve_available_fast_linker() -> str | None:
+    if shutil.which("mold"):
+        return "mold"
+    if shutil.which("ld.lld") or shutil.which("lld"):
+        return "lld"
+    return None
+
+
 def _resolve_dev_linker() -> str | None:
     raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
     if raw in {"0", "false", "no", "off", "none", "disable"}:
@@ -25450,11 +25466,35 @@ def _resolve_dev_linker() -> str | None:
         return raw
     if raw != "auto":
         return None
-    if shutil.which("mold"):
-        return "mold"
-    if shutil.which("ld.lld") or shutil.which("lld"):
-        return "lld"
+    return _resolve_available_fast_linker()
+
+
+def _resolve_native_linker_hint(
+    *,
+    profile: str,
+    target_triple: str | None,
+) -> str | None:
+    if profile == "dev":
+        return _resolve_dev_linker()
+    is_host_linux = target_triple is None and sys.platform.startswith("linux")
+    if is_host_linux:
+        return _resolve_available_fast_linker()
     return None
+
+
+def _native_link_cmd_supports_safe_icf(
+    link_cmd: Sequence[str],
+    linker_hint: str | None,
+) -> bool:
+    if linker_hint in {"mold", "lld"}:
+        return True
+    for arg in link_cmd:
+        if not arg.startswith("-fuse-ld="):
+            continue
+        linker = Path(arg.split("=", 1)[1]).name
+        if linker in {"mold", "ld.mold", "lld", "ld.lld", "gold", "ld.gold"}:
+            return True
+    return False
 
 
 def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:

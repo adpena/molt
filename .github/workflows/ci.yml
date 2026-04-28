@@ -55,6 +55,12 @@ jobs:
       - name: Sync Python environment
         run: uv sync --group dev --python 3.12
 
+      - name: Install native linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
+          ld.lld --version
+
       - name: Run Python smoke tests
         run: |
           uv run --python 3.12 python3 -m pytest -q \
