@@ -85,15 +85,53 @@ fn is_borrowing_builtin(name: &str) -> bool {
 /// Uses the effects system: a method that is `effect_free` on an immutable
 /// receiver type cannot capture its arguments. Falls back to `false` for
 /// unknown receiver types or methods (conservative).
+///
+/// Supports two encodings of method identity on the SSA `attrs` dict:
+///
+/// 1. **Frontend canonical form (production)**: `method` is the
+///    full `BoundMethod:<receiver_type>:<method_name>` string copied
+///    from the SimpleIR `s_value` of `call_method` ops.  This is
+///    what the frontend's `_emit_dynamic_call` produces for
+///    monomorphic builtin-method dispatches and what the native
+///    backend's `s_value` match arm expects to see at codegen
+///    (`function_compiler.rs:16489+`).  We parse the receiver and
+///    method out inline so the existing effects table
+///    (`("list", "append")`, `("str", "upper")`, …) matches.
+///
+/// 2. **Test / future-refined form**: `method` is a bare method
+///    name AND `receiver_type` is a separate attr.  This is what
+///    the existing unit tests use, and what a future SSA-lift
+///    refinement would emit if we ever derive receiver type from
+///    the receiver value's `TirType` directly.
+///
+/// The two encodings are equivalent contracts; the parse logic
+/// here lets a single effects-table lookup serve both.
 fn is_borrowing_method_call(attrs: &AttrDict) -> bool {
-    let method = match attr_str(attrs, "method") {
+    let method_attr = match attr_str(attrs, "method") {
         Some(m) => m,
         None => return false,
     };
-    let receiver_type = match attr_str(attrs, "receiver_type") {
-        Some(rt) => rt,
-        None => return false,
-    };
+    let (receiver_type, method) =
+        if let Some(rest) = method_attr.strip_prefix("BoundMethod:") {
+            // Frontend canonical form: split on the first ':' to
+            // recover (receiver_type, method_name).  Both halves
+            // must be non-empty for the lookup to succeed.
+            let mut parts = rest.splitn(2, ':');
+            match (parts.next(), parts.next()) {
+                (Some(rcv), Some(mthd)) if !rcv.is_empty() && !mthd.is_empty() => {
+                    (rcv, mthd)
+                }
+                _ => return false,
+            }
+        } else {
+            // Test / future-refined form: bare method name plus
+            // explicit receiver_type attr.
+            let receiver_type = match attr_str(attrs, "receiver_type") {
+                Some(rt) => rt,
+                None => return false,
+            };
+            (receiver_type, method_attr)
+        };
     effects::method_effects(receiver_type, method).is_some_and(|fx| fx.effect_free)
 }
 
@@ -104,6 +142,21 @@ fn is_borrowing_method_call(attrs: &AttrDict) -> bool {
 #[inline]
 fn is_alloc_site(opcode: OpCode) -> bool {
     matches!(opcode, OpCode::Alloc | OpCode::ObjectNewBound)
+}
+
+/// Return the operand that carries the stored value for StoreAttr-family ops.
+///
+/// The TIR opcode intentionally groups several SimpleIR store variants behind
+/// `StoreAttr`; the preserved `_original_kind` defines operand roles for the
+/// variants whose attribute name/class guard is also an SSA operand.
+fn store_attr_value_operand_index(attrs: &AttrDict, operand_count: usize) -> Option<usize> {
+    let value_index = match attr_str(attrs, "_original_kind") {
+        Some("module_set_attr") | Some("set_attr_name") => 2,
+        Some("guarded_field_set") | Some("guarded_field_set_init") => 3,
+        Some("set_attr") | Some("store_attr") if operand_count >= 3 => 2,
+        _ => 1,
+    };
+    (value_index < operand_count).then_some(value_index)
 }
 
 /// Analyze escape state of all allocation sites in `func`.
@@ -255,12 +308,15 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                     escapes.insert(val, EscapeState::GlobalEscape);
                 }
                 // StoreAttr / StoreIndex: check if target is also alloc'd.
-                // Convention: operands[0] = target, operands[1] = value (or attr name operand).
-                // For StoreAttr: operands = [target, value], attr name in attrs.
+                // StoreAttr groups SimpleIR variants whose value operand is
+                // determined by `_original_kind`; see
+                // `store_attr_value_operand_index`.
                 // For StoreIndex: operands = [target, index, value].
                 OpCode::StoreAttr => {
-                    // operands[0] = target, operands[1] = value
-                    if use_info.operand_index == 1 {
+                    if use_info.operand_index
+                        == store_attr_value_operand_index(&use_info.attrs, use_info.operands.len())
+                            .unwrap_or(usize::MAX)
+                    {
                         // This alloc'd value is being stored as a field value.
                         let target = use_info.operands[0];
                         if alloc_set.contains(&target) {
@@ -525,11 +581,9 @@ mod tests {
             vec![class_ref],
             vec![inst_val],
         ));
-        entry.ops.push(make_op(
-            OpCode::LoadAttr,
-            vec![inst_val],
-            vec![load_result],
-        ));
+        entry
+            .ops
+            .push(make_op(OpCode::LoadAttr, vec![inst_val], vec![load_result]));
         entry
             .ops
             .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
@@ -561,11 +615,9 @@ mod tests {
             attrs,
             source_span: None,
         });
-        entry.ops.push(make_op(
-            OpCode::LoadAttr,
-            vec![inst_val],
-            vec![load_result],
-        ));
+        entry
+            .ops
+            .push(make_op(OpCode::LoadAttr, vec![inst_val], vec![load_result]));
         entry
             .ops
             .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
@@ -594,11 +646,9 @@ mod tests {
             vec![class_ref],
             vec![inst_val],
         ));
-        entry.ops.push(make_op(
-            OpCode::LoadAttr,
-            vec![inst_val],
-            vec![load_result],
-        ));
+        entry
+            .ops
+            .push(make_op(OpCode::LoadAttr, vec![inst_val], vec![load_result]));
         entry
             .ops
             .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
@@ -803,6 +853,153 @@ mod tests {
         );
     }
 
+    /// Production frontend canonical form: the SSA lift copies the
+    /// SimpleIR `call_method` op's `s_value` (e.g.
+    /// `"BoundMethod:list:append"`) into `attrs["method"]` and does
+    /// NOT set `receiver_type`.  Pre-fix, `is_borrowing_method_call`
+    /// returned false on the missing receiver_type and the CallMethod
+    /// arm still defaulted to GlobalEscape — *correct but for the
+    /// wrong reason*: the borrow check never fired even for genuinely
+    /// borrowing methods.  This test pins that, post-fix, the
+    /// frontend canonical form correctly classifies a mutating
+    /// method (list.append) as escaping.
+    #[test]
+    fn frontend_canonical_form_list_append_still_escapes() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let alloc_val = func.fresh_value();
+        let list_val = func.fresh_value();
+        let call_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "method".into(),
+            AttrValue::Str("BoundMethod:list:append".into()),
+        );
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![list_val]));
+        entry.ops.push(make_op_with_attrs(
+            OpCode::CallMethod,
+            vec![list_val, alloc_val],
+            vec![call_result],
+            attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&alloc_val],
+            EscapeState::GlobalEscape,
+            "list.append in canonical BoundMethod: form must escape \
+             — list.append is not in the effect_free table"
+        );
+    }
+
+    /// Production frontend canonical form: a *pure* monomorphic
+    /// builtin method (e.g. `str.upper`) on an alloc'd receiver
+    /// should classify as NoEscape — `str.upper` returns a new
+    /// string and doesn't capture self.  Before the borrow-check
+    /// fix that parses the `BoundMethod:` prefix, this test would
+    /// FAIL: with no `receiver_type` attr set, the old code fell
+    /// through to GlobalEscape.  Post-fix, the parse extracts
+    /// `(str, upper)` from the method attr, looks up
+    /// `effects::method_effects("str", "upper")`, sees `effect_free`,
+    /// and stays at NoEscape.
+    #[test]
+    fn frontend_canonical_form_str_upper_does_not_escape() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let alloc_val = func.fresh_value();
+        let call_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "method".into(),
+            AttrValue::Str("BoundMethod:str:upper".into()),
+        );
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry.ops.push(make_op_with_attrs(
+            OpCode::CallMethod,
+            vec![alloc_val],
+            vec![call_result],
+            attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&alloc_val],
+            EscapeState::NoEscape,
+            "str.upper in canonical BoundMethod: form should be \
+             classified as borrowing (effect_free) — alloc stays \
+             at NoEscape"
+        );
+    }
+
+    /// Malformed `BoundMethod:` strings (empty receiver, empty
+    /// method, missing colon) fall through to false.  Soundness
+    /// failure mode: false-positive borrow ⇒ stack-allocated value
+    /// dangling past frame ⇒ UAF.  Better to default to escape.
+    #[test]
+    fn malformed_bound_method_string_defaults_to_escape() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let alloc_val = func.fresh_value();
+        let call_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        // No method portion (string ends at the receiver colon).
+        attrs.insert(
+            "method".into(),
+            AttrValue::Str("BoundMethod:str:".into()),
+        );
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry.ops.push(make_op_with_attrs(
+            OpCode::CallMethod,
+            vec![alloc_val],
+            vec![call_result],
+            attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&alloc_val],
+            EscapeState::GlobalEscape,
+            "malformed BoundMethod: string must NOT be parsed into \
+             a successful borrow check — soundness over precision"
+        );
+    }
+
     /// Test: print() (I/O but borrowing) does not cause GlobalEscape.
     #[test]
     fn borrowing_builtin_print_does_not_escape() {
@@ -989,6 +1186,60 @@ mod tests {
             stats.values_changed, 0,
             "no values should be rewritten when the alloc escapes"
         );
+    }
+
+    #[test]
+    fn object_new_bound_stored_to_module_attr_escapes() {
+        let mut func = TirFunction::new(
+            "molt_init_typing".into(),
+            vec![TirType::DynBox, TirType::Str, TirType::DynBox],
+            TirType::None,
+        );
+        let module_obj = ValueId(0);
+        let attr_name = ValueId(1);
+        let class_ref = ValueId(2);
+        let inst_val = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut alloc_attrs = AttrDict::new();
+        alloc_attrs.insert("value".into(), AttrValue::Int(24));
+        let mut store_attrs = AttrDict::new();
+        store_attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str("module_set_attr".into()),
+        );
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs: alloc_attrs,
+            source_span: None,
+        });
+        entry.ops.push(make_op_with_attrs(
+            OpCode::StoreAttr,
+            vec![module_obj, attr_name, inst_val],
+            vec![],
+            store_attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let stats = run(&mut func);
+        let entry = &func.blocks[&func.entry_block];
+
+        assert_eq!(
+            entry.ops[0].opcode,
+            OpCode::ObjectNewBound,
+            "module globals outlive the module init frame, so stored objects must stay heap allocated"
+        );
+        assert_eq!(stats.values_changed, 0);
     }
 
     /// Test 6: Empty function → empty results.
