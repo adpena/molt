@@ -89,8 +89,11 @@ fn is_side_effecting(opcode: OpCode) -> bool {
 /// Returns `true` if the op may throw an exception.  Used when
 /// `has_exception_handling` is set to conservatively keep all
 /// potentially-throwing ops alive inside try regions.
+///
+/// Also re-used by `check_exception_elim` so both passes share a
+/// single source of truth for raising semantics.
 #[inline]
-fn is_potentially_throwing(opcode: OpCode) -> bool {
+pub(super) fn is_potentially_throwing(opcode: OpCode) -> bool {
     matches!(
         opcode,
         OpCode::Call
