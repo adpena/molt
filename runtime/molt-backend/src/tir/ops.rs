@@ -60,6 +60,20 @@ pub enum OpCode {
     // Memory
     Alloc,
     StackAlloc,
+    /// Allocate a vanilla user-class instance with `class_ref` operand.
+    /// Lowers to `molt_object_new_bound(class_bits)`.  The frontend's
+    /// class-instantiation fold emits this op for `Class(args)` call
+    /// sites where the class layout is statically known and `__new__`
+    /// is the default.  Distinct from generic `Alloc` because the
+    /// allocation size and finalizer are derived from the class layout
+    /// rather than a fixed heap-block descriptor.
+    ObjectNewBound,
+    /// Stack-allocated instance (escape analysis NoEscape variant of
+    /// `ObjectNewBound`).  Only valid when the class has a fixed,
+    /// non-extensible layout and the result does not escape the
+    /// enclosing function.  Lowers to a Cranelift `StackSlot` of the
+    /// class's slot count.
+    ObjectNewBoundStack,
     Free,
     LoadAttr,
     StoreAttr,

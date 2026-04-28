@@ -1631,6 +1631,26 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             value: attr_int(&op.attrs, "value"),
             ..OpIR::default()
         }),
+        OpCode::ObjectNewBound => Some(OpIR {
+            kind: "object_new_bound".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            // The frontend stores the result class id in the SimpleIR
+            // `type_hint` field (`type_hint=class_id`).  The SSA lift
+            // round-trips it through the `_type_hint` attribute (see
+            // `tir/ssa.rs:1133`); restore it here so downstream backend
+            // preanalysis still sees the class identity.
+            type_hint: attr_str(&op.attrs, "_type_hint"),
+            ..OpIR::default()
+        }),
+        OpCode::ObjectNewBoundStack => Some(OpIR {
+            kind: "object_new_bound_stack".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            type_hint: attr_str(&op.attrs, "_type_hint"),
+            stack_eligible: Some(true),
+            ..OpIR::default()
+        }),
         OpCode::Free => Some(OpIR {
             kind: "free".to_string(),
             args: Some(operand_args(op)),
