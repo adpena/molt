@@ -582,6 +582,41 @@ pub(crate) fn alloc_cold_header(cold: MoltColdHeader) -> u32 {
     slab.alloc(cold)
 }
 
+/// High bit of `MoltHeader::cold_idx` flagged as "shared" — many
+/// instances of the same class point to one cold header (allocated
+/// at first instantiation, reused for every subsequent instance).
+/// Eliminates the per-instance `alloc_cold_header` mutex contention
+/// in tight allocation loops, and — critically for stack-allocated
+/// instances — encodes `class_bits` (which lives in the cold
+/// header's `state` field) without per-instance heap allocation.
+///
+/// When the bit is set:
+///   - `object_state` masks it off before slab lookup.
+///   - `object_set_state` allocates a *private* cold header for the
+///     mutating instance (since shared state cannot be modified
+///     without affecting siblings).
+///   - `object_set_poll_fn` similarly promotes shared → private.
+///   - `free_cold_header_for_obj` is a no-op (the shared cold header
+///     outlives any individual instance — only the class itself
+///     owns and frees it).
+///
+/// The slab index is bounded by `COLD_HEADER_SLAB_CAP` which is well
+/// below `2^31`, so the bit will never collide with a real index.
+pub(crate) const SHARED_COLD_IDX_BIT: u32 = 1 << 31;
+
+/// Mask off the shared-bit to recover the real slab index.
+#[inline]
+pub(crate) fn cold_idx_real(raw: u32) -> u32 {
+    raw & !SHARED_COLD_IDX_BIT
+}
+
+/// Returns `true` when the cold_idx is flagged as shared and should
+/// not be freed when the owning instance is deallocated.
+#[inline]
+pub(crate) fn cold_idx_is_shared(raw: u32) -> bool {
+    raw & SHARED_COLD_IDX_BIT != 0
+}
+
 /// Retrieve a **copy** of the cold header at `idx`.
 /// Returns `None` if idx == 0.
 #[inline]
@@ -603,6 +638,71 @@ pub(crate) fn free_cold_header(idx: u32) {
     slab.free(idx);
 }
 
+/// Returns the per-class shared cold-header index for `class_ptr`,
+/// allocating one lazily on first call.  The shared cold header
+/// stores `class_bits` (the boxed class reference) in its `state`
+/// field, so all instances of this class can recover their class
+/// via `object_state()` without needing a private cold header.
+///
+/// The returned value has `SHARED_COLD_IDX_BIT` set, signaling to
+/// readers that no per-instance allocation occurred and to the
+/// dealloc path that this idx must NOT be freed when the owning
+/// instance dies (the class outlives its instances).
+///
+/// **Per-class cache**: the class object's `MoltHeader::reserved`
+/// field — currently unused for typed classes — is repurposed to
+/// cache the shared idx.  Accessed atomically; a losing concurrent
+/// initializer wastes one cold-header slot but never produces an
+/// inconsistent state.
+///
+/// **Why this works**: `MoltHeader::reserved` is `u32` and the
+/// struct is `#[repr(C)]` with 4-byte aligned fields, so an in-place
+/// `AtomicU32` view is sound (alignment + size match).
+///
+/// Safety: `class_ptr` must point to a live class object (TYPE_ID_TYPE).
+pub(crate) unsafe fn ensure_shared_cold_idx(class_ptr: *mut u8) -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    unsafe {
+        let header = header_from_obj_ptr(class_ptr);
+        // SAFETY: `reserved` is a u32 with natural 4-byte alignment;
+        // viewing it as AtomicU32 is sound on every supported target.
+        let reserved_ptr = std::ptr::addr_of_mut!((*header).reserved) as *const AtomicU32;
+        let reserved = &*reserved_ptr;
+        let cached = reserved.load(Ordering::Acquire);
+        if cached != 0 {
+            return cached;
+        }
+        let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let new_idx = alloc_cold_header(MoltColdHeader {
+            state: class_bits as i64,
+            ..MoltColdHeader::default()
+        });
+        let tagged = new_idx | SHARED_COLD_IDX_BIT;
+        match reserved.compare_exchange(0, tagged, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => tagged,
+            Err(winner) => {
+                // Lost the race: free our wasted alloc and use the winner's.
+                free_cold_header(new_idx);
+                winner
+            }
+        }
+    }
+}
+
+/// Release the per-class shared cold header cached in `MoltHeader::reserved`.
+///
+/// Safety: `class_ptr` must point to a class object that is being destroyed.
+unsafe fn free_shared_cold_idx_for_class(class_ptr: *mut u8) {
+    unsafe {
+        let header = header_from_obj_ptr(class_ptr);
+        let raw = (*header).reserved;
+        if cold_idx_is_shared(raw) {
+            (*header).reserved = 0;
+            free_cold_header(cold_idx_real(raw));
+        }
+    }
+}
+
 /// Derive the total allocation size from a header's `size_class`.
 /// For oversized objects (size_class == 0) the exact size is stored in
 /// the cold header's `extended_size`.
@@ -612,8 +712,11 @@ pub(crate) fn total_size_from_header_fields(size_class: u16, cold_idx: u32) -> u
     if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
         SIZE_CLASS_TABLE[sc]
     } else {
-        // Oversized: look up cold header by slab index
-        get_cold_header(cold_idx)
+        // Oversized: look up cold header by slab index.  Strip the
+        // shared bit before lookup — oversized objects don't share
+        // cold headers (per-instance `extended_size` differs), but
+        // the strip is harmless when the bit is clear.
+        get_cold_header(cold_idx_real(cold_idx))
             .map(|c| c.extended_size)
             .unwrap_or(0)
     }
@@ -635,20 +738,47 @@ fn allocated_size_for(total_size: usize) -> usize {
 }
 
 /// Get the poll_fn for an object. Returns 0 if no cold header exists.
+/// Strips the shared bit since the shared cold header carries
+/// `state=class_bits` only — `poll_fn` is generator/coroutine state
+/// and a class instance reading `poll_fn` from a shared cold header
+/// observes the (zero-initialised) shared `poll_fn` field, which is
+/// the correct semantics for "no live coroutine state."
 #[inline]
 pub(crate) fn object_poll_fn(data_ptr: *mut u8) -> u64 {
-    let idx = unsafe { (*header_from_obj_ptr(data_ptr)).cold_idx };
-    get_cold_header(idx).map(|c| c.poll_fn).unwrap_or(0)
+    let raw_idx = unsafe { (*header_from_obj_ptr(data_ptr)).cold_idx };
+    get_cold_header(cold_idx_real(raw_idx))
+        .map(|c| c.poll_fn)
+        .unwrap_or(0)
 }
 
 /// Set the poll_fn for an object, creating a cold header if needed.
+/// Mirrors `object_set_state`'s shared→private promotion: writing
+/// to a shared cold header would corrupt every sibling instance.
 pub(crate) fn object_set_poll_fn(data_ptr: *mut u8, poll_fn: u64) {
     unsafe {
         let header = header_from_obj_ptr(data_ptr);
-        let idx = (*header).cold_idx;
-        if idx != 0 {
+        let raw_idx = (*header).cold_idx;
+        if cold_idx_is_shared(raw_idx) {
+            // Promote: shared → private.  We don't preserve the
+            // shared state's `state` field here — the only value
+            // stored in shared cold headers is `class_bits`, and
+            // setting `poll_fn` is unrelated; the new private cold
+            // header has state=0, which is semantically "no class
+            // bits stored" (the class_bits will be re-stored via
+            // object_set_class_bits when needed).  In practice
+            // poll_fn is only set on coroutine/generator objects,
+            // not on user-class instances, so this branch is
+            // effectively unreachable for shared cold idx.
+            let new_idx = alloc_cold_header(MoltColdHeader {
+                poll_fn,
+                ..MoltColdHeader::default()
+            });
+            (*header).cold_idx = new_idx;
+            return;
+        }
+        if raw_idx != 0 {
             let mut slab = cold_header_slab().lock().unwrap();
-            if let Some(entry) = slab.get_mut(idx) {
+            if let Some(entry) = slab.get_mut(raw_idx) {
                 entry.poll_fn = poll_fn;
             }
         } else {
@@ -663,20 +793,43 @@ pub(crate) fn object_set_poll_fn(data_ptr: *mut u8, poll_fn: u64) {
 }
 
 /// Get the state for an object. Returns 0 if no cold header exists.
+/// Strips the `SHARED_COLD_IDX_BIT` so shared cold headers
+/// (allocated once per class for typed-class instances) read
+/// transparently — both heap-alloc and stack-alloc instances of the
+/// same class observe the class's stored `class_bits`.
 #[inline]
 pub(crate) fn object_state(data_ptr: *mut u8) -> i64 {
-    let idx = unsafe { (*header_from_obj_ptr(data_ptr)).cold_idx };
-    get_cold_header(idx).map(|c| c.state).unwrap_or(0)
+    let raw_idx = unsafe { (*header_from_obj_ptr(data_ptr)).cold_idx };
+    get_cold_header(cold_idx_real(raw_idx))
+        .map(|c| c.state)
+        .unwrap_or(0)
 }
 
 /// Set the state for an object, creating a cold header if needed.
+/// When the current cold_idx is the class's shared cold header, this
+/// must allocate a *private* cold header instead — otherwise we'd
+/// corrupt every sibling instance's state.  The new private cold
+/// header inherits the shared state's value as a starting point so
+/// callers that read-modify-write semantics are preserved (e.g.
+/// generator-state transitions on instances that store class_bits).
 pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
     unsafe {
         let header = header_from_obj_ptr(data_ptr);
-        let idx = (*header).cold_idx;
-        if idx != 0 {
+        let raw_idx = (*header).cold_idx;
+        if cold_idx_is_shared(raw_idx) {
+            // Promote: shared → private.  The shared cold header
+            // remains alive (still referenced by the class and
+            // siblings); we simply give this instance its own.
+            let new_idx = alloc_cold_header(MoltColdHeader {
+                state,
+                ..MoltColdHeader::default()
+            });
+            (*header).cold_idx = new_idx;
+            return;
+        }
+        if raw_idx != 0 {
             let mut slab = cold_header_slab().lock().unwrap();
-            if let Some(entry) = slab.get_mut(idx) {
+            if let Some(entry) = slab.get_mut(raw_idx) {
                 entry.state = state;
             }
         } else {
@@ -707,6 +860,82 @@ pub extern "C" fn molt_obj_get_state(data_ptr: *mut u8) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_obj_set_state(data_ptr: *mut u8, state: i64) {
     object_set_state(data_ptr, state);
+}
+
+/// Initialize a stack-allocated MoltObject in-place.  Used by the
+/// native backend's `object_new_bound_stack` lowering: Cranelift
+/// allocates a `StackSlot` of size `MoltHeader::SIZE +
+/// payload_size_bytes` and calls into this helper to:
+///   * zero the payload (StackSlot contents are undefined on entry,
+///     so this is mandatory for soundness — a stale pointer in a
+///     slot would corrupt subsequent `dec_ref` / `has_ptrs`
+///     traversal),
+///   * stamp the MoltHeader fields:
+///       - `type_id        = TYPE_ID_OBJECT`
+///       - `ref_count      = 1` (paired with IMMORTAL — never
+///          decrements)
+///       - `flags          = HEADER_FLAG_IMMORTAL |
+///          HEADER_FLAG_SKIP_CLASS_DECREF` (so dec_ref_ptr
+///          short-circuits and the runtime never tries to free a
+///          stack pointer through the dealloc path; the class is
+///          borrowed from the module-owned class object)
+///       - `size_class     = 0`  (size lives nowhere — IMMORTAL
+///          objects bypass the size lookup paths)
+///       - `cold_idx       = ensure_shared_cold_idx(cls_ptr)`
+///         (per-class shared cold header storing class_bits in
+///         `state`; reads via `object_class_bits()` work
+///         transparently)
+///       - `reserved       = 0`
+///   * return the tagged data pointer bits (header_ptr + 24).
+///
+/// Returns `MoltObject::none().bits()` if `cls_bits` does not point
+/// to a valid type object.  The frontend gates the fold on
+/// known-class identity, so this branch is the defense-in-depth
+/// fallback rather than an expected runtime path.
+///
+/// **No class inc-ref**: we deliberately skip `inc_ref_bits(class)`
+/// because (a) the class is module-resident and outlives the
+/// function frame containing the StackSlot, (b) the symmetric
+/// dec-ref on instance death would never run (IMMORTAL skips
+/// dec_ref_ptr), so a balanced inc/dec would be lossy bookkeeping.
+///
+/// Safety: `header_ptr` must point to writable memory of at least
+/// `MoltHeader::SIZE + payload_size_bytes` bytes, 8-byte aligned.
+/// The Cranelift StackSlot allocation guarantees this.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_init_stack(
+    header_ptr: *mut u8,
+    cls_bits: u64,
+    payload_size_bytes: u64,
+) -> u64 {
+    if header_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let cls_ptr = match obj_from_bits(cls_bits).as_ptr() {
+        Some(p) => p,
+        None => return MoltObject::none().bits(),
+    };
+    unsafe {
+        if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+            return MoltObject::none().bits();
+        }
+        let payload = payload_size_bytes as usize;
+        let total = std::mem::size_of::<MoltHeader>() + payload;
+        std::ptr::write_bytes(header_ptr, 0, total);
+        let header = header_ptr as *mut MoltHeader;
+        (*header).type_id = TYPE_ID_OBJECT;
+        // ref_count is wrapped in MoltRefCount; replace whole field.
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*header).ref_count),
+            MoltRefCount::new(1),
+        );
+        (*header).flags = HEADER_FLAG_IMMORTAL | HEADER_FLAG_SKIP_CLASS_DECREF;
+        (*header).size_class = 0;
+        (*header).cold_idx = ensure_shared_cold_idx(cls_ptr);
+        (*header).reserved = 0;
+        let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
+        MoltObject::from_ptr(data_ptr).bits()
+    }
 }
 
 thread_local! {
@@ -1590,7 +1819,10 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return false;
     }
     let cold_idx = unsafe { (*header_ptr).cold_idx };
-    let class_state = get_cold_header(cold_idx)
+    // Strip the shared bit: stack-allocated and shared-cold-header
+    // instances point to the per-class cold header which carries
+    // class_bits in its `state` field — we want that value, not 0.
+    let class_state = get_cold_header(cold_idx_real(cold_idx))
         .map(|cold| cold.state)
         .unwrap_or(0);
     let class_bits = unsafe { object_class_bits_from_state(class_state) };
@@ -1854,6 +2086,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     // Dict last: its cascade will free __bases__ and __mro__
                     // after the slot refs above have been released.
                     dec_ref_bits(py, dict_bits);
+                    free_shared_cold_idx_for_class(ptr);
                     // Invalidate all result-level inline caches that may hold a
                     // stale pointer to this now-freed class object.  Without
                     // this bump, caches that were written when type_version==N
@@ -2440,7 +2673,14 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             let total_size = total_size_from_header_fields(header_size_class, header_cold_idx);
             // Notify the resource tracker that this object's memory is freed.
             crate::resource::with_tracker(|t| t.on_free(total_size));
-            free_cold_header(header_cold_idx);
+            // Shared cold headers (per-class, see SHARED_COLD_IDX_BIT)
+            // outlive any individual instance — only the class's own
+            // dealloc path frees them.  Skip free for shared idx; the
+            // real-bit case is handled normally (free_cold_header is
+            // already a no-op on idx == 0).
+            if !cold_idx_is_shared(header_cold_idx) {
+                free_cold_header(header_cold_idx);
+            }
             let should_pool = type_id_is_pool_eligible(type_id)
                 && !cfg!(miri)
                 && object_pool_put(py, total_size, header_ptr as *mut u8);

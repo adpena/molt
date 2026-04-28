@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::blocks::{BlockId, Terminator};
 use super::function::TirFunction;
-use super::ops::OpCode;
+use super::ops::{AttrValue, OpCode};
 use super::values::ValueId;
 
 // ---------------------------------------------------------------------------
@@ -221,6 +221,14 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         ));
                     }
                 }
+                OpCode::ObjectNewBoundStack => match op.attrs.get("value") {
+                    Some(AttrValue::Int(value)) if *value > 0 => {}
+                    _ => errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        "ObjectNewBoundStack requires positive payload byte size",
+                    )),
+                },
                 _ => {}
             }
 
@@ -852,6 +860,36 @@ mod tests {
             verify_function(&func).is_ok(),
             "valid add function should pass: {:?}",
             verify_function(&func).err()
+        );
+    }
+
+    #[test]
+    fn object_new_bound_stack_requires_payload_size() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBoundStack,
+            operands: vec![ValueId(0)],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let result = verify_function(&func);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("positive payload byte size")),
+            "expected ObjectNewBoundStack payload size error, got: {:?}",
+            errors
         );
     }
 

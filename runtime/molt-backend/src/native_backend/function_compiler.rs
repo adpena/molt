@@ -16970,6 +16970,75 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "object_new_bound_stack" => {
+                    // Phase 5 step 3: stack-allocate the instance.
+                    //
+                    // The escape analysis pass has proven that this
+                    // `OBJECT_NEW_BOUND` site's result is consumed
+                    // entirely within the function (no return, no
+                    // store-into-escaping-container, no stash through
+                    // an escaping op).  We can therefore allocate the
+                    // MoltHeader + payload on the Cranelift StackSlot
+                    // and call `molt_object_init_stack` to stamp the
+                    // header with `HEADER_FLAG_IMMORTAL` (so dec_ref
+                    // is a no-op), `HEADER_FLAG_SKIP_CLASS_DECREF`
+                    // (the stack object borrows the module-owned
+                    // class), and a per-class shared cold idx (so
+                    // `object_class_bits()` works without per-instance
+                    // mutex contention on `alloc_cold_header`).
+                    //
+                    // The payload size in bytes lives on `op.value`
+                    // (set by the frontend from `class_info["size"]`,
+                    // round-tripped through the SSA `value` attr).
+                    // The verifier rejects ObjectNewBoundStack without
+                    // that size; codegen treats violations as compiler
+                    // bugs rather than silently changing allocation mode.
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let cls_bits = var_get_boxed(
+                        &mut builder, &vars, &args[0],
+                        &raw_primary_int, &raw_primary_float,
+                        box_int_mask_var, box_int_tag_var,
+                    ).expect("Class ref not found for object_new_bound_stack");
+                    let payload_i64 = op
+                        .value
+                        .expect("object_new_bound_stack requires payload byte size");
+                    assert!(
+                        payload_i64 > 0,
+                        "object_new_bound_stack requires positive payload byte size"
+                    );
+                    let payload_bytes = u32::try_from(payload_i64)
+                        .expect("object_new_bound_stack payload size exceeds u32");
+                    // MoltHeader is 24 bytes, header + payload is
+                    // 8-byte aligned (align_pow_of_2 = 3).
+                    const MOLT_HEADER_SIZE: u32 = 24;
+                    let total = MOLT_HEADER_SIZE
+                        .checked_add(payload_bytes)
+                        .expect("object_new_bound_stack total size overflow");
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        total,
+                        3,
+                    ));
+                    let header_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+                    let payload_size_val =
+                        builder.ins().iconst(types::I64, payload_bytes as i64);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_object_init_stack",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee =
+                        self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[header_ptr, *cls_bits, payload_size_val]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "class_set_base" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
