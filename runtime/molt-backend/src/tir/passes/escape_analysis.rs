@@ -913,6 +913,84 @@ mod tests {
         assert_eq!(stats.ops_removed, 2);
     }
 
+    /// Phase 5 step 3 soundness regression: an `ObjectNewBound`
+    /// whose result flows into a `CallMethod` (i.e. `pts.append(p)`
+    /// in user code, lowered as `CALL_METHOD(append, [pts, p])`)
+    /// MUST be classified as `GlobalEscape`.  The production frontend
+    /// does not set `receiver_type` on `CallMethod` ops — only the
+    /// `method` attribute is set from the SimpleIR `s_value` field —
+    /// so `is_borrowing_method_call` falls through to `false` and
+    /// the CallMethod arm correctly defaults to `GlobalEscape`.
+    ///
+    /// If anyone ever propagates `receiver_type=list` to production
+    /// CallMethod ops AND adds `list.append` to the borrowing list
+    /// without considering element-escape, this test will catch the
+    /// regression: stack-allocating `p` would leave `pts` holding
+    /// dangling pointers into a popped frame.
+    #[test]
+    fn object_new_bound_into_list_append_escapes_via_call_method() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let list_val = func.fresh_value();
+        let call_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        // ObjectNewBound carrying a positive payload size (24 bytes)
+        // — the same shape the frontend emits for a typed class with
+        // 2 int fields + the trailing __dict__ slot.
+        let mut alloc_attrs = AttrDict::new();
+        alloc_attrs.insert("value".into(), AttrValue::Int(24));
+
+        // CallMethod with only `method=append` — production does NOT
+        // emit `receiver_type`, so the borrow check falls through to
+        // false and the value escapes.
+        let mut call_attrs = AttrDict::new();
+        call_attrs.insert("method".into(), AttrValue::Str("append".into()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs: alloc_attrs,
+            source_span: None,
+        });
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![list_val]));
+        entry.ops.push(make_op_with_attrs(
+            OpCode::CallMethod,
+            vec![list_val, inst_val],
+            vec![call_result],
+            call_attrs,
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let stats = run(&mut func);
+
+        // The Point alloc must NOT have been rewritten — it escapes
+        // via list.append, and stack-allocating it would leave the
+        // list with a dangling pointer when the frame pops.
+        let entry = &func.blocks[&func.entry_block];
+        assert_eq!(
+            entry.ops[0].opcode,
+            OpCode::ObjectNewBound,
+            "ObjectNewBound stored into a list must NOT be rewritten to ObjectNewBoundStack — \
+             would dangle when the frame pops"
+        );
+        assert_eq!(
+            stats.values_changed, 0,
+            "no values should be rewritten when the alloc escapes"
+        );
+    }
+
     /// Test 6: Empty function → empty results.
     #[test]
     fn empty_function_produces_empty_results() {
