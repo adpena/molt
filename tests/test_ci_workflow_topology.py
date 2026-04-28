@@ -28,6 +28,9 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "tests/test_harness_conformance.py" in ci_text
     assert "tests/test_harness_layers.py" in ci_text
     assert "tests/test_monty_conformance_runner.py" in ci_text
+    assert "Install native linker" in ci_text
+    assert "sudo apt-get install -y lld" in ci_text
+    assert "ld.lld --version" in ci_text
 
 
 def test_nightly_contains_correctness_jobs() -> None:
@@ -72,6 +75,7 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
 def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
 
+    assert "timeout-minutes: 35" in wasm_text
     assert "runtime/molt-wasm-host/Cargo.toml" in wasm_text
     assert "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_hello.wasm" in wasm_text
     assert "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_comprehension.wasm" in wasm_text
