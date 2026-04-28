@@ -16748,11 +16748,10 @@ def _build_native_link_command(
         link_cmd.append("-Wl,--strip-all")
         # Skip linking unused shared libraries.
         link_cmd.append("-Wl,--as-needed")
-        # Identical code folding deduplicates same-body functions, but GNU
-        # ld.bfd does not support --icf. Keep this optimization tied to an
-        # explicitly selected linker with safe-ICF support.
-        if _native_link_cmd_supports_safe_icf(link_cmd, linker_hint):
-            link_cmd.append("-Wl,--icf=safe")
+        # Do not enable identical-code folding for native executables. The
+        # runtime stores function addresses as semantic identities for async
+        # poll functions and function/code metadata; folding equal bodies can
+        # change those identities even when the linker labels the mode "safe".
         # Linker optimization level for layout and relaxation.
         link_cmd.append("-Wl,-O2")
         # Version script: restrict all symbols to local scope except main.
@@ -16764,7 +16763,7 @@ def _build_native_link_command(
         link_cmd.append("-lstdc++")
         link_cmd.append("-lm")
     elif _is_windows:
-        link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
+        link_cmd.extend(["-Wl,/OPT:REF"])
     _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
     # Forward native library dependencies emitted by cargo build scripts
     # (e.g. lzma-sys emitting -llzma) so the custom link step succeeds.
@@ -25480,21 +25479,6 @@ def _resolve_native_linker_hint(
     if is_host_linux:
         return _resolve_available_fast_linker()
     return None
-
-
-def _native_link_cmd_supports_safe_icf(
-    link_cmd: Sequence[str],
-    linker_hint: str | None,
-) -> bool:
-    if linker_hint in {"mold", "lld"}:
-        return True
-    for arg in link_cmd:
-        if not arg.startswith("-fuse-ld="):
-            continue
-        linker = Path(arg.split("=", 1)[1]).name
-        if linker in {"mold", "ld.mold", "lld", "ld.lld", "gold", "ld.gold"}:
-            return True
-    return False
 
 
 def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:

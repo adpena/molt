@@ -38,9 +38,10 @@ Native link commands must:
 - include Cargo-emitted native library dependencies such as `-l*`,
   `-L*`, and Darwin framework flags;
 - include Darwin runtime frameworks required by enabled GPU backends;
-- use section garbage collection and safe identical-code folding only when the
-  target platform/linker supports the flag and tests prove no symbol identity
-  contract is broken;
+- use section garbage collection where supported;
+- do not enable native identical-code folding while the runtime stores function
+  addresses as semantic identities for async poll functions and function/code
+  metadata keys;
 - keep extension modules able to resolve host-provided Molt symbols at load
   time instead of forcing fake definitions into extension objects.
 
