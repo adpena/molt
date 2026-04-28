@@ -432,20 +432,36 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
 
     for block in func.blocks.values_mut() {
         // Rewrite alloc-site opcodes for NoEscape values:
-        //   Alloc           → StackAlloc           (existing)
+        //   Alloc           → StackAlloc
+        //   ObjectNewBound  → ObjectNewBoundStack  (Phase 5 step 3)
         //
-        // ObjectNewBound is intentionally NOT rewritten yet — the
-        // analysis step now tracks it (so other passes / refcount-
-        // elim can see escape state), but the StackSlot-based
-        // lowering arm in `native_backend/function_compiler.rs` for
-        // ObjectNewBoundStack is not yet wired.  Rewriting here
-        // without a corresponding lowering would route through the
-        // default backend arm and SIGSEGV at runtime.  Step 3 of
-        // Phase 5 lands the lowering and re-enables the rewrite.
+        // The ObjectNewBound rewrite requires the op to carry the
+        // payload size (in bytes) on its `value` attr — the frontend
+        // sets this from `class_info["size"]` for typed classes.
+        // Without the size, the backend's StackSlot lowering cannot
+        // determine the slot size, so we must NOT rewrite or the
+        // backend would either fall back to heap (wasting an op
+        // kind) or — worse, if the heap fallback were missing —
+        // SIGSEGV.  When the size is missing, the heap path stands.
         for op in &mut block.ops {
             if op.opcode == OpCode::Alloc && op.results.iter().any(|r| no_escape.contains(r)) {
                 op.opcode = OpCode::StackAlloc;
                 stats.values_changed += 1;
+            } else if op.opcode == OpCode::ObjectNewBound
+                && op.results.iter().any(|r| no_escape.contains(r))
+            {
+                // Only rewrite when we have a payload size to size
+                // the StackSlot with.  The frontend always emits the
+                // size for the class-instantiation fold, but defend
+                // against synthetic ops that lack it.
+                let has_size = matches!(
+                    op.attrs.get("value"),
+                    Some(crate::tir::ops::AttrValue::Int(v)) if *v > 0
+                );
+                if has_size {
+                    op.opcode = OpCode::ObjectNewBoundStack;
+                    stats.values_changed += 1;
+                }
             }
         }
 
@@ -523,6 +539,78 @@ mod tests {
 
         let escapes = analyze(&func);
         assert_eq!(escapes[&inst_val], EscapeState::NoEscape);
+    }
+
+    #[test]
+    fn local_only_object_new_bound_with_layout_rewrites_to_stack() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let load_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(8));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs,
+            source_span: None,
+        });
+        entry.ops.push(make_op(
+            OpCode::LoadAttr,
+            vec![inst_val],
+            vec![load_result],
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let stats = run(&mut func);
+        let entry = func.blocks.get(&func.entry_block).unwrap();
+
+        assert_eq!(stats.values_changed, 1);
+        assert_eq!(entry.ops[0].opcode, OpCode::ObjectNewBoundStack);
+    }
+
+    #[test]
+    fn local_only_object_new_bound_without_layout_stays_heap() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let load_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(
+            OpCode::ObjectNewBound,
+            vec![class_ref],
+            vec![inst_val],
+        ));
+        entry.ops.push(make_op(
+            OpCode::LoadAttr,
+            vec![inst_val],
+            vec![load_result],
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let stats = run(&mut func);
+        let entry = func.blocks.get(&func.entry_block).unwrap();
+
+        assert_eq!(stats.values_changed, 0);
+        assert_eq!(entry.ops[0].opcode, OpCode::ObjectNewBound);
     }
 
     /// Phase 5 step 2: ObjectNewBound result that is returned escapes
