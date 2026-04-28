@@ -168,6 +168,91 @@ impl TirType {
     pub fn is_numeric(&self) -> bool {
         matches!(self, TirType::I64 | TirType::F64 | TirType::Bool)
     }
+
+    /// Map a frontend `_type_hint` attribute string to a `TirType`.
+    ///
+    /// This is the single source of truth for the SSA lift's type-
+    /// refinement of result values: the frontend stores its
+    /// inferred type as a string on the SimpleIR `type_hint` field
+    /// (and the SSA lift round-trips it through the `_type_hint`
+    /// attr at `tir/ssa.rs:1133`), and downstream type-refine wants
+    /// to make decisions on a structured `TirType`.
+    ///
+    /// Builtin-tag mapping (these strings are produced by the
+    /// frontend's `BUILTIN_TYPE_TAGS` set):
+    ///   - `"int"`, `"bool"` → `I64` / `Bool` (canonical unboxed)
+    ///   - `"float"` → `F64`
+    ///   - `"str"`, `"bytes"` → `Str` / `Bytes`
+    ///   - `"list"`, `"dict"`, `"set"`, `"tuple"` → container with
+    ///     `DynBox` element type (the frontend doesn't carry
+    ///     parameter types in the hint string)
+    ///   - `"None"`, `"NoneType"` → `None`
+    ///   - `"BigInt"` → `BigInt`
+    ///
+    /// Compound hints fall back to `DynBox` for safety:
+    ///   - `"Func:<symbol>"`, `"BoundMethod:<class>:<method>"`,
+    ///     `"type"`, `"Any"`, `"Unknown"`, the empty string, and
+    ///     anything containing punctuation that the simple-
+    ///     identifier check rejects.
+    ///
+    /// **User-class refinement**: an identifier-shaped hint that
+    /// is NOT a builtin tag refines to `UserClass(hint)`.  This
+    /// is the live use of the variant — once the frontend's
+    /// inferred class names propagate through the SimpleIR
+    /// `type_hint` field, the type-refine pass can act on them
+    /// (direct dispatch, static field offsets, tighter escape
+    /// analysis).
+    ///
+    /// Safety: returns `DynBox` for any input that fails the
+    /// identifier shape check (must be non-empty, ASCII
+    /// alphanumeric or `_`, and not start with a digit).  This
+    /// keeps badly-formed hints from creating spurious user
+    /// classes in the type system.
+    pub fn from_type_hint(hint: &str) -> TirType {
+        // Builtin-tag mapping — these match the frontend's
+        // BUILTIN_TYPE_TAGS set 1:1.
+        match hint {
+            "int" => return TirType::I64,
+            "float" => return TirType::F64,
+            "bool" => return TirType::Bool,
+            "str" => return TirType::Str,
+            "bytes" => return TirType::Bytes,
+            "list" => return TirType::List(Box::new(TirType::DynBox)),
+            "dict" => {
+                return TirType::Dict(
+                    Box::new(TirType::DynBox),
+                    Box::new(TirType::DynBox),
+                );
+            }
+            "set" => return TirType::Set(Box::new(TirType::DynBox)),
+            "tuple" => return TirType::Tuple(Vec::new()),
+            "None" | "NoneType" => return TirType::None,
+            "BigInt" | "bigint" => return TirType::BigInt,
+            "Any" | "Unknown" | "" | "type" => return TirType::DynBox,
+            _ => {}
+        }
+        // Compound hints (Func:..., BoundMethod:...) — defer to
+        // a future commit that adds proper signature parsing.
+        if hint.contains(':') || hint.contains('[') || hint.contains('(')
+        {
+            return TirType::DynBox;
+        }
+        // Identifier shape check: ASCII alphanumeric or `_`, not
+        // empty, doesn't start with a digit.  Anything else is a
+        // malformed or unrecognized hint — fall back to DynBox.
+        let mut chars = hint.chars();
+        let first = match chars.next() {
+            Some(c) => c,
+            None => return TirType::DynBox,
+        };
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            return TirType::DynBox;
+        }
+        if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return TirType::DynBox;
+        }
+        TirType::UserClass(hint.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -309,5 +394,102 @@ mod tests {
         set.insert(TirType::UserClass("Point".into()));
         assert!(set.contains(&TirType::UserClass("Point".into())));
         assert!(!set.contains(&TirType::UserClass("Line".into())));
+    }
+
+    /// Builtin-tag mapping: each frontend `BUILTIN_TYPE_TAGS`
+    /// string round-trips to its canonical TirType.  Pin the
+    /// contract — if anyone changes the frontend's tag spelling,
+    /// this test catches the drift.
+    #[test]
+    fn from_type_hint_builtins() {
+        assert_eq!(TirType::from_type_hint("int"), TirType::I64);
+        assert_eq!(TirType::from_type_hint("float"), TirType::F64);
+        assert_eq!(TirType::from_type_hint("bool"), TirType::Bool);
+        assert_eq!(TirType::from_type_hint("str"), TirType::Str);
+        assert_eq!(TirType::from_type_hint("bytes"), TirType::Bytes);
+        assert_eq!(
+            TirType::from_type_hint("list"),
+            TirType::List(Box::new(TirType::DynBox))
+        );
+        assert_eq!(
+            TirType::from_type_hint("dict"),
+            TirType::Dict(
+                Box::new(TirType::DynBox),
+                Box::new(TirType::DynBox),
+            )
+        );
+        assert_eq!(
+            TirType::from_type_hint("set"),
+            TirType::Set(Box::new(TirType::DynBox))
+        );
+        assert_eq!(
+            TirType::from_type_hint("tuple"),
+            TirType::Tuple(Vec::new())
+        );
+        assert_eq!(TirType::from_type_hint("None"), TirType::None);
+        assert_eq!(TirType::from_type_hint("NoneType"), TirType::None);
+        assert_eq!(TirType::from_type_hint("BigInt"), TirType::BigInt);
+    }
+
+    /// Compound or unknown hints fall back to DynBox — soundness
+    /// over precision.  A compound hint contains punctuation
+    /// (`:`, `[`, `(`) that the simple-identifier check would
+    /// otherwise erroneously promote to UserClass.
+    #[test]
+    fn from_type_hint_compound_falls_back_to_dynbox() {
+        assert_eq!(TirType::from_type_hint("Any"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("Unknown"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint(""), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("type"), TirType::DynBox);
+        assert_eq!(
+            TirType::from_type_hint("Func:foo_symbol"),
+            TirType::DynBox,
+            "Func:<symbol> hints defer to DynBox until proper \
+             FuncSignature parsing is wired"
+        );
+        assert_eq!(
+            TirType::from_type_hint("BoundMethod:list:append"),
+            TirType::DynBox,
+        );
+        assert_eq!(
+            TirType::from_type_hint("list[int]"),
+            TirType::DynBox,
+            "Parameterized hints contain `[` — defer to DynBox"
+        );
+        assert_eq!(
+            TirType::from_type_hint("Optional(Point)"),
+            TirType::DynBox,
+        );
+        // Hints that look almost-identifier but aren't valid
+        // (start with digit, contain whitespace) fall back.
+        assert_eq!(TirType::from_type_hint("1Point"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("My Class"), TirType::DynBox);
+    }
+
+    /// Identifier-shaped non-builtin hints refine to UserClass.
+    /// This is the *live* use of the new variant: the frontend's
+    /// `class Point: ...` produces type_hint="Point" on the
+    /// `OBJECT_NEW_BOUND` op, and the SSA lift then refines that
+    /// value's type from DynBox to UserClass("Point").
+    #[test]
+    fn from_type_hint_user_class_refines() {
+        assert_eq!(
+            TirType::from_type_hint("Point"),
+            TirType::UserClass("Point".into()),
+        );
+        assert_eq!(
+            TirType::from_type_hint("MyClass"),
+            TirType::UserClass("MyClass".into()),
+        );
+        // Underscore + digit at non-leading positions are valid
+        // identifier characters.
+        assert_eq!(
+            TirType::from_type_hint("Snake_case_123"),
+            TirType::UserClass("Snake_case_123".into()),
+        );
+        assert_eq!(
+            TirType::from_type_hint("_private"),
+            TirType::UserClass("_private".into()),
+        );
     }
 }

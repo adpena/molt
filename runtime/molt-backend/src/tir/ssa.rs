@@ -1132,6 +1132,34 @@ impl<'a> SsaContext<'a> {
         }
         if let Some(ref th) = op.type_hint {
             attrs.insert("_type_hint".into(), AttrValue::Str(th.clone()));
+            // Type-refine result values from the frontend's hint.
+            // Currently we only refine to `UserClass` — builtin
+            // type refinement is already handled by the
+            // `_fast_int` / `_fast_float` side-channel attrs and
+            // by the type-refine pass; refining builtin scalars
+            // here would risk changing existing codegen paths.
+            //
+            // UserClass refinement is the *live* use of
+            // `TirType::UserClass` — every typed-class allocation
+            // (`OBJECT_NEW_BOUND`, dataclass instantiation, etc.)
+            // carries a `type_hint` whose value is the qualified
+            // class name.  Refining DynBox → UserClass(name) lets
+            // downstream passes (escape analysis, devirt, GVN)
+            // reason about class identity without parsing the
+            // attr string at every call site.
+            //
+            // Soundness: `from_type_hint` returns DynBox for any
+            // non-identifier or built-in tag, so we only refine
+            // when the hint is a plain class name.  Joining a
+            // UserClass with DynBox at a phi collapses to DynBox
+            // (covered by the `meet` lattice), so type-erased
+            // exception handler args stay sound.
+            let refined = TirType::from_type_hint(th);
+            if matches!(refined, TirType::UserClass(_)) {
+                for &result in &results {
+                    self.value_types.insert(result, refined.clone());
+                }
+            }
         }
         // Preserve column offsets for traceback caret annotations through
         // the TIR roundtrip.  Without this, per-op col_offset is lost when
@@ -2863,7 +2891,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Test 9: All output values are typed as DynBox
+    // Test 9: All output values are typed as DynBox (when no hint)
     // =======================================================================
     #[test]
     fn all_values_typed_dynbox() {
@@ -2884,5 +2912,80 @@ mod tests {
                 ty
             );
         }
+    }
+
+    // =======================================================================
+    // Test 10: type_hint="<UserClass>" refines result type to UserClass
+    // =======================================================================
+    /// SSA lift refines a result value's type from DynBox to
+    /// `UserClass(class_id)` when the SimpleIR op carries
+    /// `type_hint="<class_id>"` and the hint is identifier-shaped.
+    /// This is the live use of `TirType::UserClass` — without it,
+    /// the type system has no way to distinguish typed-class
+    /// instances from arbitrary boxed values, and downstream
+    /// passes (escape, devirt, GVN) cannot reason about class
+    /// identity.
+    #[test]
+    fn user_class_type_hint_refines_result_type() {
+        let mut alloc_op = op_args_out("object_new_bound", &["cls"], "p");
+        alloc_op.type_hint = Some("Point".to_string());
+        // Carry the size attr so the op is well-formed for the
+        // Phase 5 step 3 lowering (24 bytes = 2 ints + __dict__
+        // slot).  Not strictly required for the type-refine test
+        // but matches what the frontend actually emits.
+        alloc_op.value = Some(24);
+        let ops = vec![
+            op_val_out("const", 0, "cls"),
+            alloc_op,
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        // Find the ObjectNewBound op's result and verify its type.
+        let entry = &output.blocks[0];
+        let alloc_result = entry
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::ObjectNewBound)
+            .and_then(|op| op.results.first().copied())
+            .expect("expected ObjectNewBound op with a result");
+        assert_eq!(
+            output.types[&alloc_result],
+            TirType::UserClass("Point".into()),
+            "type_hint=Point on object_new_bound must refine the \
+             result value's type from DynBox to UserClass(\"Point\")"
+        );
+    }
+
+    /// Builtin-tagged hints (`type_hint=int`, etc.) are
+    /// intentionally NOT refined by this lift logic — that path is
+    /// already handled by the `_fast_int` / `_fast_float` side-
+    /// channel attrs and by the type-refine pass.  We pin the
+    /// non-refinement contract here so a future change doesn't
+    /// silently start refining builtin hints (which could change
+    /// existing codegen paths in unexpected ways).
+    #[test]
+    fn builtin_type_hint_does_not_refine_at_lift() {
+        let mut const_op = op_val_out("const", 42, "x");
+        const_op.type_hint = Some("int".to_string());
+        let ops = vec![const_op, op("ret_void")];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let entry = &output.blocks[0];
+        let const_result = entry
+            .ops
+            .iter()
+            .find(|op| matches!(op.opcode, OpCode::ConstInt))
+            .and_then(|op| op.results.first().copied())
+            .expect("expected const op with a result");
+        assert_eq!(
+            output.types[&const_result],
+            TirType::DynBox,
+            "builtin type hint `int` must NOT refine at lift — \
+             the refinement path for scalars goes through fast_int \
+             attrs and the type-refine pass, not the lift itself"
+        );
     }
 }
