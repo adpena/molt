@@ -1101,6 +1101,49 @@ mod tests {
         assert_eq!(alloc.value, Some(48), "alloc_task.value must be preserved");
     }
 
+    // ---------------------------------------------------------------------------
+    // Phase 5: object_new_bound is a first-class TIR opcode (was Copy
+    // fallback with `_original_kind`).  Round-trip must preserve the
+    // operand list, output value name, and the SimpleIR `type_hint`
+    // field that carries the result's class id.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_object_new_bound_preserves_class_type_hint() {
+        // Note: SSA lift renames operand/result names to internal SSA
+        // ids, so we can only check structural properties (kind,
+        // arity, attrs that don't go through SSA renaming).  This
+        // matches the convention used by other tests in this file
+        // (see `roundtrip_alloc_task_preserves_task_metadata` which
+        // checks task_kind / s_value / value, not names).
+        let ops = vec![
+            op_out_args("module_get_attr", "cls", &["mod", "name"]),
+            OpIR {
+                kind: "object_new_bound".to_string(),
+                args: Some(vec!["cls".to_string()]),
+                out: Some("inst".into()),
+                type_hint: Some("Point".into()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["inst"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let alloc = result
+            .iter()
+            .find(|o| o.kind == "object_new_bound")
+            .expect("object_new_bound must survive round-trip");
+        assert_eq!(
+            alloc.args.as_ref().map(|v| v.len()),
+            Some(1),
+            "object_new_bound must have a single class-ref operand"
+        );
+        assert_eq!(
+            alloc.type_hint.as_deref(),
+            Some("Point"),
+            "object_new_bound type_hint (class id) must round-trip"
+        );
+    }
+
     #[test]
     fn pipeline_alloc_task_preserves_task_metadata() {
         let ops = vec![
