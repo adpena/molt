@@ -98,12 +98,6 @@ pub(crate) unsafe fn class_layout_size_cached(
 unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
     unsafe {
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let builtins = builtin_classes(_py);
-        let reserved_tail = if issubclass_bits(class_bits, builtins.dict) {
-            2 * std::mem::size_of::<u64>()
-        } else {
-            std::mem::size_of::<u64>()
-        };
         let fields_name_bits = intern_static_name(
             _py,
             &runtime_state(_py).interned.field_offsets_name,
@@ -115,6 +109,48 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
             b"__molt_layout_size__",
         );
         let class_dict_ptr = obj_from_bits(class_dict_bits(class_ptr)).as_ptr();
+
+        // Hot path: when the class dict already carries
+        // `__molt_layout_size__` AND `__molt_field_offsets__`, the
+        // cached size is the recomputation target the slow path
+        // below would converge on (`size = max_end + reserved_tail`)
+        // — both terms are determined by the same `__molt_field_offsets__`
+        // dict that own_has_offsets verifies.  Subsequent calls in
+        // tight allocation loops (`while …: Point(0,0)`) hit this
+        // path and skip two MRO walks (`class_attr_lookup_raw_mro`
+        // for `size_name_bits`, `max_slot_end_from_mro_offsets`
+        // for `fields_name_bits`) plus the issubclass-bits MRO
+        // walks for the int/dict min-size guards.
+        //
+        // Soundness rests on the cache invalidation contract:
+        // anything that mutates `__molt_field_offsets__` MUST clear
+        // or update `__molt_layout_size__` in the same atomic
+        // operation, so a stale size never coexists with a fresh
+        // offsets dict.  Class definition / inheritance assembly
+        // already obey this (the slow path below writes
+        // `__molt_layout_size__` last and bumps the layout version);
+        // mutating `__molt_field_offsets__` after the class is
+        // sealed is unsupported.
+        if let Some(class_dict_ptr) = class_dict_ptr
+            && object_type_id(class_dict_ptr) == TYPE_ID_DICT
+            && let Some(size_bits) = dict_get_in_place(_py, class_dict_ptr, size_name_bits)
+            && let Some(cached_size) = obj_from_bits(size_bits).as_int()
+            && cached_size > 0
+            && let Some(offsets_bits) = dict_get_in_place(_py, class_dict_ptr, fields_name_bits)
+            && obj_from_bits(offsets_bits)
+                .as_ptr()
+                .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
+        {
+            return cached_size as usize;
+        }
+
+        // Slow path: cache miss — full recompute.
+        let builtins = builtin_classes(_py);
+        let reserved_tail = if issubclass_bits(class_bits, builtins.dict) {
+            2 * std::mem::size_of::<u64>()
+        } else {
+            std::mem::size_of::<u64>()
+        };
         let mut size = 0usize;
         let mut has_own_layout = false;
         let mut own_has_offsets = false;
