@@ -550,7 +550,9 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
         {
             // SAFETY: `poll_fn_addr` is a valid extern "C" fn pointer stored in the task object
             // by the async runtime. The caller ensures it points to a 1-arg poll function. UB if null.
-            let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+            let poll_target = crate::builtins::functions::runtime_callable_target_ptr(poll_fn_addr)
+                .unwrap_or(poll_fn_addr as usize as *const ());
+            let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_target);
             poll_fn(addr)
         }
     }
@@ -631,5 +633,27 @@ pub(crate) unsafe fn poll_future_with_task_stack(
         }
         CURRENT_TASK.with(|cell| cell.set(prev_task));
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::async_sleep_poll_fn_addr;
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_async_sleep_poll_id_is_stable_not_raw_code_address() {
+        let poll_id = async_sleep_poll_fn_addr();
+        let raw_ptr = crate::molt_async_sleep as *const () as usize as u64;
+
+        assert_ne!(poll_id, raw_ptr);
+        assert_eq!(
+            crate::builtins::functions::runtime_callable_target_ptr(poll_id),
+            Some(crate::molt_async_sleep as *const ())
+        );
+        assert_eq!(
+            crate::builtins::functions::canonicalize_runtime_callable_key(raw_ptr),
+            poll_id
+        );
     }
 }
