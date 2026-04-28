@@ -357,6 +357,7 @@ pub fn print_type(ty: &TirType) -> String {
         }
         TirType::Box(inner) => format!("box<{}>", print_type(inner)),
         TirType::DynBox => "dynbox".to_string(),
+        TirType::UserClass(class_id) => format!("user_class<{}>", class_id),
         TirType::Func(sig) => print_func_signature(sig),
         TirType::BigInt => "bigint".to_string(),
         TirType::Ptr(inner) => format!("ptr<{}>", print_type(inner)),
@@ -712,6 +713,12 @@ mod tests {
         assert_eq!(print_type(&TirType::Str), "str");
         assert_eq!(print_type(&TirType::DynBox), "dynbox");
         assert_eq!(print_type(&TirType::Never), "never");
+        assert_eq!(
+            print_type(&TirType::UserClass("Point".into())),
+            "user_class<Point>",
+            "user-class identity must round-trip into the printer so \
+             TIR dumps remain decodable for debugging"
+        );
         assert_eq!(
             print_type(&TirType::List(Box::new(TirType::I64))),
             "list<i64>"
