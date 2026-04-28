@@ -1641,6 +1641,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // `tir/ssa.rs:1133`); restore it here so downstream backend
             // preanalysis still sees the class identity.
             type_hint: attr_str(&op.attrs, "_type_hint"),
+            // Carry the static class-instance payload size in bytes
+            // (header NOT included).  The heap arm ignores it; the
+            // stack arm (rewritten by escape analysis) uses it to size
+            // the Cranelift StackSlot.
+            value: attr_int(&op.attrs, "value"),
             ..OpIR::default()
         }),
         OpCode::ObjectNewBoundStack => Some(OpIR {
@@ -1648,6 +1653,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             args: Some(operand_args(op)),
             out: out_var,
             type_hint: attr_str(&op.attrs, "_type_hint"),
+            // Inherited from the original `ObjectNewBound` — required
+            // for the StackSlot lowering to know the payload size.
+            value: attr_int(&op.attrs, "value"),
             stack_eligible: Some(true),
             ..OpIR::default()
         }),

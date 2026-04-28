@@ -14305,13 +14305,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._pop_qualname()
             if self.return_label is not None:
                 if not self._ends_with_return_jump():
-                    res = MoltValue(self.next_var())
-                    self.emit(MoltOp(kind="CONST", args=[0], result=res))
+                    res = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                     self._emit_return_value(res)
                 self._emit_return_label()
             elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
-                res = MoltValue(self.next_var())
-                self.emit(MoltOp(kind="CONST", args=[0], result=res))
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
@@ -20177,11 +20177,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     init_is_default = init_info is None or init_owner == "object"
                     if init_is_default and len(node.args) == 0:
                         res = MoltValue(self.next_var(), type_hint=class_id)
+                        # Carry the static class-instance payload size
+                        # (in bytes, header NOT included) so the
+                        # backend's escape-analysis-rewritten
+                        # `object_new_bound_stack` arm can size the
+                        # Cranelift StackSlot at codegen time.  The
+                        # heap arm ignores it (sizing happens at
+                        # runtime via `class_layout_size`).
+                        class_size_bytes = (
+                            class_info.get("size", 0) if class_info else 0
+                        )
                         self.emit(
                             MoltOp(
                                 kind="OBJECT_NEW_BOUND",
                                 args=[class_ref],
                                 result=res,
+                                metadata={"class_size_bytes": class_size_bytes},
                             )
                         )
                         return res
@@ -20230,11 +20241,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                                 self.next_var(),
                                                 type_hint=class_id,
                                             )
+                                            # See sibling site above: payload
+                                            # size in bytes carried via
+                                            # metadata for the stack-alloc
+                                            # lowering.
+                                            class_size_bytes = (
+                                                class_info.get("size", 0)
+                                                if class_info
+                                                else 0
+                                            )
                                             self.emit(
                                                 MoltOp(
                                                     kind="OBJECT_NEW_BOUND",
                                                     args=[class_ref],
                                                     result=res,
+                                                    metadata={
+                                                        "class_size_bytes": class_size_bytes
+                                                    },
                                                 )
                                             )
                                             init_args = [
@@ -31641,13 +31664,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # `__init__`'s symbol — bypassing
                 # `type.__call__` → bound-method-init → CALL_BIND.
                 # See `_try_emit_class_static_call` for the predicates.
-                json_ops.append(
-                    {
-                        "kind": "object_new_bound",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                # The optional `value` field carries the static
+                # class-instance payload size in bytes (header NOT
+                # included), which the escape-analysis-rewritten
+                # `object_new_bound_stack` lowering uses to size the
+                # Cranelift StackSlot.  Heap arm ignores it.
+                _onb_op: dict[str, Any] = {
+                    "kind": "object_new_bound",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                _onb_md = op.metadata or {}
+                _onb_size = _onb_md.get("class_size_bytes")
+                if isinstance(_onb_size, int) and _onb_size > 0:
+                    _onb_op["value"] = _onb_size
+                json_ops.append(_onb_op)
             elif op.kind == "CLASSMETHOD_NEW":
                 json_ops.append(
                     {
