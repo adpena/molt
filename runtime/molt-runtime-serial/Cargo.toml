@@ -1,7 +1,9 @@
 [package]
 name = "molt-runtime-serial"
 version = "0.1.0"
+publish = false
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 molt-runtime-core = { path = "../molt-runtime-core" }

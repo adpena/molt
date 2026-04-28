@@ -1,6 +1,7 @@
 [package]
 name = "molt-runtime-regex"
 version = "0.1.0"
+publish = false
 edition = "2024"
 license = "Apache-2.0"
 description = "Regex intrinsics for the Molt runtime (lookahead, lookbehind, verbose strip, fullmatch, etc.)"
