@@ -1,0 +1,38 @@
+{
+  "benchmarks": {
+    "bench_sum": {
+      "molt_wasm_build_s": 20.417529500002274,
+      "molt_wasm_failure": "Traceback (most recent call last):\n  File \"<molt-builtin>\", line 0, in \u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\nNotImplementedError",
+      "molt_wasm_failure_class": "runner_error",
+      "molt_wasm_failure_returncode": 1,
+      "molt_wasm_function_import_count": 44,
+      "molt_wasm_function_imports_per_kb": 0.006126,
+      "molt_wasm_import_count": 45,
+      "molt_wasm_linked": true,
+      "molt_wasm_ok": false,
+      "molt_wasm_size_kb": 7182.513671875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.0
+    }
+  },
+  "control_runner": null,
+  "created_at": "2026-03-28T10:22:49.339021+00:00",
+  "git_rev": "2b80788b94edbe8a99b883e09e78decbf798ed45",
+  "node_max_old_space_mb": null,
+  "runner": "node",
+  "samples": 3,
+  "schema_version": 1,
+  "super_run": false,
+  "system": {
+    "cpu_count": 18,
+    "load_avg": [
+      5.90234375,
+      5.3505859375,
+      4.70947265625
+    ],
+    "machine": "arm64",
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "python": "3.12.13"
+  },
+  "warmup": 1
+}
