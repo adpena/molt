@@ -772,6 +772,19 @@ fn evaluate_builtin_call(
 
 /// Try to concrete-eval a `CallMethod` op when the receiver is a known
 /// constant and the method is pure.
+///
+/// `op.attrs["method"]` may carry either:
+///   - the full frontend `BoundMethod:<receiver>:<method>` string
+///     (production canonical form, set by the SSA lift from the
+///     SimpleIR `call_method` op's `s_value` field), OR
+///   - a bare method name (test / future-refined form).
+///
+/// We strip the `BoundMethod:` prefix and discard the embedded
+/// receiver name, keeping the bare method.  The actual receiver
+/// type for the effects lookup comes from the constant operand's
+/// runtime type — that's stricter than what's encoded in the hint
+/// (the hint reflects the frontend's static guess; the constant
+/// operand reflects what's actually flowing through SCCP).
 fn evaluate_method_call(
     op: &crate::tir::ops::TirOp,
     operands: &[Option<&ConstVal>],
@@ -779,9 +792,22 @@ fn evaluate_method_call(
     if op.opcode != OpCode::CallMethod {
         return None;
     }
-    let method = match op.attrs.get("method") {
+    let method_attr = match op.attrs.get("method") {
         Some(AttrValue::Str(s)) => s.as_str(),
         _ => return None,
+    };
+    // Strip the `BoundMethod:<rcv>:` prefix when present.  We keep
+    // only the bare method name; the receiver type comes from the
+    // constant operand below.  Empty-component guards mirror the
+    // escape-analysis parse to keep the contract symmetric.
+    let method = if let Some(rest) = method_attr.strip_prefix("BoundMethod:") {
+        let mut parts = rest.splitn(2, ':');
+        match (parts.next(), parts.next()) {
+            (Some(_rcv), Some(mthd)) if !mthd.is_empty() => mthd,
+            _ => return None,
+        }
+    } else {
+        method_attr
     };
     let receiver = operands.first().copied().flatten()?;
     let receiver_type = match receiver {
