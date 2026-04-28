@@ -180,10 +180,27 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         ..Default::default()
     };
 
-    // Skip functions with exception handling (conservative).
-    if func.has_exception_handling {
-        return stats;
-    }
+    // Functions with exception handling are NOT skipped wholesale —
+    // the per-op `is_hoistable` predicate restricts hoisting to a
+    // safe-list of side-effect-free, never-throwing ops (constants,
+    // pure arithmetic on already-computed values, etc.) for which
+    // hoisting out of a try-bearing loop is observably equivalent
+    // to lazy in-loop computation: the only behavioural difference
+    // is the trivial "computed in preheader even if loop ran zero
+    // iterations" case, which doesn't affect any program output.
+    //
+    // This is critical for performance: the frontend liberally emits
+    // CHECK_EXCEPTION ops, and the lower_from_simple detection sets
+    // `has_exception_handling = true` whenever any TryStart/TryEnd/
+    // CheckException op appears.  In practice virtually every
+    // non-trivial loop body trips this flag, so the prior wholesale
+    // skip turned LICM into a no-op for nearly all real code.
+    //
+    // Loop-detection (natural-loop construction via dominators) is
+    // unchanged by exception ops, since try_start/try_end/
+    // check_exception don't add back-edges or alter the CFG topology
+    // beyond the normal block-splitting that any structured
+    // construct does.
 
     // Find loop headers from loop_roles metadata. Sort by id so that
     // tie-breaking in the post-order traversal below is deterministic
