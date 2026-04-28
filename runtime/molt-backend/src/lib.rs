@@ -217,6 +217,277 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
     }
 }
 
+/// Returns `true` for SimpleIR op kinds that provably don't raise.
+///
+/// Used by `elide_useless_try_blocks` to detect try/except wrappers whose
+/// body cannot raise, in which case the entire wrapper (including the
+/// dead handler-dispatch sequence) can be replaced by just the body.
+/// The set is intentionally conservative: ops whose throwing behaviour
+/// is conditional on operand types (e.g. `add` without a `fast_int`
+/// flag) are treated as throwing.
+fn simple_op_is_provably_nonthrowing(op: &OpIR) -> bool {
+    let kind = op.kind.as_str();
+    // 1) Constants and missing sentinel — pure value introduction.
+    if matches!(
+        kind,
+        "const"
+            | "const_int"
+            | "const_float"
+            | "const_str"
+            | "const_bool"
+            | "const_none"
+            | "const_bytes"
+            | "const_bigint"
+            | "const_ellipsis"
+            | "missing"
+    ) {
+        return true;
+    }
+    // 2) Local slot reads/writes — slot ops are pure memory accesses.
+    //    The `is_missing → if → raise UnboundLocalError` guard pattern
+    //    is emitted as separate ops, so a bare `load_var`/`store_var`
+    //    op cannot raise on its own.
+    if matches!(
+        kind,
+        "load_var"
+            | "store_var"
+            | "load_var_slot"
+            | "store_var_slot"
+            | "load_closure"
+            | "store_closure"
+    ) {
+        return true;
+    }
+    // 3) Pure SSA / aliasing helpers.
+    if matches!(kind, "copy" | "copy_var" | "identity_alias" | "phi") {
+        return true;
+    }
+    // 4) Arithmetic on proven-typed operands (fast_int / fast_float
+    //    flags are set by the frontend only when type inference proves
+    //    both operands are int/float).  Without those flags the runtime
+    //    op may dispatch into Python arithmetic protocols that can
+    //    raise TypeError, so we stay conservative.
+    if matches!(
+        kind,
+        "add"
+            | "sub"
+            | "mul"
+            | "inplace_add"
+            | "inplace_sub"
+            | "inplace_mul"
+            | "neg"
+            | "pos"
+    ) && (op.fast_int == Some(true) || op.fast_float == Some(true))
+    {
+        return true;
+    }
+    // 5) Bitwise / logical ops on proven ints.  These require fast_int
+    //    because non-int operands trigger __and__/__or__ protocol
+    //    dispatch which may raise.
+    if matches!(
+        kind,
+        "bit_and"
+            | "bit_or"
+            | "bit_xor"
+            | "bit_not"
+            | "bitand"
+            | "bitor"
+            | "bitxor"
+            | "lshift"
+            | "rshift"
+            | "shl"
+            | "shr"
+            | "inplace_bit_and"
+            | "inplace_bit_or"
+            | "inplace_bit_xor"
+            | "inplace_lshift"
+            | "inplace_rshift"
+    ) && op.fast_int == Some(true)
+    {
+        return true;
+    }
+    // 6) Boolean / comparison ops on proven types.  Comparisons on
+    //    arbitrary objects can raise TypeError (no __lt__) so require
+    //    the proven-type annotation here too.
+    if matches!(
+        kind,
+        "lt" | "le" | "gt" | "ge" | "eq" | "ne"
+    ) && (op.fast_int == Some(true) || op.fast_float == Some(true))
+    {
+        return true;
+    }
+    // 7) Identity / boolean ops — always safe regardless of operand type.
+    if matches!(kind, "is" | "is_not" | "not" | "and" | "or" | "bool") {
+        return true;
+    }
+    // 8) Type guards — emit a typed branch on type-tag mismatch but do
+    //    not raise: the slow path falls through to the polymorphic op.
+    if matches!(kind, "guard_tag" | "guard_layout" | "guard_int" | "guard_float") {
+        return true;
+    }
+    // 9) Field accesses by offset — the frontend's `store`/`load` ops
+    //    target proven layout slots and so cannot raise.
+    if matches!(kind, "store" | "load") {
+        return true;
+    }
+    // 10) Structured control flow op markers — they don't raise on
+    //     their own (their bodies' ops decide).
+    if matches!(
+        kind,
+        "if"
+            | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_end"
+            | "loop_continue"
+            | "loop_break"
+            | "loop_break_if_false"
+            | "loop_index_start"
+            | "loop_index_next"
+            | "jump"
+            | "label"
+            | "line"
+    ) {
+        return true;
+    }
+    // 11) Inline-cache slot setup ops — idempotent, no exception.
+    if matches!(
+        kind,
+        "code_slots_init" | "code_slot_set" | "code_new"
+    ) {
+        return true;
+    }
+    // 12) Trace markers and tuple-new-zero-args — pure introduction of
+    //     small immutable values, no allocation failure surfaced.
+    if kind == "trace_enter_slot" || kind == "trace_exit" {
+        return true;
+    }
+    // 13) Already-cleared exception state — clearing or marker-only
+    //     reads of pending state cannot raise.  `check_exception`
+    //     itself does not raise — it dispatches to the existing
+    //     handler when state is already pending — so it does not
+    //     *introduce* throwing potential beyond what the body
+    //     already has.  When the body's other ops are all safe, the
+    //     check_exception op is a no-op at runtime and is removed by
+    //     the TIR-level `check_exception_elim` pass too.
+    if matches!(
+        kind,
+        "exception_clear"
+            | "exception_last"
+            | "exception_stack_enter"
+            | "exception_stack_clear"
+            | "exception_stack_depth"
+            | "context_depth"
+            | "check_exception"
+    ) {
+        return true;
+    }
+    // Anything else is conservatively treated as potentially raising.
+    false
+}
+
+/// Eliminate try/except wrappers whose body provably cannot raise.
+///
+/// The frontend emits a fixed structural pattern for `try: BODY except ...:
+/// HANDLER`:
+/// ```text
+///   exception_push
+///   try_start
+///   <BODY>
+///   try_end
+///   jump <done_label>
+///   label <handler_label>
+///   label <done_label>
+///   <handler dispatch sequence>
+///   exception_pop
+/// ```
+/// Each `exception_push`/`exception_pop` pair carries a real per-iter cost
+/// (two function calls into the runtime) plus the dead-but-still-emitted
+/// handler dispatch.  When BODY contains no potentially-raising op, none
+/// of that overhead is observable: the handler is unreachable, the pop
+/// has no state to release.  This pass replaces the entire wrapped
+/// region with just the BODY ops.
+///
+/// Targets `bench_exception_check.happy_path`'s `try: total += 1` loop
+/// where `total += 1` is fast-int arithmetic and provably non-throwing.
+pub fn elide_useless_try_blocks(ops: &mut Vec<OpIR>) {
+    let mut i = 0;
+    while i < ops.len() {
+        if ops[i].kind != "exception_push" {
+            i += 1;
+            continue;
+        }
+        let push_idx = i;
+        // Find matching exception_pop at depth 0.
+        let mut depth = 1;
+        let mut pop_idx: Option<usize> = None;
+        let mut j = i + 1;
+        while j < ops.len() {
+            match ops[j].kind.as_str() {
+                "exception_push" => depth += 1,
+                "exception_pop" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        pop_idx = Some(j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        let pop_idx = match pop_idx {
+            Some(j) => j,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+        // Find try_start within (push_idx, pop_idx).  The frontend
+        // always emits try_start as the first op after exception_push,
+        // but tolerate intervening line/check_exception markers.
+        let try_start_idx = (push_idx + 1..pop_idx).find(|&k| ops[k].kind == "try_start");
+        let try_end_idx = match try_start_idx {
+            Some(ts) => (ts + 1..pop_idx).find(|&k| ops[k].kind == "try_end"),
+            None => None,
+        };
+        let (Some(ts_idx), Some(te_idx)) = (try_start_idx, try_end_idx) else {
+            i = pop_idx + 1;
+            continue;
+        };
+        // Body is ops[ts_idx + 1 .. te_idx].  All must be provably
+        // non-throwing.  Encountering any nested exception_push in the
+        // body is fine — it nests in our analysis but not at this
+        // pair's depth, so it's already been considered (or will be on
+        // the next outer iteration after we splice).  But conservatively
+        // bail on nested try here to avoid doubly-modifying ranges.
+        let body_range = ts_idx + 1..te_idx;
+        let mut safe = true;
+        for op in &ops[body_range.clone()] {
+            // Don't recurse into nested try blocks at this pass — the
+            // outer iteration will revisit the spliced ops afterwards.
+            if op.kind == "exception_push" || op.kind == "try_start" {
+                safe = false;
+                break;
+            }
+            if !simple_op_is_provably_nonthrowing(op) {
+                safe = false;
+                break;
+            }
+        }
+        if !safe {
+            i = pop_idx + 1;
+            continue;
+        }
+        // Replace the entire wrapper [push_idx, pop_idx] with just BODY.
+        let body: Vec<OpIR> = ops[body_range].to_vec();
+        ops.splice(push_idx..=pop_idx, body);
+        // Restart from push_idx to catch nested wrappers that may
+        // have come into scope after splicing.
+        i = push_idx;
+    }
+}
+
 /// Collapse simple alias-only copy ops (`copy`, `copy_var`, `identity_alias`)
 /// by rewriting later uses to the original source name.
 pub fn rewrite_copy_aliases(ops: &mut [OpIR]) {
@@ -3253,6 +3524,15 @@ impl SimpleBackend {
                             // state-machine backend does not see residual phi ops.
                             if tmp_func.ops.iter().any(|op| op.kind == "phi") {
                                 rewrite_phi_to_store_load(&mut tmp_func.ops);
+                            }
+                            // Elide try/except wrappers whose body provably
+                            // cannot raise — the frontend emits the wrapper
+                            // unconditionally, but a body of e.g.
+                            // `total += 1` (fast-int) carries it for nothing.
+                            // Done at SimpleIR level so the eliminated ops
+                            // never reach the TIR pipeline at all.
+                            if tmp_func.ops.iter().any(|op| op.kind == "exception_push") {
+                                elide_useless_try_blocks(&mut tmp_func.ops);
                             }
                             let func_name = tmp_func.name.clone();
                             let mut tir_func =
