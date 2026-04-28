@@ -540,6 +540,47 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
     })
 }
 
+/// Sized variant of [`molt_object_new_bound`] — the codegen passes
+/// the static instance payload size (in bytes, header-exclusive)
+/// when the frontend carries it on the `OBJECT_NEW_BOUND` op's
+/// `value` field (set from `class_info["size"]`).  The runtime
+/// then skips the `class_layout_size` MRO walk + dict probe + name
+/// interning entirely.
+///
+/// All other guards (cls_bits validity, type_id check, builtin
+/// safety check) match the unsized entry point exactly.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_new_bound_sized(
+    cls_bits: u64,
+    payload_size_bytes: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let cls_obj = obj_from_bits(cls_bits);
+        let Some(cls_ptr) = cls_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "object.__new__ expects type");
+        };
+        unsafe {
+            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+                return raise_exception::<_>(_py, "TypeError", "object.__new__ expects type");
+            }
+        }
+        let builtins = builtin_classes(_py);
+        if is_builtin_class_bits(_py, cls_bits) && cls_bits != builtins.object {
+            let class_name = class_name_for_error(cls_bits);
+            let msg =
+                format!("object.__new__({class_name}) is not safe, use {class_name}.__new__()");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        unsafe {
+            crate::call::class_init::alloc_instance_for_class_sized(
+                _py,
+                cls_ptr,
+                payload_size_bytes as usize,
+            )
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
