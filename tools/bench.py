@@ -468,6 +468,21 @@ def _molt_build_cmd(build_profile: str) -> list[str]:
     ]
 
 
+def _emit_molt_build_failure(script: str, res: subprocess.CompletedProcess[str]) -> None:
+    print(
+        f"Molt build failed for {Path(script).name} with exit {res.returncode}.",
+        file=sys.stderr,
+    )
+    for label, text in (("stdout", res.stdout), ("stderr", res.stderr)):
+        body = (text or "").strip()
+        if not body:
+            continue
+        if len(body) > 4000:
+            body = body[-4000:]
+            body = f"... <truncated to last 4000 chars>\n{body}"
+        print(f"--- Molt build {label} ---\n{body}", file=sys.stderr)
+
+
 def prepare_molt_binary(
     script: str,
     extra_args: list[str] | None = None,
@@ -501,12 +516,14 @@ def prepare_molt_binary(
         build_s = time.perf_counter() - start
 
         if res.returncode != 0:
+            _emit_molt_build_failure(script, res)
             temp_dir.cleanup()
             return None
 
         try:
             payload = json.loads(res.stdout.strip() or "{}")
         except json.JSONDecodeError:
+            _emit_molt_build_failure(script, res)
             temp_dir.cleanup()
             return None
 
