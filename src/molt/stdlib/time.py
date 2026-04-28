@@ -17,6 +17,7 @@ _MOLT_TIME_PERF_COUNTER = _require_intrinsic("molt_time_perf_counter")
 _MOLT_TIME_PERF_COUNTER_NS = _require_intrinsic("molt_time_perf_counter_ns")
 _MOLT_TIME_TIME = _require_intrinsic("molt_time_time")
 _MOLT_TIME_TIME_NS = _require_intrinsic("molt_time_time_ns")
+_MOLT_TIME_SLEEP = _require_intrinsic("molt_time_sleep")
 _MOLT_TIME_PROCESS_TIME = _require_intrinsic("molt_time_process_time")
 _MOLT_TIME_PROCESS_TIME_NS = _require_intrinsic("molt_time_process_time_ns")
 _MOLT_TIME_LOCALTIME = _require_intrinsic("molt_time_localtime")
@@ -30,8 +31,6 @@ _MOLT_TIME_ASCTIME = _require_intrinsic("molt_time_asctime")
 _MOLT_TIME_MKTIME = _require_intrinsic("molt_time_mktime")
 _MOLT_TIME_TIMEGM = _require_intrinsic("molt_time_timegm")
 _MOLT_TIME_GET_CLOCK_INFO = _require_intrinsic("molt_time_get_clock_info")
-_MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep")
-_MOLT_BLOCK_ON = _require_intrinsic("molt_block_on")
 
 _CAP_TRUSTED = None
 _CAP_HAS = None
@@ -93,6 +92,9 @@ if TYPE_CHECKING:
     def _molt_time_time_ns() -> int:
         return 0
 
+    def _molt_time_sleep(secs: float) -> None:
+        return None
+
     def _molt_time_perf_counter() -> float:
         return 0.0
 
@@ -119,12 +121,6 @@ if TYPE_CHECKING:
 
     def _molt_time_tzname() -> Any:
         return ("UTC", "UTC")
-
-    def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any:
-        return None
-
-    def molt_block_on(task: Any) -> Any:
-        return None
 
 
 class ClockInfo:
@@ -376,8 +372,7 @@ def sleep(secs: float) -> None:
         raise TypeError("an integer or float is required")
     if delay < 0:
         raise ValueError("sleep length must be non-negative")
-    fut = _MOLT_ASYNC_SLEEP(delay, None)
-    _MOLT_BLOCK_ON(fut)
+    _MOLT_TIME_SLEEP(delay)
     return None
 
 

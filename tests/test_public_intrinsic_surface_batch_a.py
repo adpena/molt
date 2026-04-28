@@ -197,7 +197,8 @@ def _sd_drop(_handle):
 
 
 _KW_MARK = object()
-_SLEEPS = []
+_ASYNC_SLEEPS = []
+_TIME_SLEEPS = []
 
 builtins._molt_intrinsics = {{
     "molt_time_monotonic": lambda: 1.25,
@@ -219,8 +220,9 @@ builtins._molt_intrinsics = {{
     "molt_time_mktime": lambda tup: 123.0,
     "molt_time_timegm": lambda tup: 456,
     "molt_time_get_clock_info": lambda name: (name, "stub", 0.01, True, False),
+    "molt_time_sleep": lambda delay: _TIME_SLEEPS.append(float(delay)),
     "molt_async_sleep": lambda delay, result=None: ("sleep", float(delay), result),
-    "molt_block_on": lambda fut: _SLEEPS.append(fut),
+    "molt_block_on": lambda fut: _ASYNC_SLEEPS.append(fut),
     "molt_capabilities_trusted": lambda: True,
     "molt_capabilities_has": lambda name: True,
     "molt_context_null": lambda value=None: value,
@@ -363,12 +365,15 @@ def _adder(a, b):
     return a + b
 
 partial_add = functools_mod.partial(_adder, 4)
+time_mod.sleep(0.25)
 
 checks = {{
     "time": (
         time_mod.monotonic() == 1.25
         and time_mod.time() == 3.5
         and time_mod.get_clock_info("time").implementation == "stub"
+        and _TIME_SLEEPS == [0.25]
+        and _ASYNC_SLEEPS == []
         and "molt_time_monotonic" not in time_mod.__dict__
         and "molt_async_sleep" not in time_mod.__dict__
         and "molt_capabilities_has" not in time_mod.__dict__

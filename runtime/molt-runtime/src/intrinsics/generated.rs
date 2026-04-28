@@ -2378,6 +2378,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
     },
     IntrinsicSpec {
+        name: "molt_time_sleep",
+        symbol: "molt_time_sleep",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_time_process_time",
         symbol: "molt_time_process_time",
         arity: 0,
@@ -23459,6 +23464,10 @@ fn resolve_time_symbol(symbol: &str) -> Option<u64> {
         "molt_time_time_ns" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_time_time_ns",
             crate::molt_time_time_ns as *const (),
+        )),
+        "molt_time_sleep" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_time_sleep",
+            crate::molt_time_sleep as *const (),
         )),
         "molt_time_process_time" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_time_process_time",
