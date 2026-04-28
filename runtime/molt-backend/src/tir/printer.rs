@@ -467,6 +467,8 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::Bool => "bool",
         OpCode::Alloc => "alloc",
         OpCode::StackAlloc => "stack_alloc",
+        OpCode::ObjectNewBound => "object_new_bound",
+        OpCode::ObjectNewBoundStack => "object_new_bound_stack",
         OpCode::Free => "free",
         OpCode::LoadAttr => "load_attr",
         OpCode::StoreAttr => "store_attr",

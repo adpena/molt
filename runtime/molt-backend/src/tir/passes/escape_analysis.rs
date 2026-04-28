@@ -347,6 +347,8 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 // appear as uses of an alloc'd value, but be safe.
                 OpCode::Alloc
                 | OpCode::StackAlloc
+                | OpCode::ObjectNewBound
+                | OpCode::ObjectNewBoundStack
                 | OpCode::Free
                 | OpCode::ConstInt
                 | OpCode::ConstFloat

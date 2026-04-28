@@ -1665,6 +1665,8 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "bool" | "cast_bool" | "builtin_bool" => OpCode::Bool,
         "alloc" => OpCode::Alloc,
         "stack_alloc" => OpCode::StackAlloc,
+        "object_new_bound" => OpCode::ObjectNewBound,
+        "object_new_bound_stack" => OpCode::ObjectNewBoundStack,
         "free" => OpCode::Free,
         "get_attr"
         | "get_attr_generic_ptr"
