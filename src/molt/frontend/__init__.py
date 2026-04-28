@@ -16803,23 +16803,51 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         finally:
             self.locals = old_locals
             self.exact_locals = old_exact
-        # All value-expressions visited successfully — route each
-        # store through `_emit_attribute_store` with `exact_class`
-        # set to the receiver's known class, so the field-map fast
-        # path (`_emit_guarded_setattr(..., assume_exact=True)`)
-        # picks it up and emits a direct slot-based store on the
-        # freshly-allocated instance.  Receiver is OBJECT_NEW_BOUND's
-        # result with `type_hint=class_id`, so the layout is exact.
+        # All value-expressions visited successfully — emit each
+        # store via `_emit_guarded_setattr(..., use_init=True,
+        # assume_exact=True)`.  `use_init=True` is sound because the
+        # receiver was just produced by OBJECT_NEW_BOUND (whose
+        # backing allocation goes through `alloc_object_zeroed_with_pool`),
+        # so every slot starts as `None`/0 with no live pointer to
+        # decref.  This routes the lowering through `store_init`
+        # (`function_compiler.rs:21162`) which has an inline tag-
+        # check fast path: for immediate values (int/float/bool/
+        # none) it emits a direct memory store with `MemFlags::trusted`
+        # and zero runtime calls.  Targets bench_struct's 2-ops-per-
+        # iter __init__ overhead.
+        #
+        # Falls back to `_emit_attribute_store` (which emits SETATTR
+        # / runtime helper) only when the field map doesn't cover the
+        # attribute — i.e. dynamic-class / non-static-layout edges
+        # the assume_exact path declines to handle.
         receiver_class = receiver.type_hint
-        for attr_name, value in emitted_pairs:
-            self._emit_attribute_store(
-                receiver,
-                None,
-                None,
-                receiver_class if receiver_class in self.classes else None,
-                attr_name,
-                value,
-            )
+        if receiver_class is not None and receiver_class in self.classes:
+            class_info = self.classes[receiver_class]
+            field_map = class_info.get("fields", {}) if class_info else {}
+            for attr_name, value in emitted_pairs:
+                if (
+                    attr_name in field_map
+                    and not class_info.get("dynamic")
+                    and not class_info.get("dataclass")
+                    and not self._class_attr_is_data_descriptor(receiver_class, attr_name)
+                ):
+                    self._emit_guarded_setattr(
+                        receiver,
+                        attr_name,
+                        value,
+                        receiver_class,
+                        use_init=True,
+                        assume_exact=True,
+                    )
+                else:
+                    self._emit_attribute_store(
+                        receiver, None, None, receiver_class, attr_name, value,
+                    )
+        else:
+            for attr_name, value in emitted_pairs:
+                self._emit_attribute_store(
+                    receiver, None, None, None, attr_name, value,
+                )
         return True
 
     def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
