@@ -67,3 +67,15 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "tools/bench.py" in perf_text
     assert "--molt-profile release" in perf_text
     assert "bench/results/" in perf_text
+
+
+def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
+    wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
+
+    assert "runtime/molt-wasm-host/Cargo.toml" in wasm_text
+    assert "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_hello.wasm" in wasm_text
+    assert "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_comprehension.wasm" in wasm_text
+    assert "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_sieve.wasm" in wasm_text
+    assert "wasmtime run /tmp/test_hello.wasm" not in wasm_text
+    assert "wasmtime run /tmp/test_comprehension.wasm" not in wasm_text
+    assert "wasmtime run /tmp/test_sieve.wasm" not in wasm_text
