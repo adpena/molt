@@ -220,6 +220,49 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
     }
 }
 
+/// Variant of [`alloc_instance_for_class`] that takes the payload
+/// size in bytes as a parameter, skipping the in-runtime
+/// `class_layout_size` lookup entirely.  Used by the native
+/// codegen for the `object_new_bound` heap path when the frontend
+/// already carries the static class size on the SimpleIR op (set
+/// by the class-instantiation fold from `class_info["size"]`).
+///
+/// **Soundness contract**: `payload_size_bytes` MUST equal what
+/// `class_layout_size(class_ptr)` would return.  The frontend
+/// derives this from the class definition's static field layout
+/// (`len(field_order) * 8 + reserved_tail`); the runtime's
+/// `class_layout_size` slow path computes the same thing from the
+/// dict offsets.  Per the CLAUDE.md no-runtime-monkeypatching
+/// contract, class definitions are immutable post-compile, so the
+/// two values must agree.
+///
+/// In debug builds we assert the equality to catch any divergence
+/// during testing; in release the assertion is compiled out and
+/// the caller pays nothing for the safety check.
+pub(crate) unsafe fn alloc_instance_for_class_sized(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    payload_size_bytes: usize,
+) -> u64 {
+    unsafe {
+        debug_assert_eq!(
+            payload_size_bytes,
+            class_layout_size(_py, class_ptr),
+            "alloc_instance_for_class_sized: caller-supplied size must match \
+             class_layout_size — frontend layout drift detected"
+        );
+        let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let total_size = payload_size_bytes + std::mem::size_of::<MoltHeader>();
+        let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+        if obj_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        object_set_class_bits(_py, obj_ptr, class_bits);
+        inc_ref_bits(_py, class_bits);
+        MoltObject::from_ptr(obj_ptr).bits()
+    }
+}
+
 pub(crate) unsafe fn alloc_instance_for_default_object_new(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
