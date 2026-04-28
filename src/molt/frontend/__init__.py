@@ -14303,6 +14303,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.current_class = prev_class
             self.current_method_first_param = prev_first_param
             method_attr = func_val
+            # Phase 2 — detect trivially-inlinable methods.
+            #
+            # If the body is a single `return <expr>` where `<expr>`
+            # references only parameters, attributes-on-parameters, and
+            # constants (no Calls, no Subscripts, no closure / global
+            # references), record the return-expression AST so the
+            # call site can substitute params → args and emit the body
+            # inline instead of a CALL.  Targets bench_class_hierarchy's
+            # call chain (`Base.compute(self, x): return x`,
+            # `Mid.compute(self, x): return ... + 1` — the latter is
+            # filtered out because the AST still contains a Call to
+            # super(); Phase 4a's fold runs at visit time, not at
+            # compile_method-time AST inspection).
+            inline_return = None
+            if (
+                descriptor == "function"
+                and not has_closure
+                and not (vararg is not None or varkw is not None)
+                and not kwonly_names
+            ):
+                inline_return = self._extract_inline_return(item, params)
             return {
                 "func": func_val,
                 "attr": method_attr,
@@ -14317,6 +14338,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "has_closure": has_closure,
                 "property_field": property_field,
                 "property_update": property_update,
+                "inline_return": inline_return,
+                "inline_params": params if inline_return is not None else None,
+                # Owner class — needed at inline time to set
+                # `self.current_class` so that Phase 4a's `super()`
+                # fold inside the inlined body resolves against the
+                # callee's MRO position, not the caller's.
+                "inline_owner_class": node.name if inline_return is not None else None,
             }
 
         def compile_async_method(item: ast.AsyncFunctionDef) -> MethodInfo:
@@ -16411,16 +16439,37 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if self_val is None:
             return None
 
-        method_symbol = self._function_symbol(f"{owner_class}_{method_name}")
-        # Symbol must actually be registered as a callable in the module.
-        if method_symbol not in self.func_symbol_names.values() and method_symbol not in self.globals:
-            # The owner class's method hasn't been emitted yet — this
-            # can happen for forward-reference scenarios.  Fall back.
+        # Extract the method symbol from method_info["func"].type_hint
+        # (format: "Func:<symbol>"), which was set when the ClassDef
+        # compiled the method.  Calling `_function_symbol` here would
+        # increment the collision counter and return a fresh dangling
+        # symbol — same bug Phase 1 documents at line 16720.
+        func_val = method_info.get("func")
+        if (
+            func_val is None
+            or not getattr(func_val, "type_hint", "").startswith("Func:")
+        ):
+            return None
+        method_symbol = func_val.type_hint.split(":", 1)[1]
+        if method_symbol not in self.func_symbol_names:
             return None
 
         call_args = [self.visit(a) for a in node.args]
         if any(a is None for a in call_args):
             return None
+
+        # Phase 2 inline opportunity at the super-fold site: if the
+        # MRO-resolved target method has a trivially inlinable body
+        # (single Return of a constant/param/binop/etc. expression),
+        # emit the body inline rather than a CALL.  This composes
+        # with Phase 4a's recursive super-walk — `Leaf.compute` calls
+        # `super().compute(x) * 2` which folds to `Mid.compute`,
+        # whose body inlines to `super().compute(x) + 1` whose super
+        # again folds to `Base.compute(x) = x`, fully unwinding the
+        # super-chain at compile time.
+        inlined = self._try_inline_method_call(method_info, self_val, call_args)
+        if inlined is not None:
+            return inlined
 
         res_hint = "Any"
         return_hint = method_info.get("return_hint")
@@ -16437,6 +16486,153 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
         return res
+
+    def _extract_inline_return(
+        self, item: "ast.FunctionDef", params: list[str]
+    ) -> "ast.expr | None":
+        """Return the body's `return <expr>` AST iff the method is
+        trivially inlinable: body is a single Return statement (an
+        optional leading docstring is allowed), the returned expression
+        references only parameters, attributes-on-parameters,
+        constants, and pure operations (BinOp, UnaryOp, Compare,
+        BoolOp, IfExp, Tuple/List of inlinable elements).
+
+        No Calls, no Subscripts, no global references, no name
+        rebinding — those would require the full visitor with proper
+        scope handling and break the substitution model.
+        """
+        body = item.body
+        # Skip docstring if present.
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]
+        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+            return None
+
+        param_set = set(params)
+
+        def _safe(node: "ast.AST") -> bool:
+            if isinstance(node, ast.Constant):
+                return True
+            if isinstance(node, ast.Name):
+                # Builtin names like `super` are allowed even though
+                # they aren't params — visit_Call's Phase 4a / general
+                # path handles them correctly with the inline scope's
+                # current_class set.  Plain identifier refs that
+                # AREN'T params would fail at visit time (KeyError on
+                # the substituted self.locals), which the caller
+                # catches and bails on.
+                return True
+            if isinstance(node, ast.Attribute):
+                return _safe(node.value)
+            if isinstance(node, ast.BinOp):
+                return _safe(node.left) and _safe(node.right)
+            if isinstance(node, ast.UnaryOp):
+                return _safe(node.operand)
+            if isinstance(node, ast.Compare):
+                return _safe(node.left) and all(_safe(c) for c in node.comparators)
+            if isinstance(node, ast.BoolOp):
+                return all(_safe(v) for v in node.values)
+            if isinstance(node, ast.IfExp):
+                return _safe(node.test) and _safe(node.body) and _safe(node.orelse)
+            if isinstance(node, (ast.Tuple, ast.List)) and not getattr(node, "ctx", None).__class__.__name__ == "Store":
+                return all(_safe(e) for e in node.elts)
+            # Calls are allowed: when visited at inline time, Phase 4a's
+            # super() fold or Phase 1's user-method fold will recursively
+            # try inlining or emit a direct CALL.  Either way the body
+            # composes cleanly with the substitution model — the Names
+            # in arg positions get resolved against the inline locals.
+            if isinstance(node, ast.Call):
+                # Reject calls with kwargs / starred args — defensive,
+                # the substitution model handles only positional.
+                if node.keywords:
+                    return False
+                if any(isinstance(a, ast.Starred) for a in node.args):
+                    return False
+                return _safe(node.func) and all(_safe(a) for a in node.args)
+            return False
+
+        return body[0].value if _safe(body[0].value) else None
+
+    def _try_inline_method_call(
+        self,
+        method_info: dict,
+        receiver: "MoltValue",
+        call_args: list,
+    ) -> "MoltValue | None":
+        """Inline a Phase-1-direct-call into the current scope.
+
+        Substitutes parameters → arg MoltValues in the locals map
+        for the duration of visiting the inline-return-value AST,
+        then restores.  Returns the resulting MoltValue, or None if
+        inlining failed (caller should fall through to a regular CALL).
+        """
+        inline_return = method_info.get("inline_return")
+        inline_params = method_info.get("inline_params")
+        inline_owner = method_info.get("inline_owner_class")
+        if inline_return is None or inline_params is None:
+            return None
+        # The first param is `self` (for non-classmethod / non-static).
+        if len(inline_params) != 1 + len(call_args):
+            return None
+        # Build the substitution map.
+        # NB: we replace `self.locals` wholesale rather than overlay,
+        # because the visitor's Name-resolution logic falls through to
+        # `self.locals` for any name not otherwise resolved.  Names
+        # outside the substitution would resolve in the caller's scope
+        # and emit ops with caller-scope ValueIds — wrong inlining
+        # semantics.  By replacing, we force the body to reference only
+        # the substituted MoltValues; if the body has any other Name
+        # reference, visit_Name will find it absent and bail.
+        subst = {inline_params[0]: receiver}
+        for pname, arg_val in zip(inline_params[1:], call_args):
+            subst[pname] = arg_val
+        old_locals = self.locals
+        old_exact = self.exact_locals
+        old_class = self.current_class
+        old_first_param = self.current_method_first_param
+        # Preserve self.exact_locals across inline so receiver-class
+        # attribute folds inside the body still resolve.  But scrub
+        # any caller locals that share names with our params, so they
+        # don't accidentally surface during attribute lookups.
+        new_exact = dict(old_exact) if isinstance(old_exact, dict) else {}
+        for pname in inline_params:
+            new_exact.pop(pname, None)
+        # Set the inline scope's current_class / first_param so that
+        # `super()` references inside the body resolve against the
+        # callee's MRO (Base for Mid.compute's super, Mid for Leaf's
+        # super), enabling the recursive Phase 4a fold + Phase 2
+        # inline pipeline to unwind nested super-call chains at
+        # compile time.
+        if inline_owner is not None:
+            self.current_class = inline_owner
+            self.current_method_first_param = inline_params[0] if inline_params else None
+        self.locals = subst
+        self.exact_locals = new_exact
+        try:
+            result = self.visit(inline_return)
+        except (KeyError, AttributeError, NotImplementedError):
+            return None
+        finally:
+            self.locals = old_locals
+            self.exact_locals = old_exact
+            self.current_class = old_class
+            self.current_method_first_param = old_first_param
+        # Re-stamp the inlined result's type_hint with the method's
+        # declared return type when the visit produced a less-specific
+        # hint.  Inlining can degrade type_hint propagation through
+        # the BinOp/Compare visitors that don't always walk back to
+        # the method signature; reasserting `int → int` here keeps
+        # the lane preanalysis on the int-accumulator hot path in
+        # tight loops like `total += obj.compute(i)`.
+        if result is not None:
+            return_hint = method_info.get("return_hint")
+            if return_hint and (
+                return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
+            ):
+                current_hint = getattr(result, "type_hint", None)
+                if current_hint in (None, "Any", "") and current_hint != return_hint:
+                    result.type_hint = return_hint
+        return result
 
     def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
         """Phase 1 (frontend variant) — direct call for monomorphic user methods.
@@ -16545,6 +16741,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         call_args = [self.visit(a) for a in node.args]
         if any(a is None for a in call_args):
             return None
+
+        # Phase 2 inline opportunity: if the method has a trivially
+        # inlinable body (single Return of a constant/param/binop/etc.
+        # expression), emit the body inline rather than a CALL.
+        # Falls through to a regular direct CALL on bail.
+        inlined = self._try_inline_method_call(method_info, receiver, call_args)
+        if inlined is not None:
+            return inlined
 
         res_hint = "Any"
         return_hint = method_info.get("return_hint")
