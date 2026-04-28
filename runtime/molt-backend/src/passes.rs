@@ -2081,12 +2081,37 @@ fn simple_ir_op_is_pure(kind: &str) -> bool {
     )
 }
 
+fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
+    !matches!(
+        op.kind.as_str(),
+        // Assignment targets and fused iterator value outputs are definitions,
+        // not source reads.
+        "store_var" | "store_fast" | "iter_next_unboxed"
+    )
+}
+
+fn simple_ir_defined_names(op: &OpIR) -> Vec<&str> {
+    let mut defined = Vec::new();
+    if let Some(out) = op.out.as_deref()
+        && out != "none"
+    {
+        defined.push(out);
+    }
+    if op.kind == "iter_next_unboxed"
+        && let Some(var) = op.var.as_deref()
+        && var != "none"
+    {
+        defined.push(var);
+    }
+    defined
+}
+
 /// Eliminate dead ops within each function of the SimpleIR.
 ///
 /// An op is dead when:
 /// 1. It is pure (no side effects).
-/// 2. Its `var` (result name) is never referenced by any subsequent op's
-///    `args`, `var`, `s_value`, or `value` in the same function.
+/// 2. None of its defined names are referenced by any subsequent op's data
+///    inputs in the same function.
 ///
 /// Iterates to fixpoint (max 5 rounds) to catch cascading dead chains.
 pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
@@ -2099,7 +2124,9 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
 
     for func in &mut ir.functions {
         for _round in 0..5 {
-            // Build a set of all consumed names (args + var references).
+            // Build a set of all consumed names. `args` are always data
+            // inputs; `var` is input for read/copy/return-like ops but is a
+            // target definition for store_var and iter_next_unboxed.
             let mut consumed: HashSet<String> = HashSet::new();
 
             for op in &func.ops {
@@ -2107,6 +2134,11 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
                     for arg in args {
                         consumed.insert(arg.clone());
                     }
+                }
+                if let Some(v) = &op.var
+                    && simple_ir_var_field_is_read(op)
+                {
+                    consumed.insert(v.clone());
                 }
                 // s_value can reference function names or variable names
                 // in certain ops — conservatively keep anything it references.
@@ -2118,19 +2150,6 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
                         "copy_var" | "load_var" | "load_fast" | "store_var"
                     ) {
                         consumed.insert(sv.clone());
-                    }
-                }
-            }
-
-            // Also mark variables consumed by special ops' var field when the
-            // op reads from it (load_var, copy_var use var as the source).
-            for op in &func.ops {
-                if let Some(v) = &op.var {
-                    // var is the result name for most ops, but for store_var
-                    // and similar, var is the target. For load_var/copy_var,
-                    // the var field is the source being loaded.
-                    if matches!(op.kind.as_str(), "store_var" | "store_fast") {
-                        consumed.insert(v.clone());
                     }
                 }
             }
@@ -2148,13 +2167,9 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
                     return true;
                 }
 
-                // If the op has a result variable, check if it's consumed.
-                if let Some(var) = &op.var {
-                    if consumed.contains(var) {
-                        return true;
-                    }
-                    // Unreferenced pure result → dead.
-                    return false;
+                let defined = simple_ir_defined_names(op);
+                if !defined.is_empty() {
+                    return defined.iter().any(|name| consumed.contains(*name));
                 }
 
                 // Ops without a result variable but with no side effects
@@ -2940,6 +2955,85 @@ mod tests {
             out: Some(out.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "param_copy".to_string(),
+                params: vec!["n".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "copy_var".to_string(),
+                        var: Some("n".to_string()),
+                        out: Some("_v8".to_string()),
+                        ..Default::default()
+                    },
+                    make_const_int("_v11", 1),
+                    make_arith("add", &["_v8", "_v11"], "_v12"),
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("_v12".to_string()),
+                        args: Some(vec!["_v12".to_string()]),
+                        ..Default::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter()
+                .any(|op| op.kind == "copy_var" && op.out.as_deref() == Some("_v8")),
+            "dead-op elimination must preserve copy_var definitions consumed through op.out: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn dead_op_elim_counts_copy_var_source_as_consumed_input() {
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "copy_source".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    make_const_int("_v0", 40),
+                    make_const_int("_v1", 2),
+                    make_arith("add", &["_v0", "_v1"], "_sum"),
+                    OpIR {
+                        kind: "copy_var".to_string(),
+                        var: Some("_sum".to_string()),
+                        out: Some("_alias".to_string()),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("_alias".to_string()),
+                        args: Some(vec!["_alias".to_string()]),
+                        ..Default::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter()
+                .any(|op| op.kind == "add" && op.out.as_deref() == Some("_sum")),
+            "dead-op elimination must preserve producers consumed through copy_var.var: {ops:?}"
+        );
     }
 
     // --- RC coalescing tests ---

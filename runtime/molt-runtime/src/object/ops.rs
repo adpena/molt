@@ -2479,6 +2479,43 @@ pub extern "C" fn molt_time_time_ns() -> u64 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_sleep(secs_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(secs) = to_f64(obj_from_bits(secs_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "an integer or float is required");
+        };
+        if secs.is_nan() {
+            return raise_exception::<_>(_py, "ValueError", "Invalid value NaN (not a number)");
+        }
+        if secs < 0.0 {
+            return raise_exception::<_>(_py, "ValueError", "sleep length must be non-negative");
+        }
+        if !secs.is_finite() {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "timestamp out of range for platform time_t",
+            );
+        }
+        let duration = match std::time::Duration::try_from_secs_f64(secs) {
+            Ok(duration) => duration,
+            Err(_) => {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "timestamp out of range for platform time_t",
+                );
+            }
+        };
+        if !duration.is_zero() {
+            let _release = GilReleaseGuard::new();
+            std::thread::sleep(duration);
+        }
+        MoltObject::none().bits()
+    })
+}
+
 // Re-export time helpers from ops_sys (authoritative copy).
 #[cfg(target_arch = "wasm32")]
 use super::ops_sys::{
