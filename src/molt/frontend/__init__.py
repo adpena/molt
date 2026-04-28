@@ -8476,7 +8476,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if name in self.free_vars or name in self.nonlocal_decls:
             if self._emit_free_var_store(name, value):
                 return
-        if self.control_flow_depth == 0 and name in self.unbound_check_names:
+        # Discard the name from the unbound-check set — at any flow
+        # depth.  Within the current basic block, the assignment we're
+        # about to emit dominates all subsequent loads of `name` until
+        # the next flow boundary.  The flow visitors (visit_If,
+        # visit_While, visit_For, visit_Try, visit_With,
+        # visit_AsyncWith) snapshot `unbound_check_names` on entry and
+        # restore on exit, so a name discarded inside a loop or branch
+        # becomes "checked again" after the flow exits — the parent
+        # path can't rely on the inner assignment having happened.
+        # Inside the current scope (until the next flow boundary), the
+        # discard eliminates the redundant `is missing → raise
+        # UnboundLocalError` guard that would otherwise be emitted on
+        # every subsequent load_var, which is the dominant per-iter
+        # overhead in `obj = Class(...)` / `obj.x = …` / `obj.y = …`
+        # loop bodies (bench_struct).
+        if name in self.unbound_check_names:
             self.unbound_check_names.discard(name)
         cell = self._load_boxed_cell(name)
         if cell is not None:
@@ -14317,6 +14332,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # super(); Phase 4a's fold runs at visit time, not at
             # compile_method-time AST inspection).
             inline_return = None
+            inline_init_assigns: list[tuple[str, ast.expr]] | None = None
             if (
                 descriptor == "function"
                 and not has_closure
@@ -14324,6 +14340,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 and not kwonly_names
             ):
                 inline_return = self._extract_inline_return(item, params)
+                # Detect __init__-style trivially-inlinable bodies — a
+                # sequence of `self.attr = <pure expr>` assignments
+                # where <pure expr> only references params/constants
+                # and the targets are attributes of the first param.
+                # The class-instantiation fold (visit_Call) inlines
+                # these as a sequence of STORE_ATTR ops directly on
+                # the freshly-allocated instance, eliminating the
+                # __init__ CALL frame setup that dominates
+                # bench_struct's per-iter cost.
+                if method_name == "__init__":
+                    inline_init_assigns = self._extract_inline_init_assigns(
+                        item, params
+                    )
             return {
                 "func": func_val,
                 "attr": method_attr,
@@ -14339,12 +14368,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "property_field": property_field,
                 "property_update": property_update,
                 "inline_return": inline_return,
-                "inline_params": params if inline_return is not None else None,
+                "inline_params": (
+                    params if (inline_return is not None or inline_init_assigns is not None) else None
+                ),
                 # Owner class — needed at inline time to set
                 # `self.current_class` so that Phase 4a's `super()`
                 # fold inside the inlined body resolves against the
                 # callee's MRO position, not the caller's.
-                "inline_owner_class": node.name if inline_return is not None else None,
+                "inline_owner_class": (
+                    node.name
+                    if (inline_return is not None or inline_init_assigns is not None)
+                    else None
+                ),
+                "inline_init_assigns": inline_init_assigns,
             }
 
         def compile_async_method(item: ast.AsyncFunctionDef) -> MethodInfo:
@@ -16553,6 +16589,100 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         return body[0].value if _safe(body[0].value) else None
 
+    def _extract_inline_init_assigns(
+        self, item: "ast.FunctionDef", params: list[str]
+    ) -> "list[tuple[str, ast.expr]] | None":
+        """Detect `__init__`-style trivially-inlinable bodies.
+
+        Accepts a body that is a sequence of `self.attr = <pure expr>`
+        assignments (an optional leading docstring is allowed), where:
+          - the assignment target is `Attribute(Name(<first param>),
+            <attr>)` — i.e. `self.attr` for whatever `self` is named.
+          - the value expression is `_safe` per `_extract_inline_return`'s
+            criteria (constants, params, attributes-on-params, pure
+            BinOp/UnaryOp/Compare/etc., Calls).
+          - no other statement kinds (no `if`, no `for`, no `try`, no
+            extra `Assign` to non-self targets, no `Return` other than
+            implicit None).
+
+        Returns the list of `(attr_name, expr_AST)` pairs in order, or
+        ``None`` if the body doesn't match the pattern.
+
+        At inline time the caller substitutes params → call args and
+        emits a STORE_ATTR per pair on the freshly-allocated instance,
+        eliminating the __init__ CALL frame setup that dominates
+        bench_struct's per-iter cost.
+        """
+        if not params:
+            return None
+        self_name = params[0]
+        body = item.body
+        # Skip docstring if present.
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]
+        if not body:
+            # Empty body (only docstring) — equivalent to a no-op
+            # __init__.  Inline as zero stores; still a perf win since
+            # we skip the CALL.
+            return []
+
+        # Reuse _extract_inline_return's safety predicate.
+        param_set = set(params)
+
+        def _safe(node: "ast.AST") -> bool:
+            if isinstance(node, ast.Constant):
+                return True
+            if isinstance(node, ast.Name):
+                return True
+            if isinstance(node, ast.Attribute):
+                return _safe(node.value)
+            if isinstance(node, ast.BinOp):
+                return _safe(node.left) and _safe(node.right)
+            if isinstance(node, ast.UnaryOp):
+                return _safe(node.operand)
+            if isinstance(node, ast.Compare):
+                return _safe(node.left) and all(_safe(c) for c in node.comparators)
+            if isinstance(node, ast.BoolOp):
+                return all(_safe(v) for v in node.values)
+            if isinstance(node, ast.IfExp):
+                return _safe(node.test) and _safe(node.body) and _safe(node.orelse)
+            if isinstance(node, (ast.Tuple, ast.List)) and not getattr(node, "ctx", None).__class__.__name__ == "Store":
+                return all(_safe(e) for e in node.elts)
+            if isinstance(node, ast.Call):
+                if node.keywords:
+                    return False
+                if any(isinstance(a, ast.Starred) for a in node.args):
+                    return False
+                return _safe(node.func) and all(_safe(a) for a in node.args)
+            return False
+
+        assigns: list[tuple[str, ast.expr]] = []
+        for stmt in body:
+            # Allow trailing `return` / `return None` — Python __init__
+            # implicitly returns None, but explicit `return None` is
+            # also legal.  Anything else fails the pattern.
+            if isinstance(stmt, ast.Return):
+                if stmt.value is None:
+                    continue
+                if isinstance(stmt.value, ast.Constant) and stmt.value.value is None:
+                    continue
+                return None
+            if not isinstance(stmt, ast.Assign):
+                return None
+            if len(stmt.targets) != 1:
+                return None
+            target = stmt.targets[0]
+            if not isinstance(target, ast.Attribute):
+                return None
+            if not isinstance(target.value, ast.Name):
+                return None
+            if target.value.id != self_name:
+                return None
+            if not _safe(stmt.value):
+                return None
+            assigns.append((target.attr, stmt.value))
+        return assigns
+
     def _try_inline_method_call(
         self,
         method_info: dict,
@@ -16633,6 +16763,64 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if current_hint in (None, "Any", "") and current_hint != return_hint:
                     result.type_hint = return_hint
         return result
+
+    def _try_inline_init_assigns(
+        self,
+        init_assigns: "list[tuple[str, ast.expr]]",
+        inline_params: list[str],
+        receiver: "MoltValue",
+        call_args: list,
+    ) -> bool:
+        """Inline an `__init__`-style body's `self.attr = expr`
+        assignments at the call site.  Substitutes
+        params → call_args in self.locals for the duration of
+        visiting each value-expression, then emits a STORE_ATTR for
+        each pair on `receiver`.  Returns True on success, False if
+        any value-expression failed to lower (caller falls back to a
+        regular CALL).
+        """
+        if len(inline_params) != 1 + len(call_args):
+            return False
+        subst = {inline_params[0]: receiver}
+        for pname, arg_val in zip(inline_params[1:], call_args):
+            subst[pname] = arg_val
+        old_locals = self.locals
+        old_exact = self.exact_locals
+        new_exact = dict(old_exact) if isinstance(old_exact, dict) else {}
+        for pname in inline_params:
+            new_exact.pop(pname, None)
+        self.locals = subst
+        self.exact_locals = new_exact
+        emitted_pairs: list[tuple[str, MoltValue]] = []
+        try:
+            for attr_name, expr in init_assigns:
+                value = self.visit(expr)
+                if value is None:
+                    return False
+                emitted_pairs.append((attr_name, value))
+        except (KeyError, AttributeError, NotImplementedError):
+            return False
+        finally:
+            self.locals = old_locals
+            self.exact_locals = old_exact
+        # All value-expressions visited successfully — route each
+        # store through `_emit_attribute_store` with `exact_class`
+        # set to the receiver's known class, so the field-map fast
+        # path (`_emit_guarded_setattr(..., assume_exact=True)`)
+        # picks it up and emits a direct slot-based store on the
+        # freshly-allocated instance.  Receiver is OBJECT_NEW_BOUND's
+        # result with `type_hint=class_id`, so the layout is exact.
+        receiver_class = receiver.type_hint
+        for attr_name, value in emitted_pairs:
+            self._emit_attribute_store(
+                receiver,
+                None,
+                None,
+                receiver_class if receiver_class in self.classes else None,
+                attr_name,
+                value,
+            )
+        return True
 
     def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
         """Phase 1 (frontend variant) — direct call for monomorphic user methods.
@@ -20025,6 +20213,35 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                                 self.visit(a) for a in node.args
                                             ]
                                             if not any(a is None for a in init_args):
+                                                # Phase 2 sibling — inline
+                                                # __init__ body directly when
+                                                # it's a sequence of
+                                                # `self.attr = expr`
+                                                # assignments.  Eliminates
+                                                # the per-iter __init__ CALL
+                                                # frame setup that dominates
+                                                # bench_struct's overhead;
+                                                # the substituted body emits
+                                                # STORE_ATTR ops on `res`.
+                                                init_assigns = (
+                                                    init_info.get(
+                                                        "inline_init_assigns"
+                                                    )
+                                                )
+                                                inline_params = (
+                                                    init_info.get("inline_params")
+                                                )
+                                                if (
+                                                    init_assigns is not None
+                                                    and inline_params is not None
+                                                    and self._try_inline_init_assigns(
+                                                        init_assigns,
+                                                        inline_params,
+                                                        res,
+                                                        init_args,
+                                                    )
+                                                ):
+                                                    return res
                                                 init_res = MoltValue(
                                                     self.next_var(),
                                                     type_hint="None",
@@ -25166,11 +25383,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         cond = self.visit(node.test)
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         self.control_flow_depth += 1
+        # Snapshot unbound_check_names on flow entry so per-branch
+        # discards don't leak into the post-merge state — only names
+        # discarded in EVERY path can stay discarded after the merge.
+        unbound_snapshot = set(self.unbound_check_names)
         try:
             self._visit_block(node.body)
+            then_unbound = set(self.unbound_check_names)
             if node.orelse:
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                self.unbound_check_names = set(unbound_snapshot)
                 self._visit_block(node.orelse)
+                else_unbound = set(self.unbound_check_names)
+                # Names discarded in BOTH branches stay discarded;
+                # names discarded in only one go back to checked.
+                self.unbound_check_names = then_unbound | else_unbound
+            else:
+                # if-only: the else path is implicit (no statements),
+                # so it can't add discards.  Restore to snapshot —
+                # any discards in `body` may not have happened.
+                self.unbound_check_names = unbound_snapshot
         finally:
             self.control_flow_depth -= 1
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -25253,9 +25485,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="TRY_START", args=[], result=MoltValue("none")))
         self.context_depth += 1
         self.control_flow_depth += 1
+        # See _visit_loop_body for the unbound-check snapshot rationale.
+        # `with` blocks may exit via exception before any assignment,
+        # so post-block code can't rely on body-internal discards.
+        unbound_snapshot = set(self.unbound_check_names)
         try:
             self._visit_block(node.body)
         finally:
+            self.unbound_check_names = unbound_snapshot
             self.control_flow_depth -= 1
             self.context_depth -= 1
         self.try_end_labels.pop()
@@ -25385,9 +25622,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_end_labels.append(try_end_label)
         self.emit(MoltOp(kind="TRY_START", args=[], result=MoltValue("none")))
         self.control_flow_depth += 1
+        # async-with: see _visit_loop_body for snapshot rationale.
+        unbound_snapshot = set(self.unbound_check_names)
         try:
             self._visit_block(node.body)
         finally:
+            self.unbound_check_names = unbound_snapshot
             self.control_flow_depth -= 1
         self.try_end_labels.pop()
         self.emit(MoltOp(kind="LABEL", args=[try_end_label], result=MoltValue("none")))
@@ -26124,6 +26364,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_break_flags.append(loop_break_flag)
         self.loop_try_depths.append(len(self.try_scopes))
         terminated = False
+        # Snapshot unbound_check_names — the loop body may not execute
+        # at all (empty range / false initial condition), so any
+        # discards inside the body must be reverted on exit.  Inside
+        # the body, post-assignment loads still skip the check, which
+        # is the source of the per-iter speedup on
+        # `obj = Class(...); obj.x = …; obj.y = …` patterns.
+        unbound_snapshot = set(self.unbound_check_names)
         try:
             self.control_flow_depth += 1
             try:
@@ -26131,6 +26378,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             finally:
                 self.control_flow_depth -= 1
         finally:
+            self.unbound_check_names = unbound_snapshot
             self.loop_break_flags.pop()
             self.loop_try_depths.pop()
             if not self.is_async():
@@ -26337,6 +26585,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prior_terminated = self.block_terminated
         self.block_terminated = False
         self.control_flow_depth += 1
+        # try/except: snapshot unbound_check_names — the body may
+        # raise before any internal assignment, so post-block code
+        # cannot rely on body-internal discards.  See _visit_loop_body
+        # for the full rationale.
+        unbound_snapshot_try = set(self.unbound_check_names)
 
         ctx_mark = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
@@ -26642,6 +26895,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending(emit_exit=True)
         self.try_scopes.pop()
+        self.unbound_check_names = unbound_snapshot_try
         self.control_flow_depth -= 1
         self.block_terminated = prior_terminated
         return None
@@ -26673,6 +26927,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prior_terminated = self.block_terminated
         self.block_terminated = False
         self.control_flow_depth += 1
+        # try/except*: snapshot unbound_check_names — see visit_Try.
+        unbound_snapshot_try_star = set(self.unbound_check_names)
 
         ctx_mark = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
@@ -27167,6 +27423,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending(emit_exit=True)
         self.try_scopes.pop()
+        self.unbound_check_names = unbound_snapshot_try_star
         self.control_flow_depth -= 1
         self.block_terminated = prior_terminated
         return None
