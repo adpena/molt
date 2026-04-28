@@ -234,11 +234,11 @@ fn build_edges(
     // Pre-compute structural maps.
     let (if_else_map, else_end_if_map) = build_if_else_maps(ops);
 
-    // Pre-compute loop break targets: for each loop_start block, find the
-    // block immediately after the matching loop_end.  This is needed for
-    // `loop_break_if_true/false` ops that don't carry an explicit target
-    // label (molt's frontend omits the label, relying on the native
-    // backend's LoopFrame for the break target).
+    // Pre-compute loop break targets.  For a loop nested in the then side of
+    // an if/else, the structural successor after `loop_end` is the enclosing
+    // `end_if`, not the `else` block.  Keep this aligned with default
+    // fall-through so CFG pruning cannot make then-body breaks execute the
+    // sibling else body.
     let loop_break_targets: HashMap<usize, usize> = {
         let mut targets = HashMap::new();
         let mut header_stack: Vec<usize> = Vec::new();
@@ -247,11 +247,11 @@ fn build_edges(
             match first_kind {
                 "loop_start" => header_stack.push(bid),
                 "loop_end" => {
-                    if let Some(header_bid) = header_stack.pop() {
-                        // The break target is the block after loop_end.
-                        if bid + 1 < n {
-                            targets.insert(header_bid, bid + 1);
-                        }
+                    if let Some(header_bid) = header_stack.pop()
+                        && let Some(break_target) =
+                            structured_fallthrough_target(ops, blocks, &else_end_if_map, bid)
+                    {
+                        targets.insert(header_bid, break_target);
                     }
                 }
                 _ => {}
@@ -403,21 +403,10 @@ fn build_edges(
             _ => {
                 // Default: fall-through to next block — but if the next block
                 // starts with `else`, the then-branch should skip to end_if.
-                if bid + 1 < n {
-                    let next_start = blocks[bid + 1].start_op;
-                    if ops[next_start].kind == "else" {
-                        // Skip else-block; jump to end_if block.
-                        if let Some(&end_if_idx) = else_end_if_map.get(&next_start) {
-                            if let Some(end_if_bid) = block_containing(blocks, end_if_idx) {
-                                add_edge(&mut successors, &mut predecessors, bid, end_if_bid);
-                            }
-                        } else {
-                            // Fallback: fall through normally.
-                            add_edge(&mut successors, &mut predecessors, bid, bid + 1);
-                        }
-                    } else {
-                        add_edge(&mut successors, &mut predecessors, bid, bid + 1);
-                    }
+                if let Some(target_bid) =
+                    structured_fallthrough_target(ops, blocks, &else_end_if_map, bid)
+                {
+                    add_edge(&mut successors, &mut predecessors, bid, target_bid);
                 }
             }
         }
@@ -434,6 +423,28 @@ fn build_edges(
     }
 
     (successors, predecessors)
+}
+
+fn structured_fallthrough_target(
+    ops: &[OpIR],
+    blocks: &[BasicBlock],
+    else_end_if_map: &HashMap<usize, usize>,
+    from_bid: usize,
+) -> Option<usize> {
+    let next_bid = from_bid + 1;
+    if next_bid >= blocks.len() {
+        return None;
+    }
+
+    let next_start = blocks[next_bid].start_op;
+    if ops[next_start].kind == "else"
+        && let Some(&end_if_idx) = else_end_if_map.get(&next_start)
+        && let Some(end_if_bid) = block_containing(blocks, end_if_idx)
+    {
+        return Some(end_if_bid);
+    }
+
+    Some(next_bid)
 }
 
 fn add_edge(
@@ -1036,6 +1047,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn loop_break_in_then_loop_skips_enclosing_else_block() {
+        let ops = vec![
+            op_args("if", &["v0"]), // 0 enclosing if
+            op("loop_start"),       // 1 then loop header
+            op_args("loop_break_if_true", &["v1"]), // 2 implicit break target
+            op("add"),              // 3 loop body fall-through
+            op("loop_end"),         // 4 then loop end marker
+            op("else"),             // 5 sibling else block
+            op("sub"),              // 6 else body
+            op("end_if"),           // 7 structured join
+            op("ret_void"),         // 8 after if/else
+        ];
+        let cfg = CFG::build(&ops);
+
+        let break_bid = block_containing(&cfg.blocks, 2).expect("loop break block");
+        let else_bid = block_containing(&cfg.blocks, 5).expect("else block");
+        let join_bid = block_containing(&cfg.blocks, 7).expect("join block");
+
+        assert!(
+            cfg.successors[break_bid].contains(&join_bid),
+            "implicit loop break from a then-branch loop must target the enclosing join"
+        );
+        assert!(
+            !cfg.successors[break_bid].contains(&else_bid),
+            "implicit loop break from a then-branch loop must not enter the sibling else block"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Test 6: empty ops
     // -----------------------------------------------------------------------
@@ -1096,6 +1136,85 @@ mod tests {
             cfg.successors[br_bid].len(),
             2,
             "br_if should have 2 successors (fall-through + target)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: loop break inside IF/THEN must skip the ELSE block
+    // -----------------------------------------------------------------------
+    /// Reproduces the class_hierarchy 2x correctness bug.  The frontend
+    /// wraps loops containing layout-guarded method dispatch in
+    /// `IF (guard): for ... ELSE: for ... END_IF`, so the loop sits
+    /// inside the THEN branch.  The pre-fix `loop_break_targets`
+    /// computation used `bid + 1` (the block immediately after
+    /// `loop_end`) as the break target — which in this layout is the
+    /// `else` block, NOT the `end_if` block.  Result: when the loop
+    /// exited normally (via `loop_break_if_false` with no explicit
+    /// label), control fell through into the ELSE body and ran the
+    /// duplicated loop a second time.
+    ///
+    /// Fix: when the next-block-after-loop_end starts with `else`,
+    /// route the break target to the matching `end_if` block instead.
+    /// Mirror's the default-case fall-through skip rule that already
+    /// exists for blocks ending with non-branch ops.
+    ///
+    /// This test pins the CFG-level contract: the loop header's break
+    /// target must equal the end_if block, not the else block.
+    #[test]
+    fn loop_break_inside_if_skips_else_block() {
+        // Build: const; if cond; loop_start; loop_break_if_false cond;
+        //        ... loop_end; else; loop_start; loop_end; end_if; ret
+        let ops = vec![
+            op("const"),                  // 0  if-cond setup
+            op_args("if", &["c0"]),       // 1  IF
+            op("loop_start"),             // 2  THEN-body loop header
+            op("const"),                  // 3  loop body cond
+            op_args("loop_break_if_false", &["c1"]), // 4  exit cond (no label)
+            op("nop"),                    // 5  body op
+            op("loop_continue"),          // 6
+            op("loop_end"),               // 7  THEN-body loop end
+            op("else"),                   // 8  ELSE block start
+            op("loop_start"),             // 9  ELSE-body loop header
+            op_args("loop_break_if_false", &["c2"]), // 10
+            op("loop_continue"),          // 11
+            op("loop_end"),               // 12 ELSE-body loop end
+            op("end_if"),                 // 13 join
+            op("ret_void"),               // 14
+        ];
+        let cfg = CFG::build(&ops);
+
+        // The THEN-body loop's loop_end is at op 7.  The block
+        // containing `loop_break_if_false` (op 4) must have a
+        // successor edge to the END_IF block (op 13), NOT the ELSE
+        // block (op 8).
+        let break_op_idx = 4;
+        let else_op_idx = 8;
+        let end_if_op_idx = 13;
+        let break_bid = block_containing(&cfg.blocks, break_op_idx)
+            .expect("break op should be in a block");
+        let else_bid = block_containing(&cfg.blocks, else_op_idx)
+            .expect("else op should be in a block");
+        let end_if_bid = block_containing(&cfg.blocks, end_if_op_idx)
+            .expect("end_if op should be in a block");
+
+        // The break path from the THEN-body loop must NOT include
+        // the else block.
+        assert!(
+            !cfg.successors[break_bid].contains(&else_bid),
+            "loop_break_if_false inside IF/THEN must NOT route to \
+             the ELSE block — that would double-execute the body. \
+             successors={:?}, else_bid={}",
+            cfg.successors[break_bid],
+            else_bid
+        );
+        // The break path SHOULD include the end_if block.
+        assert!(
+            cfg.successors[break_bid].contains(&end_if_bid),
+            "loop_break_if_false inside IF/THEN must route to the \
+             END_IF block (skipping the ELSE body). successors={:?}, \
+             end_if_bid={}",
+            cfg.successors[break_bid],
+            end_if_bid
         );
     }
 
