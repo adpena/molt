@@ -1103,7 +1103,7 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     assert "-Wl,--icf=safe" not in link_cmd
 
 
-def test_linux_release_link_selects_lld_and_keeps_safe_icf(
+def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output_obj = tmp_path / "output.o"
@@ -1136,7 +1136,37 @@ def test_linux_release_link_selects_lld_and_keeps_safe_icf(
 
     assert linker_hint == "lld"
     assert "-fuse-ld=lld" in link_cmd
-    assert "-Wl,--icf=safe" in link_cmd
+    assert "-Wl,--icf=safe" not in link_cmd
+
+
+def test_windows_link_omits_icf_for_fn_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.obj"
+    stub_path = tmp_path / "main_stub.c"
+    runtime_lib = tmp_path / "molt_runtime.lib"
+    output_binary = tmp_path / "app.exe"
+    output_obj.write_bytes(b"COFFobject")
+    stub_path.write_text("int main(void) { return 0; }\n")
+    runtime_lib.write_bytes(b"archive")
+
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.setenv("CC", "clang")
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+
+    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple=None,
+        sysroot_path=None,
+        profile="release",
+        stdlib_obj_path=None,
+    )
+
+    assert "-Wl,/OPT:REF" in link_cmd
+    assert "-Wl,/OPT:ICF" not in link_cmd
 
 
 def test_cache_payloads_for_ir_share_sorted_function_order() -> None:
