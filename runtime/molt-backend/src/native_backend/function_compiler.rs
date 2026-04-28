@@ -1036,6 +1036,11 @@ struct FunctionPreanalysis {
     ///   - it is returned from the function (ret)
     ///   - it has explicit inc_ref/dec_ref ops in the IR
     scalar_slot_exclusion_unsafe: BTreeSet<String>,
+    /// Op indexes for `store` / `store_init` operations proven safe to lower
+    /// as plain payload writes.  These are limited to fresh stack-allocated
+    /// objects and known non-heap values, so codegen can skip refcount,
+    /// profiling, header-flag, and pointer-tag slow-path scaffolding.
+    direct_field_store_ops: BTreeSet<usize>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1135,13 +1140,177 @@ fn preanalyze_alias_source<'a>(
 }
 
 #[cfg(feature = "native-backend")]
+fn preanalysis_value_is_known_non_heap(
+    name: &str,
+    int_like_vars: &BTreeSet<String>,
+    bool_like_vars: &BTreeSet<String>,
+    float_like_vars: &BTreeSet<String>,
+    none_like_vars: &BTreeSet<String>,
+) -> bool {
+    int_like_vars.contains(name)
+        || bool_like_vars.contains(name)
+        || float_like_vars.contains(name)
+        || none_like_vars.contains(name)
+}
+
+#[cfg(feature = "native-backend")]
+fn direct_field_store_control_boundary(kind: &str) -> bool {
+    matches!(
+        kind,
+        "label"
+            | "state_label"
+            | "jump"
+            | "br_if"
+            | "if"
+            | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_end"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break"
+            | "loop_continue"
+            | "ret"
+            | "ret_void"
+    )
+}
+
+#[cfg(feature = "native-backend")]
+fn direct_field_store_passthrough(kind: &str) -> bool {
+    matches!(
+        kind,
+        "copy"
+            | "copy_var"
+            | "load_var"
+            | "store_var"
+            | "identity_alias"
+            | "const"
+            | "const_bool"
+            | "const_float"
+            | "const_none"
+            | "const_str"
+            | "const_bytes"
+            | "line"
+            | "nop"
+            | "trace_enter_slot"
+            | "trace_exit"
+            | "missing"
+    )
+}
+
+#[cfg(feature = "native-backend")]
+fn remove_direct_field_store_root(
+    root: &str,
+    stack_object_roots: &mut BTreeSet<String>,
+    known_non_heap_slots: &mut BTreeSet<(String, i64)>,
+) {
+    stack_object_roots.remove(root);
+    known_non_heap_slots.retain(|(slot_root, _)| slot_root != root);
+}
+
+#[cfg(feature = "native-backend")]
+fn analyze_direct_stack_field_stores(
+    func_ir: &FunctionIR,
+    alias_roots: &BTreeMap<String, String>,
+    int_like_vars: &BTreeSet<String>,
+    bool_like_vars: &BTreeSet<String>,
+    float_like_vars: &BTreeSet<String>,
+    none_like_vars: &BTreeSet<String>,
+) -> BTreeSet<usize> {
+    let mut direct_ops = BTreeSet::new();
+    let mut stack_object_roots: BTreeSet<String> = BTreeSet::new();
+    let mut known_non_heap_slots: BTreeSet<(String, i64)> = BTreeSet::new();
+
+    for (idx, op) in func_ir.ops.iter().enumerate() {
+        let kind = op.kind.as_str();
+        if direct_field_store_control_boundary(kind) {
+            stack_object_roots.clear();
+            known_non_heap_slots.clear();
+            continue;
+        }
+
+        if kind == "object_new_bound_stack" {
+            if let Some(out) = op.out.as_deref() {
+                let root = alias_root_name(alias_roots, out).to_string();
+                stack_object_roots.insert(root);
+            }
+            continue;
+        }
+
+        if matches!(kind, "store" | "store_init") {
+            let Some(args) = op.args.as_ref() else {
+                continue;
+            };
+            let (Some(obj_name), Some(value_name)) = (args.first(), args.get(1)) else {
+                continue;
+            };
+            let root = alias_root_name(alias_roots, obj_name).to_string();
+            if !stack_object_roots.contains(&root) {
+                continue;
+            }
+            let offset = op.value.unwrap_or(0);
+            let value_known_non_heap = preanalysis_value_is_known_non_heap(
+                value_name,
+                int_like_vars,
+                bool_like_vars,
+                float_like_vars,
+                none_like_vars,
+            );
+            let slot = (root.clone(), offset);
+            let slot_known_non_heap = kind == "store_init" || known_non_heap_slots.contains(&slot);
+
+            if value_known_non_heap && slot_known_non_heap {
+                direct_ops.insert(idx);
+                known_non_heap_slots.insert(slot);
+            } else {
+                remove_direct_field_store_root(
+                    &root,
+                    &mut stack_object_roots,
+                    &mut known_non_heap_slots,
+                );
+            }
+            continue;
+        }
+
+        if direct_field_store_passthrough(kind) {
+            continue;
+        }
+
+        let mut touched_roots: BTreeSet<String> = BTreeSet::new();
+        if let Some(args) = op.args.as_ref() {
+            for arg in args {
+                let root = alias_root_name(alias_roots, arg).to_string();
+                if stack_object_roots.contains(&root) {
+                    touched_roots.insert(root);
+                }
+            }
+        }
+        if let Some(var) = op.var.as_ref() {
+            let root = alias_root_name(alias_roots, var).to_string();
+            if stack_object_roots.contains(&root) {
+                touched_roots.insert(root);
+            }
+        }
+        for root in touched_roots {
+            remove_direct_field_store_root(
+                &root,
+                &mut stack_object_roots,
+                &mut known_non_heap_slots,
+            );
+        }
+    }
+
+    direct_ops
+}
+
+#[cfg(feature = "native-backend")]
 fn preanalyze_function_ir(
     func_ir: &FunctionIR,
     return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
 ) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
-    let mut has_store = false;
+    let has_store: bool;
     let mut var_names: BTreeSet<String> = BTreeSet::new();
     let mut last_use = BTreeMap::new();
     let mut alias_roots = BTreeMap::new();
@@ -1191,7 +1360,7 @@ fn preanalyze_function_ir(
             "ret" => has_ret = true,
             "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
             | "chan_recv_yield" => stateful = true,
-            "store" => has_store = true,
+            "store" => {}
             _ => {}
         }
 
@@ -1629,6 +1798,18 @@ fn preanalyze_function_ir(
         }
     }
 
+    let direct_field_store_ops = analyze_direct_stack_field_stores(
+        func_ir,
+        &alias_roots,
+        &int_like_vars,
+        &bool_like_vars,
+        &float_like_vars,
+        &none_like_vars,
+    );
+    has_store = func_ir.ops.iter().enumerate().any(|(idx, op)| {
+        op.kind == "store" && !direct_field_store_ops.contains(&idx)
+    });
+
     let mut var_names: Vec<String> = var_names.into_iter().collect();
     var_names.sort();
     let function_exception_label_id = label_positions
@@ -1777,6 +1958,7 @@ fn preanalyze_function_ir(
         has_arena_eligible,
         arena_eligible_outs,
         scalar_slot_exclusion_unsafe,
+        direct_field_store_ops,
     }
 }
 
@@ -2012,6 +2194,7 @@ impl SimpleBackend {
             has_arena_eligible,
             arena_eligible_outs: _arena_eligible_outs,
             scalar_slot_exclusion_unsafe,
+            direct_field_store_ops,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
@@ -17051,22 +17234,93 @@ impl SimpleBackend {
                         total,
                         3,
                     ));
-                    let header_ptr = builder.ins().stack_addr(types::I64, slot, 0);
-                    let payload_size_val =
-                        builder.ins().iconst(types::I64, payload_bytes as i64);
-                    let callee = Self::import_func_id_split(
+                    // Inline the body of `molt_object_init_stack`,
+                    // eliminating the C-call frame + argument
+                    // marshaling (~30 ns saved per stack alloc on
+                    // bench_struct's tight loop).
+                    //
+                    // Step 1: zero-fill the slot in 8-byte chunks.
+                    // `total` is known at compile time (24 + payload),
+                    // typically 40-56 bytes ⇒ 5-7 stores.  Cranelift
+                    // stack slots are guaranteed to be at least
+                    // `total` bytes; the trailing
+                    // `(8 - total % 8) % 8` bytes lie within the
+                    // slot allocation (Cranelift rounds slot size
+                    // up to `align_pow_of_2 = 3` ⇒ 8 byte alignment),
+                    // so writing the final whole-i64 chunk is sound
+                    // regardless of payload byte count.
+                    let zero64 = builder.ins().iconst(types::I64, 0);
+                    let n_chunks = ((total as usize) + 7) / 8;
+                    for chunk in 0..n_chunks {
+                        builder
+                            .ins()
+                            .stack_store(zero64, slot, (chunk * 8) as i32);
+                    }
+                    // Step 2: stamp MoltHeader fields in #[repr(C)]
+                    // layout (24 bytes total).  The earlier zero-fill
+                    // covers size_class@12 (i16) + 2 bytes padding
+                    // and reserved@20 (i32) — only the fields below
+                    // need explicit writes.
+                    //
+                    //   offset  0: type_id    (i32) = TYPE_ID_OBJECT (100)
+                    //   offset  4: ref_count  (i32) = 1
+                    //              (AtomicU32 raw value — `MoltRefCount`
+                    //              is `#[repr(transparent)]` over it)
+                    //   offset  8: flags      (i32) =
+                    //              HEADER_FLAG_IMMORTAL (0x8000)
+                    //              | HEADER_FLAG_SKIP_CLASS_DECREF (0x0002)
+                    //              = 0x8002.  **Both flags are
+                    //              load-bearing**: IMMORTAL prevents
+                    //              `dec_ref_ptr` from freeing the
+                    //              stack pointer (heap corruption
+                    //              would result); SKIP_CLASS_DECREF
+                    //              ensures the class refcount is
+                    //              not decremented (the stack object
+                    //              borrows the module-owned class).
+                    //              Match the existing init_stack
+                    //              runtime body at `object/mod.rs:932`
+                    //              exactly — using only IMMORTAL
+                    //              would leave class-refcount
+                    //              corruption as a defense-in-depth
+                    //              hazard.
+                    //   offset 16: cold_idx   (u32) = result of
+                    //              `molt_ensure_shared_cold_idx(cls_bits)`.
+                    //              This is the only call we cannot
+                    //              inline — it does an atomic
+                    //              compare-exchange on the class's
+                    //              `MoltHeader::reserved` field plus
+                    //              a slab alloc on cache miss.
+                    let type_id_val = builder.ins().iconst(types::I32, 100); // TYPE_ID_OBJECT
+                    builder.ins().stack_store(type_id_val, slot, 0);
+                    let ref_count_val = builder.ins().iconst(types::I32, 1);
+                    builder.ins().stack_store(ref_count_val, slot, 4);
+                    let flags_val = builder.ins().iconst(types::I32, 0x8002);
+                    builder.ins().stack_store(flags_val, slot, 8);
+                    // cold_idx: one runtime call (atomic CAS + slab).
+                    let cold_idx_callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_object_init_stack",
-                        &[types::I64, types::I64, types::I64],
+                        "molt_ensure_shared_cold_idx",
                         &[types::I64],
+                        &[types::I32],
                     );
-                    let local_callee =
-                        self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[header_ptr, *cls_bits, payload_size_val]);
-                    let res = builder.inst_results(call)[0];
+                    let cold_idx_local = self
+                        .module
+                        .declare_func_in_func(cold_idx_callee, builder.func);
+                    let cold_idx_call =
+                        builder.ins().call(cold_idx_local, &[*cls_bits]);
+                    let cold_idx_val = builder.inst_results(cold_idx_call)[0];
+                    builder.ins().stack_store(cold_idx_val, slot, 16);
+                    // Step 3: compute data_ptr = header_ptr + 24 and
+                    // NaN-box it as a TAG_PTR value, matching what
+                    // `MoltObject::from_ptr(data_ptr).bits()` does
+                    // inside the runtime `molt_object_init_stack`.
+                    let data_ptr = builder.ins().stack_addr(
+                        types::I64,
+                        slot,
+                        MOLT_HEADER_SIZE as i32,
+                    );
+                    let res = box_ptr_value(&mut builder, data_ptr, &nbc);
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
@@ -21213,15 +21467,28 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, obj);
                 }
                 "store" => {
-                    let local_profile_struct =
-                        local_profile_struct.expect("store lowering requires profile import");
-                    let profile_enabled_val =
-                        profile_enabled_val.expect("store lowering requires profile flag");
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Object not found");
                     let val = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
+                    if direct_field_store_ops.contains(&op_idx) {
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            let none_val = builder.ins().iconst(types::I64, box_none());
+                            def_var_named(&mut builder, &vars, out_name.clone(), none_val);
+                        }
+                        continue;
+                    }
+
+                    let local_profile_struct =
+                        local_profile_struct.expect("store lowering requires profile import");
+                    let profile_enabled_val =
+                        profile_enabled_val.expect("store lowering requires profile flag");
 
                     // Profile hook: gated on profile_enabled_val so it's
                     // a single branch when profiling is off.
@@ -21372,6 +21639,18 @@ impl SimpleBackend {
                     let val = var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("Value not found");
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
+                    if direct_field_store_ops.contains(&op_idx) {
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            let none_val = builder.ins().iconst(types::I64, box_none());
+                            def_var_named(&mut builder, &vars, out_name.clone(), none_val);
+                        }
+                        continue;
+                    }
                     // Inline the field init for immediate values (int/float/
                     // bool/none): just store to obj_ptr + offset with no GIL
                     // acquire and no function call. For heap-pointer values
@@ -24250,6 +24529,11 @@ mod tests {
         assert!(
             !analysis.has_store,
             "immediate stores into fresh stack object slots should lower as direct field writes"
+        );
+        assert_eq!(
+            analysis.direct_field_store_ops,
+            [3usize, 6usize].into_iter().collect(),
+            "both the init write and later same-slot immediate write should be direct"
         );
     }
 

@@ -938,6 +938,49 @@ pub extern "C" fn molt_object_init_stack(
     }
 }
 
+/// C-ABI entry point for the Cranelift inline stack-alloc fast
+/// path: decode `cls_bits` to a class pointer, verify it is a
+/// `TYPE_ID_TYPE` object, then delegate to `ensure_shared_cold_idx`
+/// which atomically allocates-or-reuses the per-class shared cold
+/// header.  Returns the raw `u32` index (with `SHARED_COLD_IDX_BIT`
+/// set) so the caller can store it directly into
+/// `MoltHeader::cold_idx` at slot offset 16.
+///
+/// Returns `0` (the "no cold header" sentinel) when `cls_bits` is
+/// not a valid pointer or the object is not a type — the codegen
+/// guarantees neither branch is reachable on the typed-class
+/// fast path (the frontend gates the OBJECT_NEW_BOUND fold on a
+/// known-class identity at compile time), so the fallbacks are
+/// defense-in-depth rather than expected runtime paths.
+///
+/// **Why a separate C-API**: the Cranelift inline stack-alloc
+/// codegen replaces a single C-call to `molt_object_init_stack`
+/// with inline header-stamping stores, but the cold-header
+/// allocation can't be inlined — it does an atomic
+/// compare-exchange against the class's `MoltHeader::reserved`
+/// field plus a slab alloc on the cache-miss path.  Splitting it
+/// into its own entry point lets the codegen issue exactly one
+/// runtime call (for the cold idx) instead of going through the
+/// full init_stack helper.
+///
+/// Safety: the caller (the codegen) guarantees `cls_bits` encodes
+/// a live heap object that remains alive for the duration of the
+/// call — the class is module-owned and never freed during a
+/// function execution.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_ensure_shared_cold_idx(cls_bits: u64) -> u32 {
+    let cls_ptr = match obj_from_bits(cls_bits).as_ptr() {
+        Some(p) => p,
+        None => return 0,
+    };
+    unsafe {
+        if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+            return 0;
+        }
+        ensure_shared_cold_idx(cls_ptr)
+    }
+}
+
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
         RefCell::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]);
