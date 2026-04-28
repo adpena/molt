@@ -97,16 +97,27 @@ fn is_borrowing_method_call(attrs: &AttrDict) -> bool {
     effects::method_effects(receiver_type, method).is_some_and(|fx| fx.effect_free)
 }
 
-/// Analyze escape state of all `Alloc` operations in `func`.
+/// Returns `true` if this opcode is an allocation site whose result we
+/// want to track for escape state.  Currently `Alloc` (generic heap
+/// blocks) and `ObjectNewBound` (class-instance allocation from the
+/// frontend's class-instantiation fold).
+#[inline]
+fn is_alloc_site(opcode: OpCode) -> bool {
+    matches!(opcode, OpCode::Alloc | OpCode::ObjectNewBound)
+}
+
+/// Analyze escape state of all allocation sites in `func`.
 ///
-/// Returns a map from each `Alloc` result `ValueId` to its `EscapeState`.
+/// Returns a map from each allocation result `ValueId` to its
+/// `EscapeState`.  An allocation site is any op for which
+/// `is_alloc_site` returns `true`.
 pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
-    // Step 1: Find all Alloc ops and their result ValueIds.
+    // Step 1: Find all alloc-site ops and their result ValueIds.
     let mut escapes: HashMap<ValueId, EscapeState> = HashMap::new();
 
     for block in func.blocks.values() {
         for op in &block.ops {
-            if op.opcode == OpCode::Alloc {
+            if is_alloc_site(op.opcode) {
                 for &result in &op.results {
                     escapes.insert(result, EscapeState::NoEscape);
                 }
@@ -420,7 +431,17 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
     }
 
     for block in func.blocks.values_mut() {
-        // Rewrite Alloc → StackAlloc for NoEscape values.
+        // Rewrite alloc-site opcodes for NoEscape values:
+        //   Alloc           → StackAlloc           (existing)
+        //
+        // ObjectNewBound is intentionally NOT rewritten yet — the
+        // analysis step now tracks it (so other passes / refcount-
+        // elim can see escape state), but the StackSlot-based
+        // lowering arm in `native_backend/function_compiler.rs` for
+        // ObjectNewBoundStack is not yet wired.  Rewriting here
+        // without a corresponding lowering would route through the
+        // default backend arm and SIGSEGV at runtime.  Step 3 of
+        // Phase 5 lands the lowering and re-enables the rewrite.
         for op in &mut block.ops {
             if op.opcode == OpCode::Alloc && op.results.iter().any(|r| no_escape.contains(r)) {
                 op.opcode = OpCode::StackAlloc;
@@ -465,6 +486,65 @@ mod tests {
             attrs: AttrDict::new(),
             source_span: None,
         }
+    }
+
+    /// Phase 5 step 2: ObjectNewBound result that is only used by
+    /// LoadAttr (i.e. observed locally, never returned, never stored
+    /// into a non-alloc heap location, never passed to an escaping
+    /// op) is classified as NoEscape — the same lattice value as a
+    /// local-only `Alloc`.  This is the prerequisite for the
+    /// ObjectNewBound → ObjectNewBoundStack rewrite that lands in
+    /// step 3.
+    #[test]
+    fn local_only_object_new_bound_is_no_escape() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0); // function parameter standing in for the class ref
+        let inst_val = func.fresh_value();
+        let load_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(
+            OpCode::ObjectNewBound,
+            vec![class_ref],
+            vec![inst_val],
+        ));
+        entry.ops.push(make_op(
+            OpCode::LoadAttr,
+            vec![inst_val],
+            vec![load_result],
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(escapes[&inst_val], EscapeState::NoEscape);
+    }
+
+    /// Phase 5 step 2: ObjectNewBound result that is returned escapes
+    /// — same lattice handling as `Alloc`.
+    #[test]
+    fn returned_object_new_bound_is_global_escape() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(
+            OpCode::ObjectNewBound,
+            vec![class_ref],
+            vec![inst_val],
+        ));
+        entry.terminator = Terminator::Return {
+            values: vec![inst_val],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(escapes[&inst_val], EscapeState::GlobalEscape);
     }
 
     /// Test 1: Local-only alloc (created, field read, no escape) → NoEscape.
