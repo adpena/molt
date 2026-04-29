@@ -604,9 +604,7 @@ def _run_wrapper_build(
                 _abs_path = file_path
             _path_digest = _hashlib.sha256(_abs_path.encode("utf-8")).hexdigest()[:16]
             stem = Path(file_path).stem
-            cached_bin = (
-                _cache_root / "home" / "bin" / f"{stem}_{_path_digest}_molt"
-            )
+            cached_bin = _cache_root / "home" / "bin" / f"{stem}_{_path_digest}_molt"
             if cached_bin.exists():
                 try:
                     src_mtime = Path(file_path).stat().st_mtime
@@ -11826,7 +11824,9 @@ def _sweep_orphaned_backend_daemon_locks(
     if include_other_sessions:
         sessions_root = project_root / "target" / "sessions"
         try:
-            session_dirs = list(sessions_root.iterdir()) if sessions_root.is_dir() else []
+            session_dirs = (
+                list(sessions_root.iterdir()) if sessions_root.is_dir() else []
+            )
         except OSError:
             session_dirs = []
         for session_dir in session_dirs:
@@ -12921,9 +12921,7 @@ def _start_backend_daemon(
     if log_tail:
         message = f"{message}\nLast daemon log lines:\n{log_tail}"
     else:
-        message = (
-            f"{message}\n(no daemon log output captured at {log_path})"
-        )
+        message = f"{message}\n(no daemon log output captured at {log_path})"
     _report_daemon_issue(message)
     return False
 
@@ -16699,27 +16697,26 @@ def _build_native_link_command(
     # molt-runtime and molt-runtime-serial (e.g. serial bridge FFI
     # symbols) — the second pass resolves back-edges from the first.
     _is_darwin = (
-        (target_triple and ("apple" in target_triple or "darwin" in target_triple))
-        or (not target_triple and sys.platform == "darwin")
-    )
-    _is_linux = (
-        (target_triple and "linux" in target_triple)
-        or (not target_triple and sys.platform.startswith("linux"))
+        target_triple and ("apple" in target_triple or "darwin" in target_triple)
+    ) or (not target_triple and sys.platform == "darwin")
+    _is_linux = (target_triple and "linux" in target_triple) or (
+        not target_triple and sys.platform.startswith("linux")
     )
     _is_windows = (
-        (target_triple and ("windows" in target_triple or "msvc" in target_triple))
-        or (not target_triple and sys.platform == "win32")
-    )
+        target_triple and ("windows" in target_triple or "msvc" in target_triple)
+    ) or (not target_triple and sys.platform == "win32")
     _rt_lib = str(runtime_lib)
     if _is_linux:
         # GNU ld: use --start-group/--end-group for circular references.
-        _link_inputs.extend([
-            "-Wl,--start-group",
-            _rt_lib,
-            "-Wl,--end-group",
-            "-o",
-            str(output_binary),
-        ])
+        _link_inputs.extend(
+            [
+                "-Wl,--start-group",
+                _rt_lib,
+                "-Wl,--end-group",
+                "-o",
+                str(output_binary),
+            ]
+        )
     else:
         # macOS ld64 / lld: list the archive twice to handle circular refs.
         _link_inputs.extend([_rt_lib, _rt_lib, "-o", str(output_binary)])
@@ -16776,12 +16773,10 @@ def _build_native_link_command(
 def _post_link_strip(binary: Path, target_triple: str | None) -> None:
     """Run platform-appropriate post-link strip for maximum size reduction."""
     _is_darwin = (
-        (target_triple and ("apple" in target_triple or "darwin" in target_triple))
-        or (not target_triple and sys.platform == "darwin")
-    )
-    _is_linux = (
-        (target_triple and "linux" in target_triple)
-        or (not target_triple and sys.platform.startswith("linux"))
+        target_triple and ("apple" in target_triple or "darwin" in target_triple)
+    ) or (not target_triple and sys.platform == "darwin")
+    _is_linux = (target_triple and "linux" in target_triple) or (
+        not target_triple and sys.platform.startswith("linux")
     )
     if not binary.exists():
         return
@@ -17432,8 +17427,16 @@ def _resolve_build_output_layout(
         else target
     )
     is_transpile = is_rust_transpile or is_luau_transpile
-    emit_mode = "bin" if is_transpile or is_mlir_emit else (emit or ("wasm" if is_wasm else "bin"))
-    if not is_transpile and not is_mlir_emit and emit_mode not in {"bin", "obj", "wasm"}:
+    emit_mode = (
+        "bin"
+        if is_transpile or is_mlir_emit
+        else (emit or ("wasm" if is_wasm else "bin"))
+    )
+    if (
+        not is_transpile
+        and not is_mlir_emit
+        and emit_mode not in {"bin", "obj", "wasm"}
+    ):
         raise ValueError(f"Invalid emit mode: {emit_mode}")
     if is_wasm and emit_mode != "wasm":
         raise ValueError(f"Invalid emit mode for wasm target: {emit_mode}")
@@ -26240,11 +26243,14 @@ def _append_darwin_runtime_frameworks(
 def _resolve_macos_sdk_root() -> str | None:
     """Return the active macOS SDK root via xcrun, or None if unavailable."""
     try:
-        return subprocess.check_output(
-            ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
-            text=True,
-            timeout=5,
-        ).strip() or None
+        return (
+            subprocess.check_output(
+                ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                text=True,
+                timeout=5,
+            ).strip()
+            or None
+        )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
 
@@ -26643,9 +26649,7 @@ def _run_script_cross(
 
     if not json_output:
         target_label = (
-            "WASM" if target == "wasm"
-            else "MLIR" if target == "mlir"
-            else "Luau"
+            "WASM" if target == "wasm" else "MLIR" if target == "mlir" else "Luau"
         )
         print(f"Building for {target_label}...", file=sys.stderr)
     try:

@@ -67,7 +67,9 @@ class Conv2d:
                     f"Invalid padding string {padding!r}, only 'same' is supported"
                 )
             if stride != 1:
-                raise ValueError("padding='same' is not supported for strided convolutions")
+                raise ValueError(
+                    "padding='same' is not supported for strided convolutions"
+                )
             dilation_t = _make_tuple(dilation, len(self.kernel_size))
             pad = [
                 (
@@ -202,15 +204,15 @@ class GroupNorm:
         self.bias = Tensor.zeros(num_channels) if affine else None
 
     def __call__(self, x: Tensor) -> Tensor:
-        x = x.reshape(x.shape[0], self.num_groups, -1).layernorm(
-            eps=self.eps
-        ).reshape(x.shape)
+        x = (
+            x.reshape(x.shape[0], self.num_groups, -1)
+            .layernorm(eps=self.eps)
+            .reshape(x.shape)
+        )
         if self.weight is None or self.bias is None:
             return x
         affine_shape = (1, -1, *[1] * (x.ndim - 2))
-        return x * self.weight.reshape(*affine_shape) + self.bias.reshape(
-            *affine_shape
-        )
+        return x * self.weight.reshape(*affine_shape) + self.bias.reshape(*affine_shape)
 
 
 class Embedding:

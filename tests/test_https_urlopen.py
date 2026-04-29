@@ -97,15 +97,18 @@ def _compile_and_run(source: str) -> str:
         )
         if run.returncode != 0:
             pytest.fail(
-                "compiled binary failed:\n"
-                f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
+                f"compiled binary failed:\nstdout:\n{run.stdout}\nstderr:\n{run.stderr}"
             )
         return run.stdout
 
 
 def test_urllib_request_urlopen_https() -> None:
     out = _compile_and_run(_PROGRAM)
-    lines = {line.split("=", 1)[0]: line.split("=", 1)[1] for line in out.strip().splitlines() if "=" in line}
+    lines = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in out.strip().splitlines()
+        if "=" in line
+    }
     assert lines.get("STATUS") == "200", out
     body_len = int(lines.get("BODY_LEN", "0"))
     assert body_len > 256, f"body too short ({body_len}): {out}"

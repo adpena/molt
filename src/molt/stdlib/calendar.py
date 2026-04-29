@@ -11,9 +11,15 @@ CPython's behavior for module-level missing names.
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 import datetime
 import warnings
 from enum import IntEnum, global_enum
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
 
 __all__ = [
     "IllegalMonthError",
@@ -294,9 +300,13 @@ def timegm(tuple):
     """Unrelated but handy: convert a tuple representing UTC time to an
     epoch seconds value. Mirrors CPython's calendar.timegm."""
     year, month, day, hour, minute, second = tuple[:6]
-    days = datetime.date(year, month, day).toordinal() - datetime.date(
-        _EPOCH, 1, 1
-    ).toordinal()
+    days = (
+        datetime.date(year, month, day).toordinal()
+        - datetime.date(_EPOCH, 1, 1).toordinal()
+    )
     hours = days * 24 + hour
     minutes = hours * 60 + minute
     return minutes * 60 + second
+
+
+globals().pop("_require_intrinsic", None)

@@ -29,7 +29,10 @@ extend-exclude = ["third_party", "tests/differential", "tests/harness/corpus"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/molt/stdlib/**/*.py" = ["E402"]
+"src/molt/stdlib/_pyio.py" = ["E722", "F401"]  # CPython mirror: finalizer suppression and __all__ re-export.
+"src/molt/stdlib/builtins.py" = ["F821"]       # Runtime-provided builtins can be version-gated ahead of host Python.
 "src/molt/stdlib/colorsys.py" = ["E741"]
+"src/molt/stdlib/calendar.py" = ["F822"]       # @global_enum exports enum members into module globals.
 "src/molt/stdlib/copyreg.py" = ["F401"]
 "src/molt/stdlib/ctypes/_endian.py" = ["F821"]
 "src/molt/stdlib/ctypes/wintypes.py" = ["F821"]
@@ -38,6 +41,10 @@ extend-exclude = ["third_party", "tests/differential", "tests/harness/corpus"]
 "src/molt/stdlib/encodings/punycode.py" = ["E741"]
 "src/molt/stdlib/encodings/quopri_codec.py" = ["F401"]
 "src/molt/stdlib/http/client.py" = ["F822"]
+"src/molt/stdlib/mimetypes.py" = ["E731"]      # CPython mirror keeps local callback lambdas.
+"src/molt/stdlib/site.py" = ["F401"]           # Imports intentionally execute customization hooks.
+"src/molt/stdlib/unittest/mock.py" = ["E722", "E731"] # CPython mirror preserves mock callback/finalizer shape.
+"src/molt/stdlib/xml/etree/cElementTree.py" = ["F403"] # Deprecated CPython alias re-exports ElementTree.
 "src/molt/stdlib/_sys_impl.py" = ["F822"]  # __all__ names are bootstrap-populated.
 "src/molt/stdlib/sys.py" = ["F822"]        # __all__ names are bootstrap-populated.
 "examples/cloudflare-demo/src/app.py" = ["E402"]  # Route handlers intentionally follow large GPT weights.
@@ -45,7 +52,7 @@ extend-exclude = ["third_party", "tests/differential", "tests/harness/corpus"]
 "tests/e2e/test_falcon_ocr_parity.py" = ["E402"]  # Standalone script path setup precedes sibling imports.
 "tests/e2e/test_falcon_ocr_real.py" = ["E402"]    # Standalone script path setup precedes sibling imports.
 "tests/e2e/test_falcon_ocr_targets.py" = ["E402"] # Standalone script path setup precedes sibling imports.
-"tests/parity/**/*.py" = ["E402"]                 # Executable parity scripts test import timing/order.
+"tests/parity/**/*.py" = ["E402", "E731"]         # Executable parity scripts test import timing/order and syntax forms.
 "tests/parity/test_exceptions.py" = ["E402", "E722"]  # Bare except is parity corpus input.
 "tests/runtime_compat/scripts/*.py" = ["E402"]    # Harness scripts are executed directly by compatibility runner.
 

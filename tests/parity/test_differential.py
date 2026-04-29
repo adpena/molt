@@ -6,7 +6,7 @@
 
 # === BASIC TYPES ===
 # 1. Integer arithmetic
-print("int:", 1 + 2, 3 * 4, 10 // 3, 10 % 3, 2 ** 10)
+print("int:", 1 + 2, 3 * 4, 10 // 3, 10 % 3, 2**10)
 # 2. Float arithmetic
 print("float:", 1.5 + 2.5, 3.0 * 4.0, 10.0 / 3.0)
 # 3. String operations
@@ -61,35 +61,56 @@ for i in range(10):
     vals.append(i)
 print("break_continue:", vals)
 
+
 # === FUNCTIONS ===
 # 14. Basic function
 def add(a, b):
     return a + b
+
+
 print("func:", add(3, 4))
+
+
 # 15. Default args
 def greet(name, greeting="Hello"):
     return f"{greeting}, {name}!"
+
+
 print("default:", greet("World"), greet("Bob", "Hi"))
+
+
 # 16. *args, **kwargs
 def variadic(*args, **kwargs):
     return len(args), sorted(kwargs.keys())
+
+
 print("variadic:", variadic(1, 2, 3, x=4, y=5))
 # 17. Lambda
 sq = lambda x: x * x
 print("lambda:", sq(5))
+
+
 # 18. Closure
 def make_adder(n):
     def adder(x):
         return x + n
+
     return adder
+
+
 add5 = make_adder(5)
 print("closure:", add5(10))
+
+
 # 19. Recursion
 def fib(n):
     if n <= 1:
         return n
     return fib(n - 1) + fib(n - 2)
+
+
 print("recursion:", fib(10))
+
 
 # === CLASSES ===
 # 20. Basic class
@@ -97,32 +118,49 @@ class Point:
     def __init__(self, x, y):
         self.x = x
         self.y = y
+
     def __repr__(self):
         return f"Point({self.x}, {self.y})"
+
+
 p = Point(3, 4)
 print("class:", p, p.x, p.y)
+
+
 # 21. Inheritance
 class Point3D(Point):
     def __init__(self, x, y, z):
         super().__init__(x, y)
         self.z = z
+
     def __repr__(self):
         return f"Point3D({self.x}, {self.y}, {self.z})"
+
+
 p3 = Point3D(1, 2, 3)
 print("inherit:", p3)
+
+
 # 22. @classmethod
 class Counter:
     count = 0
+
     @classmethod
     def increment(cls):
         cls.count += 1
         return cls.count
+
+
 print("classmethod:", Counter.increment(), Counter.increment())
+
+
 # 23. @staticmethod
 class Math:
     @staticmethod
     def square(x):
         return x * x
+
+
 print("staticmethod:", Math.square(7))
 
 # === EXCEPTION HANDLING ===
@@ -179,13 +217,17 @@ print("swap:", x, y)
 # === IMPORTS ===
 # 37. json
 import json
+
 print("json:", json.dumps({"key": "value"}))
 # 38. os
 import os
+
 print("os:", type(os.sep).__name__)
 # 39. sys
 import sys
+
 print("sys:", sys.maxsize > 0)
+
 
 # === GENERATORS ===
 # 40. Generator function
@@ -193,6 +235,8 @@ def gen():
     yield 1
     yield 2
     yield 3
+
+
 print("gen:", list(gen()))
 
 # === MISC ===
@@ -200,15 +244,23 @@ print("gen:", list(gen()))
 print("chain:", 1 < 2 < 3, 1 < 2 > 3)
 # 42. Ternary
 print("ternary:", "yes" if True else "no", "yes" if False else "no")
+
+
 # 43. Multiple return values
 def multi():
     return 1, 2, 3
+
+
 print("multi:", multi())
 # 44. Global
 counter = 0
+
+
 def inc():
     global counter
     counter += 1
+
+
 inc()
 inc()
 print("global:", counter)

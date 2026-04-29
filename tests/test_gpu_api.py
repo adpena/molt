@@ -1253,12 +1253,23 @@ def test_nn_conv2d_uses_tensor_conv2d(monkeypatch):
     from molt.gpu.nn import Conv2d
     from molt.gpu.tensor import Tensor
 
-    conv = Conv2d(2, 4, (3, 2), stride=(2, 1), padding=(1, 0), dilation=(2, 1), groups=2, bias=False)
+    conv = Conv2d(
+        2,
+        4,
+        (3, 2),
+        stride=(2, 1),
+        padding=(1, 0),
+        dilation=(2, 1),
+        groups=2,
+        bias=False,
+    )
     x = Tensor.arange(16).reshape(1, 1, 4, 4).float()
     sentinel = Tensor([1.0], shape=(1, 1, 1, 1))
     seen = {}
 
-    def fake_conv2d(self, weight, bias=None, groups=1, stride=1, dilation=1, padding=0, dtype=None):
+    def fake_conv2d(
+        self, weight, bias=None, groups=1, stride=1, dilation=1, padding=0, dtype=None
+    ):
         seen["weight"] = weight
         seen["bias"] = bias
         seen["groups"] = groups

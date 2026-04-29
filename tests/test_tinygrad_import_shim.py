@@ -681,7 +681,9 @@ def _reference_conv_nd(
                             + kernel_coords[i] * dilation[i]
                             for i in range(spatial_ndim)
                         )
-                        if all(0 <= src_coords[i] < spatial[i] for i in range(spatial_ndim)):
+                        if all(
+                            0 <= src_coords[i] < spatial[i] for i in range(spatial_ndim)
+                        ):
                             acc += get_x(n, src_channel, src_coords) * get_w(
                                 oc, ic, kernel_coords
                             )
@@ -755,18 +757,16 @@ def test_tinygrad_nn_groupnorm_matches_upstream_composition() -> None:
     norm.weight = Tensor([1.0, 1.5, -1.0, 0.5])
     norm.bias = Tensor([0.0, 1.0, 2.0, -2.0])
 
-    expected = (
-        x.reshape(1, 2, -1)
-        .layernorm(eps=norm.eps)
-        .reshape(x.shape)
-        * norm.weight.reshape(1, -1, 1, 1)
-        + norm.bias.reshape(1, -1, 1, 1)
-    )
+    expected = x.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(
+        x.shape
+    ) * norm.weight.reshape(1, -1, 1, 1) + norm.bias.reshape(1, -1, 1, 1)
 
     assert _flatten_numeric(norm(x).tolist()) == pytest.approx(
         _flatten_numeric(expected.tolist())
     )
-    assert _flatten_numeric(nn.GroupNorm(2, 4, affine=False)(x).tolist()) == pytest.approx(
+    assert _flatten_numeric(
+        nn.GroupNorm(2, 4, affine=False)(x).tolist()
+    ) == pytest.approx(
         _flatten_numeric(
             x.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(x.shape).tolist()
         )
@@ -791,10 +791,14 @@ def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -
             ]
         ]
 
-        grouped = Tensor(list(range(18))).reshape(1, 2, 3, 3).conv2d(
-            Tensor.ones(2, 1, 2, 2),
-            groups=2,
-            padding=1,
+        grouped = (
+            Tensor(list(range(18)))
+            .reshape(1, 2, 3, 3)
+            .conv2d(
+                Tensor.ones(2, 1, 2, 2),
+                groups=2,
+                padding=1,
+            )
         )
         assert grouped.tolist() == [
             [

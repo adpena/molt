@@ -449,4 +449,5 @@ def strptime(data_string: str, format: str = "%a %b %d %H:%M:%S %Y") -> "struct_
     `_strptime` module's `_strptime_time` entry point.
     """
     import _strptime as _strptime_mod  # imported lazily to avoid circular boot
+
     return _strptime_mod._strptime_time(data_string, format)

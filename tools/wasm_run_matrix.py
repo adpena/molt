@@ -58,23 +58,19 @@ applicable, that lane is reported as "skipped" but does not cause divergence.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import dataclasses
 import http.server
 import json
 import os
-import shlex
 import shutil
-import socket
 import socketserver
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
@@ -100,19 +96,13 @@ class SmokeCase:
 SMOKE_CORPUS: list[SmokeCase] = [
     SmokeCase(
         name="arith",
-        source=(
-            "x = 7\n"
-            "y = 5\n"
-            "print(x + y, x - y, x * y, x // y, x % y)\n"
-        ),
+        source=("x = 7\ny = 5\nprint(x + y, x - y, x * y, x // y, x % y)\n"),
         expected="12 2 35 1 2",
     ),
     SmokeCase(
         name="dict",
         source=(
-            "d = {'a': 1, 'b': 2, 'c': 3}\n"
-            "for k in sorted(d):\n"
-            "    print(k, d[k])\n"
+            "d = {'a': 1, 'b': 2, 'c': 3}\nfor k in sorted(d):\n    print(k, d[k])\n"
         ),
         expected="a 1\nb 2\nc 3",
     ),
@@ -156,9 +146,7 @@ SMOKE_CORPUS: list[SmokeCase] = [
     SmokeCase(
         name="typing",
         source=(
-            "def add(a: int, b: int) -> int:\n"
-            "    return a + b\n"
-            "print(add(2, 3))\n"
+            "def add(a: int, b: int) -> int:\n    return a + b\nprint(add(2, 3))\n"
         ),
         expected="5",
     ),
@@ -177,11 +165,7 @@ SMOKE_CORPUS: list[SmokeCase] = [
     ),
     SmokeCase(
         name="tstring",
-        source=(
-            "name = 'world'\n"
-            "n = 3\n"
-            "print(f\"hello {name} x{n}\")\n"
-        ),
+        source=("name = 'world'\nn = 3\nprint(f\"hello {name} x{n}\")\n"),
         expected="hello world x3",
     ),
 ]
@@ -200,9 +184,7 @@ def _ensure_pythonpath() -> None:
     current = os.environ.get("PYTHONPATH", "")
     parts = current.split(os.pathsep) if current else []
     if src not in parts:
-        os.environ["PYTHONPATH"] = (
-            src + os.pathsep + current if current else src
-        )
+        os.environ["PYTHONPATH"] = src + os.pathsep + current if current else src
 
 
 def _build_one(case: SmokeCase, *, out_dir: Path, rebuild: bool) -> Path:
@@ -235,17 +217,13 @@ def build_corpus(
     *, out_dir: Path, rebuild: bool, names: list[str] | None
 ) -> dict[str, Path]:
     """Build (or rebuild) every selected smoke case. Returns name -> wasm path."""
-    selected = [
-        case for case in SMOKE_CORPUS if names is None or case.name in names
-    ]
+    selected = [case for case in SMOKE_CORPUS if names is None or case.name in names]
     if not selected:
         raise RuntimeError("No smoke cases selected to build")
     artifacts: dict[str, Path] = {}
     for case in selected:
         print(f"[build] {case.name}", flush=True)
-        artifacts[case.name] = _build_one(
-            case, out_dir=out_dir, rebuild=rebuild
-        )
+        artifacts[case.name] = _build_one(case, out_dir=out_dir, rebuild=rebuild)
     return artifacts
 
 
@@ -282,9 +260,7 @@ def _normalise(out: str) -> str:
 def _run_node(case: SmokeCase, wasm: Path) -> RunResult:
     node = _node_bin()
     if node is None:
-        return RunResult(
-            "node", case.name, "skipped", detail="node binary not found"
-        )
+        return RunResult("node", case.name, "skipped", detail="node binary not found")
     if not RUN_WASM_JS.exists():
         return RunResult(
             "node",
@@ -308,9 +284,7 @@ def _run_node(case: SmokeCase, wasm: Path) -> RunResult:
     env["MOLT_WASM_LINKED_PATH"] = str(wasm)
     start = time.perf_counter()
     try:
-        proc = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=120
-        )
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired as exc:
         return RunResult(
             "node",
@@ -396,9 +370,7 @@ def _run_molt_wasm_host(case: SmokeCase, wasm: Path) -> RunResult:
     env["MOLT_WASM_LINKED_PATH"] = str(wasm)
     start = time.perf_counter()
     try:
-        proc = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=120
-        )
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired as exc:
         return RunResult(
             "molt-wasm-host",
@@ -543,9 +515,7 @@ def _stock_cli_skip_reason(wasm: Path) -> str:
     return f"incompatible-imports: {sample}{suffix}"
 
 
-def _run_stock_cli(
-    runtime: str, exe: str, case: SmokeCase, wasm: Path
-) -> RunResult:
+def _run_stock_cli(runtime: str, exe: str, case: SmokeCase, wasm: Path) -> RunResult:
     skip = _stock_cli_skip_reason(wasm)
     if skip:
         return RunResult(runtime, case.name, "skipped", detail=skip)
@@ -556,14 +526,10 @@ def _run_stock_cli(
     elif runtime == "wasmedge":
         cmd = [exe, str(wasm)]
     else:
-        return RunResult(
-            runtime, case.name, "skipped", detail="unknown stock runtime"
-        )
+        return RunResult(runtime, case.name, "skipped", detail="unknown stock runtime")
     start = time.perf_counter()
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired as exc:
         return RunResult(
             runtime,
@@ -827,7 +793,11 @@ def _run_browser(case: SmokeCase, wasm: Path) -> RunResult:
         site = Path(tmp)
         # Required browser harness assets — symlink/copy to keep relative
         # imports intact.
-        for src_name in ("browser_host.js", "browser_gpu_worker.js", "molt_vfs_browser.js"):
+        for src_name in (
+            "browser_host.js",
+            "browser_gpu_worker.js",
+            "molt_vfs_browser.js",
+        ):
             src = WASM_DIR / src_name
             if src.exists():
                 try:
@@ -893,9 +863,7 @@ def _run_browser(case: SmokeCase, wasm: Path) -> RunResult:
 
             start = time.perf_counter()
             try:
-                proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=120
-                )
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             except subprocess.TimeoutExpired as exc:
                 return RunResult(
                     "browser",
@@ -922,9 +890,7 @@ def _run_browser(case: SmokeCase, wasm: Path) -> RunResult:
                     "browser",
                     case.name,
                     "fail",
-                    detail=(
-                        f"stdout-mismatch: got={actual!r} want={case.expected!r}"
-                    ),
+                    detail=(f"stdout-mismatch: got={actual!r} want={case.expected!r}"),
                     stdout=proc.stdout,
                     stderr=proc.stderr,
                     elapsed_s=elapsed,
@@ -983,9 +949,7 @@ def _runtime_present(runtime: str) -> tuple[bool, str]:
     if runtime == "browser":
         present = _detect_browser_driver() is not None
         return present, (
-            "no headless browser driver (puppeteer/playwright)"
-            if not present
-            else ""
+            "no headless browser driver (puppeteer/playwright)" if not present else ""
         )
     return False, f"unknown runtime {runtime}"
 
@@ -1012,20 +976,26 @@ def _print_matrix(results: list[RunResult], runtimes: list[str]) -> None:
         (r.runtime, r.case): r for r in results
     }
     col_widths = {
-        rt: max(len(rt), max((len(by_pair[(rt, c)].status) for c in cases if (rt, c) in by_pair), default=4))
+        rt: max(
+            len(rt),
+            max(
+                (len(by_pair[(rt, c)].status) for c in cases if (rt, c) in by_pair),
+                default=4,
+            ),
+        )
         for rt in runtimes
     }
     name_width = max(len("test"), max((len(c) for c in cases), default=4))
-    header = " | ".join([f"{'test':<{name_width}}"] + [f"{rt:<{col_widths[rt]}}" for rt in runtimes])
+    header = " | ".join(
+        [f"{'test':<{name_width}}"] + [f"{rt:<{col_widths[rt]}}" for rt in runtimes]
+    )
     print(header)
     print("-" * len(header))
     for case in cases:
         row = [f"{case:<{name_width}}"]
         for rt in runtimes:
             res = by_pair.get((rt, case))
-            row.append(
-                f"{(res.status if res else 'n/a'):<{col_widths[rt]}}"
-            )
+            row.append(f"{(res.status if res else 'n/a'):<{col_widths[rt]}}")
         print(" | ".join(row))
 
 
@@ -1101,9 +1071,7 @@ def main(argv: list[str] | None = None) -> int:
 
     runtimes = _resolve_runtime_set(args.runtime)
     case_names = (
-        [n.strip() for n in args.case.split(",") if n.strip()]
-        if args.case
-        else None
+        [n.strip() for n in args.case.split(",") if n.strip()] if args.case else None
     )
     if case_names:
         unknown = [n for n in case_names if n not in SMOKE_BY_NAME]
@@ -1132,9 +1100,7 @@ def main(argv: list[str] | None = None) -> int:
         suffix = f" ({why})" if not ok and why else ""
         print(f"[matrix] runtime {rt}: {marker}{suffix}")
 
-    artifacts = build_corpus(
-        out_dir=out_dir, rebuild=args.rebuild, names=case_names
-    )
+    artifacts = build_corpus(out_dir=out_dir, rebuild=args.rebuild, names=case_names)
 
     if args.build_only:
         print(f"[matrix] built {len(artifacts)} smoke artifacts; build-only: exiting")
@@ -1146,9 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
         for case_name, wasm_path in artifacts.items():
             case = SMOKE_BY_NAME[case_name]
             if not ok:
-                results.append(
-                    RunResult(rt, case.name, "skipped", detail=why)
-                )
+                results.append(RunResult(rt, case.name, "skipped", detail=why))
                 continue
             res = _run_one(rt, case, wasm_path)
             print(
@@ -1179,7 +1143,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         payload = {
             "runtimes": runtimes,
-            "presence": {rt: {"available": ok, "reason": why} for rt, (ok, why) in presence.items()},
+            "presence": {
+                rt: {"available": ok, "reason": why}
+                for rt, (ok, why) in presence.items()
+            },
             "results": [dataclasses.asdict(r) for r in results],
             "summary": summary,
             "divergences": divergences,

@@ -502,9 +502,7 @@ TypeAlias = _SpecialForm("TypeAlias", None)
 TypeGuard = _SpecialForm(
     "TypeGuard", lambda params: _GenericAlias(TypeGuard, params, "TypeGuard")
 )
-TypeIs = _SpecialForm(
-    "TypeIs", lambda params: _GenericAlias(TypeIs, params, "TypeIs")
-)
+TypeIs = _SpecialForm("TypeIs", lambda params: _GenericAlias(TypeIs, params, "TypeIs"))
 Required = _SpecialForm(
     "Required", lambda params: _GenericAlias(Required, params, "Required")
 )

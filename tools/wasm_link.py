@@ -1056,7 +1056,6 @@ def _repair_out_of_bounds_func_refs(data: bytes) -> bytes | None:
                 new_body.extend(body[:pos])
                 patched_this_func = False
                 while pos < len(body):
-                    instr_start = pos
                     op = body[pos]
                     pos += 1
                     if op == 0xD2:  # ref.func

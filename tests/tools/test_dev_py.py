@@ -42,6 +42,40 @@ def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
     ]
 
 
+def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[tuple[list[str], str | None, bool]] = []
+
+    def fake_run_uv(args, python=None, env=None, tty=False):
+        calls.append((list(args), python, tty))
+
+    monkeypatch.setattr(module, "run_uv", fake_run_uv, raising=True)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        ["tools/dev.py", "lint"],
+        raising=True,
+    )
+    module.main()
+
+    stdlib_calls = [
+        args
+        for args, _python, _tty in calls
+        if args[:2] == ["python3", "tools/check_stdlib_intrinsics.py"]
+    ]
+
+    assert [
+        "python3",
+        "tools/check_stdlib_intrinsics.py",
+        "--fallback-intrinsic-backed-only",
+    ] in stdlib_calls
+    assert [
+        "python3",
+        "tools/check_stdlib_intrinsics.py",
+        "--critical-allowlist",
+    ] in stdlib_calls
+
+
 def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[tuple[list[str], str | None, bool]] = []

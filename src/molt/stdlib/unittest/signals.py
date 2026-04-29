@@ -4,6 +4,13 @@ Direct port of CPython 3.12's unittest/signals.py — pure Python; depends
 on `signal`, `weakref`, and `functools.wraps`.
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
+
 import signal
 import weakref
 
@@ -20,6 +27,7 @@ class _InterruptHandler(object):
             if default_handler == signal.SIG_DFL:
                 default_handler = signal.default_int_handler
             elif default_handler == signal.SIG_IGN:
+
                 def default_handler(unused_signum, unused_frame):
                     pass
             else:
@@ -65,6 +73,7 @@ def installHandler():
 
 def removeHandler(method=None):
     if method is not None:
+
         @wraps(method)
         def inner(*args, **kwargs):
             initial = signal.getsignal(signal.SIGINT)
@@ -73,8 +82,12 @@ def removeHandler(method=None):
                 return method(*args, **kwargs)
             finally:
                 signal.signal(signal.SIGINT, initial)
+
         return inner
 
     global _interrupt_handler
     if _interrupt_handler is not None:
         signal.signal(signal.SIGINT, _interrupt_handler.original_handler)
+
+
+globals().pop("_require_intrinsic", None)

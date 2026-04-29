@@ -569,8 +569,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
     ),
     "this": ("molt_this_payload",),
     "time": (
-        "molt_async_sleep",
-        "molt_block_on",
         "molt_time_altzone",
         "molt_time_asctime",
         "molt_time_daylight",
@@ -584,6 +582,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_time_perf_counter_ns",
         "molt_time_process_time",
         "molt_time_process_time_ns",
+        "molt_time_sleep",
         "molt_time_strftime",
         "molt_time_time",
         "molt_time_time_ns",
