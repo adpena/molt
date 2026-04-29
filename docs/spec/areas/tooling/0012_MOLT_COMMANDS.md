@@ -56,7 +56,7 @@ Outputs:
 - Native binary defaults to `$MOLT_BIN/<entry>_molt` when `--output` is not provided.
 - `--emit obj` skips linking and returns only the object artifact.
 - Cache reuse skips the backend compile step only; linking still runs when `--linked` is enabled. Use `--no-cache` for a full recompile.
-- Cache keys are computed from the IR payload plus backend/runtime source fingerprints and rustc/RUSTFLAGS metadata; small timestamp-only changes should not invalidate the cache.
+- Cache keys are computed from the IR payload plus backend/runtime/tooling source fingerprints, rustc/RUSTFLAGS metadata, and source-tree metadata (path, size, mtime, ctime). Source metadata changes intentionally invalidate object caches so long-lived CLI/batch processes cannot reuse stale compiler outputs after local source edits.
 Environment defaults:
 - `MOLT_HOME` (default `~/.molt`): base directory for Molt state, including build artifacts under `build/`.
 - `MOLT_BIN` (default `$MOLT_HOME/bin`): default directory for compiled native binaries.
