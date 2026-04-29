@@ -7744,6 +7744,81 @@ def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_w
     assert "runtime_wasm" not in prepared.artifacts
 
 
+def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    linked_wasm = tmp_path / "out" / "output_linked.wasm"
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    wasm_link = tmp_path / "tools" / "wasm_link.py"
+    wasm_link.parent.mkdir(parents=True, exist_ok=True)
+    wasm_link.write_text("# linker\n", encoding="utf-8")
+    link_calls: list[list[str]] = []
+
+    def fake_run(
+        cmd: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        link_calls.append(list(cmd))
+        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli, "_validate_wasm_structural", lambda path: None)
+
+    common_kwargs = {
+        "is_rust_transpile": False,
+        "is_luau_transpile": False,
+        "is_wasm": True,
+        "is_wasm_freestanding": False,
+        "linked": True,
+        "require_linked": False,
+        "linked_output_path": linked_wasm,
+        "output_artifact": output_wasm,
+        "json_output": True,
+        "runtime_wasm": runtime_wasm,
+        "runtime_reloc_wasm": runtime_reloc_wasm,
+        "ensure_runtime_wasm_shared": lambda *_args, **_kwargs: True,
+        "ensure_runtime_wasm_reloc": lambda required=None: True,
+        "runtime_cargo_profile": "dev-fast",
+        "molt_root": tmp_path,
+        "split_runtime": False,
+        "precompile": False,
+    }
+
+    first, first_err = cli._prepare_non_native_build_result(**common_kwargs)
+    assert first_err is None
+    assert first is not None
+    assert link_calls == [
+        [
+            sys.executable,
+            str(wasm_link),
+            "--runtime",
+            str(runtime_reloc_wasm),
+            "--input",
+            str(output_wasm),
+            "--output",
+            str(linked_wasm),
+            "--optimize",
+            "--optimize-level",
+            "Oz",
+        ]
+    ]
+
+    second, second_err = cli._prepare_non_native_build_result(**common_kwargs)
+    assert second_err is None
+    assert second is not None
+    assert len(link_calls) == 1
+
+
 def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -9641,6 +9716,89 @@ def test_run_wrapper_build_manifest_tracks_imported_source_hash(
     assert len(seen_cmds) == 1
 
     _rewrite_preserving_mtime(helper, "VALUE = 2\n", original_helper)
+    third, third_duration, third_error = cli._run_wrapper_build(**common_kwargs)
+    assert third_error is None
+    assert third_duration >= 0.0
+    assert third is not None
+    assert len(seen_cmds) == 2
+
+
+def test_run_wrapper_build_manifest_caches_module_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    package = project / "demo"
+    package.mkdir()
+    entry = package / "__main__.py"
+    entry.write_text("print(1)\n", encoding="utf-8")
+    original = entry.stat()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    _clear_molt_home_caches()
+    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+
+    resolved, error = cli._resolve_wrapper_build_entry(
+        file_path=None,
+        module="demo",
+        project_root=project,
+        json_output=True,
+        command="run",
+        build_args=[],
+    )
+    assert error is None
+    assert resolved is not None
+    cached_bin = cli._wrapper_build_default_binary_path(resolved)
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(cached_bin),
+            "consumer_output": str(cached_bin),
+            "artifacts": {},
+        },
+    )
+    seen_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        cached_bin.parent.mkdir(parents=True, exist_ok=True)
+        cached_bin.write_bytes(f"binary-{len(seen_cmds)}".encode("ascii"))
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    common_kwargs = {
+        "file_path": None,
+        "module": "demo",
+        "build_args": [],
+        "env": {},
+        "project_root": project,
+        "json_output": True,
+        "command": "run",
+        "verbose": False,
+        "resolved_build_entry": resolved,
+    }
+
+    first, first_duration, first_error = cli._run_wrapper_build(**common_kwargs)
+    assert first_error is None
+    assert first_duration >= 0.0
+    assert first is not None
+    assert len(seen_cmds) == 1
+
+    second, second_duration, second_error = cli._run_wrapper_build(**common_kwargs)
+    assert second_error is None
+    assert second_duration == 0.0
+    assert second is not None
+    assert len(seen_cmds) == 1
+
+    _rewrite_preserving_mtime(entry, "print(2)\n", original)
     third, third_duration, third_error = cli._run_wrapper_build(**common_kwargs)
     assert third_error is None
     assert third_duration >= 0.0
