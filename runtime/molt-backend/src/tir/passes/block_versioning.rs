@@ -254,7 +254,7 @@ fn clone_block_with_fresh_values(
     }
 
     // Second pass: remap operands and build ops.
-    for (op, new_results) in block.ops.iter().zip(result_ids.into_iter()) {
+    for (op, new_results) in block.ops.iter().zip(result_ids) {
         let new_operands: Vec<ValueId> = op
             .operands
             .iter()

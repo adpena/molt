@@ -285,10 +285,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         };
 
         if explicit_cond_bid.is_none() {
-            loop {
-                let Some(blk) = func.blocks.get(&cond_bid) else {
-                    break;
-                };
+            while let Some(blk) = func.blocks.get(&cond_bid) {
                 match &blk.terminator {
                     Terminator::CondBranch {
                         then_block,
@@ -1189,20 +1186,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // AttrValue::Bool.  Legacy AttrValue::Int is handled for
             // backward compatibility with cached TIR artifacts.
             value: Some(match op.attrs.get("value") {
-                Some(AttrValue::Bool(b)) => {
-                    if *b {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                Some(AttrValue::Int(i)) => {
-                    if *i != 0 {
-                        1
-                    } else {
-                        0
-                    }
-                }
+                Some(AttrValue::Bool(b)) => u8::from(*b) as i64,
+                Some(AttrValue::Int(i)) => u8::from(*i != 0) as i64,
                 _ => 0,
             }),
             out: out_var,
@@ -1786,10 +1771,7 @@ fn emit_structured_loop_region(
             let mut cur = header;
             let mut walk_visited: HashSet<BlockId> = HashSet::new();
             walk_visited.insert(header);
-            loop {
-                let Some(blk) = func.blocks.get(&cur) else {
-                    break;
-                };
+            while let Some(blk) = func.blocks.get(&cur) {
                 let next = match &blk.terminator {
                     Terminator::Branch { target, .. } => *target,
                     Terminator::CondBranch {
@@ -2092,10 +2074,7 @@ fn emit_structured_loop_region(
                 let mut cur = *body_bid;
                 let mut visited = std::collections::HashSet::new();
                 visited.insert(cur);
-                loop {
-                    let Some(blk) = func.blocks.get(&cur) else {
-                        break;
-                    };
+                while let Some(blk) = func.blocks.get(&cur) {
                     match &blk.terminator {
                         Terminator::Branch { target, .. } => {
                             if !visited.insert(*target) || *target == inner_region.cond_block {

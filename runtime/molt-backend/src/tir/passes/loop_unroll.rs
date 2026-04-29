@@ -742,11 +742,9 @@ fn branches_to(term: &Terminator, target: BlockId) -> bool {
 /// verification (block-arg arity match) sound.
 fn redirect_terminator(term: &mut Terminator, from: BlockId, to: BlockId) {
     match term {
-        Terminator::Branch { target, args } => {
-            if *target == from {
-                *target = to;
-                args.clear();
-            }
+        Terminator::Branch { target, args } if *target == from => {
+            *target = to;
+            args.clear();
         }
         Terminator::CondBranch {
             then_block,
