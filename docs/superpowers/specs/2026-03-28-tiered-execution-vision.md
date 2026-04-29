@@ -17,7 +17,7 @@ This document describes a **V8-style tiered execution architecture** that unifie
 
 The two runtimes share a **contract surface** -- a capability manifest (`molt.capabilities.toml`), type stubs, exception semantics, resource error behavior, and a conformance test suite -- so that tier-up from interpreted to compiled is invisible to user code. A function starts life in Monty's eval loop; when call-count thresholds are crossed, Molt compiles it in the background; an atomic pointer swap replaces the interpreted entry point with the compiled one. The user program never observes the transition.
 
-This is not theoretical. The shared capability manifest already exists (`molt.capabilities.toml` v2.0 with a `[monty]` section), the `ResourceTracker` trait and `AuditSink` are implemented in `molt-runtime`, Molt's TIR pipeline has 16 optimization passes with deoptimization infrastructure, and the compilation cache (`tir/cache.rs`) provides content-addressed artifact storage. What remains is the plumbing between the two runtimes: call counters, background compilation, and the atomic swap.
+This is not theoretical. The shared capability manifest already exists (`molt.capabilities.toml` v2.0 with a `[monty]` section), the `ResourceTracker` trait and `AuditSink` are implemented in `molt-runtime`, Molt's TIR pipeline runs a multi-phase optimization sequence (lowering → canonicalization → redundancy → memory → value → cleanup; see `runtime/molt-backend/src/tir/passes/mod.rs`) with deoptimization infrastructure, and the compilation cache (`tir/cache.rs`) provides content-addressed artifact storage. What remains is the plumbing between the two runtimes: call counters, background compilation, and the atomic swap.
 
 ---
 
