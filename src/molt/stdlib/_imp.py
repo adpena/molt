@@ -10,7 +10,13 @@ every attribute consumers might probe (False, empty list, no-op).
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 import sys
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
 
 
 def is_builtin(name):
@@ -122,3 +128,6 @@ __all__ = [
     "_fix_co_filename",
     "source_hash",
 ]
+
+
+globals().pop("_require_intrinsic", None)

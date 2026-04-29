@@ -101,7 +101,7 @@ jobs:
         run: cargo test -p molt-backend --features native-backend --lib
 
       - name: Clippy (molt-backend)
-        run: cargo clippy -p molt-backend --features native-backend -- -D warnings 2>&1 | head -20 || true
+        run: cargo clippy -p molt-backend --features native-backend -- -D warnings
 
       - name: Test molt-snapshot
         run: cargo test -p molt-snapshot

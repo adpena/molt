@@ -377,11 +377,15 @@ Build knobs (optional):
 
 ## Tooling Quickstart (Optional but Recommended)
 
-### Pre-commit (Python formatting + typing)
+### Pre-commit (Read-only checks)
 ```bash
 uv run pre-commit install
 uv run pre-commit run -a
 ```
+
+Default pre-commit hooks are check-only. Use explicit commands such as
+`uv run --python 3.12 ruff check --fix .`, `uv run --python 3.12 ruff format .`,
+or `cargo fmt` before staging when a check reports required formatting changes.
 
 ### Differential coverage reporting
 ```bash

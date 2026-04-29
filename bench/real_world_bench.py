@@ -16,6 +16,7 @@ Compilation notes (molt native backend):
     - for-range inside function bodies crashes at runtime (SIGILL) -- using while loops
     - augmented assign (+=) with float inside for-loops causes compile panic -- using explicit add
 """
+
 import time
 
 
@@ -37,18 +38,28 @@ def bench(name, func, *args):
 #    Tests: dict access, string ops, nested structures, type coercion.
 # ---------------------------------------------------------------------------
 
+
 def _build_json_string():
     """Build a ~10KB JSON string by hand (no json module needed for construction)."""
     entries = []
     i = 0
     while i < 200:
         entries.append(
-            '"item_' + str(i) + '": {"id": ' + str(i)
-            + ', "name": "widget_' + str(i)
-            + '", "price": ' + str(i * 1.5)
-            + ', "tags": ["tag_a", "tag_b", "tag_' + str(i % 10)
-            + '"], "nested": {"x": ' + str(i)
-            + ', "y": ' + str(i * 2) + '}}'
+            '"item_'
+            + str(i)
+            + '": {"id": '
+            + str(i)
+            + ', "name": "widget_'
+            + str(i)
+            + '", "price": '
+            + str(i * 1.5)
+            + ', "tags": ["tag_a", "tag_b", "tag_'
+            + str(i % 10)
+            + '"], "nested": {"x": '
+            + str(i)
+            + ', "y": '
+            + str(i * 2)
+            + "}}"
         )
         i = i + 1
     return "{" + ", ".join(entries) + "}"
@@ -57,6 +68,7 @@ def _build_json_string():
 def json_roundtrip():
     """Parse JSON, modify values, serialize back."""
     import json
+
     raw = _build_json_string()
     total_price = 0.0
     tag_counts = {}
@@ -94,9 +106,11 @@ def json_roundtrip():
 #    Tests: re module, string iteration, list building.
 # ---------------------------------------------------------------------------
 
+
 def regex_matching():
     """Compile patterns, match against many strings."""
     import re
+
     patterns = [
         re.compile(r"\b[A-Z][a-z]+\b"),
         re.compile(r"\d{3}-\d{4}"),
@@ -142,6 +156,7 @@ def regex_matching():
 #    Tests: string split, float conversion, accumulation.
 # ---------------------------------------------------------------------------
 
+
 def _build_csv_data():
     """Build CSV data as a single string."""
     lines = ["name,value_a,value_b,value_c"]
@@ -160,10 +175,20 @@ def _build_csv_data():
         if len(a_frac) == 1:
             a_frac = "0" + a_frac
         lines.append(
-            "row_" + str(i) + ","
-            + str(a) + "." + b_frac + ","
-            + str(b) + "." + c_frac + ","
-            + str(c) + "." + a_frac
+            "row_"
+            + str(i)
+            + ","
+            + str(a)
+            + "."
+            + b_frac
+            + ","
+            + str(b)
+            + "."
+            + c_frac
+            + ","
+            + str(c)
+            + "."
+            + a_frac
         )
         i = i + 1
     return "\n".join(lines)
@@ -211,7 +236,14 @@ def csv_processing():
     mean_a = sum_a / count
     mean_b = sum_b / count
     mean_c = sum_c / count
-    return int(mean_a * 100) + int(mean_b * 100) + int(mean_c * 100) + int(max_a) + int(max_b) + int(max_c)
+    return (
+        int(mean_a * 100)
+        + int(mean_b * 100)
+        + int(mean_c * 100)
+        + int(max_a)
+        + int(max_b)
+        + int(max_c)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +251,7 @@ def csv_processing():
 #    Join, split, resolve 200K paths using string operations.
 #    Tests: string ops, splitting, list building, object creation.
 # ---------------------------------------------------------------------------
+
 
 def path_manipulation():
     """Simulate pathlib-style path manipulation with string ops."""
@@ -239,7 +272,7 @@ def path_manipulation():
         total_depth = total_depth + len(parts)
         # extract parent and name
         name = parts[len(parts) - 1]
-        parent = "/".join(parts[:len(parts) - 1])
+        parent = "/".join(parts[: len(parts) - 1])
         # extract extension
         dot_idx = name.rfind(".")
         if dot_idx >= 0:
@@ -261,8 +294,10 @@ def path_manipulation():
 #    Tests: class instantiation, attribute access, sorting.
 # ---------------------------------------------------------------------------
 
+
 def dataclass_creation():
     """Create class instances, convert to dicts, sort."""
+
     class Record:
         def __init__(self, id, name, score, active):
             self.id = id
@@ -321,6 +356,7 @@ def dataclass_creation():
 #    Tests: exception overhead, control flow.
 # ---------------------------------------------------------------------------
 
+
 def exception_handling():
     """Try/except with 1% exception rate in tight loop."""
     success_count = 0
@@ -343,8 +379,10 @@ def exception_handling():
 #    Tests: generator protocol, lazy evaluation, yield.
 # ---------------------------------------------------------------------------
 
+
 def generator_pipeline():
     """Chain generators: generate -> filter -> map -> accumulate -> collect."""
+
     def gen_range(n):
         """Generate integers 0..n."""
         i = 0
@@ -381,14 +419,7 @@ def generator_pipeline():
     pass_num = 0
     while pass_num < 30:
         pipeline = gen_filter_threshold(
-            gen_accumulate(
-                gen_map_square(
-                    gen_filter_odd(
-                        gen_range(50000)
-                    )
-                )
-            ),
-            1000000
+            gen_accumulate(gen_map_square(gen_filter_odd(gen_range(50000)))), 1000000
         )
         count = 0
         last = 0
@@ -405,6 +436,7 @@ def generator_pipeline():
 #    Merge 100 dicts, build frequency table from 100K words.
 #    Tests: dict operations, string hashing, iteration.
 # ---------------------------------------------------------------------------
+
 
 def dict_merge_and_freq():
     """Merge dicts and build word frequency table."""
@@ -433,10 +465,28 @@ def dict_merge_and_freq():
             ki = ki + 1
         di = di + 1
     # build frequency table from 100K "words"
-    vocab = ["alpha", "beta", "gamma", "delta", "epsilon",
-             "zeta", "eta", "theta", "iota", "kappa",
-             "lambda", "mu", "nu", "xi", "omicron",
-             "pi", "rho", "sigma", "tau", "upsilon"]
+    vocab = [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "eta",
+        "theta",
+        "iota",
+        "kappa",
+        "lambda",
+        "mu",
+        "nu",
+        "xi",
+        "omicron",
+        "pi",
+        "rho",
+        "sigma",
+        "tau",
+        "upsilon",
+    ]
     total_top5 = 0
     pass_num = 0
     while pass_num < 15:
@@ -475,6 +525,7 @@ def dict_merge_and_freq():
 #    Tests: string interpolation, type conversion, string building.
 # ---------------------------------------------------------------------------
 
+
 def string_formatting():
     """Format 300K strings using f-strings and .format()."""
     results_len = 0
@@ -500,8 +551,10 @@ def string_formatting():
 #     Tests: list building, function calls, filtering, nested iteration.
 # ---------------------------------------------------------------------------
 
+
 def list_comprehension_chain():
     """Chained list building with filtering and transforms."""
+
     def is_interesting(x):
         """Non-trivial predicate: digits sum to > 10."""
         total = 0

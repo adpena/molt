@@ -33,6 +33,31 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "ld.lld --version" in ci_text
 
 
+def test_pre_commit_hooks_are_read_only_by_default() -> None:
+    pre_commit_text = _read(".pre-commit-config.yaml")
+
+    assert "- id: ruff" in pre_commit_text
+    assert "--fix" not in pre_commit_text
+    assert "- id: ruff-format" in pre_commit_text
+    assert 'args: ["--check"]' in pre_commit_text
+    assert "- id: end-of-file-fixer" not in pre_commit_text
+    assert "- id: trailing-whitespace" not in pre_commit_text
+    assert "git diff --cached --check" in pre_commit_text
+
+
+def test_ci_clippy_failures_are_not_swallowed() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    clippy_lines = [
+        line.strip()
+        for line in ci_text.splitlines()
+        if line.strip().startswith("run: cargo clippy")
+    ]
+
+    assert clippy_lines == [
+        "run: cargo clippy -p molt-backend --features native-backend -- -D warnings"
+    ]
+
+
 def test_nightly_contains_correctness_jobs() -> None:
     nightly_text = _read(".github/workflows/nightly.yml")
 
@@ -78,7 +103,10 @@ def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
     assert "timeout-minutes: 35" in wasm_text
     assert "runtime/molt-wasm-host/Cargo.toml" in wasm_text
     assert "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_hello.wasm" in wasm_text
-    assert "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_comprehension.wasm" in wasm_text
+    assert (
+        "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_comprehension.wasm"
+        in wasm_text
+    )
     assert "$CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_sieve.wasm" in wasm_text
     assert "wasmtime run /tmp/test_hello.wasm" not in wasm_text
     assert "wasmtime run /tmp/test_comprehension.wasm" not in wasm_text

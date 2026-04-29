@@ -173,10 +173,12 @@ class ZipFile:
             data = _deflate_raw(raw_data, level)
         elif method == ZIP_BZIP2:
             import bz2 as _bz2
+
             level = self._compresslevel if compresslevel is None else compresslevel
             data = _bz2.compress(raw_data, level if level is not None else 9)
         elif method == ZIP_LZMA:
             import lzma as _lzma
+
             data = _lzma.compress(raw_data)
         else:
             data = raw_data
@@ -256,12 +258,14 @@ class ZipFile:
                 raise BadZipFile(str(exc)) from exc
         if comp_method == ZIP_BZIP2:
             import bz2 as _bz2
+
             try:
                 return _bz2.decompress(payload)
             except (OSError, ValueError) as exc:
                 raise BadZipFile(str(exc)) from exc
         if comp_method == ZIP_LZMA:
             import lzma as _lzma
+
             try:
                 return _lzma.decompress(payload)
             except (OSError, ValueError) as exc:

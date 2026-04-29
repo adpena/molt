@@ -18,6 +18,10 @@ etree -- The ElementTree XML library.  This is a subset of the full
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
 # The package itself contains no logic, but every subpackage is wired through
 # the runtime XML intrinsic surface.  The probe call here keeps the package
 # inside the intrinsic-backed stdlib gate.

@@ -468,7 +468,9 @@ def _molt_build_cmd(build_profile: str) -> list[str]:
     ]
 
 
-def _emit_molt_build_failure(script: str, res: subprocess.CompletedProcess[str]) -> None:
+def _emit_molt_build_failure(
+    script: str, res: subprocess.CompletedProcess[str]
+) -> None:
     print(
         f"Molt build failed for {Path(script).name} with exit {res.returncode}.",
         file=sys.stderr,

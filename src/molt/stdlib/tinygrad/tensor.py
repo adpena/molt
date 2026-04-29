@@ -935,9 +935,7 @@ class Tensor:
         spatial_ndim = x.ndim - 2
         stride_t = _make_tuple(stride, spatial_ndim, "stride")
         dilation_t = _make_tuple(dilation, spatial_ndim, "dilation")
-        output_padding_t = _make_tuple(
-            output_padding, spatial_ndim, "output_padding"
-        )
+        output_padding_t = _make_tuple(output_padding, spatial_ndim, "output_padding")
         pads = _resolve_pool_pads(padding, spatial_ndim)
         groups = int(groups)
         if groups <= 0:
@@ -969,9 +967,7 @@ class Tensor:
             for i in range(spatial_ndim)
         )
         if any(size < 0 for size in out_spatial):
-            raise ValueError(
-                f"conv_transpose2d output shape is invalid: {out_spatial}"
-            )
+            raise ValueError(f"conv_transpose2d output shape is invalid: {out_spatial}")
 
         out_shape = (batch, out_channels, *out_spatial)
         out_data = [0.0] * _numel(out_shape)
@@ -1208,9 +1204,7 @@ def _resolve_pool_pads(padding, spatial_ndim: int) -> tuple:
     if len(padding) == spatial_ndim:
         return tuple((p, p) for p in padding)
     if len(padding) == spatial_ndim * 2:
-        pairs = tuple(
-            (padding[i], padding[i + 1]) for i in range(0, len(padding), 2)
-        )
+        pairs = tuple((padding[i], padding[i + 1]) for i in range(0, len(padding), 2))
         return tuple(reversed(pairs))
     raise ValueError(
         f"padding must have length {spatial_ndim} or {spatial_ndim * 2}, got {padding}"

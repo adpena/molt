@@ -166,7 +166,9 @@ class _FileLoader:
 
         spec = _util.spec_from_file_location(fullname, self.path, loader=self)
         if spec is None:
-            raise ImportError(f"could not build spec for {fullname!r} from {self.path!r}")
+            raise ImportError(
+                f"could not build spec for {fullname!r} from {self.path!r}"
+            )
         module = _util.module_from_spec(spec)
         if module is None:
             raise ImportError(

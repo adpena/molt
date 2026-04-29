@@ -8,6 +8,13 @@ third-party code that imports ``_elementtree`` directly) continue to
 function.
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
+
 from xml.etree.ElementTree import (
     Comment,
     Element,
@@ -69,3 +76,6 @@ __all__ = [
 def _set_factories(comment_factory, pi_factory):  # noqa: D401
     """API-compat shim; pure-Python Element does not need factory injection."""
     return None
+
+
+globals().pop("_require_intrinsic", None)
