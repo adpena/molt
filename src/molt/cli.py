@@ -23836,6 +23836,37 @@ def _ensure_backend_binary(
             _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
             if _probe_ok:
                 return True
+        # Cargo always writes the executable as `molt-backend`; Molt keeps
+        # feature-specific aliases beside it so native/wasm/rust lanes cannot
+        # poison each other.  When CI or a developer prebuilds the correct
+        # feature lane with cargo, materialize the alias after probing the
+        # canonical binary instead of rebuilding the backend.
+        if backend_features != _DEFAULT_BACKEND_FEATURES:
+            cargo_output = _canonical_cargo_backend_output()
+            if _artifact_newer_than_sources(
+                cargo_output,
+                _backend_source_paths(project_root, backend_features),
+            ):
+                _probe_target = _backend_probe_target()
+                _probe_ok, _probe_detail = _probe_backend_binary_support(
+                    _probe_target,
+                    binary_path=cargo_output,
+                )
+                if _probe_ok and _materialize_backend_binary_from(cargo_output):
+                    if fingerprint is not None:
+                        try:
+                            fingerprint_path.parent.mkdir(
+                                parents=True,
+                                exist_ok=True,
+                            )
+                            _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                        except OSError:
+                            if not json_output:
+                                print(
+                                    "Warning: failed to write backend fingerprint metadata.",
+                                    file=sys.stderr,
+                                )
+                    return True
         # Fast path: if the backend binary exists and is newer than every
         # source file that contributes to the fingerprint, skip the expensive
         # cargo build and just update the stored fingerprint.  This handles
@@ -24587,6 +24618,52 @@ def _ensure_runtime_wasm(
                 extension="fingerprint",
             )
         )
+        if (
+            not reloc
+            and fingerprint is not None
+            and _artifact_newer_than_sources(
+                target_runtime_wasm,
+                _runtime_source_paths(root),
+            )
+            and _inspect_wasm_binary(target_runtime_wasm) == "valid"
+            and _is_valid_runtime_wasm_artifact(target_runtime_wasm)
+            and (
+                not validate_exports
+                or _runtime_wasm_exports_satisfy(
+                    target_runtime_wasm,
+                    required_exports,
+                )
+            )
+        ):
+            runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target_runtime_wasm, runtime_wasm)
+            if _inspect_wasm_binary(runtime_wasm) != "valid":
+                if not json_output:
+                    print(
+                        f"Copied runtime wasm artifact is invalid: {runtime_wasm}",
+                        file=sys.stderr,
+                    )
+                return False
+            try:
+                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                target_runtime_wasm_fingerprint_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                _write_runtime_fingerprint(
+                    target_runtime_wasm_fingerprint_path,
+                    fingerprint,
+                )
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to publish prebuilt runtime wasm metadata.",
+                        file=sys.stderr,
+                    )
+                return False
+            return True
         if not reloc and _maybe_hydrate_artifact_from_canonical_target(
             artifact=runtime_wasm,
             fingerprint=fingerprint,
@@ -24633,6 +24710,42 @@ def _ensure_runtime_wasm(
                 extension="fingerprint",
             )
         )
+        if (
+            reloc
+            and fingerprint is not None
+            and _artifact_newer_than_sources(
+                target_runtime_staticlib,
+                _runtime_source_paths(root),
+            )
+        ):
+            if not _link_runtime_staticlib_to_reloc_wasm(
+                staticlib_path=target_runtime_staticlib,
+                output_path=runtime_wasm,
+                json_output=json_output,
+                link_timeout=cargo_timeout,
+                export_link_args=runtime_exports,
+            ):
+                return False
+            try:
+                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                target_runtime_staticlib_fingerprint_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                _write_runtime_fingerprint(
+                    target_runtime_staticlib_fingerprint_path,
+                    fingerprint,
+                )
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to publish prebuilt runtime wasm metadata.",
+                        file=sys.stderr,
+                    )
+                return False
+            return True
         if reloc and not _artifact_needs_rebuild(
             target_runtime_staticlib,
             fingerprint,
