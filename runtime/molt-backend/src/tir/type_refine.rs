@@ -929,6 +929,10 @@ fn infer_result_type_with_attrs(
         // Copy propagates type.
         OpCode::Copy => operand_types.first().cloned(),
 
+        // Module attribute lookup returns an arbitrary runtime value. The
+        // module operand's type is not the result type.
+        OpCode::ModuleGetAttr => Some(TirType::DynBox),
+
         // Box/Unbox
         OpCode::BoxVal => operand_types
             .first()
@@ -1108,6 +1112,40 @@ mod tests {
         let mut func = single_block_func(ops, 3);
         let refined = refine_types(&mut func);
         assert_eq!(refined, 3); // two consts + one add result
+    }
+
+    #[test]
+    fn module_get_attr_result_stays_dynbox() {
+        let ops = vec![
+            make_op(
+                OpCode::ConstStr,
+                vec![],
+                vec![ValueId(0)],
+                str_attr("module_name"),
+            ),
+            make_op(
+                OpCode::ConstStr,
+                vec![],
+                vec![ValueId(1)],
+                str_attr("Point"),
+            ),
+            make_op(
+                OpCode::ModuleGetAttr,
+                vec![ValueId(0), ValueId(1)],
+                vec![ValueId(2)],
+                AttrDict::new(),
+            ),
+        ];
+        let mut func = single_block_func(ops, 3);
+        let refined = refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(refined, 2, "only the const_str operands refine to Str");
+        assert_eq!(
+            type_map.get(&ValueId(2)),
+            Some(&TirType::DynBox),
+            "module_get_attr result must not inherit the module operand type"
+        );
     }
 
     // ---- Test 3: Mixed arithmetic promotes to F64 ----

@@ -44,13 +44,13 @@ use super::PassStats;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::dominators::{build_pred_map, compute_idoms, dominates};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-/// Returns `true` if the opcode is pure and safe to hoist out of a loop.
-fn is_hoistable(opcode: OpCode) -> bool {
+/// Returns `true` if the op is pure and safe to hoist out of a loop.
+fn is_hoistable(op: &TirOp) -> bool {
     matches!(
-        opcode,
+        op.opcode,
         OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
@@ -80,12 +80,11 @@ fn is_hoistable(opcode: OpCode) -> bool {
             | OpCode::ConstBool
             | OpCode::ConstNone
             | OpCode::ConstBytes
-            | OpCode::Copy
             | OpCode::BoxVal
             | OpCode::UnboxVal
             | OpCode::TypeGuard
             | OpCode::BuildSlice
-    )
+    ) || op.is_plain_value_copy()
 }
 
 /// Identify all blocks that belong to the natural loop whose header is
@@ -336,7 +335,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 let mut to_hoist: Vec<usize> = Vec::new();
 
                 for (i, op) in block.ops.iter().enumerate() {
-                    if !is_hoistable(op.opcode) {
+                    if !is_hoistable(op) {
                         continue;
                     }
                     if op.results.is_empty() {
@@ -431,8 +430,7 @@ mod tests {
     /// with a+b computed inside the loop body.
     #[test]
     fn invariant_add_hoisted_to_preheader() {
-        let mut func =
-            TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
         let a = ValueId(0); // param
         let b = ValueId(1); // param
 
@@ -527,8 +525,7 @@ mod tests {
         );
 
         // Mark loop_header as a loop header.
-        func.loop_roles
-            .insert(loop_header, LoopRole::LoopHeader);
+        func.loop_roles.insert(loop_header, LoopRole::LoopHeader);
 
         let stats = run(&mut func);
 
@@ -550,6 +547,126 @@ mod tests {
         );
 
         assert!(stats.ops_removed > 0 || stats.ops_added > 0);
+    }
+
+    #[test]
+    fn fallback_semantic_copy_is_not_hoisted() {
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::Str],
+            TirType::DynBox,
+        );
+        let module = ValueId(0);
+        let attr_name = ValueId(1);
+
+        let preheader = func.fresh_block();
+        let loop_header = func.fresh_block();
+        let loop_body = func.fresh_block();
+        let exit = func.fresh_block();
+
+        let loop_var = func.fresh_value();
+        let lookup = func.fresh_value();
+        let cond = func.fresh_value();
+
+        {
+            let init = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(make_const_int(0, init));
+            entry.terminator = Terminator::Branch {
+                target: preheader,
+                args: vec![],
+            };
+        }
+
+        func.blocks.insert(
+            preheader,
+            TirBlock {
+                id: preheader,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: loop_header,
+                    args: vec![],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            loop_header,
+            TirBlock {
+                id: loop_header,
+                args: vec![TirValue {
+                    id: loop_var,
+                    ty: TirType::I64,
+                }],
+                ops: vec![make_const_int(1, cond)],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: loop_body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            loop_body,
+            TirBlock {
+                id: loop_body,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::Copy,
+                    operands: vec![module, attr_name],
+                    results: vec![lookup],
+                    attrs: {
+                        let mut attrs = AttrDict::new();
+                        attrs.insert(
+                            "_original_kind".into(),
+                            AttrValue::Str("module_get_attr".into()),
+                        );
+                        attrs
+                    },
+                    source_span: None,
+                }],
+                terminator: Terminator::Branch {
+                    target: loop_header,
+                    args: vec![loop_var],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        func.loop_roles.insert(loop_header, LoopRole::LoopHeader);
+
+        let _stats = run(&mut func);
+
+        assert!(
+            func.blocks[&loop_body].ops.iter().any(|op| {
+                op.opcode == OpCode::Copy
+                    && matches!(
+                        op.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(kind)) if kind == "module_get_attr"
+                    )
+            }),
+            "fallback semantic Copy ops must not be hoisted as pure copies"
+        );
+        assert!(
+            func.blocks[&preheader].ops.iter().all(|op| {
+                !(op.opcode == OpCode::Copy && op.attrs.contains_key("_original_kind"))
+            }),
+            "semantic fallback Copy must not move into the preheader"
+        );
     }
 
     /// Layout of a canonical 2-level nested loop CFG:
@@ -775,8 +892,7 @@ mod tests {
     /// longer contain it.
     #[test]
     fn nested_loop_inner_invariant_hoisted_to_outer_preheader() {
-        let mut func =
-            TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
         let a = ValueId(0);
         let b = ValueId(1);
 
@@ -851,8 +967,7 @@ mod tests {
     /// invariant transitively across both preheaders.
     #[test]
     fn nested_loop_outer_invariant_hoisted_via_inner() {
-        let mut func =
-            TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
         let a = ValueId(0);
         let b = ValueId(1);
 
@@ -1052,8 +1167,7 @@ mod tests {
             },
         );
 
-        func.loop_roles
-            .insert(loop_header, LoopRole::LoopHeader);
+        func.loop_roles.insert(loop_header, LoopRole::LoopHeader);
 
         let _stats = run(&mut func);
 

@@ -85,6 +85,10 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         // Import has module-level side effects.
         | OpCode::Import
         | OpCode::ImportFrom
+        // Module attribute reads may raise on missing attributes. Preserve
+        // even when the result is unused so compile-time DCE cannot erase
+        // an observable failure.
+        | OpCode::ModuleGetAttr
         // IO / diagnostics — emits to stderr.
         | OpCode::WarnStderr
         // Deoptimisation must not be silently dropped.
@@ -114,6 +118,7 @@ pub(super) fn is_potentially_throwing(opcode: OpCode) -> bool {
             | OpCode::DelIndex
             | OpCode::Import
             | OpCode::ImportFrom
+            | OpCode::ModuleGetAttr
             | OpCode::Div
             | OpCode::FloorDiv
             | OpCode::Mod
@@ -426,6 +431,38 @@ mod tests {
         assert!(ops.iter().any(|o| o.opcode == OpCode::Call));
         // The ConstInt feeding the Call is used by it, so it stays too.
         let _ = stats;
+    }
+
+    #[test]
+    fn module_get_attr_kept_when_result_dead() {
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::Str],
+            TirType::None,
+        );
+        let module = ValueId(0);
+        let attr_name = ValueId(1);
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(
+            OpCode::ModuleGetAttr,
+            vec![module, attr_name],
+            vec![result],
+        ));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert!(is_potentially_throwing(OpCode::ModuleGetAttr));
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::ModuleGetAttr),
+            "dead module_get_attr must be preserved because missing attributes raise"
+        );
     }
 
     // -----------------------------------------------------------------------

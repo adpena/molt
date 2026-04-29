@@ -1584,6 +1584,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
+        OpCode::ModuleGetAttr => Some(OpIR {
+            kind: "module_get_attr".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
         OpCode::WarnStderr => Some(OpIR {
             kind: "warn_stderr".to_string(),
             args: Some(operand_args(op)),
