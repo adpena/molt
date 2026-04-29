@@ -20,15 +20,7 @@ use std::collections::HashMap;
 use super::PassStats;
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
-
-/// Returns `true` if a Copy op is a pure value copy with no semantic
-/// attributes that must be preserved (fused tags, original_kind, etc.).
-#[inline]
-fn is_pure_copy(attrs: &crate::tir::ops::AttrDict) -> bool {
-    attrs.is_empty()
-}
 
 /// Build a copy chain map: for every pure Copy(src) → dst, map dst → src.
 /// Transitively resolves chains: if a → b → c, then a → c.
@@ -37,11 +29,7 @@ fn build_copy_map(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, 
 
     for block in func.blocks.values() {
         for op in &block.ops {
-            if op.opcode == OpCode::Copy
-                && op.operands.len() == 1
-                && op.results.len() == 1
-                && is_pure_copy(&op.attrs)
-            {
+            if op.is_plain_value_copy() {
                 copy_of.insert(op.results[0], op.operands[0]);
             }
         }
@@ -55,10 +43,11 @@ fn build_copy_map(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, 
         for k in keys {
             let v = copy_of[&k];
             if let Some(&deeper) = copy_of.get(&v)
-                && deeper != v {
-                    copy_of.insert(k, deeper);
-                    changed = true;
-                }
+                && deeper != v
+            {
+                copy_of.insert(k, deeper);
+                changed = true;
+            }
         }
         if !changed {
             break;

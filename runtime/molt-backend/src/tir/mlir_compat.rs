@@ -301,6 +301,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::Copy => "copy",
         OpCode::Import => "import",
         OpCode::ImportFrom => "import_from",
+        OpCode::ModuleGetAttr => "module_get_attr",
         OpCode::ScfIf => "if",
         OpCode::ScfFor => "for",
         OpCode::ScfWhile => "while",

@@ -1761,6 +1761,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "copy" | "store_var" | "load_var" => OpCode::Copy,
         "import" | "import_name" | "module_import" => OpCode::Import,
         "import_from" => OpCode::ImportFrom,
+        "module_get_attr" => OpCode::ModuleGetAttr,
         "warn_stderr" => OpCode::WarnStderr,
         // Fallback for unknown ops.
         _ => OpCode::Copy,
@@ -1838,6 +1839,51 @@ mod tests {
     // Helper: count block arguments across all blocks.
     fn total_block_args(output: &SsaOutput) -> usize {
         output.blocks.iter().map(|b| b.args.len()).sum()
+    }
+
+    #[test]
+    fn module_get_attr_does_not_lower_as_fallback_copy() {
+        let ops = vec![
+            op_args_out("module_cache_get", &["mod_name"], "module"),
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("Point".to_string()),
+                out: Some("name".to_string()),
+                ..OpIR::default()
+            },
+            op_args_out("module_get_attr", &["module", "name"], "class_ref"),
+            op_args("ret", &["class_ref"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let module_lookup_count = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == OpCode::ModuleGetAttr)
+            .count();
+        let fallback_count = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| {
+                op.opcode == OpCode::Copy
+                    && matches!(
+                        op.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(kind)) if kind == "module_get_attr"
+                    )
+            })
+            .count();
+
+        assert_eq!(
+            module_lookup_count, 1,
+            "module_get_attr must lower to its first-class TIR opcode"
+        );
+        assert_eq!(
+            fallback_count, 0,
+            "module_get_attr must be a first-class TIR op, not Copy[_original_kind]"
+        );
     }
 
     // Helper: collect all unique ValueIds from block arguments and op results.
