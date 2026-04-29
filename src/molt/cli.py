@@ -25421,6 +25421,9 @@ _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
         "stdlib_profile": "micro",
     },
 }
+_BUILD_PROFILE_CHOICES = ("dev", "release")
+_DEPLOY_PROFILE_CHOICES = tuple(_DEPLOY_PROFILE_DEFAULTS)
+_BUILD_OR_DEPLOY_PROFILE_CHOICES = (*_BUILD_PROFILE_CHOICES, *_DEPLOY_PROFILE_CHOICES)
 
 
 @functools.lru_cache(maxsize=64)
@@ -32826,6 +32829,7 @@ def _completion_script(shell: str) -> str:
             "--emit",
             "--emit-ir",
             "--profile",
+            "--platform",
             "--build-profile",
             "--deterministic",
             "--no-deterministic",
@@ -33214,14 +33218,19 @@ def _build_args_has_capabilities_flag(args: list[str]) -> bool:
 
 
 def _build_args_has_profile_flag(args: list[str]) -> bool:
-    for arg in args:
-        if (
-            arg == "--profile"
-            or arg.startswith("--profile=")
-            or arg == "--build-profile"
-            or arg.startswith("--build-profile=")
-        ):
+    for index, arg in enumerate(args):
+        if arg == "--build-profile" or arg.startswith("--build-profile="):
             return True
+        if arg == "--profile":
+            if index + 1 >= len(args):
+                return True
+            if args[index + 1] in _BUILD_PROFILE_CHOICES:
+                return True
+            continue
+        if arg.startswith("--profile="):
+            if arg.split("=", 1)[1] in _BUILD_PROFILE_CHOICES:
+                return True
+            continue
     return False
 
 
@@ -34678,7 +34687,7 @@ def main() -> int:
     )
     build_parser.add_argument(
         "--build-profile",
-        choices=["dev", "release"],
+        choices=_BUILD_PROFILE_CHOICES,
         default=None,
         help="Build profile for backend/runtime (default: release).",
     )
@@ -34690,8 +34699,16 @@ def main() -> int:
     )
     build_parser.add_argument(
         "--profile",
+        choices=_BUILD_OR_DEPLOY_PROFILE_CHOICES,
+        default=None,
+        help=(
+            "Build profile (dev/release) or legacy deployment platform/profile "
+            "(cloudflare/browser/wasi/fastly)."
+        ),
+    )
+    build_parser.add_argument(
         "--platform",
-        choices=["cloudflare", "browser", "wasi", "fastly"],
+        choices=_DEPLOY_PROFILE_CHOICES,
         default=None,
         help="Deployment platform/profile (sets optimization defaults for the target platform).",
     )
@@ -36222,9 +36239,55 @@ def main() -> int:
             or build_cfg.get("runtime_feedback")
             or build_cfg.get("runtime-feedback")
         )
+        profile_arg = getattr(args, "profile", None)
+        platform_arg = getattr(args, "platform", None)
+        cli_profile_build_profile: str | None = None
+        deploy_profile: str | None = None
+        if profile_arg in _BUILD_PROFILE_CHOICES:
+            cli_profile_build_profile = profile_arg
+        elif profile_arg in _DEPLOY_PROFILE_DEFAULTS:
+            deploy_profile = profile_arg
+        elif profile_arg is not None:
+            return _fail(
+                f"Invalid build profile or platform profile: {profile_arg}",
+                args.json,
+                command="build",
+            )
+        if platform_arg is not None:
+            if deploy_profile is not None and deploy_profile != platform_arg:
+                return _fail(
+                    "Conflicting deployment profiles: "
+                    f"--profile {deploy_profile} and --platform {platform_arg}",
+                    args.json,
+                    command="build",
+                )
+            deploy_profile = platform_arg
+        if (
+            cli_profile_build_profile is not None
+            and args.build_profile is not None
+            and cli_profile_build_profile != args.build_profile
+        ):
+            return _fail(
+                "Conflicting build profiles: "
+                f"--profile {cli_profile_build_profile} and "
+                f"--build-profile {args.build_profile}",
+                args.json,
+                command="build",
+            )
+        cli_build_profile = args.build_profile or cli_profile_build_profile
+        if (
+            getattr(args, "release", False)
+            and cli_build_profile is not None
+            and cli_build_profile != "release"
+        ):
+            return _fail(
+                f"Conflicting build profiles: --release and {cli_build_profile}",
+                args.json,
+                command="build",
+            )
         build_profile = (
             ("release" if getattr(args, "release", False) else None)
-            or args.build_profile
+            or cli_build_profile
             or build_cfg.get("profile")
             or build_cfg.get("build_profile")
             or "release"
@@ -36324,7 +36387,6 @@ def main() -> int:
         if not args.file and not args.module:
             return _fail("Missing entry file or module.", args.json, command="build")
 
-        deploy_profile = getattr(args, "profile", None)
         wasm_opt_level_raw = getattr(args, "wasm_opt_level", "Oz")
         wasm_opt_level = (
             wasm_opt_level_raw if isinstance(wasm_opt_level_raw, str) else "Oz"

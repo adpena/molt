@@ -116,6 +116,29 @@ def test_find_rss_violation_returns_highest_descendant() -> None:
     assert violation.rss_gb == pytest.approx(29_000_000 / (1024 * 1024))
 
 
+def test_find_rss_violation_catches_aggregate_process_tree_rss() -> None:
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 100, 15_000_000, "child-a", pgid=100),
+        102: memory_guard.ProcessSample(102, 100, 15_000_000, "child-b", pgid=100),
+        200: memory_guard.ProcessSample(200, 1, 40_000_000, "unrelated", pgid=200),
+    }
+
+    violation = memory_guard.find_rss_violation(
+        samples,
+        root_pid=100,
+        max_rss_kb=25_000_000,
+        max_total_rss_kb=25_000_000,
+    )
+
+    assert violation == memory_guard.RssViolation(
+        pid=100,
+        rss_kb=30_000_010,
+        command="process tree aggregate",
+        scope="process_tree",
+    )
+
+
 def test_max_rss_gb_must_leave_margin_below_thirty() -> None:
     with pytest.raises(ValueError, match="below 30"):
         memory_guard.max_rss_kb_from_gb(30)
@@ -171,6 +194,17 @@ def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> No
     assert "below 30" in capsys.readouterr().err
 
 
+def test_main_rejects_unsafe_total_threshold(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = memory_guard.main(
+        ["--max-total-rss-gb", "30", "--", sys.executable, "-c", "pass"]
+    )
+
+    assert rc == 2
+    assert "below 30" in capsys.readouterr().err
+
+
 def test_main_writes_summary_json(tmp_path) -> None:
     summary_path = tmp_path / "summary.json"
     rc = memory_guard.main(
@@ -193,3 +227,9 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["returncode"] == 0
     assert payload["violation"] is None
     assert payload["peak"]["rss_kb"] > 0
+    assert payload["peak"]["scope"] == "process"
+    assert payload["peak_total"]["rss_kb"] >= payload["peak"]["rss_kb"]
+    assert payload["peak_total"]["scope"] == "process_tree"
+    assert payload["max_total_rss_gb"] == pytest.approx(
+        memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
+    )
