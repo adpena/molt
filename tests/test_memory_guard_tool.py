@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -24,6 +25,24 @@ def test_parse_process_table_keeps_commands_with_spaces() -> None:
     assert samples[11].command == "/bin/sh -c echo hi"
 
 
+def test_parse_process_table_reads_process_group_ids() -> None:
+    samples = memory_guard.parse_process_table(
+        """
+          10     1    10  2048 python worker.py --flag value
+          11    10    10  4096 /bin/sh -c echo hi
+        """
+    )
+
+    assert samples[10] == memory_guard.ProcessSample(
+        pid=10,
+        ppid=1,
+        rss_kb=2048,
+        command="python worker.py --flag value",
+        pgid=10,
+    )
+    assert samples[11].pgid == 10
+
+
 def test_descendant_pids_includes_grandchildren() -> None:
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root"),
@@ -33,6 +52,34 @@ def test_descendant_pids_includes_grandchildren() -> None:
     }
 
     assert memory_guard.descendant_pids(samples, 100) == {100, 101, 102}
+
+
+def test_watched_pids_includes_reparented_process_group_members() -> None:
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=100),
+        102: memory_guard.ProcessSample(102, 1, 30, "reparented", pgid=100),
+        200: memory_guard.ProcessSample(200, 1, 999_999, "unrelated", pgid=200),
+    }
+
+    assert memory_guard.watched_pids(samples, 100) == {100, 101, 102}
+
+
+def test_find_rss_violation_catches_reparented_process_group_member() -> None:
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 1, 26_000_000, "reparented", pgid=100),
+    }
+
+    violation = memory_guard.find_rss_violation(
+        samples, root_pid=100, max_rss_kb=25_000_000
+    )
+
+    assert violation == memory_guard.RssViolation(
+        pid=101,
+        rss_kb=26_000_000,
+        command="reparented",
+    )
 
 
 def test_find_rss_violation_ignores_unrelated_processes() -> None:
@@ -83,6 +130,8 @@ def test_run_command_passes_through_success() -> None:
 
     assert result.returncode == 0
     assert result.violation is None
+    assert result.peak is not None
+    assert result.peak.rss_kb > 0
     assert result.stdout == "ok\n"
 
 
@@ -120,3 +169,27 @@ def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> No
 
     assert rc == 2
     assert "below 30" in capsys.readouterr().err
+
+
+def test_main_writes_summary_json(tmp_path) -> None:
+    summary_path = tmp_path / "summary.json"
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--poll-interval",
+            "0.01",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            "print('ok')",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["returncode"] == 0
+    assert payload["violation"] is None
+    assert payload["peak"]["rss_kb"] > 0
