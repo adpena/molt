@@ -99,6 +99,73 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
     assert "-lc++" in link_libs
 
 
+def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_lib = tmp_path / "target" / "release-output" / "libmolt_runtime.a"
+    runtime_lib.parent.mkdir(parents=True)
+    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+
+    build_dir = runtime_lib.parent / "build"
+    active = build_dir / "getrandom-aaaaaaaaaaaaaaaa" / "output"
+    stale = build_dir / "lzma-sys-bbbbbbbbbbbbbbbb" / "output"
+    active.parent.mkdir(parents=True)
+    stale.parent.mkdir(parents=True)
+    active.write_text(
+        "cargo:rustc-link-lib=framework=Security\n",
+        encoding="utf-8",
+    )
+    stale.write_text(
+        "\n".join(
+            [
+                "cargo:rustc-link-search=native=/opt/homebrew/Cellar/xz/5.8.3/lib",
+                "cargo:rustc-link-lib=lzma",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_archive_crate_names",
+        lambda _runtime_lib: frozenset({"getrandom"}),
+    )
+
+    search_paths, link_libs = cli._collect_cargo_native_link_deps(runtime_lib)
+
+    assert search_paths == []
+    assert link_libs == ["-framework", "Security"]
+    assert "-llzma" not in link_libs
+
+
+def test_runtime_archive_crate_name_parsing_matches_cargo_build_dirs() -> None:
+    assert (
+        cli._crate_name_from_archive_member(
+            "molt_runtime_core-fd8aa164401cbab3."
+            "molt_runtime_core.72746e05456e55ff-cgu.0.rcgu.o"
+        )
+        == "molt_runtime_core"
+    )
+    assert (
+        cli._crate_name_from_archive_member(
+            "libmimalloc_sys-b09204f8862a05be."
+            "libmimalloc_sys.859cd25662bf594f-cgu.0.rcgu.o"
+        )
+        == "libmimalloc_sys"
+    )
+    assert (
+        cli._crate_name_from_archive_member("077ae3504b1c7768-static.o") is None
+    )
+    assert (
+        cli._crate_name_from_cargo_build_dir("libmimalloc-sys-a169d24182e74596")
+        == "libmimalloc_sys"
+    )
+    assert cli._crate_name_from_cargo_build_dir("lzma-sys-4f003b5513bfab3a") == (
+        "lzma_sys"
+    )
+
+
 def test_build_native_link_command_includes_metal_frameworks_when_runtime_gpu_metal_enabled(
     monkeypatch,
     tmp_path: Path,
