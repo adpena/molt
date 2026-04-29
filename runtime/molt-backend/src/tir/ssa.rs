@@ -1761,7 +1761,10 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "copy" | "store_var" | "load_var" => OpCode::Copy,
         "import" | "import_name" | "module_import" => OpCode::Import,
         "import_from" => OpCode::ImportFrom,
+        "module_cache_get" => OpCode::ModuleCacheGet,
         "module_get_attr" => OpCode::ModuleGetAttr,
+        "module_get_global" => OpCode::ModuleGetGlobal,
+        "module_get_name" => OpCode::ModuleGetName,
         "warn_stderr" => OpCode::WarnStderr,
         // Fallback for unknown ops.
         _ => OpCode::Copy,
@@ -1883,6 +1886,96 @@ mod tests {
         assert_eq!(
             fallback_count, 0,
             "module_get_attr must be a first-class TIR op, not Copy[_original_kind]"
+        );
+    }
+
+    fn assert_first_class_module_lookup(simple_kind: &str, expected_opcode: OpCode, args: &[&str]) {
+        let mut ops = vec![
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("mod".to_string()),
+                out: Some("module_name".to_string()),
+                ..OpIR::default()
+            },
+            op_args_out("module_cache_get", &["module_name"], "module"),
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("answer".to_string()),
+                out: Some("name".to_string()),
+                ..OpIR::default()
+            },
+            op_args_out(simple_kind, args, "resolved"),
+            op_args("ret", &["resolved"]),
+        ];
+        if simple_kind == "module_cache_get" {
+            ops = vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    s_value: Some("mod".to_string()),
+                    out: Some("module_name".to_string()),
+                    ..OpIR::default()
+                },
+                op_args_out("module_cache_get", &["module_name"], "resolved"),
+                op_args("ret", &["resolved"]),
+            ];
+        }
+
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let first_class_count = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == expected_opcode)
+            .count();
+        let fallback_count = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| {
+                op.opcode == OpCode::Copy
+                    && matches!(
+                        op.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(kind)) if kind == simple_kind
+                    )
+            })
+            .count();
+
+        assert_eq!(
+            first_class_count, 1,
+            "{simple_kind} must lower to its first-class TIR opcode"
+        );
+        assert_eq!(
+            fallback_count, 0,
+            "{simple_kind} must not lower as Copy[_original_kind]"
+        );
+    }
+
+    #[test]
+    fn module_cache_get_lowers_to_first_class_tir_opcode() {
+        assert_first_class_module_lookup(
+            "module_cache_get",
+            OpCode::ModuleCacheGet,
+            &["module_name"],
+        );
+    }
+
+    #[test]
+    fn module_get_global_lowers_to_first_class_tir_opcode() {
+        assert_first_class_module_lookup(
+            "module_get_global",
+            OpCode::ModuleGetGlobal,
+            &["module", "name"],
+        );
+    }
+
+    #[test]
+    fn module_get_name_lowers_to_first_class_tir_opcode() {
+        assert_first_class_module_lookup(
+            "module_get_name",
+            OpCode::ModuleGetName,
+            &["module", "name"],
         );
     }
 
