@@ -1584,8 +1584,26 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
+        OpCode::ModuleCacheGet => Some(OpIR {
+            kind: "module_cache_get".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
         OpCode::ModuleGetAttr => Some(OpIR {
             kind: "module_get_attr".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
+        OpCode::ModuleGetGlobal => Some(OpIR {
+            kind: "module_get_global".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
+        OpCode::ModuleGetName => Some(OpIR {
+            kind: "module_get_name".to_string(),
             args: Some(operand_args(op)),
             out: out_var,
             ..OpIR::default()

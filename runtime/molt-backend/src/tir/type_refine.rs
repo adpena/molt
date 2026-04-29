@@ -929,9 +929,12 @@ fn infer_result_type_with_attrs(
         // Copy propagates type.
         OpCode::Copy => operand_types.first().cloned(),
 
-        // Module attribute lookup returns an arbitrary runtime value. The
-        // module operand's type is not the result type.
-        OpCode::ModuleGetAttr => Some(TirType::DynBox),
+        // Module lookup operations return arbitrary runtime values. Their
+        // result type must not inherit the module/name operand type.
+        OpCode::ModuleCacheGet
+        | OpCode::ModuleGetAttr
+        | OpCode::ModuleGetGlobal
+        | OpCode::ModuleGetName => Some(TirType::DynBox),
 
         // Box/Unbox
         OpCode::BoxVal => operand_types
@@ -1146,6 +1149,45 @@ mod tests {
             Some(&TirType::DynBox),
             "module_get_attr result must not inherit the module operand type"
         );
+    }
+
+    #[test]
+    fn module_lookup_results_stay_dynbox() {
+        for opcode in [
+            OpCode::ModuleCacheGet,
+            OpCode::ModuleGetGlobal,
+            OpCode::ModuleGetName,
+        ] {
+            let operands = if opcode == OpCode::ModuleCacheGet {
+                vec![ValueId(0)]
+            } else {
+                vec![ValueId(0), ValueId(1)]
+            };
+            let ops = vec![
+                make_op(
+                    OpCode::ConstStr,
+                    vec![],
+                    vec![ValueId(0)],
+                    str_attr("module_name"),
+                ),
+                make_op(
+                    OpCode::ConstStr,
+                    vec![],
+                    vec![ValueId(1)],
+                    str_attr("answer"),
+                ),
+                make_op(opcode, operands, vec![ValueId(2)], AttrDict::new()),
+            ];
+            let mut func = single_block_func(ops, 3);
+            refine_types(&mut func);
+            let type_map = extract_type_map(&func);
+
+            assert_eq!(
+                type_map.get(&ValueId(2)),
+                Some(&TirType::DynBox),
+                "{opcode:?} result must not inherit the module/name operand type"
+            );
+        }
     }
 
     // ---- Test 3: Mixed arithmetic promotes to F64 ----

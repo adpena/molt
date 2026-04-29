@@ -3378,11 +3378,56 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
+            // ── ModuleCacheGet: module-cache lookup by name ──
+            // operands: [module_name]
+            OpCode::ModuleCacheGet => {
+                let result_id = op.results[0];
+                let get_fn = self.ensure_runtime_i64_fn("molt_module_cache_get", 1);
+                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(get_fn, &[name_bits.into()], "module_cache_get")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                self.values.insert(result_id, result);
+                self.value_types.insert(result_id, TirType::DynBox);
+            }
+
             // ── ModuleGetAttr: module attribute read ──
             // operands: [module, attr_name]
             OpCode::ModuleGetAttr => {
                 let result = self.call_runtime_2_boxed(
                     "molt_module_get_attr",
+                    op.operands[0],
+                    op.operands[1],
+                );
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
+            // ── ModuleGetGlobal: CPython-style module global lookup ──
+            // operands: [module, global_name]
+            OpCode::ModuleGetGlobal => {
+                let result = self.call_runtime_2_boxed(
+                    "molt_module_get_global",
+                    op.operands[0],
+                    op.operands[1],
+                );
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
+            // ── ModuleGetName: module name/attribute lookup helper ──
+            // operands: [module, attr_name]
+            OpCode::ModuleGetName => {
+                let result = self.call_runtime_2_boxed(
+                    "molt_module_get_name",
                     op.operands[0],
                     op.operands[1],
                 );

@@ -136,6 +136,14 @@ pub enum OpCode {
     // Import
     Import,
     ImportFrom,
+    /// Read a module object from the runtime module cache by name.
+    ///
+    /// Operands: `[module_name_value]`.
+    /// Result: dynamic Molt value (`module` object on hit, `None` on miss).
+    /// This validates that the name is a string and increments the returned
+    /// module handle on cache hits, so optimization passes must not treat it
+    /// as a pure value copy.
+    ModuleCacheGet,
     /// Read an attribute from a runtime module object.
     ///
     /// Operands: `[module_value, attr_name_value]`.
@@ -143,6 +151,19 @@ pub enum OpCode {
     /// not define the requested attribute, so optimization passes must
     /// not treat it as a pure value copy.
     ModuleGetAttr,
+    /// Resolve a module global using CPython LOAD_GLOBAL semantics.
+    ///
+    /// Operands: `[module_value, global_name_value]`.
+    /// Result: dynamic Molt value. This may fall back through builtins or
+    /// raise `NameError`, so it is observable even when the result is dead.
+    ModuleGetGlobal,
+    /// Read a named module attribute through the `module_get_name` runtime
+    /// entrypoint used by the current native/WASM import surface.
+    ///
+    /// Operands: `[module_value, attr_name_value]`.
+    /// Result: dynamic Molt value. This delegates to module attribute lookup
+    /// and therefore may raise.
+    ModuleGetName,
     // IO / diagnostics
     WarnStderr,
     // Structured control flow (scf dialect)

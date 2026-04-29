@@ -85,10 +85,13 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         // Import has module-level side effects.
         | OpCode::Import
         | OpCode::ImportFrom
-        // Module attribute reads may raise on missing attributes. Preserve
-        // even when the result is unused so compile-time DCE cannot erase
-        // an observable failure.
+        // Module lookup reads may raise on invalid names / missing attrs /
+        // missing globals. Preserve even when the result is unused so
+        // compile-time DCE cannot erase an observable failure.
+        | OpCode::ModuleCacheGet
         | OpCode::ModuleGetAttr
+        | OpCode::ModuleGetGlobal
+        | OpCode::ModuleGetName
         // IO / diagnostics — emits to stderr.
         | OpCode::WarnStderr
         // Deoptimisation must not be silently dropped.
@@ -118,7 +121,10 @@ pub(super) fn is_potentially_throwing(opcode: OpCode) -> bool {
             | OpCode::DelIndex
             | OpCode::Import
             | OpCode::ImportFrom
+            | OpCode::ModuleCacheGet
             | OpCode::ModuleGetAttr
+            | OpCode::ModuleGetGlobal
+            | OpCode::ModuleGetName
             | OpCode::Div
             | OpCode::FloorDiv
             | OpCode::Mod
@@ -462,6 +468,93 @@ mod tests {
                 .iter()
                 .any(|op| op.opcode == OpCode::ModuleGetAttr),
             "dead module_get_attr must be preserved because missing attributes raise"
+        );
+    }
+
+    #[test]
+    fn module_cache_get_kept_when_result_dead() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::Str], TirType::None);
+        let module_name = ValueId(0);
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::ModuleCacheGet, vec![module_name], vec![result]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert!(is_potentially_throwing(OpCode::ModuleCacheGet));
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::ModuleCacheGet),
+            "dead module_cache_get must be preserved because invalid names raise"
+        );
+    }
+
+    #[test]
+    fn module_get_global_kept_when_result_dead() {
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::Str],
+            TirType::None,
+        );
+        let module = ValueId(0);
+        let name = ValueId(1);
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(
+            OpCode::ModuleGetGlobal,
+            vec![module, name],
+            vec![result],
+        ));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert!(is_potentially_throwing(OpCode::ModuleGetGlobal));
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::ModuleGetGlobal),
+            "dead module_get_global must be preserved because missing globals raise"
+        );
+    }
+
+    #[test]
+    fn module_get_name_kept_when_result_dead() {
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::Str],
+            TirType::None,
+        );
+        let module = ValueId(0);
+        let name = ValueId(1);
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::ModuleGetName, vec![module, name], vec![result]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert!(is_potentially_throwing(OpCode::ModuleGetName));
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::ModuleGetName),
+            "dead module_get_name must be preserved because it reads module attributes"
         );
     }
 
