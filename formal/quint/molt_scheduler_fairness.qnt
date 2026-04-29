@@ -514,6 +514,11 @@ module molt_scheduler_fairness {
       activeTasks.exists(tid =>
         tasks.get(tid).state != Waiting or tasks.get(tid).state == Completed
       ) or
+      // I/O waits are not dependency deadlocks; progress is possible through
+      // ioResume, which is intentionally nondeterministic in this model.
+      activeTasks.exists(tid =>
+        tasks.get(tid).state == Waiting and tasks.get(tid).waitingOn == -2
+      ) or
       // Allow the case where tasks are waiting on unsubmitted dependencies
       // (progress via future submit actions).
       activeTasks.exists(tid =>

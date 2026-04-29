@@ -14,6 +14,7 @@ Invariants tested:
   - Frame consistency (active frames reference alive objects)
   - Callargs alias protection (aliased returns are protected before cleanup)
   - Roots alive (root set only contains alive objects)
+  - Counted root/container references are well-formed
   - Alive objects have positive refcount
   - Elision correctness (rc >= 2 objects can skip inc/dec pairs)
 
@@ -69,6 +70,8 @@ class RefcountState:
 
     heap: dict[int, HeapObj]
     roots: set[int]
+    root_counts: dict[int, int]
+    heap_counts: dict[int, int]
     borrows: set[tuple[int, int]]  # (borrower, owner)
     frames: dict[int, CallFrame]
     active_frame_ids: set[int]
@@ -79,6 +82,8 @@ class RefcountState:
         return RefcountState(
             heap={k: copy.copy(v) for k, v in self.heap.items()},
             roots=set(self.roots),
+            root_counts=dict(self.root_counts),
+            heap_counts=dict(self.heap_counts),
             borrows=set(self.borrows),
             frames={k: copy.copy(v) for k, v in self.frames.items()},
             active_frame_ids=set(self.active_frame_ids),
@@ -102,6 +107,8 @@ def _make_initial_state() -> RefcountState:
     return RefcountState(
         heap=heap,
         roots=set(),
+        root_counts={oid: 0 for oid in range(MAX_OBJS)},
+        heap_counts={oid: 0 for oid in range(MAX_OBJS)},
         borrows=set(),
         frames=frames,
         active_frame_ids=set(),
@@ -122,6 +129,7 @@ def alloc_obj(state: RefcountState) -> RefcountState:
     oid = s.next_id
     s.heap[oid] = HeapObj(id=oid, refcount=1, alive=True)
     s.roots.add(oid)
+    s.root_counts[oid] = 1
     s.accessed = set()
     s.next_id += 1
     return s
@@ -134,6 +142,7 @@ def inc_ref(state: RefcountState, oid: int) -> RefcountState:
     assert obj.alive, f"inc_ref on dead object {oid}"
     obj.refcount += 1
     s.roots.add(oid)
+    s.root_counts[oid] += 1
     s.accessed = {oid}
     return s
 
@@ -144,12 +153,46 @@ def dec_ref(state: RefcountState, oid: int) -> RefcountState:
     obj = s.heap[oid]
     assert obj.alive, f"dec_ref on dead object {oid}"
     assert obj.refcount > 0, f"dec_ref on zero-refcount object {oid}"
+    assert s.root_counts[oid] > 0, f"dec_ref on unrooted object {oid}"
     obj.refcount -= 1
-    s.roots.discard(oid)
+    s.root_counts[oid] -= 1
+    if s.root_counts[oid] == 0:
+        s.roots.discard(oid)
     if obj.refcount == 0:
+        assert s.heap_counts[oid] == 0
+        assert all(oid not in s.frames[fid].args for fid in s.active_frame_ids)
         obj.alive = False
         s.borrows = {b for b in s.borrows if b[1] != oid}
+    s.accessed = set() if obj.refcount == 0 else {oid}
+    return s
+
+
+def store_to_heap(state: RefcountState, oid: int) -> RefcountState:
+    """Store an object in a container slot, adding a counted heap reference."""
+    s = state.clone()
+    obj = s.heap[oid]
+    assert obj.alive, f"store_to_heap on dead object {oid}"
+    obj.refcount += 1
+    s.heap_counts[oid] += 1
     s.accessed = {oid}
+    return s
+
+
+def remove_from_heap(state: RefcountState, oid: int) -> RefcountState:
+    """Remove an object from a container slot, dropping its heap reference."""
+    s = state.clone()
+    obj = s.heap[oid]
+    assert obj.alive, f"remove_from_heap on dead object {oid}"
+    assert obj.refcount > 0, f"remove_from_heap on zero-refcount object {oid}"
+    assert s.heap_counts[oid] > 0, f"remove_from_heap on unstored object {oid}"
+    obj.refcount -= 1
+    s.heap_counts[oid] -= 1
+    if obj.refcount == 0:
+        assert s.root_counts[oid] == 0
+        assert all(oid not in s.frames[fid].args for fid in s.active_frame_ids)
+        obj.alive = False
+        s.borrows = {b for b in s.borrows if b[1] != oid}
+    s.accessed = set() if obj.refcount == 0 else {oid}
     return s
 
 
@@ -188,6 +231,7 @@ def call_return(state: RefcountState, frame_id: int, ret_oid: int) -> RefcountSt
     f.return_val = ret_oid
     f.protected_return = is_aliased
     s.roots.add(ret_oid)
+    s.root_counts[ret_oid] += 1
 
     if not is_aliased:
         s.borrows.add((frame_id, ret_oid))
@@ -208,7 +252,7 @@ def cleanup_frame(state: RefcountState, frame_id: int) -> RefcountState:
         if obj.refcount == 0:
             obj.alive = False
 
-    s.borrows = {b for b in s.borrows if b[0] != frame_id}
+    s.borrows = {b for b in s.borrows if b[0] != frame_id and s.heap[b[1]].alive}
 
     ret_alive = s.heap[f.return_val].alive
     if not ret_alive:
@@ -217,7 +261,9 @@ def cleanup_frame(state: RefcountState, frame_id: int) -> RefcountState:
     f.active = False
     f.args = set()
     s.active_frame_ids.discard(frame_id)
-    s.accessed = set(state.frames[frame_id].args) | {f.return_val}
+    live_args = {oid for oid in state.frames[frame_id].args if s.heap[oid].alive}
+    live_return = {f.return_val} if ret_alive else set()
+    s.accessed = live_args | live_return
     return s
 
 
@@ -232,6 +278,31 @@ def check_no_double_free(state: RefcountState) -> None:
         assert state.heap[oid].refcount >= 0, (
             f"Double free: object {oid} has refcount {state.heap[oid].refcount}"
         )
+
+
+def check_no_use_after_free(state: RefcountState) -> None:
+    """I1: accessed objects must be alive."""
+    for oid in state.accessed:
+        assert 0 <= oid < state.next_id
+        assert state.heap[oid].alive, f"Accessed freed object {oid}"
+
+
+def _is_reachable(state: RefcountState, oid: int) -> bool:
+    return (
+        state.root_counts[oid] > 0
+        or state.heap_counts[oid] > 0
+        or any(oid in state.frames[fid].args for fid in state.active_frame_ids)
+    )
+
+
+def check_no_leak(state: RefcountState) -> None:
+    """I3: live objects must be reachable from a counted owner."""
+    for oid in range(state.next_id):
+        obj = state.heap[oid]
+        if obj.alive and not _is_reachable(state, oid):
+            assert obj.refcount == 0, (
+                f"Leaked object {oid}: rc={obj.refcount}, no counted owner"
+            )
 
 
 def check_borrow_safe(state: RefcountState) -> None:
@@ -277,8 +348,20 @@ def check_roots_alive(state: RefcountState) -> None:
         assert state.heap[oid].alive, f"Root {oid} is dead"
 
 
+def check_counted_refs_well_formed(state: RefcountState) -> None:
+    """I8: counted root/container references are non-negative and projected."""
+    for oid in range(MAX_OBJS):
+        assert state.root_counts[oid] >= 0
+        assert state.heap_counts[oid] >= 0
+        if oid < state.next_id:
+            assert (state.root_counts[oid] > 0) == (oid in state.roots)
+        else:
+            assert state.root_counts[oid] == 0
+            assert state.heap_counts[oid] == 0
+
+
 def check_alive_positive_refcount(state: RefcountState) -> None:
-    """I8: alive objects have positive refcount."""
+    """I9: alive objects have positive refcount."""
     for oid in range(state.next_id):
         obj = state.heap[oid]
         if obj.alive:
@@ -288,7 +371,7 @@ def check_alive_positive_refcount(state: RefcountState) -> None:
 
 
 def check_elision_correct(state: RefcountState) -> None:
-    """I9: objects with rc >= 2 can safely skip an inc/dec pair."""
+    """I10: objects with rc >= 2 can safely skip an inc/dec pair."""
     for oid in range(state.next_id):
         obj = state.heap[oid]
         if obj.alive and obj.refcount >= 2:
@@ -298,11 +381,14 @@ def check_elision_correct(state: RefcountState) -> None:
 
 def check_all_invariants(state: RefcountState) -> None:
     """Check all invariants from the Quint model."""
+    check_no_use_after_free(state)
     check_no_double_free(state)
+    check_no_leak(state)
     check_borrow_safe(state)
     check_frame_consistent(state)
     check_alias_protection(state)
     check_roots_alive(state)
+    check_counted_refs_well_formed(state)
     check_alive_positive_refcount(state)
     check_elision_correct(state)
 
@@ -376,6 +462,41 @@ class TestIncDecBalance:
         assert not s.heap[2].alive
         assert s.heap[0].alive
         assert s.heap[1].alive
+
+
+class TestHeapOwnership:
+    """Test counted container ownership from store/remove operations."""
+
+    def test_heap_store_keeps_object_reachable_after_root_drop(self) -> None:
+        s = _make_initial_state()
+        s = alloc_obj(s)  # obj 0, root rc=1
+        s = store_to_heap(s, 0)  # container owns one reference
+        check_all_invariants(s)
+
+        s = dec_ref(s, 0)  # drop the root; container still owns obj 0
+        assert s.heap[0].alive
+        assert s.heap[0].refcount == 1
+        assert s.root_counts[0] == 0
+        assert s.heap_counts[0] == 1
+        check_all_invariants(s)
+
+        s = remove_from_heap(s, 0)  # drop the final container reference
+        assert not s.heap[0].alive
+        assert s.heap[0].refcount == 0
+        assert s.heap_counts[0] == 0
+        check_all_invariants(s)
+
+    def test_heap_remove_preserves_rooted_object(self) -> None:
+        s = _make_initial_state()
+        s = alloc_obj(s)  # root owns obj 0
+        s = store_to_heap(s, 0)  # container owns obj 0 too
+
+        s = remove_from_heap(s, 0)
+        assert s.heap[0].alive
+        assert s.heap[0].refcount == 1
+        assert s.root_counts[0] == 1
+        assert s.heap_counts[0] == 0
+        check_all_invariants(s)
 
 
 class TestCallArgsProtection:

@@ -70,32 +70,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Quint
         run: npm install -g @informalsystems/quint
 
       - name: Verify all models
-        working-directory: formal/quint
-        run: |
-          failures=0
-          total=0
-          for model in *.qnt; do
-            total=$((total + 1))
-            echo "::group::Verifying $model"
-            if quint verify "$model" --max-steps=10 2>&1; then
-              echo "PASS: $model"
-            else
-              echo "::warning::Model $model failed verification (non-blocking)"
-              failures=$((failures + 1))
-            fi
-            echo "::endgroup::"
-          done
-          echo "Quint verification: $((total - failures))/$total models passed"
-          echo "::notice::Quint model verification complete: $((total - failures))/$total passed"
-          # Non-blocking for now: some models may need --invariant tuning.
-          # To make blocking, uncomment:
-          # if [ "$failures" -gt 0 ]; then exit 1; fi
+        run: python3 tools/check_formal_methods.py --quint-only
 
   formal-correspondence:
     name: Proof-Code Correspondence
