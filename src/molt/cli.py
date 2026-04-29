@@ -16630,6 +16630,63 @@ def _build_native_link_driver_command(
     return link_cmd, linker_hint, normalized_target
 
 
+def _crate_name_from_archive_member(member_name: str) -> str | None:
+    """Return the normalized Rust crate name encoded in a staticlib member.
+
+    Rust archives contain members such as
+    ``molt_runtime_core-<hash>.molt_runtime_core.<hash>-cgu.0.rcgu.o``.
+    Cargo build output directories use package names with ``-`` separators,
+    while object members use crate names with ``_`` separators.  Normalizing
+    both forms lets the custom linker ignore stale build-script outputs from
+    crates that are not actually present in the runtime archive.
+    """
+    name = member_name.strip()
+    if not name or name == "__.SYMDEF":
+        return None
+    stem = name.split(".", 1)[0]
+    if stem.endswith("-static"):
+        return None
+    if "-" in stem:
+        stem = stem.rsplit("-", 1)[0]
+    if not stem or stem[0].isdigit():
+        return None
+    return stem.replace("-", "_")
+
+
+def _runtime_archive_crate_names(runtime_lib: Path) -> frozenset[str]:
+    """Return normalized crate names present in a built Rust staticlib."""
+    archive_tool = shutil.which("llvm-ar") or shutil.which("ar")
+    if archive_tool is None:
+        return frozenset()
+    try:
+        result = subprocess.run(
+            [archive_tool, "-t", str(runtime_lib)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    if result.returncode != 0:
+        return frozenset()
+    crates = {
+        crate
+        for line in result.stdout.splitlines()
+        if (crate := _crate_name_from_archive_member(line)) is not None
+    }
+    return frozenset(crates)
+
+
+def _crate_name_from_cargo_build_dir(entry_name: str) -> str:
+    """Normalize a Cargo ``target/<profile>/build/<pkg-hash>`` directory name."""
+    package = entry_name
+    if "-" in entry_name:
+        head, suffix = entry_name.rsplit("-", 1)
+        if suffix and all(ch in "0123456789abcdefABCDEF" for ch in suffix):
+            package = head
+    return package.replace("-", "_")
+
+
 def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[str]]:
     """Collect native library link flags from cargo build-script output files.
 
@@ -16650,8 +16707,13 @@ def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[
     build_dir = profile_dir / "build"
     if not build_dir.is_dir():
         return search_paths, link_libs
+    active_crates = _runtime_archive_crate_names(runtime_lib)
     seen_libs: set[str] = set()
     for entry in build_dir.iterdir():
+        if active_crates:
+            build_crate = _crate_name_from_cargo_build_dir(entry.name)
+            if build_crate not in active_crates:
+                continue
         output_file = entry / "output"
         if not output_file.is_file():
             continue
