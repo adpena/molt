@@ -95,8 +95,8 @@ jobs:
 
       - name: Build Molt backend and WASM host
         run: |
-          cargo build --profile dev-fast -p molt-backend
-          cargo build --release -p molt-wasm-host
+          cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend
+          cargo build --profile release-fast -p molt-wasm-host
 
       # ── WASM target: hello.py (class + arithmetic) ──
       - name: Compile hello.py to WASM
@@ -116,7 +116,7 @@ jobs:
           fi
 
       - name: Run hello.wasm with molt-wasm-host
-        run: $CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_hello.wasm
+        run: $CARGO_TARGET_DIR/release-fast/molt-wasm-host /tmp/test_hello.wasm
 
       # ── WASM target: comprehension_fail.py (list comprehension regression gate) ──
       - name: Compile comprehension_fail.py to WASM
@@ -136,7 +136,7 @@ jobs:
           fi
 
       - name: Run comprehension.wasm with molt-wasm-host
-        run: $CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_comprehension.wasm
+        run: $CARGO_TARGET_DIR/release-fast/molt-wasm-host /tmp/test_comprehension.wasm
 
       # ── Luau target: hello.py ──
       - name: Compile hello.py to Luau
@@ -196,7 +196,7 @@ jobs:
           RUSTC_WRAPPER: ""
 
       - name: Run sieve.wasm with molt-wasm-host
-        run: $CARGO_TARGET_DIR/release/molt-wasm-host /tmp/test_sieve.wasm
+        run: $CARGO_TARGET_DIR/release-fast/molt-wasm-host /tmp/test_sieve.wasm
 
       # ── WASM parity tests (pytest) ──
       - name: Run WASM control flow parity tests

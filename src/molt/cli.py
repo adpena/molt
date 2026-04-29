@@ -7265,6 +7265,10 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 2
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 2
+
+
 @functools.lru_cache(maxsize=1024)
 def _module_graph_cache_key(
     entry_path: str,
@@ -7274,11 +7278,13 @@ def _module_graph_cache_key(
     skip_modules: tuple[str, ...],
     stub_parents: tuple[str, ...],
     nested_stdlib_scan_modules: tuple[str, ...],
+    compiler_fingerprint: str,
 ) -> str:
     return hashlib.sha256(
         json.dumps(
             {
-                "version": 1,
+                "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
+                "compiler_fingerprint": compiler_fingerprint,
                 "entry_path": str(Path(entry_path).resolve()),
                 "roots": [str(Path(path).resolve()) for path in roots],
                 "module_roots": [str(Path(path).resolve()) for path in module_roots],
@@ -12541,66 +12547,11 @@ def _start_backend_daemon(
     if existing_pid is not None:
         if _pid_alive(existing_pid):
             if _backend_daemon_binary_is_newer(backend_bin, pid_path):
-                # Trigger cargo rebuild to ensure the binary reflects
-                # source changes. Cargo incremental may skip the link
-                # step if the content hash is unchanged, but a clean
-                # build of the specific crate guarantees freshness.
-                import shutil
-
                 if not json_output:
                     print(
-                        "Source changed; rebuilding backend...",
+                        "Backend binary changed; restarting daemon...",
                         file=sys.stderr,
                     )
-                _cargo = shutil.which("cargo")
-                if _cargo:
-                    _profile_flag = (
-                        ["--profile", cargo_profile]
-                        if cargo_profile not in ("dev", "release")
-                        else (["--release"] if cargo_profile == "release" else [])
-                    )
-                    # Incremental rebuild only — no cargo clean.
-                    # cargo clean holds the cargo lock for the entire duration,
-                    # blocking ALL concurrent builds across all agent sessions.
-                    # Cargo's incremental compilation correctly detects source
-                    # changes and rebuilds affected crates.  The previous
-                    # clean+rebuild pattern caused:
-                    #   - 30s+ lock waits for concurrent sessions
-                    #   - Binary deletion mid-test (SIGSEGV/ENOENT)
-                    #   - Env var isolation failures (daemon restarts)
-                    _rebuild_cmd = [
-                        _cargo,
-                        "build",
-                        "-p",
-                        "molt-backend",
-                        "-p",
-                        "molt-runtime",
-                        *_profile_flag,
-                    ]
-                    _rebuild_cmd.extend(["--features", "native-backend"])
-                    # Always route the rebuild through the canonical cargo
-                    # target resolver so read/write paths stay aligned.
-                    _rebuild_env = os.environ.copy()
-                    _rebuild_env["CARGO_TARGET_DIR"] = str(
-                        _cargo_target_root(project_root)
-                    )
-                    with _build_slot() as _slot:
-                        _rebuild = subprocess.run(
-                            _rebuild_cmd,
-                            capture_output=True,
-                            cwd=project_root,
-                            timeout=300,
-                            env=_rebuild_env,
-                        )
-                    if _rebuild.returncode != 0 and not json_output:
-                        print(
-                            f"  cargo rebuild failed (exit {_rebuild.returncode})",
-                            file=sys.stderr,
-                        )
-                print(
-                    "Backend or runtime rebuilt; restarting daemon...",
-                    file=sys.stderr,
-                )
                 _terminate_backend_daemon_pid(existing_pid, grace=1.0)
                 _remove_backend_daemon_pid(pid_path)
                 try:
@@ -12608,54 +12559,6 @@ def _start_backend_daemon(
                         socket_path.unlink()
                 except OSError:
                     pass
-                # Clear cached build artifacts that were linked against
-                # the old runtime library.  Without this, stale .o files
-                # produce linker errors (duplicate symbols) or silent
-                # correctness regressions.
-                import shutil
-
-                for cache_dir in [
-                    project_root / ".molt_cache",
-                    Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
-                ]:
-                    if cache_dir.is_dir():
-                        # Preserve stdlib_shared_* files — the daemon stdlib
-                        # partition needs them to avoid recompiling 300+ stdlib
-                        # functions on every build.
-                        for _entry in list(cache_dir.iterdir()):
-                            if _entry.name.startswith("stdlib_shared_"):
-                                continue
-                            # Preserve compiled binaries (home/bin/) across daemon
-                            # restarts — they're validated by mtime in the fast-path.
-                            # Only clear intermediate build artifacts (home/build/).
-                            if _entry.name == "bin":
-                                continue
-                            if _entry.is_dir():
-                                shutil.rmtree(_entry, ignore_errors=True)
-                            else:
-                                _entry.unlink(missing_ok=True)
-                        if not json_output:
-                            print(
-                                f"  Cleared stale cache: {cache_dir}", file=sys.stderr
-                            )
-                _cache_root = _default_molt_cache()
-                if _cache_root.is_dir():
-                    for _cached_file in _cache_root.iterdir():
-                        if _cached_file.name.startswith("stdlib_shared_"):
-                            continue
-                        if _cached_file.is_file() and _cached_file.suffix in {
-                            ".o",
-                            ".wasm",
-                            ".fingerprint",
-                            ".count",
-                            ".key",
-                        }:
-                            _cached_file.unlink(missing_ok=True)
-                    if not json_output:
-                        print(
-                            f"  Cleared cached artifacts in: {_cache_root}",
-                            file=sys.stderr,
-                        )
                 existing_pid = None
             else:
                 if socket_path.exists():
@@ -13407,6 +13310,7 @@ def _import_scan_cache_path(
         module_name,
         "pkg" if is_package else "mod",
         "nested" if include_nested else "top",
+        _cache_tooling_fingerprint(),
     )
     return root / f"{path.stem}.{cache_key}.json"
 
@@ -13475,6 +13379,7 @@ def _module_graph_cache_path(
         tuple(sorted(skip_modules)),
         tuple(sorted(stub_parents)),
         tuple(sorted(nested_stdlib_scan_modules)),
+        _cache_tooling_fingerprint(),
     )
     return root / f"{entry_path.stem}.{cache_key}.json"
 
@@ -13504,7 +13409,11 @@ def _read_persisted_module_graph(
     payload = _read_cached_json_object(cache_path)
     if payload is None:
         return None
-    if not isinstance(payload, dict) or payload.get("version") != 1:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != _MODULE_GRAPH_CACHE_SCHEMA_VERSION
+        or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+    ):
         return None
     raw_modules = payload.get("modules")
     if not isinstance(raw_modules, list):
@@ -13576,7 +13485,8 @@ def _write_persisted_module_graph(
             }
         )
     payload = {
-        "version": 1,
+        "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
+        "compiler_fingerprint": _cache_tooling_fingerprint(),
         "modules": modules,
         "explicit_imports": sorted(explicit_imports),
     }
@@ -13612,6 +13522,11 @@ def _read_persisted_import_scan(
     )
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
+        return None
+    if (
+        payload.get("version") != _IMPORT_SCAN_CACHE_SCHEMA_VERSION
+        or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+    ):
         return None
     if path_stat is None:
         try:
@@ -13649,7 +13564,8 @@ def _write_persisted_import_scan(
     )
     stat = path.stat()
     payload = {
-        "version": 1,
+        "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
+        "compiler_fingerprint": _cache_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
         "include_nested": include_nested,
