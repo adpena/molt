@@ -187,6 +187,19 @@ def test_run_command_returns_guard_code_on_real_low_limit() -> None:
     assert result.violation.rss_kb > 1
 
 
+def test_run_command_returns_timeout_code_when_wall_clock_expires() -> None:
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        timeout=0.01,
+    )
+
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+    assert result.timed_out is True
+    assert "timeout after" in result.stderr
+
+
 def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> None:
     rc = memory_guard.main(["--max-rss-gb", "30", "--", sys.executable, "-c", "pass"])
 

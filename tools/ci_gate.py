@@ -27,6 +27,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
+from collections.abc import Sequence
+from datetime import UTC, datetime
 import json
 import os
 import shutil
@@ -38,13 +41,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+_THIS_FILE = Path(__file__).resolve()
+_REPO_ROOT = _THIS_FILE.parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import tools.memory_guard as memory_guard  # noqa: E402
+import tools.compile_governor as compile_governor  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _REPO_ROOT
+CI_GATE = _THIS_FILE
 TOOLS = ROOT / "tools"
 TESTS = ROOT / "tests"
+LOG_ROOT = ROOT / "logs" / "ci_gate"
 
 IS_TTY = sys.stdout.isatty()
 
@@ -105,6 +118,31 @@ class CheckResult:
     stdout: str = ""
     stderr: str = ""
     skip_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryGuardLimits:
+    max_rss_gb: float = memory_guard.DEFAULT_MAX_RSS_GB
+    max_total_rss_gb: float = memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
+    poll_interval: float = memory_guard.DEFAULT_POLL_INTERVAL_SEC
+
+    @property
+    def max_rss_kb(self) -> int:
+        return memory_guard.max_rss_kb_from_gb(self.max_rss_gb)
+
+    @property
+    def max_total_rss_kb(self) -> int:
+        return memory_guard.max_rss_kb_from_gb(self.max_total_rss_gb)
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundGateMetadata:
+    pid: int
+    command: list[str]
+    log_path: Path
+    metadata_path: Path
+    cwd: Path
+    created_at: str
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +455,34 @@ def _skip_reason(check: Check) -> str | None:
     return None
 
 
-def _run_check(check: Check, dry_run: bool = False) -> CheckResult:
+def _check_env(check: Check) -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+    env["PYTHONUNBUFFERED"] = "1"
+    env.update(check.env_extra)
+    return env
+
+
+def _truncate_output(text: str) -> str:
+    return text[-4096:] if len(text) > 4096 else text
+
+
+def _status_from_process_result(
+    *,
+    returncode: int,
+    violation: memory_guard.RssViolation | None = None,
+    timed_out: bool = False,
+) -> str:
+    if timed_out or violation is not None:
+        return "error"
+    return "pass" if returncode == 0 else "fail"
+
+
+def _run_check(
+    check: Check,
+    dry_run: bool = False,
+    memory_limits: MemoryGuardLimits | None = MemoryGuardLimits(),
+) -> CheckResult:
     """Execute a single check and return the result."""
     skip = _skip_reason(check)
     if skip:
@@ -436,31 +501,58 @@ def _run_check(check: Check, dry_run: bool = False) -> CheckResult:
             skip_reason="dry-run",
         )
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(ROOT / "src")
-    env["PYTHONUNBUFFERED"] = "1"
-    env.update(check.env_extra)
+    env = _check_env(check)
+    cwd = check.cwd or str(ROOT)
+    slot_context = (
+        compile_governor.compile_slot(env=env, label=f"ci_gate:{check.name}")
+        if check.needs_rust
+        else contextlib.nullcontext()
+    )
 
     start = time.monotonic()
     try:
-        proc = subprocess.run(
-            check.cmd,
-            cwd=check.cwd or str(ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=check.timeout,
-        )
+        with slot_context:
+            if memory_limits is None:
+                proc = subprocess.run(
+                    check.cmd,
+                    cwd=cwd,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=check.timeout,
+                )
+                returncode = proc.returncode
+                stdout = proc.stdout
+                stderr = proc.stderr
+                status = _status_from_process_result(returncode=returncode)
+            else:
+                guarded = memory_guard.run_guarded(
+                    check.cmd,
+                    max_rss_kb=memory_limits.max_rss_kb,
+                    max_total_rss_kb=memory_limits.max_total_rss_kb,
+                    poll_interval=memory_limits.poll_interval,
+                    cwd=cwd,
+                    env=env,
+                    timeout=check.timeout,
+                    capture_output=True,
+                )
+                returncode = guarded.returncode
+                stdout = guarded.stdout
+                stderr = guarded.stderr
+                status = _status_from_process_result(
+                    returncode=guarded.returncode,
+                    violation=guarded.violation,
+                    timed_out=guarded.timed_out,
+                )
         duration = time.monotonic() - start
-        status = "pass" if proc.returncode == 0 else "fail"
         return CheckResult(
             name=check.name,
             tier=check.tier,
             status=status,
             duration_s=round(duration, 2),
-            returncode=proc.returncode,
-            stdout=proc.stdout[-4096:] if len(proc.stdout) > 4096 else proc.stdout,
-            stderr=proc.stderr[-4096:] if len(proc.stderr) > 4096 else proc.stderr,
+            returncode=returncode,
+            stdout=_truncate_output(stdout),
+            stderr=_truncate_output(stderr),
         )
     except subprocess.TimeoutExpired:
         duration = time.monotonic() - start
@@ -517,6 +609,7 @@ def run_gate(
     dry_run: bool = False,
     json_out: bool = False,
     verbose: bool = False,
+    memory_limits: MemoryGuardLimits | None = MemoryGuardLimits(),
 ) -> list[CheckResult]:
     """Run all checks for the requested tiers and return results."""
     all_checks = _build_checks()
@@ -541,7 +634,12 @@ def run_gate(
             # Run checks within a tier concurrently
             with ThreadPoolExecutor(max_workers=min(4, len(tier_checks))) as pool:
                 futures = {
-                    pool.submit(_run_check, check, dry_run): check
+                    pool.submit(
+                        _run_check,
+                        check,
+                        dry_run,
+                        memory_limits,
+                    ): check
                     for check in tier_checks
                 }
                 for future in as_completed(futures):
@@ -560,7 +658,7 @@ def run_gate(
                         break
         else:
             for check in tier_checks:
-                result = _run_check(check, dry_run)
+                result = _run_check(check, dry_run, memory_limits)
                 results.append(result)
                 if not json_out:
                     _print_result(result, verbose)
@@ -582,6 +680,57 @@ def run_gate(
                 break
 
     return results
+
+
+def _strip_background_flag(argv: Sequence[str]) -> list[str]:
+    return [arg for arg in argv if arg != "--background"]
+
+
+def launch_background_gate(argv: Sequence[str]) -> BackgroundGateMetadata:
+    """Launch this gate detached and write stdout/stderr to canonical logs."""
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    created_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    base = f"ci_gate_{stamp}_{os.getpid()}"
+    log_path = LOG_ROOT / f"{base}.log"
+    metadata_path = LOG_ROOT / f"{base}.json"
+    command = [sys.executable, str(CI_GATE), *_strip_background_flag(argv)]
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    with log_path.open("ab") as log:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    metadata = BackgroundGateMetadata(
+        pid=proc.pid,
+        command=command,
+        log_path=log_path,
+        metadata_path=metadata_path,
+        cwd=ROOT,
+        created_at=created_at,
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "pid": metadata.pid,
+                "command": metadata.command,
+                "log_path": str(metadata.log_path),
+                "metadata_path": str(metadata.metadata_path),
+                "cwd": str(metadata.cwd),
+                "created_at": metadata.created_at,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return metadata
 
 
 def _results_to_dict(results: list[CheckResult]) -> dict[str, Any]:
@@ -659,7 +808,62 @@ def main() -> None:
         action="store_true",
         help="Show stderr tail on failures",
     )
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Launch the selected gate in the background and write logs under logs/ci_gate/.",
+    )
+    parser.add_argument(
+        "--no-memory-guard",
+        action="store_true",
+        help="Disable per-check process-tree RSS limits. Intended for debugging this gate only.",
+    )
+    parser.add_argument(
+        "--max-rss-gb",
+        type=float,
+        default=memory_guard.DEFAULT_MAX_RSS_GB,
+        help=(
+            "Abort a check if any process exceeds this RSS; must be <30 "
+            f"(default: {memory_guard.DEFAULT_MAX_RSS_GB})."
+        ),
+    )
+    parser.add_argument(
+        "--max-total-rss-gb",
+        type=float,
+        default=memory_guard.DEFAULT_MAX_TOTAL_RSS_GB,
+        help=(
+            "Abort a check if its process tree exceeds this aggregate RSS; must be <30 "
+            f"(default: {memory_guard.DEFAULT_MAX_TOTAL_RSS_GB})."
+        ),
+    )
+    parser.add_argument(
+        "--memory-poll-interval",
+        type=float,
+        default=memory_guard.DEFAULT_POLL_INTERVAL_SEC,
+        help=(
+            "Memory guard polling interval in seconds "
+            f"(default: {memory_guard.DEFAULT_POLL_INTERVAL_SEC})."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.background:
+        metadata = launch_background_gate(sys.argv[1:])
+        print(
+            json.dumps(
+                {
+                    "pid": metadata.pid,
+                    "command": metadata.command,
+                    "log_path": str(metadata.log_path),
+                    "metadata_path": str(metadata.metadata_path),
+                    "cwd": str(metadata.cwd),
+                    "created_at": metadata.created_at,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
 
     if args.tier == "all":
         tiers = [1, 2, 3]
@@ -667,6 +871,25 @@ def main() -> None:
         tier_num = int(args.tier)
         # Running tier N implies running all tiers <= N
         tiers = list(range(1, tier_num + 1))
+
+    try:
+        memory_limits = (
+            None
+            if args.no_memory_guard
+            else MemoryGuardLimits(
+                max_rss_gb=args.max_rss_gb,
+                max_total_rss_gb=args.max_total_rss_gb,
+                poll_interval=args.memory_poll_interval,
+            )
+        )
+        if memory_limits is not None:
+            memory_limits.max_rss_kb
+            memory_limits.max_total_rss_kb
+            if memory_limits.poll_interval <= 0:
+                raise ValueError("memory poll interval must be greater than 0")
+    except ValueError as exc:
+        print(f"ci_gate: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     if not args.json:
         tier_label = "all" if args.tier == "all" else args.tier
@@ -677,6 +900,8 @@ def main() -> None:
             mode_flags.append("parallel")
         if args.dry_run:
             mode_flags.append("dry-run")
+        if memory_limits is None:
+            mode_flags.append("unguarded")
         mode_str = f" [{', '.join(mode_flags)}]" if mode_flags else ""
         print(bold(f"Molt CI Gate -- tier {tier_label}{mode_str}"))
 
@@ -687,6 +912,7 @@ def main() -> None:
         dry_run=args.dry_run,
         json_out=args.json,
         verbose=args.verbose,
+        memory_limits=memory_limits,
     )
 
     if args.json:
