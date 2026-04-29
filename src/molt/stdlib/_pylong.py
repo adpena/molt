@@ -12,8 +12,16 @@ integers with a huge number of digits.  Saving a few microseconds with
 tricky or non-obvious code is not worth it.  For people looking for
 maximum performance, they should use something like gmpy2."""
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
+
 import re
 import decimal
+
 try:
     import _decimal
 except ImportError:
@@ -103,7 +111,7 @@ def int_to_decimal_string(n):
         w2 = w >> 1
         d = pow10_cache.get(w2)
         if d is None:
-            d = pow10_cache[w2] = 5**w2 << w2 # 10**i = (5*2)**i = 5**i * 2**i
+            d = pow10_cache[w2] = 5**w2 << w2  # 10**i = (5*2)**i = 5**i * 2**i
         hi, lo = divmod(n, d)
         return inner(hi, w - w2) + inner(lo, w2).zfill(w2)
 
@@ -118,14 +126,14 @@ def int_to_decimal_string(n):
     pow10_cache = {}
     if n < 0:
         n = -n
-        sign = '-'
+        sign = "-"
     else:
-        sign = ''
+        sign = ""
     s = inner(n, w)
-    if s[0] == '0' and n:
+    if s[0] == "0" and n:
         # If our guess of w is too large, there may be leading 0's that
         # need to be stripped.
-        s = s.lstrip('0')
+        s = s.lstrip("0")
     return sign + s
 
 
@@ -183,18 +191,18 @@ def int_from_string(s):
     # use of underscore characters, checked that string consists of only digits
     # and underscores, and stripped leading whitespace.  The input can still
     # contain underscores and have trailing whitespace.
-    s = s.rstrip().replace('_', '')
+    s = s.rstrip().replace("_", "")
     return _str_to_int_inner(s)
 
 
 def str_to_int(s):
     """Asymptotically fast version of decimal string to 'int' conversion."""
     # FIXME: this doesn't support the full syntax that int() supports.
-    m = re.match(r'\s*([+-]?)([0-9_]+)\s*', s)
+    m = re.match(r"\s*([+-]?)([0-9_]+)\s*", s)
     if not m:
-        raise ValueError('invalid literal for int() with base 10')
+        raise ValueError("invalid literal for int() with base 10")
     v = int_from_string(m.group(2))
-    if m.group(1) == '-':
+    if m.group(1) == "-":
         v = -v
     return v
 
@@ -327,3 +335,6 @@ def int_divmod(a, b):
         return ~q, b + ~r
     else:
         return _divmod_pos(a, b)
+
+
+globals().pop("_require_intrinsic", None)

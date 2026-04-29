@@ -17,6 +17,7 @@ def sieve(n):
         p += 1
     return sum(1 for x in is_prime if x)
 
+
 # Float arithmetic
 def mandelbrot(size):
     count = 0
@@ -42,11 +43,13 @@ def mandelbrot(size):
         y += 1
     return count
 
+
 # Recursive calls
 def fib(n):
     if n <= 1:
         return n
     return fib(n - 1) + fib(n - 2)
+
 
 # List operations
 def list_ops(n):
@@ -55,6 +58,7 @@ def list_ops(n):
     for x in a:
         total += x
     return total
+
 
 # Dict operations
 def dict_ops(n):
@@ -66,6 +70,7 @@ def dict_ops(n):
         total += d[k]
     return total
 
+
 # String operations
 def str_ops(n):
     parts = []
@@ -73,13 +78,16 @@ def str_ops(n):
         parts.append(str(i))
     return len(",".join(parts))
 
+
 # Class operations
 class Point:
     def __init__(self, x, y):
         self.x = x
         self.y = y
+
     def dist(self):
         return self.x * self.x + self.y * self.y
+
 
 def class_ops(n):
     total = 0
@@ -87,6 +95,7 @@ def class_ops(n):
         p = Point(i, i + 1)
         total += p.dist()
     return total
+
 
 # Run all
 print(sieve(10000))

@@ -14,6 +14,10 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
 # Probe intrinsic — required by the molt stdlib enforcement policy so this
 # module is recognized as a thin runtime-backed module rather than pure Python.
 _MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
@@ -35,9 +39,7 @@ def convert(value: Any, conversion: str | None) -> Any:
         return repr(value)
     if conversion == "a":
         return ascii(value)
-    raise ValueError(
-        f"Bad conversion: {conversion!r}; must be 's', 'r', 'a', or None"
-    )
+    raise ValueError(f"Bad conversion: {conversion!r}; must be 's', 'r', 'a', or None")
 
 
 class Interpolation:

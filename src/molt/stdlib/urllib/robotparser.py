@@ -5,6 +5,13 @@ behavioral changes. Pure-Python — relies on `urllib.parse`, `urllib.error`,
 `urllib.request`, and `time` (which are already intrinsic-backed in molt).
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
+
 import collections
 import urllib.error
 import urllib.parse
@@ -18,7 +25,7 @@ RequestRate = collections.namedtuple("RequestRate", "requests seconds")
 class RobotFileParser:
     """Read, parse, and answer questions about a single robots.txt file."""
 
-    def __init__(self, url=''):
+    def __init__(self, url=""):
         self.entries = []
         self.sitemaps = []
         self.default_entry = None
@@ -32,6 +39,7 @@ class RobotFileParser:
 
     def modified(self):
         import time
+
         self.last_checked = time.time()
 
     def set_url(self, url):
@@ -72,13 +80,13 @@ class RobotFileParser:
                     self._add_entry(entry)
                     entry = Entry()
                     state = 0
-            i = line.find('#')
+            i = line.find("#")
             if i >= 0:
                 line = line[:i]
             line = line.strip()
             if not line:
                 continue
-            line = line.split(':', 1)
+            line = line.split(":", 1)
             if len(line) == 2:
                 line[0] = line[0].strip().lower()
                 line[1] = urllib.parse.unquote(line[1].strip())
@@ -103,9 +111,12 @@ class RobotFileParser:
                         state = 2
                 elif line[0] == "request-rate":
                     if state != 0:
-                        numbers = line[1].split('/')
-                        if (len(numbers) == 2 and numbers[0].strip().isdigit()
-                                and numbers[1].strip().isdigit()):
+                        numbers = line[1].split("/")
+                        if (
+                            len(numbers) == 2
+                            and numbers[0].strip().isdigit()
+                            and numbers[1].strip().isdigit()
+                        ):
                             entry.req_rate = RequestRate(
                                 int(numbers[0]), int(numbers[1])
                             )
@@ -124,8 +135,14 @@ class RobotFileParser:
             return False
         parsed_url = urllib.parse.urlparse(urllib.parse.unquote(url))
         url = urllib.parse.urlunparse(
-            ('', '', parsed_url.path, parsed_url.params,
-             parsed_url.query, parsed_url.fragment)
+            (
+                "",
+                "",
+                parsed_url.path,
+                parsed_url.params,
+                parsed_url.query,
+                parsed_url.fragment,
+            )
         )
         url = urllib.parse.quote(url)
         if not url:
@@ -166,14 +183,14 @@ class RobotFileParser:
         entries = self.entries
         if self.default_entry is not None:
             entries = entries + [self.default_entry]
-        return '\n\n'.join(map(str, entries))
+        return "\n\n".join(map(str, entries))
 
 
 class RuleLine:
     """A single Allow or Disallow rule with an optional path."""
 
     def __init__(self, path, allowance):
-        if path == '' and not allowance:
+        if path == "" and not allowance:
             allowance = True
         path = urllib.parse.urlunparse(urllib.parse.urlparse(path))
         self.path = urllib.parse.quote(path)
@@ -205,12 +222,12 @@ class Entry:
             rate = self.req_rate
             ret.append(f"Request-rate: {rate.requests}/{rate.seconds}")
         ret.extend(map(str, self.rulelines))
-        return '\n'.join(ret)
+        return "\n".join(ret)
 
     def applies_to(self, useragent):
         useragent = useragent.split("/")[0].lower()
         for agent in self.useragents:
-            if agent == '*':
+            if agent == "*":
                 return True
             agent = agent.lower()
             if agent in useragent:
@@ -222,3 +239,6 @@ class Entry:
             if line.applies_to(filename):
                 return line.allowance
         return True
+
+
+globals().pop("_require_intrinsic", None)

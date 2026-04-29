@@ -16,7 +16,7 @@
 - Full deterministic CPython >= 3.12 parity (except: no exec/eval/compile, no runtime monkeypatching, no unrestricted reflection).
 - All backends (native/Cranelift, WASM, LLVM) must have parity.
 - NEVER revert or discard unstaged partner changes. Pause and wait.
-- Always `git add` immediately after writing files (linter hooks revert unstaged changes).
+- Always `git add` immediately after writing files (commit hooks are read-only by default; explicit staging keeps owned changes atomic).
 
 ## Top Priority: Chris Lattner Compiler Engineering Standards (Feb 18, 2026) (Non-Negotiable, Turn Blocker)
 - This section is a top-of-file hard gate and applies to every compiler/runtime/tooling turn; violations block merge and must be fixed before completion.
@@ -273,7 +273,7 @@ cargo build --profile release-fast -p molt-backend --features native-backend --t
 
 **Git discipline (non-negotiable):**
 - NEVER revert unstaged changes — they are partner work
-- Always `git add` immediately after writing files (linter hooks can silently revert unstaged changes)
+- Always `git add` immediately after writing files (commit hooks are read-only by default; explicit staging keeps owned changes atomic)
 - Write + git add in the same operation using `&&` chaining
 
 ## Build Profile Policy (Non-Negotiable)
@@ -392,7 +392,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - **Memory:** `vm_stat` for system memory, `leaks` for leak detection, `vmmap` for virtual memory maps
 
 ## Tooling Add-ons (Optional)
-- `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks (ruff/ty formatting + checks).
+- `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks. Hooks are read-only by default; run explicit format/fix commands before staging when a check fails.
 - `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
 - `python3 tools/check_dynamic_policy.py`: enforce dynamic-execution policy guardrails (no accidental policy drift for `eval`/`exec`, monkeypatching, or unrestricted reflection lanes).
 - `python3 tools/sync_stdlib_top_level_stubs.py --write` and `python3 tools/sync_stdlib_submodule_stubs.py --write`: sync stdlib stub inventories from the manifest.

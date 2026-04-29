@@ -1,3 +1,9 @@
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
 #
 # ElementTree
 # $Id: ElementInclude.py 3375 2008-02-13 08:05:08Z fredrik $
@@ -64,6 +70,7 @@ DEFAULT_MAX_INCLUSION_DEPTH = 6
 ##
 # Fatal include error.
 
+
 class FatalIncludeError(SyntaxError):
     pass
 
@@ -84,16 +91,18 @@ class LimitedRecursiveIncludeError(FatalIncludeError):
 #    or raise an OSError exception.
 # @throws OSError If the loader fails to load the resource.
 
+
 def default_loader(href, parse, encoding=None):
     if parse == "xml":
-        with open(href, 'rb') as file:
+        with open(href, "rb") as file:
             data = ElementTree.parse(file).getroot()
     else:
         if not encoding:
-            encoding = 'UTF-8'
-        with open(href, 'r', encoding=encoding) as file:
+            encoding = "UTF-8"
+        with open(href, "r", encoding=encoding) as file:
             data = file.read()
     return data
+
 
 ##
 # Expand XInclude directives.
@@ -114,14 +123,16 @@ def default_loader(href, parse, encoding=None):
 # @throws ValueError If negative {@link max_depth} is passed.
 # @returns None. Modifies tree pointed by {@link elem}
 
-def include(elem, loader=None, base_url=None,
-            max_depth=DEFAULT_MAX_INCLUSION_DEPTH):
+
+def include(elem, loader=None, base_url=None, max_depth=DEFAULT_MAX_INCLUSION_DEPTH):
     if max_depth is None:
         max_depth = -1
     elif max_depth < 0:
-        raise ValueError("expected non-negative depth or None for 'max_depth', got %r" % max_depth)
+        raise ValueError(
+            "expected non-negative depth or None for 'max_depth', got %r" % max_depth
+        )
 
-    if hasattr(elem, 'getroot'):
+    if hasattr(elem, "getroot"):
         elem = elem.getroot()
     if loader is None:
         loader = default_loader
@@ -145,14 +156,15 @@ def _include(elem, loader, base_url, max_depth, _parent_hrefs):
                     raise FatalIncludeError("recursive include of %s" % href)
                 if max_depth == 0:
                     raise LimitedRecursiveIncludeError(
-                        "maximum xinclude depth reached when including file %s" % href)
+                        "maximum xinclude depth reached when including file %s" % href
+                    )
                 _parent_hrefs.add(href)
                 node = loader(href, parse)
                 if node is None:
-                    raise FatalIncludeError(
-                        "cannot load %r as %r" % (href, parse)
-                        )
-                node = copy.copy(node)  # FIXME: this makes little sense with recursive includes
+                    raise FatalIncludeError("cannot load %r as %r" % (href, parse))
+                node = copy.copy(
+                    node
+                )  # FIXME: this makes little sense with recursive includes
                 _include(node, loader, href, max_depth - 1, _parent_hrefs)
                 _parent_hrefs.remove(href)
                 if e.tail:
@@ -161,13 +173,11 @@ def _include(elem, loader, base_url, max_depth, _parent_hrefs):
             elif parse == "text":
                 text = loader(href, parse, e.get("encoding"))
                 if text is None:
-                    raise FatalIncludeError(
-                        "cannot load %r as %r" % (href, parse)
-                        )
+                    raise FatalIncludeError("cannot load %r as %r" % (href, parse))
                 if e.tail:
                     text += e.tail
                 if i:
-                    node = elem[i-1]
+                    node = elem[i - 1]
                     node.tail = (node.tail or "") + text
                 else:
                     elem.text = (elem.text or "") + text
@@ -180,7 +190,10 @@ def _include(elem, loader, base_url, max_depth, _parent_hrefs):
         elif e.tag == XINCLUDE_FALLBACK:
             raise FatalIncludeError(
                 "xi:fallback tag must be child of xi:include (%r)" % e.tag
-                )
+            )
         else:
             _include(e, loader, base_url, max_depth, _parent_hrefs)
         i += 1
+
+
+globals().pop("_require_intrinsic", None)

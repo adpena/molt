@@ -226,6 +226,43 @@ def test_fallback_intrinsic_backed_only_opt_down_flag_is_accepted(
     assert audit_doc.exists()
 
 
+def test_critical_allowlist_does_not_run_global_fallback_gate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    _seed_intrinsic_module(stdlib_root, "critical_root", "")
+    _seed_intrinsic_module(
+        stdlib_root,
+        "noncritical_with_fallback",
+        """
+try:
+    import alpha
+except ImportError:
+    import beta
+""".strip(),
+    )
+    audit_doc = tmp_path / "audit.md"
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", audit_doc)
+    monkeypatch.setattr(module, "CRITICAL_STRICT_IMPORT_ROOTS", ("critical_root",))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_stdlib_intrinsics.py",
+            "--update-doc",
+            "--critical-allowlist",
+        ],
+    )
+
+    assert module.main() == 0
+    assert audit_doc.exists()
+
+
 def test_zero_non_intrinsic_gate_rejects_python_only_module(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

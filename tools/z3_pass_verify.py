@@ -15,6 +15,7 @@ Usage:
 
 Requires: pip install z3-solver
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,10 +32,7 @@ try:
         Solver,
         UDiv,
         URem,
-        simplify,
-        sat,
         unsat,
-        ForAll,
     )
 except ImportError:
     print("Install z3-solver: pip install z3-solver", file=sys.stderr)
@@ -44,6 +42,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Op:
@@ -172,9 +171,18 @@ class Z3Encoder:
             return False
 
         args = op.args or []
-        if op.kind in ("add", "sub", "mul", "floor_div", "mod",
-                        "bitwise_and", "bitwise_or", "bitwise_xor",
-                        "lshift", "rshift"):
+        if op.kind in (
+            "add",
+            "sub",
+            "mul",
+            "floor_div",
+            "mod",
+            "bitwise_and",
+            "bitwise_or",
+            "bitwise_xor",
+            "lshift",
+            "rshift",
+        ):
             if len(args) < 2:
                 return False
             lhs = self._get(args[0])
@@ -213,6 +221,7 @@ class Z3Encoder:
             rhs = self._get(args[1])
             # Comparisons produce a 1-bit result; extend to BV_WIDTH
             from z3 import If
+
             cmp_expr = {
                 "lt": lhs < rhs,
                 "le": lhs <= rhs,
@@ -231,6 +240,7 @@ class Z3Encoder:
 # Redundancy checks
 # ---------------------------------------------------------------------------
 
+
 def _check_add_zero(encoder: Z3Encoder, op: Op, idx: int) -> Finding | None:
     """Detect x + 0 or 0 + x."""
     if op.kind != "add" or not op.args or len(op.args) < 2 or op.out is None:
@@ -248,7 +258,9 @@ def _check_add_zero(encoder: Z3Encoder, op: Op, idx: int) -> Finding | None:
     if s.check() == unsat:
         s.pop()
         return Finding(
-            op_index=idx, kind=op.kind, out=op.out,
+            op_index=idx,
+            kind=op.kind,
+            out=op.out,
             category="add-zero",
             message=f"{op.out} = {lhs_name} + {rhs_name}: rhs is always 0, result equals {lhs_name}",
         )
@@ -259,7 +271,9 @@ def _check_add_zero(encoder: Z3Encoder, op: Op, idx: int) -> Finding | None:
     if s.check() == unsat:
         s.pop()
         return Finding(
-            op_index=idx, kind=op.kind, out=op.out,
+            op_index=idx,
+            kind=op.kind,
+            out=op.out,
             category="add-zero",
             message=f"{op.out} = {lhs_name} + {rhs_name}: lhs is always 0, result equals {rhs_name}",
         )
@@ -284,7 +298,9 @@ def _check_mul_one(encoder: Z3Encoder, op: Op, idx: int) -> Finding | None:
     if s.check() == unsat:
         s.pop()
         return Finding(
-            op_index=idx, kind=op.kind, out=op.out,
+            op_index=idx,
+            kind=op.kind,
+            out=op.out,
             category="mul-one",
             message=f"{op.out} = {lhs_name} * {rhs_name}: rhs is always 1, result equals {lhs_name}",
         )
@@ -295,7 +311,9 @@ def _check_mul_one(encoder: Z3Encoder, op: Op, idx: int) -> Finding | None:
     if s.check() == unsat:
         s.pop()
         return Finding(
-            op_index=idx, kind=op.kind, out=op.out,
+            op_index=idx,
+            kind=op.kind,
+            out=op.out,
             category="mul-one",
             message=f"{op.out} = {lhs_name} * {rhs_name}: lhs is always 1, result equals {rhs_name}",
         )
@@ -319,7 +337,9 @@ def _check_mul_zero(encoder: Z3Encoder, op: Op, idx: int) -> Finding | None:
     if s.check() == unsat:
         s.pop()
         return Finding(
-            op_index=idx, kind=op.kind, out=op.out,
+            op_index=idx,
+            kind=op.kind,
+            out=op.out,
             category="mul-zero",
             message=f"{op.out} = {lhs_name} * {rhs_name}: rhs is always 0, result is always 0",
         )
@@ -329,7 +349,9 @@ def _check_mul_zero(encoder: Z3Encoder, op: Op, idx: int) -> Finding | None:
     if s.check() == unsat:
         s.pop()
         return Finding(
-            op_index=idx, kind=op.kind, out=op.out,
+            op_index=idx,
+            kind=op.kind,
+            out=op.out,
             category="mul-zero",
             message=f"{op.out} = {lhs_name} * {rhs_name}: lhs is always 0, result is always 0",
         )
@@ -345,7 +367,9 @@ def _check_sub_self(encoder: Z3Encoder, op: Op, idx: int) -> Finding | None:
     if lhs_name != rhs_name:
         return None
     return Finding(
-        op_index=idx, kind=op.kind, out=op.out,
+        op_index=idx,
+        kind=op.kind,
+        out=op.out,
         category="sub-self",
         message=f"{op.out} = {lhs_name} - {rhs_name}: subtracting a value from itself is always 0",
     )
@@ -362,12 +386,16 @@ def _check_bitwise_identity(encoder: Z3Encoder, op: Op, idx: int) -> Finding | N
         return None
     if op.kind == "bitwise_xor":
         return Finding(
-            op_index=idx, kind=op.kind, out=op.out,
+            op_index=idx,
+            kind=op.kind,
+            out=op.out,
             category="bitwise-identity",
             message=f"{op.out} = {lhs_name} ^ {rhs_name}: XOR of same value is always 0",
         )
     return Finding(
-        op_index=idx, kind=op.kind, out=op.out,
+        op_index=idx,
+        kind=op.kind,
+        out=op.out,
         category="bitwise-identity",
         message=f"{op.out} = {lhs_name} {op.kind} {rhs_name}: applying {op.kind} to same value is identity",
     )
@@ -383,7 +411,9 @@ def _check_double_neg(ops: list[Op], idx: int) -> Finding | None:
     for prev in ops[:idx]:
         if prev.out == inner_name and prev.kind == "neg" and prev.args:
             return Finding(
-                op_index=idx, kind=op.kind, out=op.out,
+                op_index=idx,
+                kind=op.kind,
+                out=op.out,
                 category="double-neg",
                 message=f"{op.out} = -(-{prev.args[0]}): double negation, result equals {prev.args[0]}",
             )
@@ -403,16 +433,16 @@ def _check_redundant_result(encoder: Z3Encoder, op: Op, idx: int) -> Finding | N
         arg_val = encoder.env.get(arg_name)
         if arg_val is None:
             continue
-        # Build a universally-quantified check: for all inputs, result == arg
-        free_vars = [v for v in encoder.env.values()
-                     if hasattr(v, 'decl') and v.decl().arity() == 0
-                     and v.sort().size() == BV_WIDTH
-                     and str(v) != str(result) and str(v) != str(arg_val)]
+        # Validate the copy without quantifiers: all live SSA values are already
+        # symbolic in the solver context, so satisfiability of inequality is a
+        # direct counterexample.
         s = Solver(ctx=encoder.ctx)
         s.add(result != arg_val)
         if s.check() == unsat:
             return Finding(
-                op_index=idx, kind=op.kind, out=op.out,
+                op_index=idx,
+                kind=op.kind,
+                out=op.out,
                 category="redundant-op",
                 message=f"{op.out} = {op.kind}({', '.join(op.args)}): result is always equal to {arg_name}",
             )
@@ -432,6 +462,7 @@ _CHECKS = [
 # ---------------------------------------------------------------------------
 # Main verification
 # ---------------------------------------------------------------------------
+
 
 def verify_function(func: Function) -> Report:
     """Verify a single TIR function for missed optimization opportunities."""
@@ -464,7 +495,9 @@ def verify_function(func: Function) -> Report:
     return report
 
 
-def verify_tir(tir_json_path: str | None = None, *, data: dict | None = None) -> list[Report]:
+def verify_tir(
+    tir_json_path: str | None = None, *, data: dict | None = None
+) -> list[Report]:
     """Verify all functions in a TIR JSON file.
 
     Either *tir_json_path* (file path) or *data* (parsed dict) must be provided.
@@ -487,7 +520,9 @@ def verify_tir(tir_json_path: str | None = None, *, data: dict | None = None) ->
 def _format_reports(reports: list[Report]) -> str:
     lines: list[str] = []
     total_findings = sum(len(r.findings) for r in reports)
-    lines.append(f"Z3 TIR pass verification: {len(reports)} function(s), {total_findings} finding(s)\n")
+    lines.append(
+        f"Z3 TIR pass verification: {len(reports)} function(s), {total_findings} finding(s)\n"
+    )
 
     for report in reports:
         if not report.findings:
@@ -495,7 +530,9 @@ def _format_reports(reports: list[Report]) -> str:
             continue
         lines.append(f"  {report.function}: {len(report.findings)} finding(s)")
         for f in report.findings:
-            lines.append(f"    [{f.category}] op #{f.op_index} ({f.kind} -> {f.out}): {f.message}")
+            lines.append(
+                f"    [{f.category}] op #{f.op_index} ({f.kind} -> {f.out}): {f.message}"
+            )
     return "\n".join(lines)
 
 
@@ -520,19 +557,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         output = []
         for report in reports:
-            output.append({
-                "function": report.function,
-                "findings": [
-                    {
-                        "op_index": f.op_index,
-                        "kind": f.kind,
-                        "out": f.out,
-                        "category": f.category,
-                        "message": f.message,
-                    }
-                    for f in report.findings
-                ],
-            })
+            output.append(
+                {
+                    "function": report.function,
+                    "findings": [
+                        {
+                            "op_index": f.op_index,
+                            "kind": f.kind,
+                            "out": f.out,
+                            "category": f.category,
+                            "message": f.message,
+                        }
+                        for f in report.findings
+                    ],
+                }
+            )
         json.dump(output, sys.stdout, indent=2)
         print()
     else:

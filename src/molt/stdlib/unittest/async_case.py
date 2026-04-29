@@ -6,6 +6,13 @@ relies on `asyncio` (intrinsic-backed in molt), `contextvars`,
 code via `unittest`.
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
+
 import asyncio
 import contextvars
 import inspect
@@ -17,7 +24,7 @@ __unittest = True
 
 
 class IsolatedAsyncioTestCase(TestCase):
-    def __init__(self, methodName='runTest'):
+    def __init__(self, methodName="runTest"):
         super().__init__(methodName)
         self._asyncioRunner = None
         self._asyncioTestContext = contextvars.copy_context()
@@ -58,8 +65,10 @@ class IsolatedAsyncioTestCase(TestCase):
     def _callTestMethod(self, method):
         if self._callMaybeAsync(method) is not None:
             warnings.warn(
-                f'It is deprecated to return a value that is not None from a '
-                f'test case ({method})', DeprecationWarning, stacklevel=4,
+                f"It is deprecated to return a value that is not None from a "
+                f"test case ({method})",
+                DeprecationWarning,
+                stacklevel=4,
             )
 
     def _callTearDown(self):
@@ -70,15 +79,15 @@ class IsolatedAsyncioTestCase(TestCase):
         self._callMaybeAsync(function, *args, **kwargs)
 
     def _callAsync(self, func, /, *args, **kwargs):
-        assert self._asyncioRunner is not None, 'asyncio runner is not initialized'
-        assert inspect.iscoroutinefunction(func), f'{func!r} is not an async function'
+        assert self._asyncioRunner is not None, "asyncio runner is not initialized"
+        assert inspect.iscoroutinefunction(func), f"{func!r} is not an async function"
         return self._asyncioRunner.run(
             func(*args, **kwargs),
             context=self._asyncioTestContext,
         )
 
     def _callMaybeAsync(self, func, /, *args, **kwargs):
-        assert self._asyncioRunner is not None, 'asyncio runner is not initialized'
+        assert self._asyncioRunner is not None, "asyncio runner is not initialized"
         if inspect.iscoroutinefunction(func):
             return self._asyncioRunner.run(
                 func(*args, **kwargs),
@@ -87,7 +96,7 @@ class IsolatedAsyncioTestCase(TestCase):
         return self._asyncioTestContext.run(func, *args, **kwargs)
 
     def _setupAsyncioRunner(self):
-        assert self._asyncioRunner is None, 'asyncio runner is already initialized'
+        assert self._asyncioRunner is None, "asyncio runner is already initialized"
         runner = asyncio.Runner(debug=True)
         self._asyncioRunner = runner
 
@@ -110,3 +119,6 @@ class IsolatedAsyncioTestCase(TestCase):
     def __del__(self):
         if self._asyncioRunner is not None:
             self._tearDownAsyncioRunner()
+
+
+globals().pop("_require_intrinsic", None)

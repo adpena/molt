@@ -45,7 +45,9 @@ def _python_for(min_version: tuple[int, int]) -> str:
     return sys.executable
 
 
-def _compile_and_run(python_source: str, *, min_version: tuple[int, int] = (3, 12)) -> str:
+def _compile_and_run(
+    python_source: str, *, min_version: tuple[int, int] = (3, 12)
+) -> str:
     """Compile Python source via molt CLI (native target), run binary, return stdout."""
     python_exe = _python_for(min_version)
     with tempfile.TemporaryDirectory() as tmp:
@@ -125,7 +127,9 @@ def _python_output(source: str, *, min_version: tuple[int, int] = (3, 12)) -> st
 
 def _assert_match(src: str, *, min_version: tuple[int, int] = (3, 12)):
     """Assert compiled Molt output matches CPython."""
-    assert _compile_and_run(src, min_version=min_version) == _python_output(src, min_version=min_version)
+    assert _compile_and_run(src, min_version=min_version) == _python_output(
+        src, min_version=min_version
+    )
 
 
 # -- PEP 649: Deferred Evaluation of Annotations ------------------------------
@@ -184,19 +188,25 @@ class TestPEP750TemplateStrings:
     """PEP 750 introduces t-string syntax: t'Hello {name}'."""
 
     def test_tstring_basic(self):
-        _assert_match("""\
+        _assert_match(
+            """\
 name = "world"
 template = t"Hello {name}"
 print(type(template).__name__)
-""", min_version=(3, 14))
+""",
+            min_version=(3, 14),
+        )
 
     def test_tstring_interpolation_count(self):
-        _assert_match("""\
+        _assert_match(
+            """\
 x = 1
 y = 2
 template = t"coords: {x}, {y}"
 print(len(template.interpolations))
-""", min_version=(3, 14))
+""",
+            min_version=(3, 14),
+        )
 
 
 # -- PEP 758: except Without Parentheses for Multiple Types -------------------
@@ -206,7 +216,8 @@ class TestPEP758ExceptSyntax:
     """PEP 758 allows `except ValueError, TypeError:` without parentheses."""
 
     def test_except_multiple_no_parens(self):
-        _assert_match("""\
+        _assert_match(
+            """\
 def try_convert(val):
     try:
         return int(val)
@@ -215,10 +226,13 @@ def try_convert(val):
 
 print(try_convert("42"))
 print(try_convert("abc"))
-""", min_version=(3, 14))
+""",
+            min_version=(3, 14),
+        )
 
     def test_except_three_types_no_parens(self):
-        _assert_match("""\
+        _assert_match(
+            """\
 def safe_div(a, b):
     try:
         return a / b
@@ -227,7 +241,9 @@ def safe_div(a, b):
 
 print(safe_div(10, 2))
 print(safe_div(10, 0))
-""", min_version=(3, 14))
+""",
+            min_version=(3, 14),
+        )
 
 
 # -- General 3.14-era Patterns ------------------------------------------------

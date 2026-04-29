@@ -18,6 +18,7 @@ from typing import (
     Iterable,
     Literal,
     NoReturn,
+    NotRequired,
     Sequence,
     SupportsIndex,
     TypedDict,
@@ -282,19 +283,23 @@ BUILTIN_LAYOUT_MIN = {
 # these methods, the first parameter (`cls`) is the class itself, not an
 # instance, so attribute assignments through that name must NOT be collected
 # as instance fields or as `__static_attributes__` entries.
-IMPLICIT_CLASSMETHOD_NAMES = frozenset({
-    "__init_subclass__",
-    "__class_getitem__",
-})
+IMPLICIT_CLASSMETHOD_NAMES = frozenset(
+    {
+        "__init_subclass__",
+        "__class_getitem__",
+    }
+)
 
 # Method names that are implicitly staticmethods (CPython treats `__new__` as
 # a staticmethod implicitly).  The first parameter is the class but the method
 # is unbound; same exclusion rules apply for instance-field collection.
-IMPLICIT_STATICMETHOD_NAMES = frozenset({
-    "__new__",
-    "__init_subclass__",
-    "__class_getitem__",
-})
+IMPLICIT_STATICMETHOD_NAMES = frozenset(
+    {
+        "__new__",
+        "__init_subclass__",
+        "__class_getitem__",
+    }
+)
 
 
 def _function_is_instance_method(item: ast.AST) -> bool:
@@ -318,9 +323,13 @@ def _function_is_instance_method(item: ast.AST) -> bool:
             return False
         # `@functools.classmethod` etc. — not standard, but matching attribute
         # form keeps us conservative.
-        if isinstance(deco, ast.Attribute) and deco.attr in {"classmethod", "staticmethod"}:
+        if isinstance(deco, ast.Attribute) and deco.attr in {
+            "classmethod",
+            "staticmethod",
+        }:
             return False
     return True
+
 
 # Methods on built-in types that the native backend can fast-dispatch when the
 # callee's type_hint is "BoundMethod:<type>:<method>".  The value is the set of
@@ -1120,6 +1129,10 @@ class MethodInfo(TypedDict):
     has_closure: bool
     property_field: str | None
     property_update: Literal["setter", "deleter"] | None
+    inline_return: NotRequired[ast.expr | None]
+    inline_params: NotRequired[list[str] | None]
+    inline_owner_class: NotRequired[str | None]
+    inline_init_assigns: NotRequired[list[tuple[str, ast.expr]] | None]
 
 
 class ClassInfo(TypedDict, total=False):
@@ -6541,11 +6554,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             args_val = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE", args=["self", slot], result=args_val
-                )
-            )
+            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=args_val))
         else:
             # Sync path: a single SSA value updated in both branches.
             args_val = MoltValue(self.next_var(), type_hint="tuple")
@@ -6934,9 +6943,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # value can be merged with the entry-block default (None) on the
         # first iteration, producing store_index(None, ...) crashes.
         if self.is_async():
-            slot = self._async_local_offset(
-                f"__name_from_obj_{len(self.async_locals)}"
-            )
+            slot = self._async_local_offset(f"__name_from_obj_{len(self.async_locals)}")
             placeholder = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[""], result=placeholder))
             self.emit(
@@ -6965,9 +6972,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             res = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=res)
-            )
+            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=res))
             return res
 
         # Sync path: a single SSA value updated in both branches replaces the
@@ -11027,9 +11032,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # (None) on the first iteration, producing store_index(None, ...)
         # crashes.
         if self.is_async():
-            slot = self._async_local_offset(
-                f"__guarded_field_{len(self.async_locals)}"
-            )
+            slot = self._async_local_offset(f"__guarded_field_{len(self.async_locals)}")
             none_init = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
             self.emit(
@@ -11079,11 +11082,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 else "Any"
             )
             merged = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE", args=["self", slot], result=merged
-                )
-            )
+            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=merged))
             return merged
 
         # Sync, non-phi path: a single SSA value updated in both branches.
@@ -11197,11 +11196,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             res_hint = fast_hint if fast_hint == slow_val.type_hint else "Any"
             merged = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE", args=["self", slot], result=merged
-                )
-            )
+            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=merged))
             return merged
 
         # Sync, non-phi path: a single SSA value updated in both branches.
@@ -12304,9 +12299,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
         else:
-            raise NotImplementedError(
-                "Unsupported t-string interpolation conversion"
-            )
+            raise NotImplementedError("Unsupported t-string interpolation conversion")
         # format_spec — rendered to str via shared f-string format-spec helper.
         if node.format_spec is None:
             format_spec_val = MoltValue(self.next_var(), type_hint="str")
@@ -12359,16 +12352,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="CONST_STR", args=[item.value], result=lit))
                 positional_vals.append(lit)
                 continue
-            if (
-                ast_interpolation_cls is not None
-                and isinstance(item, ast_interpolation_cls)
+            if ast_interpolation_cls is not None and isinstance(
+                item, ast_interpolation_cls
             ):
                 positional_vals.append(self._emit_template_interpolation(item))
                 continue
             raise NotImplementedError("Unsupported t-string segment")
-        template_class = self._emit_module_attr_get_on(
-            "string.templatelib", "Template"
-        )
+        template_class = self._emit_module_attr_get_on("string.templatelib", "Template")
         callargs = MoltValue(self.next_var(), type_hint="callargs")
         self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
         for val in positional_vals:
@@ -12497,7 +12487,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # ``for a, b in iter`` — bind the iteration value to a hidden
             # temp Name, then re-use the existing visit_Assign(target=Tuple)
             # machinery to unpack it into the user-named locals.
-            tuple_target_names = [e.id for e in comp.target.elts]
+            tuple_target_names = [cast(ast.Name, e).id for e in comp.target.elts]
             # Use a synthetic local name keyed off `next_var()` so it
             # cannot collide with any user-visible binding.
             target_name = f"__molt_listcomp_unpack_{self.next_var()}"
@@ -12777,9 +12767,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # async, walrus-leaking, or nested-comprehension forms still flow
         # through the poll-function path unchanged.
         if not async_needed:
-            equivalent_listcomp = ast.ListComp(
-                elt=node.elt, generators=node.generators
-            )
+            equivalent_listcomp = ast.ListComp(elt=node.elt, generators=node.generators)
             if self._can_inline_list_comp(equivalent_listcomp):
                 return self._emit_inline_list_comp(equivalent_listcomp)
         cell_vars = self._collect_comprehension_cell_vars(node)
@@ -14369,7 +14357,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "property_update": property_update,
                 "inline_return": inline_return,
                 "inline_params": (
-                    params if (inline_return is not None or inline_init_assigns is not None) else None
+                    params
+                    if (inline_return is not None or inline_init_assigns is not None)
+                    else None
                 ),
                 # Owner class — needed at inline time to set
                 # `self.current_class` so that Phase 4a's `super()`
@@ -16058,9 +16048,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 weakref_slot_val = emit_bool(
                     dataclass_params.get("weakref_slot", False)
                 )
-                helper_val = self._emit_module_attr_get_on(
-                    "dataclasses", "dataclass"
-                )
+                helper_val = self._emit_module_attr_get_on("dataclasses", "dataclass")
                 callargs = MoltValue(self.next_var(), type_hint="callargs")
                 self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
                 # Single positional argument: the class itself.
@@ -16085,9 +16073,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     ("weakref_slot", weakref_slot_val),
                 ]:
                     key_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(
-                        MoltOp(kind="CONST_STR", args=[kw_name], result=key_val)
-                    )
+                    self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
                     self.emit(
                         MoltOp(
                             kind="CALLARGS_PUSH_KW",
@@ -16274,8 +16260,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     # accumulator in tight loops like
                     # `total += obj.compute(i)`.
                     if return_hint and (
-                        return_hint in self.classes
-                        or return_hint in BUILTIN_TYPE_TAGS
+                        return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
                     ):
                         res_hint = return_hint
         if needs_bind:
@@ -16481,9 +16466,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # increment the collision counter and return a fresh dangling
         # symbol — same bug Phase 1 documents at line 16720.
         func_val = method_info.get("func")
-        if (
-            func_val is None
-            or not getattr(func_val, "type_hint", "").startswith("Func:")
+        if func_val is None or not getattr(func_val, "type_hint", "").startswith(
+            "Func:"
         ):
             return None
         method_symbol = func_val.type_hint.split(":", 1)[1]
@@ -16539,12 +16523,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         """
         body = item.body
         # Skip docstring if present.
-        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+        ):
             body = body[1:]
-        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+        if (
+            len(body) != 1
+            or not isinstance(body[0], ast.Return)
+            or body[0].value is None
+        ):
             return None
-
-        param_set = set(params)
 
         def _safe(node: "ast.AST") -> bool:
             if isinstance(node, ast.Constant):
@@ -16570,7 +16560,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return all(_safe(v) for v in node.values)
             if isinstance(node, ast.IfExp):
                 return _safe(node.test) and _safe(node.body) and _safe(node.orelse)
-            if isinstance(node, (ast.Tuple, ast.List)) and not getattr(node, "ctx", None).__class__.__name__ == "Store":
+            if (
+                isinstance(node, (ast.Tuple, ast.List))
+                and not getattr(node, "ctx", None).__class__.__name__ == "Store"
+            ):
                 return all(_safe(e) for e in node.elts)
             # Calls are allowed: when visited at inline time, Phase 4a's
             # super() fold or Phase 1's user-method fold will recursively
@@ -16618,16 +16611,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self_name = params[0]
         body = item.body
         # Skip docstring if present.
-        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+        ):
             body = body[1:]
         if not body:
             # Empty body (only docstring) — equivalent to a no-op
             # __init__.  Inline as zero stores; still a perf win since
             # we skip the CALL.
             return []
-
-        # Reuse _extract_inline_return's safety predicate.
-        param_set = set(params)
 
         def _safe(node: "ast.AST") -> bool:
             if isinstance(node, ast.Constant):
@@ -16646,7 +16640,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return all(_safe(v) for v in node.values)
             if isinstance(node, ast.IfExp):
                 return _safe(node.test) and _safe(node.body) and _safe(node.orelse)
-            if isinstance(node, (ast.Tuple, ast.List)) and not getattr(node, "ctx", None).__class__.__name__ == "Store":
+            if (
+                isinstance(node, (ast.Tuple, ast.List))
+                and not getattr(node, "ctx", None).__class__.__name__ == "Store"
+            ):
                 return all(_safe(e) for e in node.elts)
             if isinstance(node, ast.Call):
                 if node.keywords:
@@ -16685,10 +16682,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _try_inline_method_call(
         self,
-        method_info: dict,
-        receiver: "MoltValue",
-        call_args: list,
-    ) -> "MoltValue | None":
+        method_info: MethodInfo,
+        receiver: MoltValue,
+        call_args: list[MoltValue],
+    ) -> MoltValue | None:
         """Inline a Phase-1-direct-call into the current scope.
 
         Substitutes parameters → arg MoltValues in the locals map
@@ -16735,7 +16732,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # compile time.
         if inline_owner is not None:
             self.current_class = inline_owner
-            self.current_method_first_param = inline_params[0] if inline_params else None
+            self.current_method_first_param = (
+                inline_params[0] if inline_params else None
+            )
         self.locals = subst
         self.exact_locals = new_exact
         try:
@@ -16829,7 +16828,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     attr_name in field_map
                     and not class_info.get("dynamic")
                     and not class_info.get("dataclass")
-                    and not self._class_attr_is_data_descriptor(receiver_class, attr_name)
+                    and not self._class_attr_is_data_descriptor(
+                        receiver_class, attr_name
+                    )
                 ):
                     self._emit_guarded_setattr(
                         receiver,
@@ -16841,12 +16842,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 else:
                     self._emit_attribute_store(
-                        receiver, None, None, receiver_class, attr_name, value,
+                        receiver,
+                        None,
+                        None,
+                        receiver_class,
+                        attr_name,
+                        value,
                     )
         else:
             for attr_name, value in emitted_pairs:
                 self._emit_attribute_store(
-                    receiver, None, None, None, attr_name, value,
+                    receiver,
+                    None,
+                    None,
+                    None,
+                    attr_name,
+                    value,
                 )
         return True
 
@@ -16945,9 +16956,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # increment the collision counter and create a fresh, dangling
         # symbol → undefined-symbol link error).
         func_val = method_info.get("func")
-        if (
-            func_val is None
-            or not getattr(func_val, "type_hint", "").startswith("Func:")
+        if func_val is None or not getattr(func_val, "type_hint", "").startswith(
+            "Func:"
         ):
             return None
         method_symbol = func_val.type_hint.split(":", 1)[1]
@@ -17454,8 +17464,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     # fix; lane inference falls back to NaN-boxed accumulator
                     # if `int` returns are erased here.
                     if return_hint and (
-                        return_hint in self.classes
-                        or return_hint in BUILTIN_TYPE_TAGS
+                        return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
                     ):
                         res_hint = return_hint
                     res = MoltValue(self.next_var(), type_hint=res_hint)
@@ -20225,12 +20234,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             and (init_owner or class_id) in self.classes
                         ):
                             init_func_val = init_info.get("func")
-                            if (
-                                init_func_val is not None
-                                and getattr(init_func_val, "type_hint", "").startswith(
-                                    "Func:"
-                                )
-                            ):
+                            if init_func_val is not None and getattr(
+                                init_func_val, "type_hint", ""
+                            ).startswith("Func:"):
                                 init_symbol = init_func_val.type_hint.split(":", 1)[1]
                                 if init_symbol in self.func_symbol_names:
                                     param_count = init_info.get("param_count")
@@ -20274,13 +20280,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                                 # bench_struct's overhead;
                                                 # the substituted body emits
                                                 # STORE_ATTR ops on `res`.
-                                                init_assigns = (
-                                                    init_info.get(
-                                                        "inline_init_assigns"
-                                                    )
+                                                init_assigns = init_info.get(
+                                                    "inline_init_assigns"
                                                 )
-                                                inline_params = (
-                                                    init_info.get("inline_params")
+                                                inline_params = init_info.get(
+                                                    "inline_params"
                                                 )
                                                 if (
                                                     init_assigns is not None
@@ -20608,8 +20612,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     # tight loops fall back to a NaN-boxed accumulator and the
                     # downstream lane inference forces float arithmetic.
                     if return_hint and (
-                        return_hint in self.classes
-                        or return_hint in BUILTIN_TYPE_TAGS
+                        return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
                     ):
                         res_hint = return_hint
                 if needs_bind:
@@ -21246,9 +21249,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         # exists, handled below).  Both sets are restored after
                         # the loop emission completes.
                         old_local = self.locals.get(target_name)
-                        target_in_scope_assigned = (
-                            target_name in self.scope_assigned
-                        )
+                        target_in_scope_assigned = target_name in self.scope_assigned
                         target_in_unbound_check = (
                             target_name in self.unbound_check_names
                         )
@@ -24491,9 +24492,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # Cranelift's loop-header phi resolver (which can merge the cell SSA
         # value with the entry-block default and crash on store_index).
         if self.is_async():
-            slot = self._async_local_offset(
-                f"__ifexp_result_{len(self.async_locals)}"
-            )
+            slot = self._async_local_offset(f"__ifexp_result_{len(self.async_locals)}")
             none_init = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
             self.emit(
@@ -24530,11 +24529,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if true_val.type_hint == false_val.type_hint:
                 res_type = true_val.type_hint
             result = MoltValue(self.next_var(), type_hint=res_type)
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE", args=["self", slot], result=result
-                )
-            )
+            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=result))
             return result
 
         # Sync, non-phi path: a single SSA value updated in both branches.
@@ -27529,9 +27524,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             f"__boolop_and_{len(self.async_locals)}"
                         )
                         none_init = MoltValue(self.next_var(), type_hint="None")
-                        self.emit(
-                            MoltOp(kind="CONST_NONE", args=[], result=none_init)
-                        )
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
                         self.emit(
                             MoltOp(
                                 kind="STORE_CLOSURE",
@@ -27583,9 +27576,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         # Sync, non-phi: same single-SSA-value pattern as the
                         # `use_phi` branch above without an explicit PHI op.
                         new_result = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(kind="CONST_NONE", args=[], result=new_result)
-                        )
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=new_result))
                         self.emit(
                             MoltOp(kind="IF", args=[result], result=MoltValue("none"))
                         )

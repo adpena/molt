@@ -27,6 +27,10 @@ from __future__ import annotations
 # driver intrinsics are required by `_sqlite3` (re-exported via `dbapi2`).
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
 _require_intrinsic("molt_stdlib_probe")
 del _require_intrinsic
 

@@ -20,6 +20,7 @@ import types
 
 builtins._molt_intrinsics = {{
     "molt_capabilities_has": lambda _name=None: True,
+    "molt_import_smoke_runtime_ready": lambda: True,
 }}
 
 _intrinsics_mod = types.ModuleType("_intrinsics")

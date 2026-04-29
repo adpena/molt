@@ -14,6 +14,13 @@ GetoptError -- exception (class) raised with 'opt' attribute, which is the
 option involved with the exception.
 """
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
+
 # Long option support added by Lars Wirzenius <liw@iki.fi>.
 #
 # Gerrit Holl <gerrit@nl.linux.org> moved the string-based exceptions
@@ -28,15 +35,16 @@ import os
 try:
     from gettext import gettext as _
 except ImportError:
+
     def _(s):
         return s
 
 
 class GetoptError(Exception):
-    opt = ''
-    msg = ''
+    opt = ""
+    msg = ""
 
-    def __init__(self, msg, opt=''):
+    def __init__(self, msg, opt=""):
         self.msg = msg
         self.opt = opt
         Exception.__init__(self, msg, opt)
@@ -78,11 +86,11 @@ def getopt(args, shortopts, longopts=[]):
         longopts = [longopts]
     else:
         longopts = list(longopts)
-    while args and args[0].startswith('-') and args[0] != '-':
-        if args[0] == '--':
+    while args and args[0].startswith("-") and args[0] != "-":
+        if args[0] == "--":
             args = args[1:]
             break
-        if args[0].startswith('--'):
+        if args[0].startswith("--"):
             opts, args = do_longs(opts, args[0][2:], longopts, args[1:])
         else:
             opts, args = do_shorts(opts, args[0][1:], shortopts, args[1:])
@@ -110,7 +118,7 @@ def gnu_getopt(args, shortopts, longopts=[]):
     else:
         longopts = list(longopts)
 
-    if shortopts.startswith('+'):
+    if shortopts.startswith("+"):
         shortopts = shortopts[1:]
         all_options_first = True
     elif os.environ.get("POSIXLY_CORRECT"):
@@ -119,13 +127,13 @@ def gnu_getopt(args, shortopts, longopts=[]):
         all_options_first = False
 
     while args:
-        if args[0] == '--':
+        if args[0] == "--":
             prog_args += args[1:]
             break
 
-        if args[0][:2] == '--':
+        if args[0][:2] == "--":
             opts, args = do_longs(opts, args[0][2:], longopts, args[1:])
-        elif args[0][:1] == '-' and args[0] != '-':
+        elif args[0][:1] == "-" and args[0] != "-":
             opts, args = do_shorts(opts, args[0][1:], shortopts, args[1:])
         else:
             if all_options_first:
@@ -140,64 +148,68 @@ def gnu_getopt(args, shortopts, longopts=[]):
 
 def do_longs(opts, opt, longopts, args):
     try:
-        i = opt.index('=')
+        i = opt.index("=")
     except ValueError:
         optarg = None
     else:
-        opt, optarg = opt[:i], opt[i + 1:]
+        opt, optarg = opt[:i], opt[i + 1 :]
 
     has_arg, opt = long_has_args(opt, longopts)
     if has_arg:
         if optarg is None:
             if not args:
-                raise GetoptError(_('option --%s requires argument') % opt, opt)
+                raise GetoptError(_("option --%s requires argument") % opt, opt)
             optarg, args = args[0], args[1:]
     elif optarg is not None:
-        raise GetoptError(_('option --%s must not have an argument') % opt, opt)
-    opts.append(('--' + opt, optarg or ''))
+        raise GetoptError(_("option --%s must not have an argument") % opt, opt)
+    opts.append(("--" + opt, optarg or ""))
     return opts, args
 
 
 def long_has_args(opt, longopts):
     possibilities = [o for o in longopts if o.startswith(opt)]
     if not possibilities:
-        raise GetoptError(_('option --%s not recognized') % opt, opt)
+        raise GetoptError(_("option --%s not recognized") % opt, opt)
     if opt in possibilities:
         return False, opt
-    elif opt + '=' in possibilities:
+    elif opt + "=" in possibilities:
         return True, opt
     if len(possibilities) > 1:
-        raise GetoptError(_('option --%s not a unique prefix') % opt, opt)
+        raise GetoptError(_("option --%s not a unique prefix") % opt, opt)
     assert len(possibilities) == 1
     unique_match = possibilities[0]
-    has_arg = unique_match.endswith('=')
+    has_arg = unique_match.endswith("=")
     if has_arg:
         unique_match = unique_match[:-1]
     return has_arg, unique_match
 
 
 def do_shorts(opts, optstring, shortopts, args):
-    while optstring != '':
+    while optstring != "":
         opt, optstring = optstring[0], optstring[1:]
         if short_has_arg(opt, shortopts):
-            if optstring == '':
+            if optstring == "":
                 if not args:
-                    raise GetoptError(_('option -%s requires argument') % opt, opt)
+                    raise GetoptError(_("option -%s requires argument") % opt, opt)
                 optstring, args = args[0], args[1:]
-            optarg, optstring = optstring, ''
+            optarg, optstring = optstring, ""
         else:
-            optarg = ''
-        opts.append(('-' + opt, optarg))
+            optarg = ""
+        opts.append(("-" + opt, optarg))
     return opts, args
 
 
 def short_has_arg(opt, shortopts):
     for i in range(len(shortopts)):
-        if opt == shortopts[i] != ':':
-            return shortopts.startswith(':', i + 1)
-    raise GetoptError(_('option -%s not recognized') % opt, opt)
+        if opt == shortopts[i] != ":":
+            return shortopts.startswith(":", i + 1)
+    raise GetoptError(_("option -%s not recognized") % opt, opt)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import sys
+
     print(getopt(sys.argv[1:], "a:b", ["alpha=", "beta"]))
+
+
+globals().pop("_require_intrinsic", None)

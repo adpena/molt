@@ -11123,7 +11123,12 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_pid_files(
     own_root = project_root / "target" / ".molt_state" / "backend_daemon"
     own_root.mkdir(parents=True)
     sibling_root = (
-        project_root / "target" / "sessions" / "agent-x" / ".molt_state" / "backend_daemon"
+        project_root
+        / "target"
+        / "sessions"
+        / "agent-x"
+        / ".molt_state"
+        / "backend_daemon"
     )
     sibling_root.mkdir(parents=True)
 
@@ -11141,7 +11146,9 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_pid_files(
     malformed = own_root / "molt-backend.dev-fast.bad.dddd.pid"
     malformed.write_text("not-a-pid\n")
 
-    monkeypatch.setattr(cli, "_build_state_root", lambda root: project_root / "target" / ".molt_state")
+    monkeypatch.setattr(
+        cli, "_build_state_root", lambda root: project_root / "target" / ".molt_state"
+    )
 
     def fake_pid_alive(pid: int) -> bool:
         return pid == 4242

@@ -34,6 +34,10 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
+_MOLT_IMPORT_SMOKE_RUNTIME_READY()
+del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
 # Probe call to keep the package inside the intrinsic-backed stdlib gate;
 # the actual XML data structures and parser are wired through the
 # molt_xml_* intrinsics from xml.etree.ElementTree.

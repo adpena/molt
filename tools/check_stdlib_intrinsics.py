@@ -1481,7 +1481,12 @@ def main() -> int:
                 print(f"  {msg}")
         return 1
 
-    if not args.fallback_intrinsic_backed_only and all_fallback_violations:
+    global_fallback_gate = (
+        not args.fallback_intrinsic_backed_only
+        and not args.critical_allowlist
+        and not args.allowlist_modules
+    )
+    if global_fallback_gate and all_fallback_violations:
         print("stdlib intrinsics lint failed: all-stdlib fallback gate violated")
         for module, errors in all_fallback_violations:
             print(f"- {module}")

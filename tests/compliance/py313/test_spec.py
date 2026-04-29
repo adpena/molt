@@ -45,7 +45,9 @@ def _python_for(min_version: tuple[int, int]) -> str:
     return sys.executable
 
 
-def _compile_and_run(python_source: str, *, min_version: tuple[int, int] = (3, 12)) -> str:
+def _compile_and_run(
+    python_source: str, *, min_version: tuple[int, int] = (3, 12)
+) -> str:
     """Compile Python source via molt CLI (native target), run binary, return stdout."""
     python_exe = _python_for(min_version)
     with tempfile.TemporaryDirectory() as tmp:
@@ -125,7 +127,9 @@ def _python_output(source: str, *, min_version: tuple[int, int] = (3, 12)) -> st
 
 def _assert_match(src: str, *, min_version: tuple[int, int] = (3, 12)):
     """Assert compiled Molt output matches CPython."""
-    assert _compile_and_run(src, min_version=min_version) == _python_output(src, min_version=min_version)
+    assert _compile_and_run(src, min_version=min_version) == _python_output(
+        src, min_version=min_version
+    )
 
 
 # -- PEP 742: TypeIs (typing) -------------------------------------------------
@@ -136,7 +140,8 @@ class TestPEP742TypeIs:
 
     def test_typeis_import(self):
         """TypeIs should be importable without crashing the compiler."""
-        _assert_match("""\
+        _assert_match(
+            """\
 from typing import TypeIs
 
 def is_str(val: object) -> TypeIs[str]:
@@ -144,10 +149,13 @@ def is_str(val: object) -> TypeIs[str]:
 
 print(is_str("hello"))
 print(is_str(42))
-""", min_version=(3, 13))
+""",
+            min_version=(3, 13),
+        )
 
     def test_typeis_in_condition(self):
-        _assert_match("""\
+        _assert_match(
+            """\
 from typing import TypeIs
 
 def is_int(val: object) -> TypeIs[int]:
@@ -160,7 +168,9 @@ def process(val: object) -> str:
 
 print(process(10))
 print(process("hi"))
-""", min_version=(3, 13))
+""",
+            min_version=(3, 13),
+        )
 
 
 # -- Improved Error Messages / Exception Groups --------------------------------
@@ -234,7 +244,8 @@ class TestCopyReplace:
     """copy.replace() was added in 3.13 for named tuples and dataclasses."""
 
     def test_copy_replace_namedtuple(self):
-        _assert_match("""\
+        _assert_match(
+            """\
 from collections import namedtuple
 import copy
 
@@ -242,7 +253,9 @@ Point = namedtuple("Point", ["x", "y"])
 p1 = Point(1, 2)
 p2 = copy.replace(p1, x=10)
 print(p2)
-""", min_version=(3, 13))
+""",
+            min_version=(3, 13),
+        )
 
 
 # -- General 3.13-era Python Patterns -----------------------------------------

@@ -67,9 +67,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as _dt
-import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -78,7 +76,6 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
-from typing import Any
 
 # Repo root: tools/cross_run.py -> tools -> repo
 REPO = Path(__file__).resolve().parents[1]
@@ -277,9 +274,7 @@ def parse_inventory(path: Path) -> list[Host]:
             )
         shell = entry.get("shell", "bash")
         if shell not in VALID_SHELLS:
-            raise ValueError(
-                f"host {name!r} shell {shell!r} not in {VALID_SHELLS}"
-            )
+            raise ValueError(f"host {name!r} shell {shell!r} not in {VALID_SHELLS}")
         remote_dir = entry.get("remote_dir") or (
             "/work" if transport == "docker" else "/tmp/molt_test"
         )
@@ -324,9 +319,7 @@ def _python_for_build() -> str:
 
 def _host_target_triple() -> str:
     """Best-effort rust target triple for the build host."""
-    proc = subprocess.run(
-        ["rustc", "-vV"], capture_output=True, text=True, timeout=15
-    )
+    proc = subprocess.run(["rustc", "-vV"], capture_output=True, text=True, timeout=15)
     if proc.returncode == 0:
         for line in proc.stdout.splitlines():
             if line.startswith("host:"):
@@ -402,7 +395,7 @@ def _local_compile(
     if not candidates:
         candidates = sorted(out_dir.glob(f"{case.name}*"))
     candidates = [
-        p for p in candidates if p.is_file() and not p.suffix in (".o", ".obj")
+        p for p in candidates if p.is_file() and p.suffix not in (".o", ".obj")
     ]
     if not candidates:
         return None, log + f"\n--- error ---\nno binary produced under {out_dir}"
@@ -534,14 +527,9 @@ class SSHTransport(Transport):
         # scp each file individually so a single bad path doesn't sink the
         # whole batch; this keeps error reporting per-file.
         for src in local_files:
-            dest = (
-                f"{self.host.user}@{self.host.hostname}:"
-                f"{self.host.remote_dir}/"
-            )
+            dest = f"{self.host.user}@{self.host.hostname}:{self.host.remote_dir}/"
             cmd = self._scp_base() + [str(src), dest]
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=180
-            )
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"scp {src.name} -> {self.host.name} failed: "
@@ -559,9 +547,7 @@ class SSHTransport(Transport):
         else:
             command = " ".join(shlex.quote(a) for a in remote_argv)
             full = self._remote_shell_invoke(command)
-        proc = subprocess.run(
-            full, capture_output=True, text=True, timeout=timeout
-        )
+        proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, proc.stdout, proc.stderr
 
     def cleanup(self) -> None:
@@ -610,8 +596,7 @@ class DockerTransport(Transport):
             )
             if pull.returncode != 0:
                 raise RuntimeError(
-                    f"docker pull {self.host.container} failed: "
-                    f"{pull.stderr[:300]}"
+                    f"docker pull {self.host.container} failed: {pull.stderr[:300]}"
                 )
         # Create a stage directory we will mount as remote_dir.
         self._stage = Path(tempfile.mkdtemp(prefix="molt_cross_docker_"))
@@ -637,9 +622,7 @@ class DockerTransport(Transport):
             mount,
             self.host.container,
         ] + remote_argv
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, proc.stdout, proc.stderr
 
     def cleanup(self) -> None:
@@ -812,9 +795,7 @@ def _run_one_host(
                 )
             else:
                 result.cases.append(
-                    CaseResult(
-                        case=c.name, status="PASS", duration=duration, detail=""
-                    )
+                    CaseResult(case=c.name, status="PASS", duration=duration, detail="")
                 )
     finally:
         if not keep_remote:
@@ -827,7 +808,6 @@ def _print_matrix(results: list[HostResult], cases: list[Case]) -> None:
     total_pass = total_fail = total_skip = 0
     case_width = max(len(c.name) for c in cases)
     for r in results:
-        host_label = f"{r.host.name} / {r.host.target}"
         sys.stdout.write(f"[CROSS] target={r.host.target} host={r.host.name}\n")
         for c in r.cases:
             sys.stdout.write(
@@ -883,9 +863,7 @@ def _write_report(
         for c in cases:
             cell = by_name.get(c.name)
             cells.append(cell.status if cell else "n/a")
-        lines.append(
-            f"| {r.host.name} | {r.host.target} | " + " | ".join(cells) + " |"
-        )
+        lines.append(f"| {r.host.name} | {r.host.target} | " + " | ".join(cells) + " |")
     lines.append("")
     # Per-failure detail.
     any_detail = False

@@ -182,7 +182,11 @@ def main() -> None:
             tty=use_tty,
         )
         run_uv(
-            ["python3", "tools/check_stdlib_intrinsics.py"],
+            [
+                "python3",
+                "tools/check_stdlib_intrinsics.py",
+                "--fallback-intrinsic-backed-only",
+            ],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )

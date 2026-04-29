@@ -43,7 +43,7 @@ def _build_response_map() -> (
             b"Worker error: Error 1102 - Worker exceeded CPU time limit\n",
         ),
         "/fib/wrong-status": (500, "text/plain; charset=utf-8", b"oops"),
-        "/fib/wrong-ct": (200, "application/json", b"{\"n\": 55}"),
+        "/fib/wrong-ct": (200, "application/json", b'{"n": 55}'),
         "/fib/no-sentinel": (200, "text/plain; charset=utf-8", b"different output\n"),
     }
 
@@ -173,7 +173,9 @@ def test_probe_with_retries_recovers_on_second_attempt(
         ]
     )
 
-    def fake_probe_once(_url: str, _spec: deploy_verify.ProbeSpec) -> deploy_verify.ProbeResult:
+    def fake_probe_once(
+        _url: str, _spec: deploy_verify.ProbeSpec
+    ) -> deploy_verify.ProbeResult:
         return next(flaky_sequence)
 
     monkeypatch.setattr(deploy_verify, "_probe_once", fake_probe_once)
@@ -190,7 +192,9 @@ def test_probe_with_retries_exhausts_attempts(
     spec = deploy_verify.ProbeSpec("/fib/10", 200, "text/plain", "55")
     call_count = {"n": 0}
 
-    def fake_probe_once(_url: str, _spec: deploy_verify.ProbeSpec) -> deploy_verify.ProbeResult:
+    def fake_probe_once(
+        _url: str, _spec: deploy_verify.ProbeSpec
+    ) -> deploy_verify.ProbeResult:
         call_count["n"] += 1
         return deploy_verify.ProbeResult(
             path=spec.path,

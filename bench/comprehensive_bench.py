@@ -16,6 +16,7 @@ Usage:
     python3 bench/comprehensive_bench.py          # CPython
     molt build bench/comprehensive_bench.py ...   # molt
 """
+
 import time
 
 
@@ -34,6 +35,7 @@ def bench(name, func, *args):
 # ---------------------------------------------------------------------------
 # 1. Integer arithmetic
 # ---------------------------------------------------------------------------
+
 
 def int_sum_loop(n):
     """Sum integers 0..n in a while loop."""
@@ -76,6 +78,7 @@ def int_fib_iter(n):
 # 2. Float arithmetic
 # ---------------------------------------------------------------------------
 
+
 def float_dot_product(n):
     """Dot product of two float lists."""
     a = [float(i) * 0.1 for i in range(n)]
@@ -112,6 +115,7 @@ def float_mandelbrot(size):
 # 3. List operations
 # ---------------------------------------------------------------------------
 
+
 def list_comprehension(n):
     """List comprehension."""
     return sum([x * x for x in range(n)])
@@ -137,6 +141,7 @@ def list_nested_loop(n):
 # ---------------------------------------------------------------------------
 # 4. Dict operations
 # ---------------------------------------------------------------------------
+
 
 def dict_build_and_lookup(n):
     """Build dict then look up every key."""
@@ -164,6 +169,7 @@ def dict_counter(words):
 # 5. String operations
 # ---------------------------------------------------------------------------
 
+
 def string_join(n):
     """Build string via join."""
     parts = []
@@ -184,6 +190,7 @@ def string_split_count(text, n):
 # 6. Function calls
 # ---------------------------------------------------------------------------
 
+
 def func_recursive_fib(n):
     """Recursive fibonacci (tests call overhead)."""
     if n <= 1:
@@ -193,10 +200,13 @@ def func_recursive_fib(n):
 
 def func_closure(n):
     """Closure creation and calling."""
+
     def make_adder(x):
         def add(y):
             return x + y
+
         return add
+
     total = 0
     for i in range(n):
         f = make_adder(i)
@@ -208,15 +218,17 @@ def func_closure(n):
 # 7. Object/class operations
 # ---------------------------------------------------------------------------
 
+
 def class_attr_access(n):
     """Attribute access on objects."""
+
     class Point:
         def __init__(self, x, y):
             self.x = x
             self.y = y
 
         def distance(self):
-            return (self.x * self.x + self.y * self.y)
+            return self.x * self.x + self.y * self.y
 
     total = 0
     for i in range(n):
@@ -228,6 +240,7 @@ def class_attr_access(n):
 # ---------------------------------------------------------------------------
 # 8. Control flow
 # ---------------------------------------------------------------------------
+
 
 def control_exception_handling(n):
     """Try/except in a loop."""

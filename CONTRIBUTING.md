@@ -25,6 +25,8 @@ Molt expects production-grade changes, not opportunistic patches.
 ## Required Verification
 
 - Run the smallest command set that proves the touched paths still work.
+- Keep pre-commit hooks read-only. Formatting and automatic fixes must be run
+  explicitly before staging so commit hooks cannot rewrite files mid-commit.
 - Prefer the canonical CLI DX surface for repo-wide proof:
   - `molt setup`
   - `molt doctor`
