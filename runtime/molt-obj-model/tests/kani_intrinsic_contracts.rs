@@ -24,12 +24,8 @@ mod intrinsic_contract_proofs {
         items: [bool; MAX_LIST_LEN],
     }
 
-    fn model_hash_i64(value: i64) -> u64 {
-        let mut x = value as u64;
-        x ^= x >> 33;
-        x = x.wrapping_mul(0xff51afd7ed558ccd);
-        x ^= x >> 33;
-        x
+    fn model_hash_i64(value: i64) -> i64 {
+        value
     }
 
     impl BoundedI64List {
