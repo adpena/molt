@@ -20,24 +20,24 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v4
 
       - name: Sync Python environment
-        run: uv sync --group dev --python 3.12
+        run: uv sync --group dev
 
       - name: Check generated status blocks
-        run: uv run --python 3.12 python3 tools/update_status_blocks.py --check
+        run: uv run python3 tools/update_status_blocks.py --check
 
       - name: Check generated benchmark docs
-        run: uv run --python 3.12 python3 tools/bench_report.py --manifest bench/results/docs_manifest.json --check --update-status-doc
+        run: uv run python3 tools/bench_report.py --manifest bench/results/docs_manifest.json --check --update-status-doc
 
       - name: Check docs architecture contract
-        run: uv run --python 3.12 python3 tools/check_docs_architecture.py
+        run: uv run python3 tools/check_docs_architecture.py
 
       - name: Run docs architecture tests
-        run: uv run --python 3.12 python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py
+        run: uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py
 
   python-tooling-smoke:
     name: Python Tooling Smoke
@@ -48,12 +48,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v4
 
       - name: Sync Python environment
-        run: uv sync --group dev --python 3.12
+        run: uv sync --group dev
 
       - name: Install native linker
         run: |
@@ -63,7 +63,7 @@ jobs:
 
       - name: Run Python smoke tests
         run: |
-          uv run --python 3.12 python3 -m pytest -q \
+          uv run python3 -m pytest -q \
             tests/test_bench_harness.py \
             tests/test_bench_tool.py \
             tests/test_ci_workflow_topology.py \
@@ -75,12 +75,12 @@ jobs:
 
       - name: Test capability manifest import
         run: |
-          PYTHONPATH=src uv run --python 3.12 python3 -c \
+          PYTHONPATH=src uv run python3 -c \
             "from molt.capability_manifest import CapabilityManifest; m = CapabilityManifest(); assert m.to_env_vars()['MOLT_CAPABILITIES'] == ''; print('OK')"
 
       - name: Test harness report import
         run: |
-          PYTHONPATH=src uv run --python 3.12 python3 -c \
+          PYTHONPATH=src uv run python3 -c \
             "from molt.harness_report import LayerResult, LayerStatus; r = LayerResult(name='ci', status=LayerStatus.PASS, duration_s=0.1); assert r.passed; print('OK')"
 
   rust-build-unit-smoke:

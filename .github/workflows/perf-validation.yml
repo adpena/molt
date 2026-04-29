@@ -26,14 +26,14 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Sync Python environment
-        run: uv sync --group bench --group dev --python 3.12
+        run: uv sync --group bench --group dev
 
       - name: Run benchmarks
         run: python3 tools/bench.py --molt-profile release --json-out bench/results/perf-validation.json

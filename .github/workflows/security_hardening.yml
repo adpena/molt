@@ -22,12 +22,12 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up project Python
+        run: uv python install "$(cat .python-version)"
       - name: Install dependencies
-        run: uv sync --frozen --group dev --python 3.12
+        run: uv sync --frozen --group dev
       - name: pip-audit
-        run: uv run --python 3.12 pip-audit --ignore-vuln CVE-2025-69872
+        run: uv run pip-audit --ignore-vuln CVE-2025-69872
 
   rust-security:
     runs-on: ubuntu-latest
