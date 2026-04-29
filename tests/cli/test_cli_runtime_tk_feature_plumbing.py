@@ -54,7 +54,7 @@ def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
     assert cli._runtime_cargo_features("wasm32-wasip1") == ("molt_gpu_primitives",)
 
 
-def test_builtin_features_from_import_graph_are_stable_for_micro_imports() -> None:
+def test_builtin_features_from_import_graph_uses_native_micro_surface() -> None:
     json_features = cli._builtin_features_from_import_graph({"json"}, "micro")
     tkinter_features = cli._builtin_features_from_import_graph(
         {"tkinter.constants", "tkinter._support"},
@@ -66,12 +66,11 @@ def test_builtin_features_from_import_graph_are_stable_for_micro_imports() -> No
     )
 
     assert json_features == tkinter_features == tinygrad_features
-    assert {
-        "stdlib_tk",
-        "stdlib_net",
-        "stdlib_serial",
-        "molt_gpu_primitives",
-    } <= set(json_features)
+    assert set(json_features) == set(cli._ALL_BUILTIN_FEATURES)
+    assert "stdlib_tk" not in json_features
+    assert "stdlib_net" not in json_features
+    assert "stdlib_serial" not in json_features
+    assert "molt_gpu_primitives" not in json_features
 
 
 def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
