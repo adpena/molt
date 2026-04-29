@@ -10684,10 +10684,8 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*bytearray, *start, *stop, *value]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        if out__ != "none" {
-                            def_var_named(&mut builder, &vars, out__, res);
-                        }
+                    if let Some(out__) = op.out.filter(|out__| *out__ != "none") {
+                        def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
                 "string_find" => {
