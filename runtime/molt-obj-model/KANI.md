@@ -24,6 +24,11 @@ cd runtime/molt-obj-model
 cargo kani --tests
 ```
 
+The intrinsic-contract harnesses intentionally use fixed-capacity bounded list
+models for list axioms instead of symbolic `Vec::sort()` / `Vec::dedup()` calls.
+That keeps the proof obligation on Molt's contract surface and prevents CI from
+spending the job budget inside standard-library sorting internals.
+
 ### molt-runtime (object model, string ops)
 
 ```bash
