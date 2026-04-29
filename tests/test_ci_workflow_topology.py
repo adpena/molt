@@ -212,19 +212,13 @@ def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
 
     assert "timeout-minutes: 50" in wasm_text
-    assert "cargo build --profile release-fast -p molt-wasm-host" in wasm_text
+    assert "cargo build --profile dev-fast -p molt-wasm-host" in wasm_text
+    assert "$CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_hello.wasm" in wasm_text
     assert (
-        "$CARGO_TARGET_DIR/release-fast/molt-wasm-host /tmp/test_hello.wasm"
+        "$CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_comprehension.wasm"
         in wasm_text
     )
-    assert (
-        "$CARGO_TARGET_DIR/release-fast/molt-wasm-host /tmp/test_comprehension.wasm"
-        in wasm_text
-    )
-    assert (
-        "$CARGO_TARGET_DIR/release-fast/molt-wasm-host /tmp/test_sieve.wasm"
-        in wasm_text
-    )
+    assert "$CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_sieve.wasm" in wasm_text
     assert "wasmtime run /tmp/test_hello.wasm" not in wasm_text
     assert "wasmtime run /tmp/test_comprehension.wasm" not in wasm_text
     assert "wasmtime run /tmp/test_sieve.wasm" not in wasm_text
@@ -235,12 +229,17 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
 
     assert "MOLT_EXT_ROOT: /tmp/molt-ext" in wasm_text
     assert "- '.python-version'" in wasm_text
-    assert "CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target" in wasm_text
+    assert "CARGO_TARGET_DIR: ${{ github.workspace }}/target" in wasm_text
+    assert "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target" in wasm_text
     assert "MOLT_CACHE: /tmp/molt-ext/molt_cache" in wasm_text
     assert "MOLT_DIFF_ROOT: /tmp/molt-ext/diff" in wasm_text
     assert "MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp" in wasm_text
     assert "MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm" in wasm_text
-    assert "MOLT_WASM_TEST_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target" in wasm_text
+    assert (
+        "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target" in wasm_text
+    )
+    assert "enable-cache: true" in wasm_text
+    assert "cache-dependency-glob: uv.lock" in wasm_text
     assert (
         "MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
         in wasm_text
@@ -254,6 +253,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         not in wasm_text
     )
     assert "cargo build --release -p molt-wasm-host" not in wasm_text
+    assert "cargo build --profile release-fast -p molt-wasm-host" not in wasm_text
     assert "uv run python3 -m pytest tests/test_wasm_control_flow.py -q" in wasm_text
     assert wasm_text.count("--build-profile dev") >= 5
     assert "/home/runner/.cache/molt" not in wasm_text

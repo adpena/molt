@@ -8120,6 +8120,132 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
     assert copied == []
 
 
+def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_root = tmp_path / "target"
+    runtime = tmp_path / "wasm" / "molt_runtime.wasm"
+    cargo_runtime = target_root / "wasm32-wasip1" / "release-fast" / "molt_runtime.wasm"
+    runtime_source = tmp_path / "runtime" / "molt-runtime" / "src" / "lib.rs"
+    runtime_source.parent.mkdir(parents=True, exist_ok=True)
+    runtime_source.write_text("// runtime source\n", encoding="utf-8")
+    os.utime(runtime_source, ns=(1, 1))
+    cargo_runtime.parent.mkdir(parents=True, exist_ok=True)
+    cargo_runtime.write_bytes(b"\0asm\x01\0\0\0runtime")
+    fingerprint = {"hash": "ok", "rustc": "rustc", "inputs_digest": "inputs"}
+    cargo_builds: list[list[str]] = []
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [runtime_source])
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
+    )
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
+    monkeypatch.setattr(
+        cli, "_runtime_wasm_exports_satisfy", lambda path, required: True
+    )
+    monkeypatch.setattr(
+        cli, "_runtime_wasm_missing_exports", lambda path, required: set()
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        lambda *, cmd, **kwargs: (
+            cargo_builds.append(list(cmd))
+            or (
+                subprocess.CompletedProcess(cmd, 1, "", "unexpected rebuild"),
+                cargo_runtime,
+            )
+        ),
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime,
+        reloc=False,
+        json_output=True,
+        cargo_profile="release-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+        required_exports={"molt_fast_list_append"},
+    )
+
+    assert cargo_builds == []
+    assert runtime.read_bytes() == cargo_runtime.read_bytes()
+    assert cli._runtime_wasm_integrity_sidecar_path(runtime).exists()
+
+
+def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_root = tmp_path / "target"
+    runtime = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
+    staticlib = target_root / "wasm32-wasip1" / "release-fast" / "libmolt_runtime.a"
+    runtime_source = tmp_path / "runtime" / "molt-runtime" / "src" / "lib.rs"
+    runtime_source.parent.mkdir(parents=True, exist_ok=True)
+    runtime_source.write_text("// runtime source\n", encoding="utf-8")
+    os.utime(runtime_source, ns=(1, 1))
+    staticlib.parent.mkdir(parents=True, exist_ok=True)
+    staticlib.write_bytes(b"!<arch>\nprebuilt")
+    fingerprint = {"hash": "ok", "rustc": "rustc", "inputs_digest": "inputs"}
+    cargo_builds: list[list[str]] = []
+    linked_from: list[Path] = []
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [runtime_source])
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
+    )
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
+
+    def fake_link_runtime_staticlib_to_reloc_wasm(
+        *,
+        staticlib_path: Path,
+        output_path: Path,
+        **kwargs: object,
+    ) -> bool:
+        del kwargs
+        linked_from.append(staticlib_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"\0asm\x01\0\0\0reloc")
+        return True
+
+    monkeypatch.setattr(
+        cli,
+        "_link_runtime_staticlib_to_reloc_wasm",
+        fake_link_runtime_staticlib_to_reloc_wasm,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        lambda *, cmd, **kwargs: (
+            cargo_builds.append(list(cmd))
+            or (
+                subprocess.CompletedProcess(cmd, 1, "", "unexpected rebuild"),
+                staticlib,
+            )
+        ),
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime,
+        reloc=True,
+        json_output=True,
+        cargo_profile="release-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+    )
+
+    assert cargo_builds == []
+    assert linked_from == [staticlib]
+    assert runtime.read_bytes() == b"\0asm\x01\0\0\0reloc"
+    assert cli._runtime_wasm_integrity_sidecar_path(runtime).exists()
+
+
 def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -8591,6 +8717,69 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
             "wasm-backend",
         ]
     ]
+
+
+def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_dir = tmp_path / "target"
+    backend_bin = target_dir / "dev-fast" / "molt-backend.wasm_backend"
+    cargo_output = target_dir / "dev-fast" / "molt-backend"
+    backend_source = tmp_path / "runtime" / "molt-backend" / "src" / "lib.rs"
+    backend_source.parent.mkdir(parents=True, exist_ok=True)
+    backend_source.write_text("// backend source\n", encoding="utf-8")
+    os.utime(backend_source, ns=(1, 1))
+    cargo_output.parent.mkdir(parents=True, exist_ok=True)
+    cargo_output.write_text(
+        "#!/bin/sh\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = "--output" ]; then\n'
+        "    shift\n"
+        "    printf '\\000asm\\001\\000\\000\\000' > \"$1\"\n"
+        "  fi\n"
+        "  shift || exit 0\n"
+        "done\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    cargo_output.chmod(0o755)
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    build_cmds: list[list[str]] = []
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_dir))
+    monkeypatch.setattr(
+        cli, "_backend_source_paths", lambda *args, **kwargs: [backend_source]
+    )
+    monkeypatch.setattr(
+        cli, "_backend_fingerprint", lambda *args, **kwargs: dict(fingerprint)
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_cargo_with_sccache_retry",
+        lambda cmd, **kwargs: (
+            build_cmds.append(list(cmd))
+            or subprocess.CompletedProcess(cmd, 1, "", "unexpected rebuild")
+        ),
+    )
+
+    assert cli._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=1.0,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        backend_features=("wasm-backend",),
+    )
+
+    assert build_cmds == []
+    assert backend_bin.exists()
+    assert (
+        cli._read_runtime_fingerprint(
+            cli._backend_fingerprint_path(tmp_path, backend_bin, "dev-fast")
+        )["hash"]
+        == "abc"
+    )
 
 
 def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
