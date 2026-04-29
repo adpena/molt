@@ -18,6 +18,7 @@ DEFAULT_MAX_RSS_GB = 25.0
 DEFAULT_MAX_TOTAL_RSS_GB = 28.0
 DEFAULT_POLL_INTERVAL_SEC = 1.0
 GUARD_RETURN_CODE = 137
+TIMEOUT_RETURN_CODE = 124
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ class GuardResult:
     peak_total: RssViolation | None
     stdout: str
     stderr: str
+    timed_out: bool = False
 
 
 def parse_process_table(text: str) -> dict[int, ProcessSample]:
@@ -240,13 +242,21 @@ def run_guarded(
     poll_interval: float,
     sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
     capture_output: bool = True,
+    cwd: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
     if poll_interval <= 0:
         raise ValueError("poll interval must be greater than 0")
+    if timeout is not None and timeout <= 0:
+        raise ValueError("timeout must be greater than 0")
+    start = time.monotonic()
     proc = subprocess.Popen(
         list(command),
+        cwd=cwd,
+        env=dict(env) if env is not None else None,
         stdout=subprocess.PIPE if capture_output else None,
         stderr=subprocess.PIPE if capture_output else None,
         text=True,
@@ -255,7 +265,12 @@ def run_guarded(
     violation: RssViolation | None = None
     peak: RssViolation | None = None
     peak_total: RssViolation | None = None
+    timed_out = False
     while True:
+        if timeout is not None and time.monotonic() - start >= timeout:
+            timed_out = True
+            _terminate_process_group(proc.pid)
+            break
         samples = sampler()
         observed_peak = peak_rss(samples, root_pid=proc.pid)
         if observed_peak is not None and (
@@ -283,6 +298,10 @@ def run_guarded(
     returncode = proc.returncode
     if violation is not None:
         returncode = GUARD_RETURN_CODE
+    if timed_out:
+        returncode = TIMEOUT_RETURN_CODE
+        timeout_msg = f"memory_guard: timeout after {timeout:.2f}s\n"
+        stderr = f"{stderr or ''}{timeout_msg}"
     return GuardResult(
         returncode=returncode,
         violation=violation,
@@ -290,6 +309,7 @@ def run_guarded(
         peak_total=peak_total,
         stdout=stdout or "",
         stderr=stderr or "",
+        timed_out=timed_out,
     )
 
 
@@ -328,6 +348,7 @@ def _write_summary_json(
         "violation": _rss_record_payload(result.violation),
         "peak": _rss_record_payload(result.peak),
         "peak_total": _rss_record_payload(result.peak_total),
+        "timed_out": result.timed_out,
     }
     summary_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
