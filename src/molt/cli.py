@@ -957,7 +957,12 @@ def _run_wrapper_build(
     verbose: bool,
     resolved_build_entry: _ResolvedBuildEntry | None = None,
 ) -> tuple[_WrapperBuildContract | None, float, int | None]:
-    if file_path and "--no-cache" not in build_args and "--rebuild" not in build_args:
+    wrapper_cache_enabled = (
+        resolved_build_entry is not None
+        and "--no-cache" not in build_args
+        and "--rebuild" not in build_args
+    )
+    if wrapper_cache_enabled:
         cached_contract = _read_wrapper_build_cache_contract(
             resolved_build_entry=resolved_build_entry,
             build_args=build_args,
@@ -1026,7 +1031,7 @@ def _run_wrapper_build(
     if contract_error is not None:
         return None, duration, contract_error
     assert contract is not None
-    if file_path and "--no-cache" not in build_args and "--rebuild" not in build_args:
+    if wrapper_cache_enabled:
         with contextlib.suppress(OSError):
             _write_wrapper_build_cache_manifest(
                 resolved_build_entry=resolved_build_entry,
@@ -20393,6 +20398,8 @@ def _run_backend_pipeline(
                 ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
                 runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
                 molt_root=prepared_build_roots.molt_root,
+                project_root=prepared_build_roots.project_root,
+                profile=profile,
                 precompile=precompile,
             )
         )
@@ -20626,6 +20633,8 @@ def _prepare_non_native_build_result(
     molt_root: Path,
     split_runtime: bool = False,
     precompile: bool = False,
+    project_root: Path | None = None,
+    profile: BuildProfile = "dev",
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
@@ -20725,18 +20734,53 @@ def _prepare_non_native_build_result(
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
                 link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
-            link_process = subprocess.run(
-                link_cmd,
-                cwd=molt_root,
-                capture_output=True,
-                text=True,
+            link_project_root = project_root or molt_root
+            link_fingerprint_path = _link_fingerprint_path(
+                link_project_root,
+                resolved_linked_output,
+                profile,
+                "wasm32-wasip1",
             )
-            if link_process.returncode != 0:
-                err = link_process.stderr.strip() or link_process.stdout.strip()
-                msg = "Wasm link failed"
-                if err:
-                    msg = f"{msg}: {err}"
-                return None, _fail(msg, json_output, command="build")
+            stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
+            link_fingerprint = _link_fingerprint(
+                project_root=link_project_root,
+                inputs=[output_wasm, runtime_reloc_wasm, tool],
+                link_cmd=link_cmd,
+                stored_fingerprint=stored_link_fingerprint,
+            )
+            link_skipped = not _artifact_needs_rebuild(
+                resolved_linked_output,
+                link_fingerprint,
+                stored_link_fingerprint,
+            )
+            if link_skipped and _split_runtime:
+                split_dir = output_wasm.parent
+                app_wasm = split_dir / "app.wasm"
+                rt_wasm = split_dir / "molt_runtime.wasm"
+                link_skipped = _is_reusable_wasm_artifact(
+                    app_wasm
+                ) and _is_reusable_wasm_artifact(rt_wasm)
+            if link_skipped:
+                link_process = subprocess.CompletedProcess(link_cmd, 0, "", "")
+            else:
+                link_process = subprocess.run(
+                    link_cmd,
+                    cwd=molt_root,
+                    capture_output=True,
+                    text=True,
+                )
+                if link_process.returncode != 0:
+                    err = link_process.stderr.strip() or link_process.stdout.strip()
+                    msg = "Wasm link failed"
+                    if err:
+                        msg = f"{msg}: {err}"
+                    return None, _fail(msg, json_output, command="build")
+                _write_link_fingerprint_if_needed(
+                    link_skipped=False,
+                    link_fingerprint=link_fingerprint,
+                    link_fingerprint_path=link_fingerprint_path,
+                    json_output=json_output,
+                )
             if require_linked and resolved_linked_output is not None:
                 if output_wasm != resolved_linked_output and output_wasm.exists():
                     try:
