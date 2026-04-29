@@ -497,6 +497,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("bytearray_endswith_slice", 9),
     ("bytearray_find", 3),
     ("bytearray_find_slice", 9),
+    ("bytearray_fill_range", 7),
     ("bytearray_from_obj", 2),
     ("bytearray_from_str", 5),
     ("bytearray_replace", 7),

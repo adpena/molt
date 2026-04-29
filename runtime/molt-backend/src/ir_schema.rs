@@ -23,7 +23,7 @@ const RANGE_FILL_OP_SCHEMAS: &[OpFieldSchema] = &[
         family: "range_fill",
         kind: "bytearray_fill_range",
         required_args_len: Some(4),
-        requires_out_value: true,
+        requires_out_value: false,
     },
 ];
 

@@ -42,6 +42,10 @@ For `--target wasm --split-runtime`, the packaging contract is:
 We use `tools/bench.py` for native and `tools/bench_wasm.py` for WASM.
 To exercise single-module linking, add `--linked` (requires `wasm-ld` and
 `wasm-tools`).
+Use `tools/bench_individual.py` for focused native micro-benchmark slices. It
+reuses the backend daemon by default so build timings represent the normal
+warm developer path; pass `--isolate-daemon` only when explicitly measuring
+cold daemon startup or investigating daemon crash isolation.
 For performance parity work, prefer linked WASM artifacts (`tools/bench_wasm.py --linked`)
 and use the linked runner path by default.
 If you build standalone WASM artifacts for perf validation, use

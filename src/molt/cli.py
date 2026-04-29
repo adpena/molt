@@ -7621,126 +7621,8 @@ def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
 
 
 # ---------------------------------------------------------------------------
-# Builtin feature detection for function-level tree shaking
+# Runtime Cargo feature selection
 # ---------------------------------------------------------------------------
-
-_BUILTIN_FEATURE_MODULE_MAP: dict[str, str] = {
-    "contextvars": "builtin_contextvars",
-    "_contextvars": "builtin_contextvars",
-    "fcntl": "builtin_fcntl",
-    "cmath": "builtin_complex",
-}
-
-# Mapping from imported module name (or prefix) to stdlib_* Cargo feature.
-# When the micro profile is active and the module is not in the import graph,
-# the feature is omitted so the linker can strip the corresponding intrinsics.
-_STDLIB_DOMAIN_FEATURE_MAP: dict[str, str] = {
-    # tk
-    "tkinter": "stdlib_tk",
-    "_tkinter": "stdlib_tk",
-    # networking
-    "socket": "stdlib_net",
-    "_socket": "stdlib_net",
-    "ssl": "stdlib_net",
-    "_ssl": "stdlib_net",
-    "http": "stdlib_net",
-    "http.client": "stdlib_net",
-    "http.server": "stdlib_net",
-    "http.cookiejar": "stdlib_net",
-    "urllib": "stdlib_net",
-    "urllib.request": "stdlib_net",
-    "urllib.parse": "stdlib_net",
-    "urllib.error": "stdlib_net",
-    "urllib3": "stdlib_net",
-    "ipaddress": "stdlib_net",
-    # asyncio
-    "asyncio": "stdlib_asyncio",
-    # email
-    "email": "stdlib_email",
-    "email.message": "stdlib_email",
-    "email.mime": "stdlib_email",
-    "email.parser": "stdlib_email",
-    "email.policy": "stdlib_email",
-    # decimal
-    "decimal": "stdlib_decimal",
-    "_decimal": "stdlib_decimal",
-    # logging
-    "logging": "stdlib_logging",
-    "logging.handlers": "stdlib_logging",
-    "logging.config": "stdlib_logging",
-    # concurrent
-    "concurrent": "stdlib_concurrent",
-    "concurrent.futures": "stdlib_concurrent",
-    # dbm
-    "dbm": "stdlib_dbm",
-    "dbm.dumb": "stdlib_dbm",
-    # importlib extras
-    "importlib.resources": "stdlib_importlib_extra",
-    "importlib.metadata": "stdlib_importlib_extra",
-    # csv
-    "csv": "stdlib_csv",
-    # signal
-    "signal": "stdlib_signal",
-    # select
-    "select": "stdlib_select",
-    "selectors": "stdlib_select",
-    # --- Heavy domains (previously always excluded in micro) ---
-    # crypto
-    "hashlib": "stdlib_crypto",
-    "_hashlib": "stdlib_crypto",
-    "hmac": "stdlib_crypto",
-    # compression
-    "zlib": "stdlib_compression",
-    "gzip": "stdlib_compression",
-    "bz2": "stdlib_compression",
-    "_bz2": "stdlib_compression",
-    "lzma": "stdlib_compression",
-    "_lzma": "stdlib_compression",
-    # math
-    "math": "stdlib_math",
-    "cmath": "stdlib_math",
-    "statistics": "stdlib_math",
-    "random": "stdlib_math",
-    "fractions": "stdlib_math",
-    # serialization (msgpack, cbor)
-    "msgpack": "stdlib_serialization",
-    "cbor": "stdlib_serialization",
-    # serial (json, struct)
-    "json": "stdlib_serial",
-    "struct": "stdlib_serial",
-    "_struct": "stdlib_serial",
-    # archive
-    "zipfile": "stdlib_archive",
-    "tarfile": "stdlib_archive",
-    # ast
-    "ast": "stdlib_ast",
-    "_ast": "stdlib_ast",
-    # unicode names (unicodedata.name)
-    "unicodedata": "stdlib_unicode_names",
-    # fs extras (glob, tempfile)
-    "glob": "stdlib_fs_extra",
-    "tempfile": "stdlib_fs_extra",
-    "fnmatch": "stdlib_fs_extra",
-}
-
-# Prefix-based domain feature mapping: module names that start with
-# these prefixes imply the corresponding feature.
-_STDLIB_DOMAIN_PREFIX_MAP: tuple[tuple[str, str], ...] = (
-    ("tkinter.", "stdlib_tk"),
-    ("asyncio.", "stdlib_asyncio"),
-    ("email.", "stdlib_email"),
-    ("http.", "stdlib_net"),
-    ("urllib.", "stdlib_net"),
-    ("logging.", "stdlib_logging"),
-    ("concurrent.", "stdlib_concurrent"),
-    ("dbm.", "stdlib_dbm"),
-    ("importlib.resources.", "stdlib_importlib_extra"),
-    ("importlib.metadata.", "stdlib_importlib_extra"),
-    ("json.", "stdlib_serial"),
-    ("xml.", "stdlib_serial"),
-    ("zipfile.", "stdlib_archive"),
-    ("tarfile.", "stdlib_archive"),
-)
 
 _GPU_PRIMITIVE_IMPLYING_MODULE_PREFIXES = (
     "molt.gpu",
@@ -7760,28 +7642,6 @@ def _resolved_modules_require_gpu_primitives(
         for prefix in _GPU_PRIMITIVE_IMPLYING_MODULE_PREFIXES
     )
 
-
-_SET_IMPLYING_MODULES = frozenset(
-    {
-        "email",
-        "urllib",
-        "ast",
-        "tokenize",
-        "json",
-        "typing",
-        "collections.abc",
-    }
-)
-
-_MEMORYVIEW_IMPLYING_MODULES = frozenset(
-    {
-        "struct",
-        "array",
-        "io",
-        "_io",
-        "mmap",
-    }
-)
 
 # All builtin features that can be individually toggled.
 _ALL_BUILTIN_FEATURES: tuple[str, ...] = (
@@ -7819,91 +7679,57 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "molt_gpu_primitives",
 )
 
-_REQUIRED_RUNTIME_EXPORT_PREFIX_FEATURE_MAP: tuple[tuple[str, str], ...] = (
-    ("molt_ssl_", "stdlib_net"),
-    ("molt_socket_", "stdlib_net"),
-    ("molt_http_", "stdlib_net"),
-    ("molt_ipaddress_", "stdlib_net"),
-    ("molt_asyncio_", "stdlib_asyncio"),
-    ("molt_asyncgen_", "stdlib_asyncio"),
-    ("molt_future_", "stdlib_asyncio"),
-    ("molt_event_loop_", "stdlib_asyncio"),
-    ("molt_event_", "stdlib_asyncio"),
-    ("molt_pipe_transport_", "stdlib_asyncio"),
+_WASM_RUNTIME_STABLE_EXCLUDED_FEATURES = frozenset(
+    {
+        # Native UI and the largest parser/unicode data domains are not part of
+        # the stable wasm runtime surface today; browser/server wasm artifacts
+        # must still be fingerprint-stable across user imports.
+        "stdlib_tk",
+        "stdlib_net",
+        "stdlib_ast",
+        "stdlib_unicode_names",
+    }
 )
+
+def _runtime_builtin_features_for_profile(
+    stdlib_profile: str | None,
+    *,
+    target_triple: str | None,
+) -> list[str]:
+    """Return the stable runtime Cargo feature surface for a stdlib profile.
+
+    Runtime Cargo artifacts are shared infrastructure.  Their feature set must
+    be a function of the runtime target/profile, not the current user import
+    graph, so changing user code does not rebuild or overwrite runtime libs.
+    """
+    all_features = list(_ALL_BUILTIN_FEATURES) + list(_ALL_DOMAIN_FEATURES)
+    if stdlib_profile != "micro":
+        return all_features
+    if target_triple is not None and target_triple.startswith("wasm32"):
+        return [
+            feature
+            for feature in all_features
+            if feature not in _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES
+        ]
+    return all_features
 
 
 def _builtin_features_from_import_graph(
     resolved_modules: Collection[str] | None,
     stdlib_profile: str | None,
 ) -> list[str]:
-    """Return the ``builtin_*`` and ``stdlib_*`` cargo features required for
-    *resolved_modules*.
+    """Compatibility wrapper for the stable runtime Cargo feature surface.
 
-    For ``stdlib_full`` (or *None*) profiles every feature is enabled
-    unconditionally.  For ``micro`` profiles the import graph is inspected so
-    that only the features actually reachable from user code are compiled in.
+    The historical name is retained for internal callers/tests, but
+    *resolved_modules* intentionally no longer prunes runtime Cargo features.
+    Import graph changes belong to user-code lowering and final linking; they
+    must not invalidate the shared runtime artifact.
     """
-    all_features = list(_ALL_BUILTIN_FEATURES) + list(_ALL_DOMAIN_FEATURES)
-
-    # Full / default profile: enable everything.
-    if stdlib_profile != "micro":
-        return all_features
-
-    # No module information available: be safe and enable everything.
-    if resolved_modules is None:
-        return all_features
-    resolved_module_set = set(resolved_modules)
-
-    features: list[str] = []
-
-    # Direct module -> feature mapping (contextvars, fcntl, cmath).
-    for module_name, feature in _BUILTIN_FEATURE_MODULE_MAP.items():
-        if module_name in resolved_module_set and feature not in features:
-            features.append(feature)
-
-    # set: included if any set-implying module (or submodule) is present.
-    for m in _SET_IMPLYING_MODULES:
-        if m in resolved_module_set or any(
-            r.startswith(m + ".") for r in resolved_module_set
-        ):
-            features.append("builtin_set")
-            break
-
-    # memoryview: included if struct/array/io/_io/mmap is present.
-    if _MEMORYVIEW_IMPLYING_MODULES & resolved_module_set:
-        features.append("builtin_memoryview")
-
-    # Domain features: direct module name match.
-    for module_name, feature in _STDLIB_DOMAIN_FEATURE_MAP.items():
-        if module_name in resolved_module_set and feature not in features:
-            features.append(feature)
-
-    # Domain features: prefix-based match for submodules.
-    for prefix, feature in _STDLIB_DOMAIN_PREFIX_MAP:
-        if feature in features:
-            continue
-        if any(r.startswith(prefix) for r in resolved_modules):
-            features.append(feature)
-
-    if _resolved_modules_require_gpu_primitives(frozenset(resolved_modules)):
-        features.append("molt_gpu_primitives")
-
-    return features
-
-
-def _domain_features_from_required_runtime_exports(
-    required_exports: Collection[str] | None,
-) -> list[str]:
-    if not required_exports:
-        return []
-    features: list[str] = []
-    for prefix, feature in _REQUIRED_RUNTIME_EXPORT_PREFIX_FEATURE_MAP:
-        if feature in features:
-            continue
-        if any(export_name.startswith(prefix) for export_name in required_exports):
-            features.append(feature)
-    return features
+    del resolved_modules
+    return _runtime_builtin_features_for_profile(
+        stdlib_profile,
+        target_triple=None,
+    )
 
 
 def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
@@ -23334,17 +23160,20 @@ def _ensure_runtime_lib(
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
-    builtin_features = _builtin_features_from_import_graph(
-        resolved_modules, stdlib_profile
+    builtin_features = _runtime_builtin_features_for_profile(
+        stdlib_profile,
+        target_triple=target_triple,
     )
     # When stdlib_profile is micro, include the marker in the fingerprint
     # so full and micro builds are kept distinct in the cache.
     fingerprint_features: tuple[str, ...] = runtime_features
     if stdlib_profile == "micro":
         fingerprint_features = tuple(
-            list(runtime_features)
-            + sorted(builtin_features)
-            + ["stdlib_micro", "no-default-features"]
+            _dedupe_preserve_order(
+                list(runtime_features)
+                + sorted(builtin_features)
+                + ["stdlib_micro", "no-default-features"]
+            )
         )
     # Session-level short-circuit: once we have verified (and possibly built)
     # the runtime for the exact fingerprint-driving feature set, do not repeat
@@ -23437,9 +23266,9 @@ def _ensure_runtime_lib(
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
         if stdlib_profile == "micro":
             cmd.append("--no-default-features")
-            # Re-enable only the micro marker, builtin features from import
-            # graph analysis, and any explicit runtime features.
-            micro_features = (
+            # Re-enable the stable micro runtime surface plus explicit runtime
+            # target features. User imports must not change this Cargo command.
+            micro_features = _dedupe_preserve_order(
                 list(runtime_features) + builtin_features + ["stdlib_micro"]
             )
             cmd.extend(["--features", ",".join(micro_features)])
@@ -23774,10 +23603,7 @@ def _ensure_runtime_wasm(
     profile_dir = _cargo_profile_dir(cargo_profile)
     env = os.environ.copy()
     use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
-    runtime_exports = wasm_runtime_export_link_args(
-        required_runtime_imports=required_exports,
-        resolved_modules=resolved_modules,
-    )
+    runtime_exports = wasm_runtime_export_link_args()
     if reloc:
         flags = "" if use_legacy_wasm_flags else runtime_exports
     else:
@@ -23812,30 +23638,19 @@ def _ensure_runtime_wasm(
     cargo_runtime_features = tuple(
         ["molt_gpu_primitives"] + (["wasm_freestanding"] if freestanding else [])
     )
-    builtin_features = _builtin_features_from_import_graph(
-        set(resolved_modules) if resolved_modules is not None else None,
+    builtin_features = _runtime_builtin_features_for_profile(
         effective_stdlib_profile,
+        target_triple="wasm32-wasip1",
     )
-    required_export_features = _domain_features_from_required_runtime_exports(
-        required_exports
-    )
-    for feature in required_export_features:
-        if feature not in builtin_features:
-            builtin_features.append(feature)
     runtime_features = cargo_runtime_features
     fingerprint_features: tuple[str, ...] = runtime_features
     if effective_stdlib_profile == "micro":
         fingerprint_features = tuple(
-            list(runtime_features)
-            + sorted(builtin_features)
-            + ["stdlib_micro", "no-default-features"]
-        )
-    required_exports_feature = _required_runtime_exports_fingerprint_feature(
-        required_exports
-    )
-    if required_exports_feature is not None:
-        fingerprint_features = tuple(
-            list(fingerprint_features) + [required_exports_feature]
+            _dedupe_preserve_order(
+                list(runtime_features)
+                + sorted(builtin_features)
+                + ["stdlib_micro", "no-default-features"]
+            )
         )
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
@@ -24049,7 +23864,7 @@ def _ensure_runtime_wasm(
             ]
         if effective_stdlib_profile == "micro":
             cmd.append("--no-default-features")
-            micro_features = (
+            micro_features = _dedupe_preserve_order(
                 list(runtime_features) + sorted(builtin_features) + ["stdlib_micro"]
             )
             if micro_features:
@@ -24652,19 +24467,6 @@ def _collect_wasm_export_names(path: Path) -> set[str]:
     except ValueError:
         return set()
     return result
-
-
-def _required_runtime_exports_fingerprint_feature(
-    required_exports: set[str] | frozenset[str] | None,
-) -> str | None:
-    if not required_exports:
-        return None
-    normalized = sorted(
-        name if name.startswith("molt_") else f"molt_{name}"
-        for name in required_exports
-    )
-    digest = hashlib.sha256(",".join(normalized).encode("utf-8")).hexdigest()
-    return f"required-exports:{digest}"
 
 
 def _runtime_wasm_exports_satisfy(

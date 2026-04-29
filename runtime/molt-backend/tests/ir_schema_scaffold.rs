@@ -39,7 +39,6 @@ fn validate_simple_ir_rejects_list_repeat_range_missing_out() {
 fn validate_simple_ir_rejects_bytearray_fill_range_wrong_arity() {
     let mut fill = op("bytearray_fill_range");
     fill.args = Some(vec!["v0".to_string(), "v1".to_string(), "v2".to_string()]);
-    fill.out = Some("v4".to_string());
     let ir = single_func_ir(fill, vec!["v0", "v1", "v2"]);
     let err = validate_simple_ir(&ir).expect_err("expected args arity rejection");
     assert!(err.contains("requires `args` length 4"));
@@ -56,5 +55,19 @@ fn validate_simple_ir_accepts_range_fill_family_when_shape_is_valid() {
     ]);
     repeat.out = Some("v4".to_string());
     let ir = single_func_ir(repeat, vec!["v0", "v1", "v2", "v3"]);
+    assert!(validate_simple_ir(&ir).is_ok());
+}
+
+#[test]
+fn validate_simple_ir_accepts_bytearray_fill_range_without_owned_out() {
+    let mut fill = op("bytearray_fill_range");
+    fill.args = Some(vec![
+        "v0".to_string(),
+        "v1".to_string(),
+        "v2".to_string(),
+        "v3".to_string(),
+    ]);
+    fill.out = Some("none".to_string());
+    let ir = single_func_ir(fill, vec!["v0", "v1", "v2", "v3"]);
     assert!(validate_simple_ir(&ir).is_ok());
 }

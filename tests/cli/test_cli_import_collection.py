@@ -7070,20 +7070,23 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
     assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] == "1234"
 
 
-def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
+def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
-    verification_calls: list[frozenset[str]] = []
+    verification_calls: list[tuple[frozenset[str], str]] = []
 
     monkeypatch.setattr(
         cli,
         "_runtime_fingerprint",
         lambda project_root, **kwargs: {
-            "runtime_features": tuple(cast(tuple[str, ...], kwargs["runtime_features"]))
+            "runtime_features": tuple(
+                cast(tuple[str, ...], kwargs["runtime_features"])
+            ),
+            "rustflags": cast(str, kwargs["rustflags"]),
         },
     )
     monkeypatch.setattr(
@@ -7091,12 +7094,18 @@ def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
         "_artifact_needs_rebuild",
         lambda artifact, fingerprint, stored_fingerprint: (
             verification_calls.append(
-                frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
+                (
+                    frozenset(
+                        cast(tuple[str, ...], fingerprint["runtime_features"])
+                    ),
+                    cast(str, fingerprint["rustflags"]),
+                )
             )
             or False
         ),
     )
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(cli, "_runtime_wasm_exports_satisfy", lambda path, req: True)
 
     assert cli._ensure_runtime_wasm(
         runtime_wasm,
@@ -7109,6 +7118,7 @@ def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
         freestanding=False,
         stdlib_profile="micro",
         resolved_modules={"json"},
+        required_exports={"runtime_init"},
     )
     assert cli._ensure_runtime_wasm(
         runtime_wasm,
@@ -7121,12 +7131,15 @@ def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
         freestanding=False,
         stdlib_profile="micro",
         resolved_modules={"ssl"},
+        required_exports={"fast_list_append"},
     )
 
-    distinct_calls = set(verification_calls)
-    assert len(distinct_calls) >= 2
-    assert any("stdlib_serial" in call for call in distinct_calls)
-    assert any("stdlib_net" in call for call in distinct_calls)
+    assert len(verification_calls) == 2
+    assert verification_calls[0] == verification_calls[1]
+    assert {"stdlib_serial", "stdlib_micro", "no-default-features"} <= (
+        verification_calls[0][0]
+    )
+    assert "stdlib_net" not in verification_calls[0][0]
 
 
 def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
@@ -7749,7 +7762,7 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
     assert copied == []
 
 
-def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(
+def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7787,6 +7800,7 @@ def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(
             stdlib_profile="micro",
             resolved_modules={"json"},
         )
+        cli._RUNTIME_LIB_VERIFIED.clear()
         assert cli._ensure_runtime_lib(
             runtime_lib,
             target_triple=None,
@@ -7801,7 +7815,10 @@ def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(
         cli._RUNTIME_LIB_VERIFIED.clear()
 
     assert len(verification_calls) == 2
-    assert verification_calls[0] != verification_calls[1]
+    assert verification_calls[0] == verification_calls[1]
+    assert {"stdlib_serial", "stdlib_net", "stdlib_micro", "no-default-features"} <= (
+        verification_calls[0]
+    )
 
 
 def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen(

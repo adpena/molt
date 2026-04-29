@@ -1847,7 +1847,7 @@ fn preanalyze_function_ir(
             match op.kind.as_str() {
                 // Condition 2: passed to any function call as an argument
                 "call" | "call_method" | "call_builtin" | "call_function_value"
-                | "call_super" | "call_kw" | "call_star" | "call_ex" => {
+                | "call_super" | "call_kw" | "call_star" | "call_ex" | "bytearray_fill_range" => {
                     if let Some(args) = &op.args {
                         for arg in args {
                             if is_scalar(arg) {
@@ -10662,6 +10662,32 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
+                "bytearray_fill_range" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let bytearray =
+                        var_get_boxed(&mut builder, &vars, &args[0], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("bytearray fill target not found");
+                    let start =
+                        var_get_boxed(&mut builder, &vars, &args[1], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("bytearray fill start not found");
+                    let stop =
+                        var_get_boxed(&mut builder, &vars, &args[2], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("bytearray fill stop not found");
+                    let value =
+                        var_get_boxed(&mut builder, &vars, &args[3], &raw_primary_int, &raw_primary_float, box_int_mask_var, box_int_tag_var).expect("bytearray fill value not found");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_fill_range",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*bytearray, *start, *stop, *value]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        if out__ != "none" {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                 }
                 "string_find" => {

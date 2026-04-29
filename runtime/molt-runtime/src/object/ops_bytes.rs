@@ -106,6 +106,66 @@ pub extern "C" fn molt_bytearray_append(bytearray_bits: u64, val_bits: u64) -> u
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_fill_range(
+    bytearray_bits: u64,
+    start_bits: u64,
+    stop_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let bytearray_obj = obj_from_bits(bytearray_bits);
+        let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "bytearray_fill_range expects bytearray",
+            );
+        };
+        unsafe {
+            if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "bytearray_fill_range expects bytearray",
+                );
+            }
+        }
+        let start = index_i64_from_obj(
+            _py,
+            start_bits,
+            "bytearray fill range indices must be integers",
+        );
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let stop = index_i64_from_obj(
+            _py,
+            stop_bits,
+            "bytearray fill range indices must be integers",
+        );
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray) else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            let elems = bytearray_vec(bytearray_ptr);
+            let len = elems.len() as i64;
+            if start < 0 || stop < start || stop > len {
+                return raise_exception::<_>(
+                    _py,
+                    "IndexError",
+                    "bytearray fill range out of range",
+                );
+            }
+            elems[start as usize..stop as usize].fill(byte);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_clear(bytearray_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);

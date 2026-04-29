@@ -3063,11 +3063,21 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_repr({})", sanitize_ident(val)));
                 }
             }
-            "bytes_from_obj" | "bytes_from_str" | "bytearray_from_obj" | "bytearray_from_str" => {
+            "bytes_from_obj" | "bytes_from_str" | "bytearray_from_str" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     self.emit_line(&format!("local {out} = tostring({})", sanitize_ident(val)));
+                }
+            }
+            "bytearray_from_obj" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(val) = args.first() {
+                    let val = sanitize_ident(val);
+                    self.emit_line(&format!(
+                        "local {out} = if type({val}) == \"number\" then string.rep(string.char(0), math.max(0, {val})) else tostring({val})"
+                    ));
                 }
             }
 
@@ -3717,11 +3727,23 @@ impl LuauBackend {
             | "memoryview_tobytes"
             | "memoryview_cast"
             | "intarray_from_seq"
-            | "complex_from_obj"
-            | "bytearray_fill_range" => {
+            | "complex_from_obj" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
+                }
+            }
+
+            "bytearray_fill_range" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 4 {
+                    let bytearray = sanitize_ident(&args[0]);
+                    let start = sanitize_ident(&args[1]);
+                    let stop = sanitize_ident(&args[2]);
+                    let value = sanitize_ident(&args[3]);
+                    self.emit_line(&format!(
+                        "do local __ba = {bytearray}; local __start = {start}; local __stop = {stop}; local __byte = {value}; if __byte < 0 or __byte > 255 then error({{__type=\"ValueError\", __msg=\"byte must be in range(0, 256)\"}}) end; if __start < 0 or __stop < __start or __stop > #__ba then error({{__type=\"IndexError\", __msg=\"bytearray fill range out of range\"}}) end; {bytearray} = string.sub(__ba, 1, __start) .. string.rep(string.char(__byte), __stop - __start) .. string.sub(__ba, __stop + 1) end"
+                    ));
                 }
             }
 

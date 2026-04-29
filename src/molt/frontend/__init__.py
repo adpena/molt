@@ -1371,6 +1371,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.global_elem_hints: dict[str, str] = {}
         self.dict_key_hints: dict[str, str] = {}
         self.dict_value_hints: dict[str, str] = {}
+        self.bytearray_len_hints: dict[str, int] = {}
         self.stdlib_hint_trust = False
         if source_path:
             normalized_path = source_path.replace("\\", "/")
@@ -1839,6 +1840,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.container_elem_hints = {}
         self.dict_key_hints = {}
         self.dict_value_hints = {}
+        self.bytearray_len_hints = {}
         self.context_depth = 0
         self.control_flow_depth = 0
         self.const_ints = {}
@@ -3691,6 +3693,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "container_elem_hints": self.container_elem_hints,
             "dict_key_hints": self.dict_key_hints,
             "dict_value_hints": self.dict_value_hints,
+            "bytearray_len_hints": self.bytearray_len_hints,
             "context_depth": self.context_depth,
             "control_flow_depth": self.control_flow_depth,
             "const_ints": self.const_ints,
@@ -3748,6 +3751,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.container_elem_hints = state["container_elem_hints"]
         self.dict_key_hints = state["dict_key_hints"]
         self.dict_value_hints = state["dict_value_hints"]
+        self.bytearray_len_hints = state["bytearray_len_hints"]
         self.context_depth = state["context_depth"]
         self.control_flow_depth = state["control_flow_depth"]
         self.const_ints = state["const_ints"]
@@ -4451,6 +4455,35 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             li_set.add(dest)
         else:
             li_set.discard(dest)
+        if src.name in self.bytearray_len_hints:
+            self.bytearray_len_hints[dest] = self.bytearray_len_hints[src.name]
+        else:
+            self.bytearray_len_hints.pop(dest, None)
+
+    def _remember_bytearray_len_hint(
+        self, value: MoltValue, length: int | None
+    ) -> None:
+        if length is not None and length >= 0:
+            self.bytearray_len_hints[value.name] = length
+        else:
+            self.bytearray_len_hints.pop(value.name, None)
+
+    def _bytearray_len_hint_for(
+        self, name: str | None, value: MoltValue | None
+    ) -> int | None:
+        if value is not None and value.name in self.bytearray_len_hints:
+            return self.bytearray_len_hints[value.name]
+        if name is not None:
+            return self.bytearray_len_hints.get(name)
+        return None
+
+    def _invalidate_bytearray_len_hint(
+        self, name: str | None, value: MoltValue | None = None
+    ) -> None:
+        if value is not None:
+            self.bytearray_len_hints.pop(value.name, None)
+        if name is not None:
+            self.bytearray_len_hints.pop(name, None)
 
     def _copy_container_hints_for_boxed(self, var_name: str, ssa_name: str) -> None:
         """Copy container element/dict hints from a Python variable name to a
@@ -8540,6 +8573,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         ):
             update_locals_cache()
             return
+        if value.name in self.bytearray_len_hints:
+            self.bytearray_len_hints[name] = self.bytearray_len_hints[value.name]
+        else:
+            self.bytearray_len_hints.pop(name, None)
         self.locals[name] = value
         # Emit explicit store_var for non-boxed function locals so TIR can
         # track variable mutations through loop iterations via SSA phis.
@@ -11321,8 +11358,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         if len(node.test.comparators) != 1:
             return None
-        bound = node.test.comparators[0]
-        if not (isinstance(bound, ast.Constant) and isinstance(bound.value, int)):
+        bound_value = self._const_int_from_expr(node.test.comparators[0])
+        if bound_value is None:
             return None
         if not node.body:
             return None
@@ -11332,7 +11369,58 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         if index_name in self._collect_assigned_names(node.body[:-1]):
             return None
-        return index_name, bound.value, node.body[:-1]
+        return index_name, bound_value, node.body[:-1]
+
+    def _const_int_from_expr(self, node: ast.expr) -> int | None:
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, int)
+            and not isinstance(node.value, bool)
+        ):
+            return node.value
+        if isinstance(node, ast.Name):
+            value = self.locals.get(node.id)
+            if value is None and self.current_func_name == "molt_main":
+                value = self.globals.get(node.id)
+            if value is not None:
+                return self.const_ints.get(value.name)
+        return None
+
+    def _const_int_for_local(self, name: str) -> int | None:
+        value = self.locals.get(name)
+        if value is None:
+            return 0
+        return self.const_ints.get(value.name)
+
+    def _match_bytearray_fill_counted_while(
+        self, index_name: str, bound: int, body: list[ast.stmt]
+    ) -> tuple[str, int, int, int] | None:
+        if len(body) != 1:
+            return None
+        stmt = body[0]
+        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+            return None
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Subscript):
+            return None
+        if not isinstance(target.value, ast.Name):
+            return None
+        if not isinstance(target.slice, ast.Name) or target.slice.id != index_name:
+            return None
+        container_name = target.value.id
+        container = self.locals.get(container_name)
+        if container is None or container.type_hint != "bytearray":
+            return None
+        bytearray_len = self._bytearray_len_hint_for(container_name, container)
+        if bytearray_len is None:
+            return None
+        start = self._const_int_for_local(index_name)
+        if start is None or start < 0 or bound <= start or bound > bytearray_len:
+            return None
+        fill = self._const_int_from_expr(stmt.value)
+        if fill is None or not 0 <= fill <= 255:
+            return None
+        return container_name, start, bound, fill
 
     def _match_counted_while_sum(
         self, index_name: str, body: list[ast.stmt]
@@ -17183,6 +17271,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
 
             method = attr_node.attr
+            if receiver.type_hint == "bytearray" and method in {
+                "append",
+                "clear",
+                "extend",
+                "insert",
+                "pop",
+                "remove",
+                "resize",
+            }:
+                self._invalidate_bytearray_len_hint(obj_name, receiver)
             if method == "sort" and receiver.type_hint == "list":
                 needs_bind = True
             if receiver.type_hint == "generator":
@@ -22243,7 +22341,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if source_expr is None:
                     source_val = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=source_val))
+                    source_len_hint = None
                 else:
+                    source_len_hint = self._const_int_from_expr(source_expr)
                     source_val = self.visit(source_expr)
                     if source_val is None:
                         raise NotImplementedError("Unsupported bytearray input")
@@ -22281,6 +22381,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             args=[source_val],
                             result=res,
                         )
+                    )
+                    self._remember_bytearray_len_hint(
+                        res,
+                        source_len_hint
+                        if source_len_hint is not None
+                        else self.const_ints.get(source_val.name),
                     )
                 return res
             if func_id == "memoryview":
@@ -23437,9 +23543,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return
         if isinstance(target, ast.Subscript):
             target_obj = self.visit(target.value)
+            target_name = (
+                target.value.id if isinstance(target.value, ast.Name) else None
+            )
             if isinstance(target.slice, ast.Slice):
                 if target_obj is None:
                     raise NotImplementedError("Unsupported slice assignment target")
+                if target_obj.type_hint == "bytearray":
+                    self._invalidate_bytearray_len_hint(target_name, target_obj)
                 if target.slice.lower is None:
                     start = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=start))
@@ -23960,6 +24071,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 target_obj = self.visit(target.value)
                 if target_obj is None:
                     raise NotImplementedError("del expects subscript owner")
+                target_name = (
+                    target.value.id if isinstance(target.value, ast.Name) else None
+                )
+                if target_obj.type_hint == "bytearray":
+                    self._invalidate_bytearray_len_hint(target_name, target_obj)
                 if isinstance(target.slice, ast.Slice):
                     if target.slice.lower is None:
                         start = MoltValue(self.next_var(), type_hint="None")
@@ -26252,6 +26368,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         if counted is not None and not self.is_async():
             index_name, bound, body = counted
+            bytearray_fill = self._match_bytearray_fill_counted_while(
+                index_name, bound, body
+            )
+            if bytearray_fill is not None:
+                container_name, start, stop, fill = bytearray_fill
+                container = self._load_local_value(container_name)
+                if container is None:
+                    raise NotImplementedError("bytearray fill target not initialized")
+                start_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[start], result=start_val))
+                stop_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[stop], result=stop_val))
+                fill_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[fill], result=fill_val))
+                self.emit(
+                    MoltOp(
+                        kind="BYTEARRAY_FILL_RANGE",
+                        args=[container, start_val, stop_val, fill_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                idx_res = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[stop], result=idx_res))
+                self._store_local_value(index_name, idx_res)
+                return None
             acc_name = self._match_counted_while_sum(index_name, body)
             if acc_name is not None:
                 start_val = self._load_local_value(index_name)
@@ -32898,6 +33039,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "BYTEARRAY_FILL_RANGE":
+                json_ops.append(
+                    {
+                        "kind": "bytearray_fill_range",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "INTARRAY_FROM_SEQ":
                 json_ops.append(
                     {
@@ -35476,6 +35625,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LIST_INSERT",
             "LIST_CLEAR",
             "LIST_REVERSE",
+            "BYTEARRAY_FILL_RANGE",
             "DICT_SET",
             "DICT_STR_INT_INC",
             "DICT_SPLIT_COUNT_INT_INC",
