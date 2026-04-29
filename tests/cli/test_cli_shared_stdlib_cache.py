@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 
@@ -501,6 +502,50 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     assert stdlib_object.exists()
     assert cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
     assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+
+
+def test_invalidate_stale_stdlib_cache_tracks_active_artifact_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path
+    target_root = project_root / "target"
+    cache_root = project_root / ".molt_cache"
+    (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    cache_root.mkdir(parents=True)
+
+    stdlib_object = cache_root / "stdlib_shared_active.o"
+    stdlib_object.write_bytes(b"stdlib")
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        "active-key\n", encoding="utf-8"
+    )
+    cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+        "1\n", encoding="utf-8"
+    )
+
+    backend_bin = target_root / "dev-fast" / "molt-backend"
+    runtime_lib = target_root / "release-output" / "libmolt_runtime.a"
+    for artifact in (backend_bin, runtime_lib):
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"artifact")
+
+    monkeypatch.delenv("MOLT_SESSION_ID", raising=False)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+
+    old = 1_700_000_000.0
+    current = old + 10.0
+    os.utime(stdlib_object, (old, old))
+    os.utime(backend_bin, (current, current))
+    os.utime(runtime_lib, (current, current))
+
+    cli._invalidate_stale_stdlib_cache(
+        stdlib_object,
+        project_root,
+        expected_key="active-key",
+    )
+
+    assert not stdlib_object.exists()
+    assert not cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert not cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
 
 
 def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
