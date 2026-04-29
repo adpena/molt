@@ -48,6 +48,16 @@ def test_wasm_bytes_ops_parity(tmp_path: Path) -> None:
         "print(ba[1])\n"
         "print(ba.find(b'ne'))\n"
         "print(44 in ba)\n"
+        "filled = bytearray(8)\n"
+        "i = 0\n"
+        "while i < 8:\n"
+        "    filled[i] = 97\n"
+        "    i += 1\n"
+        "filled[-1] = 98\n"
+        "print(bytes(filled).find(b'b'))\n"
+        "print(bytes(filled)[0])\n"
+        "print(bytes(filled)[6])\n"
+        "print(i)\n"
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)
@@ -55,5 +65,5 @@ def test_wasm_bytes_ops_parity(tmp_path: Path) -> None:
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == (
         "7\n4\n4\n2\n3\n3\n0\nTrue\nTrue\nTrue\nTrue\n2\n110\n1\nTrue\n7\n4\n"
-        "4\n2\n3\n3\n4\n7\nTrue\nTrue\nTrue\nTrue\n2\n110\n1\nTrue"
+        "4\n2\n3\n3\n4\n7\nTrue\nTrue\nTrue\nTrue\n2\n110\n1\nTrue\n7\n97\n97\n8"
     )

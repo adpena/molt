@@ -54,29 +54,37 @@ def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
     assert cli._runtime_cargo_features("wasm32-wasip1") == ("molt_gpu_primitives",)
 
 
-def test_builtin_features_from_import_graph_enable_tk_for_tkinter_submodules() -> None:
-    features = cli._builtin_features_from_import_graph(
+def test_builtin_features_from_import_graph_are_stable_for_micro_imports() -> None:
+    json_features = cli._builtin_features_from_import_graph({"json"}, "micro")
+    tkinter_features = cli._builtin_features_from_import_graph(
         {"tkinter.constants", "tkinter._support"},
         "micro",
     )
-    assert "stdlib_tk" in features
-
-
-def test_builtin_features_from_import_graph_enable_gpu_primitives_for_tinygrad() -> (
-    None
-):
-    features = cli._builtin_features_from_import_graph(
+    tinygrad_features = cli._builtin_features_from_import_graph(
         {"tinygrad.tensor", "molt.stdlib.tinygrad.examples.falcon_ocr"},
         "micro",
     )
-    assert "molt_gpu_primitives" in features
+
+    assert json_features == tkinter_features == tinygrad_features
+    assert {
+        "stdlib_tk",
+        "stdlib_net",
+        "stdlib_serial",
+        "molt_gpu_primitives",
+    } <= set(json_features)
 
 
-def test_domain_features_from_required_runtime_exports_enable_stdlib_net() -> None:
-    features = cli._domain_features_from_required_runtime_exports(
-        {"molt_ssl_context_new", "molt_ssl_socket_write"}
+def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
+    features = cli._runtime_builtin_features_for_profile(
+        "micro",
+        target_triple="wasm32-wasip1",
     )
-    assert "stdlib_net" in features
+
+    assert "stdlib_tk" not in features
+    assert "stdlib_net" not in features
+    assert "stdlib_ast" not in features
+    assert "stdlib_unicode_names" not in features
+    assert "stdlib_serial" in features
 
 
 def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
@@ -158,6 +166,53 @@ def test_runtime_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     )
     assert reused == baseline
     assert calls == 0
+
+
+def test_runtime_fingerprint_rehashes_when_source_metadata_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "runtime_source.rs"
+    source.write_text("pub fn marker() {}\n")
+    monkeypatch.setattr(
+        cli, "_runtime_source_paths", lambda _project_root: [source], raising=True
+    )
+    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+
+    baseline = cli._runtime_fingerprint(
+        tmp_path,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        rustflags="",
+        runtime_features=(),
+    )
+    assert baseline is not None
+
+    source.write_text("pub fn marker() { let _changed = 1; }\n")
+    stat = source.stat()
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+    calls = 0
+    original = cli._hash_runtime_file
+
+    def wrapped(path: Path, root: Path, hasher: object) -> None:
+        nonlocal calls
+        calls += 1
+        original(path, root, hasher)
+
+    monkeypatch.setattr(cli, "_hash_runtime_file", wrapped, raising=True)
+    changed = cli._runtime_fingerprint(
+        tmp_path,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        rustflags="",
+        runtime_features=(),
+        stored_fingerprint=baseline,
+    )
+
+    assert changed is not None
+    assert changed["inputs_digest"] != baseline["inputs_digest"]
+    assert changed["hash"] != baseline["hash"]
+    assert calls == 1
 
 
 def test_artifact_needs_rebuild_stats_artifact_once(

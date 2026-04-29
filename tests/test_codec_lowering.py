@@ -30,6 +30,13 @@ def _ops_by_kind(ir: dict, kind: str, func_name: str = "molt_main") -> list[dict
     raise AssertionError(f"Missing function {func_name}")
 
 
+def _ops_by_func_suffix(ir: dict, suffix: str) -> list[dict]:
+    for func in ir["functions"]:
+        if func["name"].endswith(suffix):
+            return func["ops"]
+    raise AssertionError(f"Missing function with suffix {suffix}")
+
+
 def _assert_control_values_are_ints(ir: dict) -> None:
     control_kinds = {"label", "state_label", "jump", "check_exception"}
     for func in ir["functions"]:
@@ -364,6 +371,24 @@ series.append(1)
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
     assert "dict_setdefault_empty_list" in kinds
+
+
+def test_bytearray_counted_fill_lowers_to_range_primitive():
+    src = """
+def main():
+    size = 16
+    data = bytearray(size)
+    i = 0
+    while i < size:
+        data[i] = 97
+        i += 1
+    return bytes(data).find(b"a")
+"""
+    ir = compile_to_tir(src)
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    kinds = [op["kind"] for op in ops]
+    assert "bytearray_fill_range" in kinds
+    assert "store_index" not in kinds
 
 
 def test_nested_function_locals_cache_does_not_leak_into_outer_function():

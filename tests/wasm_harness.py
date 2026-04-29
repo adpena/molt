@@ -12306,6 +12306,31 @@ BASE_IMPORTS = """\
     }
     return boxPtr({ type: 'bytearray', data: Uint8Array.from(out) });
   },
+  bytearray_fill_range: (bytearrayBits, startBits, stopBits, valueBits) => {
+    const bytearray = getBytearray(bytearrayBits);
+    if (!bytearray) {
+      throw new Error('TypeError: bytearray_fill_range expects bytearray');
+    }
+    const start = indexFromBitsWithOverflow(
+      startBits,
+      'bytearray fill range indices must be integers',
+      null,
+    );
+    if (start === null) return boxNone();
+    const stop = indexFromBitsWithOverflow(
+      stopBits,
+      'bytearray fill range indices must be integers',
+      null,
+    );
+    if (stop === null) return boxNone();
+    const byte = byteFromBits(valueBits);
+    if (byte === null) return boxNone();
+    if (start < 0 || stop < start || stop > bytearray.data.length) {
+      throw new Error('IndexError: bytearray fill range out of range');
+    }
+    bytearray.data.fill(byte, start, stop);
+    return boxNone();
+  },
   bytes_from_str: (val, encodingBits, errorsBits) => {
     const text = getStrObj(val);
     if (text === null) return boxNone();
