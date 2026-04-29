@@ -1080,7 +1080,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
 
     for (bid, mut block_candidates) in by_block {
         // Sort by descending unpack_idx so we can remove from the end first.
-        block_candidates.sort_by(|a, b| b.unpack_idx.cmp(&a.unpack_idx));
+        block_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.unpack_idx));
 
         let block = func.blocks.get_mut(&bid).unwrap();
 

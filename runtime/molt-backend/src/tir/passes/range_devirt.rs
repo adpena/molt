@@ -124,10 +124,8 @@ fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
                         call_builtin_defs.insert(op.results[0], (bid, op_idx, op.operands.clone()));
                     }
                 }
-                OpCode::GetIter => {
-                    if !op.operands.is_empty() && !op.results.is_empty() {
-                        get_iter_defs.insert(op.results[0], (bid, op_idx, op.operands[0]));
-                    }
+                OpCode::GetIter if !op.operands.is_empty() && !op.results.is_empty() => {
+                    get_iter_defs.insert(op.results[0], (bid, op_idx, op.operands[0]));
                 }
                 _ => {}
             }
