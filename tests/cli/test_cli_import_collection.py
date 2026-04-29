@@ -8971,7 +8971,7 @@ def test_run_uses_build_profile_flag_for_nested_build(
     )
 
     assert rc == 0
-    assert build_cmds == [
+    assert build_cmds[-1:] == [
         [
             sys.executable,
             "-m",

@@ -15,6 +15,7 @@ import time
 
 
 DEFAULT_MAX_RSS_GB = 25.0
+DEFAULT_MAX_TOTAL_RSS_GB = 28.0
 DEFAULT_POLL_INTERVAL_SEC = 1.0
 GUARD_RETURN_CODE = 137
 
@@ -33,6 +34,7 @@ class RssViolation:
     pid: int
     rss_kb: int
     command: str
+    scope: str = "process"
 
     @property
     def rss_gb(self) -> float:
@@ -44,6 +46,7 @@ class GuardResult:
     returncode: int
     violation: RssViolation | None
     peak: RssViolation | None
+    peak_total: RssViolation | None
     stdout: str
     stderr: str
 
@@ -152,11 +155,29 @@ def peak_rss(
     )
 
 
+def total_rss(
+    samples: Mapping[int, ProcessSample],
+    *,
+    root_pid: int,
+) -> RssViolation | None:
+    watched = watched_pids(samples, root_pid)
+    candidates = [sample for pid, sample in samples.items() if pid in watched]
+    if not candidates:
+        return None
+    return RssViolation(
+        pid=root_pid,
+        rss_kb=sum(sample.rss_kb for sample in candidates),
+        command="process tree aggregate",
+        scope="process_tree",
+    )
+
+
 def find_rss_violation(
     samples: Mapping[int, ProcessSample],
     *,
     root_pid: int,
     max_rss_kb: int,
+    max_total_rss_kb: int | None = None,
 ) -> RssViolation | None:
     watched = watched_pids(samples, root_pid)
     candidates = [
@@ -165,6 +186,11 @@ def find_rss_violation(
         if pid in watched and sample.rss_kb > max_rss_kb
     ]
     if not candidates:
+        if max_total_rss_kb is None:
+            return None
+        aggregate = total_rss(samples, root_pid=root_pid)
+        if aggregate is not None and aggregate.rss_kb > max_total_rss_kb:
+            return aggregate
         return None
     worst = max(candidates, key=lambda sample: sample.rss_kb)
     return RssViolation(
@@ -210,6 +236,7 @@ def run_guarded(
     command: Sequence[str],
     *,
     max_rss_kb: int,
+    max_total_rss_kb: int | None = None,
     poll_interval: float,
     sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
     capture_output: bool = True,
@@ -227,6 +254,7 @@ def run_guarded(
     )
     violation: RssViolation | None = None
     peak: RssViolation | None = None
+    peak_total: RssViolation | None = None
     while True:
         samples = sampler()
         observed_peak = peak_rss(samples, root_pid=proc.pid)
@@ -234,10 +262,16 @@ def run_guarded(
             peak is None or observed_peak.rss_kb > peak.rss_kb
         ):
             peak = observed_peak
+        observed_total = total_rss(samples, root_pid=proc.pid)
+        if observed_total is not None and (
+            peak_total is None or observed_total.rss_kb > peak_total.rss_kb
+        ):
+            peak_total = observed_total
         violation = find_rss_violation(
             samples,
             root_pid=proc.pid,
             max_rss_kb=max_rss_kb,
+            max_total_rss_kb=max_total_rss_kb,
         )
         if violation is not None:
             _terminate_process_group(proc.pid)
@@ -253,6 +287,7 @@ def run_guarded(
         returncode=returncode,
         violation=violation,
         peak=peak,
+        peak_total=peak_total,
         stdout=stdout or "",
         stderr=stderr or "",
     )
@@ -266,6 +301,7 @@ def _rss_record_payload(record: RssViolation | None) -> dict[str, object] | None
         "rss_kb": record.rss_kb,
         "rss_gb": record.rss_gb,
         "command": record.command,
+        "scope": record.scope,
     }
 
 
@@ -274,6 +310,7 @@ def _write_summary_json(
     *,
     command: Sequence[str],
     max_rss_kb: int,
+    max_total_rss_kb: int | None,
     result: GuardResult,
 ) -> None:
     summary_path = Path(path)
@@ -284,8 +321,13 @@ def _write_summary_json(
         "returncode": result.returncode,
         "max_rss_kb": max_rss_kb,
         "max_rss_gb": max_rss_kb / (1024 * 1024),
+        "max_total_rss_kb": max_total_rss_kb,
+        "max_total_rss_gb": (
+            None if max_total_rss_kb is None else max_total_rss_kb / (1024 * 1024)
+        ),
         "violation": _rss_record_payload(result.violation),
         "peak": _rss_record_payload(result.peak),
+        "peak_total": _rss_record_payload(result.peak_total),
     }
     summary_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -304,6 +346,16 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "Abort if any child process exceeds this RSS; must be <30 "
             f"(default: {DEFAULT_MAX_RSS_GB})."
+        ),
+    )
+    parser.add_argument(
+        "--max-total-rss-gb",
+        type=float,
+        default=DEFAULT_MAX_TOTAL_RSS_GB,
+        help=(
+            "Abort if the watched process tree exceeds this aggregate RSS; "
+            "must be <30 "
+            f"(default: {DEFAULT_MAX_TOTAL_RSS_GB})."
         ),
     )
     parser.add_argument(
@@ -333,6 +385,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         max_rss_kb = max_rss_kb_from_gb(args.max_rss_gb)
+        max_total_rss_kb = max_rss_kb_from_gb(args.max_total_rss_gb)
         poll_interval = float(args.poll_interval)
         if poll_interval <= 0:
             raise ValueError("poll interval must be greater than 0")
@@ -342,6 +395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     result = run_guarded(
         command,
         max_rss_kb=max_rss_kb,
+        max_total_rss_kb=max_total_rss_kb,
         poll_interval=poll_interval,
         capture_output=False,
     )
@@ -351,17 +405,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.summary_json,
                 command=command,
                 max_rss_kb=max_rss_kb,
+                max_total_rss_kb=max_total_rss_kb,
                 result=result,
             )
         except OSError as exc:
             print(f"memory_guard: failed to write summary JSON: {exc}", file=sys.stderr)
             return 2 if result.returncode == 0 else result.returncode
     if result.violation is not None:
+        limit_gb = (
+            args.max_total_rss_gb
+            if result.violation.scope == "process_tree"
+            else args.max_rss_gb
+        )
         print(
             "memory_guard: RSS limit exceeded: "
             f"pid={result.violation.pid} "
             f"rss={result.violation.rss_gb:.2f}GB "
-            f"limit={args.max_rss_gb:.2f}GB "
+            f"limit={limit_gb:.2f}GB "
+            f"scope={result.violation.scope} "
             f"command={result.violation.command}",
             file=sys.stderr,
         )
