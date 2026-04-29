@@ -251,7 +251,10 @@ const CRC32_TABLE: [u32; 256] = {
 
 fn crc32_compute(data: &[u8], initial: u32) -> u32 {
     let mut crc = !initial;
-    let mut i = 0usize;
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    let mut scalar_start = 0usize;
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    let scalar_start = 0usize;
 
     // Hardware CRC32 acceleration on aarch64
     #[cfg(target_arch = "aarch64")]
@@ -260,15 +263,17 @@ fn crc32_compute(data: &[u8], initial: u32) -> u32 {
             unsafe {
                 use std::arch::aarch64::*;
                 // Process 8 bytes at a time using hardware CRC32 instructions
-                while i + 8 <= data.len() {
-                    let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+                while scalar_start + 8 <= data.len() {
+                    let val = u64::from_le_bytes(
+                        data[scalar_start..scalar_start + 8].try_into().unwrap(),
+                    );
                     crc = __crc32d(crc, val);
-                    i += 8;
+                    scalar_start += 8;
                 }
                 // Process remaining bytes one at a time
-                while i < data.len() {
-                    crc = __crc32b(crc, data[i]);
-                    i += 1;
+                while scalar_start < data.len() {
+                    crc = __crc32b(crc, data[scalar_start]);
+                    scalar_start += 1;
                 }
                 return !crc;
             }
@@ -282,15 +287,17 @@ fn crc32_compute(data: &[u8], initial: u32) -> u32 {
             unsafe {
                 use std::arch::x86_64::*;
                 // Process 8 bytes at a time
-                while i + 8 <= data.len() {
-                    let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+                while scalar_start + 8 <= data.len() {
+                    let val = u64::from_le_bytes(
+                        data[scalar_start..scalar_start + 8].try_into().unwrap(),
+                    );
                     crc = _mm_crc32_u64(crc as u64, val) as u32;
-                    i += 8;
+                    scalar_start += 8;
                 }
                 // Process remaining bytes
-                while i < data.len() {
-                    crc = _mm_crc32_u8(crc, data[i]);
-                    i += 1;
+                while scalar_start < data.len() {
+                    crc = _mm_crc32_u8(crc, data[scalar_start]);
+                    scalar_start += 1;
                 }
                 return !crc;
             }
@@ -298,7 +305,7 @@ fn crc32_compute(data: &[u8], initial: u32) -> u32 {
     }
 
     // Scalar fallback (table-based)
-    for &byte in &data[i..] {
+    for &byte in &data[scalar_start..] {
         let idx = ((crc ^ u32::from(byte)) & 0xFF) as usize;
         crc = CRC32_TABLE[idx] ^ (crc >> 8);
     }

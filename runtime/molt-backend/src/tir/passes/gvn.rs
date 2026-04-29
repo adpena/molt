@@ -42,6 +42,7 @@ struct ValueKey {
     /// collisions between distinct constants.
     const_int_key: Option<i64>,
     const_str_key: Option<String>,
+    const_bytes_key: Option<Vec<u8>>,
 }
 
 /// Always-safe ops: box/unbox are pure value transformations that
@@ -107,14 +108,14 @@ fn is_primitive_type(ty: &crate::tir::types::TirType) -> bool {
 }
 
 /// Extract constant keys for deduplicating constants by exact value.
-fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>) {
+fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>, Option<Vec<u8>>) {
     match op.opcode {
         OpCode::ConstInt => {
             let k = op.attrs.get("value").and_then(|v| match v {
                 AttrValue::Int(i) => Some(*i),
                 _ => None,
             });
-            (k, None)
+            (k, None, None)
         }
         OpCode::ConstBool => {
             let k = op.attrs.get("value").and_then(|v| match v {
@@ -122,9 +123,9 @@ fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>) {
                 AttrValue::Int(i) => Some(*i),
                 _ => None,
             });
-            (k, None)
+            (k, None, None)
         }
-        OpCode::ConstNone => (Some(0), None),
+        OpCode::ConstNone => (Some(0), None, None),
         OpCode::ConstFloat => {
             // TIR ConstFloat stores the float in "f_value" (or "value" as fallback).
             let k = op
@@ -135,9 +136,9 @@ fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>) {
                     AttrValue::Float(f) => Some(f.to_bits() as i64),
                     _ => None,
                 });
-            (k, None)
+            (k, None, None)
         }
-        OpCode::ConstStr | OpCode::ConstBytes => {
+        OpCode::ConstStr => {
             // TIR ConstStr stores the string in "s_value", not "value".
             let s = op
                 .attrs
@@ -147,9 +148,20 @@ fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>) {
                     AttrValue::Str(s) => Some(s.clone()),
                     _ => None,
                 });
-            (None, s)
+            (None, s, None)
         }
-        _ => (None, None),
+        OpCode::ConstBytes => {
+            let b = op
+                .attrs
+                .get("bytes")
+                .or_else(|| op.attrs.get("value"))
+                .and_then(|v| match v {
+                    AttrValue::Bytes(b) => Some(b.clone()),
+                    _ => None,
+                });
+            (None, None, b)
+        }
+        _ => (None, None, None),
     }
 }
 
@@ -424,12 +436,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         .map(|v| value_number.get(v).copied().unwrap_or(*v))
                         .collect();
 
-                    let (const_int_key, const_str_key) = const_keys(op);
+                    let (const_int_key, const_str_key, const_bytes_key) = const_keys(op);
                     let key = ValueKey {
                         opcode: op.opcode,
                         operands: numbered_operands,
                         const_int_key,
                         const_str_key,
+                        const_bytes_key,
                     };
 
                     if let Some(&leader) = key_to_leader.get(&key) {
@@ -569,6 +582,21 @@ mod tests {
         }
     }
 
+    fn make_const_bytes(bytes: &[u8], result: ValueId) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstBytes,
+            operands: vec![],
+            results: vec![result],
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("bytes".into(), AttrValue::Bytes(bytes.to_vec()));
+                m
+            },
+            source_span: None,
+        }
+    }
+
     #[test]
     fn redundant_add_eliminated() {
         let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
@@ -629,6 +657,27 @@ mod tests {
         let ops = &func.blocks[&func.entry_block].ops;
         assert_eq!(ops[1].opcode, OpCode::ConstInt);
         let _ = stats;
+    }
+
+    #[test]
+    fn different_const_bytes_not_folded() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::Bytes);
+        let c1 = func.fresh_value();
+        let c2 = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_const_bytes(b"one,two", c1));
+        entry.ops.push(make_const_bytes(b"two", c2));
+        entry.terminator = Terminator::Return { values: vec![c2] };
+
+        let _stats = run(&mut func);
+
+        let ops = &func.blocks[&func.entry_block].ops;
+        assert_eq!(ops[1].opcode, OpCode::ConstBytes);
+        assert_eq!(
+            ops[1].attrs.get("bytes"),
+            Some(&AttrValue::Bytes(b"two".to_vec()))
+        );
     }
 
     #[test]

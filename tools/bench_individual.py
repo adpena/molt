@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Individual benchmark runner with daemon isolation.
+"""Individual benchmark runner with warm daemon reuse by default.
 
-Runs each benchmark in complete isolation by killing all molt-backend
-processes between runs.  This avoids the cascade-failure problem where
-a daemon crash causes all subsequent benchmarks to fail.
+Runs benchmarks through the normal Molt developer path so build timings reflect
+user-code compilation after the runtime/backend artifacts are warm.  Pass
+``--isolate-daemon`` when deliberately measuring cold daemon behavior or
+investigating daemon crash cascade failures.
 
 Usage:
     python tools/bench_individual.py
@@ -268,8 +269,10 @@ def bench_one(
     samples: int,
     timeout_build: float,
     timeout_run: float,
+    *,
+    isolate_daemon: bool = False,
 ) -> dict:
-    """Run a single benchmark with full daemon isolation.
+    """Run a single benchmark.
 
     Returns a result dict for the JSON report.
     """
@@ -289,8 +292,8 @@ def bench_one(
         "error": None,
     }
 
-    # --- Kill all backends for isolation ---
-    _ensure_clean_slate()
+    if isolate_daemon:
+        _ensure_clean_slate()
 
     # --- Build with Molt ---
     tmp = tempfile.TemporaryDirectory(prefix="molt-iso-bench-")
@@ -419,7 +422,7 @@ def print_summary(results: dict[str, dict]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Molt benchmarks with per-benchmark daemon isolation.",
+        description="Run Molt benchmarks with warm backend daemon reuse by default.",
     )
     parser.add_argument(
         "--samples",
@@ -457,6 +460,14 @@ def parse_args() -> argparse.Namespace:
         default=60,
         help="Run timeout in seconds (default: 60)",
     )
+    parser.add_argument(
+        "--isolate-daemon",
+        action="store_true",
+        help=(
+            "Kill molt-backend before each benchmark and at exit. "
+            "Use only for cold-start/crash-isolation diagnostics."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -490,6 +501,10 @@ def main() -> None:
     total = len(benchmarks)
     print(f"Running {total} benchmark(s) with {args.samples} sample(s) each")
     print(f"Build timeout: {args.timeout_build}s  |  Run timeout: {args.timeout_run}s")
+    print(
+        "Backend daemon: "
+        + ("cold isolated per benchmark" if args.isolate_daemon else "warm reused")
+    )
     print()
 
     results: dict[str, dict] = {}
@@ -502,6 +517,7 @@ def main() -> None:
             samples=args.samples,
             timeout_build=args.timeout_build,
             timeout_run=args.timeout_run,
+            isolate_daemon=args.isolate_daemon,
         )
         results[name] = result
 
@@ -532,8 +548,8 @@ def main() -> None:
         default_out.write_text(json.dumps(report, indent=2) + "\n")
         print(f"Results written to {default_out}")
 
-    # Final cleanup
-    _ensure_clean_slate(quiet=True)
+    if args.isolate_daemon:
+        _ensure_clean_slate(quiet=True)
 
 
 if __name__ == "__main__":

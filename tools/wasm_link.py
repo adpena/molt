@@ -53,7 +53,7 @@ CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA
 # any runtime whose hash does not match.  Update this dict when cutting a
 # release or after rebuilding the runtime (run: shasum -a 256 molt_runtime.wasm).
 RUNTIME_EXPECTED_HASHES: dict[str, str] = {
-    "molt_runtime.wasm": "ed92be1505a4865c1b458db5944032b34d53fa0d8e0b98fcfc50ca935687f12a",
+    "molt_runtime.wasm": "4b67713dc60809000fe90a5838c643ae65b27fdd268ece133ee65b17cf1fa873",
 }
 _OUTPUT_RUNTIME_EXPORT_ALIASES = (
     "molt_isolate_bootstrap",

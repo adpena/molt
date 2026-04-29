@@ -9588,6 +9588,26 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "bytearray_fill_range" => {
+                        let args = op.args.as_ref().unwrap();
+                        let bytearray = locals[&args[0]];
+                        let start = locals[&args[1]];
+                        let stop = locals[&args[2]];
+                        let value = locals[&args[3]];
+                        func.instruction(&Instruction::LocalGet(bytearray));
+                        func.instruction(&Instruction::LocalGet(start));
+                        func.instruction(&Instruction::LocalGet(stop));
+                        func.instruction(&Instruction::LocalGet(value));
+                        emit_call(func, reloc_enabled, import_ids["bytearray_fill_range"]);
+                        if let Some(out) = op.out.as_ref()
+                            && out != "none"
+                        {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "bytes_from_obj" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
@@ -15759,7 +15779,6 @@ fn add_reloc_sections(
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use wasmparser::{Operator, Parser, Payload};
 
     #[test]
     fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
