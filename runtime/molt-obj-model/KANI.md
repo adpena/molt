@@ -26,9 +26,10 @@ cargo kani --tests
 
 The intrinsic-contract harnesses intentionally use fixed-capacity bounded list
 models for list axioms instead of symbolic `Vec` growth, iterator collection,
-or standard-library sort/dedup calls. That keeps the proof obligation on Molt's
-contract surface and prevents CI from spending the job budget inside
-standard-library collection internals.
+standard-library sort/dedup calls. They also use explicit bounded equality,
+type tags, and model hash functions instead of stdlib `memcmp`/SipHash paths.
+That keeps the proof obligation on Molt's contract surface and prevents CI from
+spending the job budget inside standard-library collection/hash internals.
 
 ### molt-runtime (object model, string ops)
 
