@@ -18,6 +18,7 @@ import ipaddress
 import tempfile
 import json
 import os
+import pathlib
 import platform
 import posixpath
 import re
@@ -7454,6 +7455,8 @@ def _hash_source_tree_metadata(
                     hasher.update(b"\0")
                     hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
                     hasher.update(b"\0")
+                    hasher.update(str(stat.st_ctime_ns).encode("utf-8"))
+                    hasher.update(b"\0")
                     file_count += 1
             elif path.exists():
                 try:
@@ -7470,6 +7473,8 @@ def _hash_source_tree_metadata(
                 hasher.update(str(stat.st_size).encode("utf-8"))
                 hasher.update(b"\0")
                 hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
+                hasher.update(b"\0")
+                hasher.update(str(stat.st_ctime_ns).encode("utf-8"))
                 hasher.update(b"\0")
                 file_count += 1
     except OSError:
@@ -7690,6 +7695,7 @@ _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES = frozenset(
         "stdlib_unicode_names",
     }
 )
+
 
 def _runtime_builtin_features_for_profile(
     stdlib_profile: str | None,
@@ -25408,23 +25414,84 @@ def _resolve_output_path(
     return path
 
 
-_CACHE_FINGERPRINT: str | None = None
-_CACHE_TOOLING_FINGERPRINT: str | None = None
-_CACHE_KEY_SCHEMA_VERSION = "v3"
+_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v2"
+_CACHE_KEY_SCHEMA_VERSION = "v4"
 _FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v2"
 _SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v2"
 
 
-def _cache_fingerprint() -> str:
-    global _CACHE_FINGERPRINT
-    if _CACHE_FINGERPRINT is not None:
-        return _CACHE_FINGERPRINT
-    root = Path(__file__).resolve().parents[2]
+def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
+    return tuple(
+        str(path.resolve())
+        for path in sorted(set(paths), key=lambda candidate: str(candidate))
+    )
+
+
+@functools.lru_cache(maxsize=64)
+def _source_tree_content_digest_cached(
+    root_str: str,
+    path_keys: tuple[str, ...],
+    metadata_digest: str,
+    scope: str,
+    extra_fingerprint_inputs: str,
+) -> str:
+    root = pathlib.Path(root_str)
     hasher = hashlib.sha256()
+    hasher.update(_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(scope.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(extra_fingerprint_inputs.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(metadata_digest.encode("utf-8"))
+    hasher.update(b"\0")
+    for path_key in path_keys:
+        path = pathlib.Path(path_key)
+        if path.is_dir():
+            for item in sorted(path.rglob("*"), key=lambda candidate: str(candidate)):
+                if item.is_file():
+                    _hash_runtime_file(item, root, hasher)
+        elif path.exists():
+            _hash_runtime_file(path, root, hasher)
+    return hasher.hexdigest()
+
+
+def _source_tree_cache_fingerprint(
+    *,
+    root: Path,
+    source_paths: Sequence[Path],
+    scope: str,
+    extra_fingerprint_inputs: str,
+) -> str:
+    path_keys = _source_fingerprint_path_keys(source_paths)
+    normalized_paths = [pathlib.Path(path_key) for path_key in path_keys]
+    metadata = _hash_source_tree_metadata(normalized_paths, root)
+    metadata_digest = metadata[0] if metadata is not None else "metadata-unavailable"
+    file_count = metadata[1] if metadata is not None else -1
+    content_digest = _source_tree_content_digest_cached(
+        str(root),
+        path_keys,
+        metadata_digest,
+        scope,
+        extra_fingerprint_inputs,
+    )
+    hasher = hashlib.sha256()
+    hasher.update(_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(scope.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(f"files:{file_count}".encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(metadata_digest.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(content_digest.encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def _cache_fingerprint() -> str:
+    root = Path(__file__).resolve().parents[2]
     rustc_info = _rustc_version() or ""
     rustflags = os.environ.get("RUSTFLAGS", "")
-    hasher.update(f"rustc:{rustc_info}\n".encode("utf-8"))
-    hasher.update(f"rustflags:{rustflags}\n".encode("utf-8"))
     # TIR setting affects codegen output — different TIR configs need
     # different caches. Source file hashing (below) already catches
     # backend code changes. We intentionally do NOT hash the backend
@@ -25432,48 +25499,35 @@ def _cache_fingerprint() -> str:
     # rebuild even without source changes, destroying the user's
     # cached binaries and causing 30s+ cold starts.
     tir_opt = os.environ.get("MOLT_TIR_OPT", "")
-    hasher.update(f"tir_opt:{tir_opt}\n".encode("utf-8"))
-    seen: set[Path] = set()
     # Keep cache invalidation scoped to runtime/backend codegen sources.
     # Frontend/stdlib semantics already flow into the IR payload hash, so
     # hashing the entire stdlib tree here would over-invalidate unrelated builds.
     source_paths = _backend_source_paths(
         root, ("egraphs", "luau-backend", "rust-backend", "wasm-backend")
     ) + _runtime_source_paths(root)
-    for path in sorted(source_paths, key=lambda p: str(p)):
-        if path in seen:
-            continue
-        seen.add(path)
-        if path.is_dir():
-            for item in sorted(path.rglob("*"), key=lambda p: str(p)):
-                if item.is_file():
-                    _hash_runtime_file(item, root, hasher)
-        elif path.exists():
-            _hash_runtime_file(path, root, hasher)
-    _CACHE_FINGERPRINT = hasher.hexdigest()
-    return _CACHE_FINGERPRINT
+    return _source_tree_cache_fingerprint(
+        root=root,
+        source_paths=source_paths,
+        scope="compiler-runtime-backend",
+        extra_fingerprint_inputs=(
+            f"rustc:{rustc_info}\nrustflags:{rustflags}\ntir_opt:{tir_opt}\n"
+        ),
+    )
 
 
 def _cache_tooling_fingerprint() -> str:
-    global _CACHE_TOOLING_FINGERPRINT
-    if _CACHE_TOOLING_FINGERPRINT is not None:
-        return _CACHE_TOOLING_FINGERPRINT
     root = Path(__file__).resolve().parents[2]
-    hasher = hashlib.sha256()
     tooling_paths = [
         Path(__file__).resolve(),
         root / "src/molt/frontend/__init__.py",
         root / "src/molt/cli.py",
     ]
-    seen: set[Path] = set()
-    for path in tooling_paths:
-        if path in seen:
-            continue
-        seen.add(path)
-        if path.exists():
-            _hash_runtime_file(path, root, hasher)
-    _CACHE_TOOLING_FINGERPRINT = hasher.hexdigest()
-    return _CACHE_TOOLING_FINGERPRINT
+    return _source_tree_cache_fingerprint(
+        root=root,
+        source_paths=tooling_paths,
+        scope="frontend-tooling",
+        extra_fingerprint_inputs="",
+    )
 
 
 def _json_ir_default(value: Any) -> Any:

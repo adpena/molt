@@ -1,8 +1,14 @@
 //! Dead-store elimination for `StoreAttr` ops within a single basic block.
 //!
-//! Pattern: when two `StoreAttr` ops within the same block target the same
-//! object value at the same offset and there is no intervening read or
-//! escape of that object, the earlier store is dead and can be removed.
+//! Pattern 1: when two `StoreAttr` ops within the same block target the
+//! same object value at the same offset and there is no intervening read
+//! or escape of that object, the earlier store is dead and can be removed.
+//!
+//! Pattern 2: when the final stores to a typed-class instance target an
+//! `ObjectNewBoundStack` value allocated in the same block, and that stack
+//! object is not used by the terminator, those stores are also dead.  The
+//! object cannot be observed outside the block, and any intervening observer
+//! already invalidates the pending-store state below.
 //!
 //! The most common producer of this pattern is the frontend's class-
 //! instantiation fold combined with the `__init__` inliner: the inlined
@@ -54,8 +60,9 @@
 //!
 //! Returns the number of dead stores removed via `PassStats.ops_removed`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use crate::tir::blocks::Terminator;
 use crate::tir::blocks::TirBlock;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
@@ -105,6 +112,19 @@ fn transparent_alias_source(op: &TirOp) -> Option<ValueId> {
         return None;
     }
     Some(op.operands[0])
+}
+
+fn stack_object_alloc_result(op: &TirOp) -> Option<ValueId> {
+    if op.opcode != OpCode::ObjectNewBoundStack {
+        return None;
+    }
+    if !matches!(op.attrs.get("value"), Some(AttrValue::Int(_))) {
+        return None;
+    }
+    if op.results.len() != 1 {
+        return None;
+    }
+    Some(op.results[0])
 }
 
 #[derive(Default)]
@@ -187,6 +207,37 @@ fn may_observe_slot(op: &TirOp, root: ValueId, aliases: &AliasState) -> bool {
     }
 }
 
+fn terminator_uses_root(terminator: &Terminator, root: ValueId, aliases: &AliasState) -> bool {
+    let mut uses_root = |value: &ValueId| aliases.root(*value) == root;
+    match terminator {
+        Terminator::Branch { args, .. } => args.iter().any(&mut uses_root),
+        Terminator::CondBranch {
+            cond,
+            then_args,
+            else_args,
+            ..
+        } => {
+            uses_root(cond)
+                || then_args.iter().any(&mut uses_root)
+                || else_args.iter().any(&mut uses_root)
+        }
+        Terminator::Switch {
+            value,
+            cases,
+            default_args,
+            ..
+        } => {
+            uses_root(value)
+                || cases
+                    .iter()
+                    .any(|(_, _, args)| args.iter().any(&mut uses_root))
+                || default_args.iter().any(&mut uses_root)
+        }
+        Terminator::Return { values } => values.iter().any(&mut uses_root),
+        Terminator::Unreachable => false,
+    }
+}
+
 /// Run dead-store elimination on a single block.  Returns the number
 /// of ops removed.
 fn run_block(block: &mut TirBlock) -> usize {
@@ -200,6 +251,7 @@ fn run_block(block: &mut TirBlock) -> usize {
     let mut pending: HashMap<(ValueId, i64), usize> = HashMap::new();
     let mut dead_indices: Vec<usize> = Vec::new();
     let mut aliases = AliasState::default();
+    let mut stack_object_roots: HashSet<ValueId> = HashSet::new();
 
     for (idx, op) in block.ops.iter().enumerate() {
         // First: any op that observes `obj` invalidates pending stores
@@ -216,6 +268,9 @@ fn run_block(block: &mut TirBlock) -> usize {
         }
 
         aliases.record_transparent_aliases(op);
+        if let Some(result) = stack_object_alloc_result(op) {
+            stack_object_roots.insert(aliases.root(result));
+        }
 
         // Now handle the store, if this is one.
         if let Some((target, offset)) = typed_slot_store(op) {
@@ -224,6 +279,14 @@ fn run_block(block: &mut TirBlock) -> usize {
                 // The previous store at this (obj, offset) is dead.
                 dead_indices.push(prev_idx);
             }
+        }
+    }
+
+    for (&(root, _offset), &idx) in &pending {
+        if stack_object_roots.contains(&root)
+            && !terminator_uses_root(&block.terminator, root, &aliases)
+        {
+            dead_indices.push(idx);
         }
     }
 
@@ -283,6 +346,12 @@ mod tests {
             "_original_kind".into(),
             AttrValue::Str(original_kind.into()),
         );
+        op
+    }
+
+    fn make_object_alloc(opcode: OpCode, cls: ValueId, inst: ValueId) -> TirOp {
+        let mut op = make_op(opcode, vec![cls], vec![inst]);
+        op.attrs.insert("value".into(), AttrValue::Int(24));
         op
     }
 
@@ -575,9 +644,9 @@ mod tests {
         let inst = ValueId(4);
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        let mut alloc = make_op(OpCode::ObjectNewBound, vec![cls], vec![inst]);
-        alloc.attrs.insert("value".into(), AttrValue::Int(24));
-        entry.ops.push(alloc);
+        entry
+            .ops
+            .push(make_object_alloc(OpCode::ObjectNewBound, cls, inst));
         // store_init p.x = 0  (offset 0)
         entry
             .ops
@@ -601,5 +670,133 @@ mod tests {
         );
         // Surviving ops: alloc + 2 user stores = 3.
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 3);
+    }
+
+    /// A stack-allocated object that never leaves the block and whose
+    /// fields are never read does not need final slot stores. DCE can
+    /// then erase the now-unused allocation and value computations.
+    #[test]
+    fn stack_object_final_stores_with_no_live_out_are_dead() {
+        let mut func = entry_only_func();
+        let cls = ValueId(0);
+        let x = ValueId(1);
+        let y = ValueId(2);
+        let inst = ValueId(3);
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_object_alloc(OpCode::ObjectNewBoundStack, cls, inst));
+        entry.ops.push(make_store(vec![inst, x], 0, "store"));
+        entry.ops.push(make_store(vec![inst, y], 8, "store"));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+        assert_eq!(
+            stats.ops_removed, 2,
+            "final stores to a noescape stack object with no block live-out are dead"
+        );
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .all(|op| op.opcode != OpCode::StoreAttr),
+            "all stack-object final stores should be removed"
+        );
+    }
+
+    /// Full bench_struct stack form: the constructor-default stores are
+    /// overwritten, and the final stores are also dead because the
+    /// object remains local and unread.
+    #[test]
+    fn bench_struct_stack_pattern_eliminates_all_dead_stores() {
+        let mut func = entry_only_func();
+        let cls = ValueId(0);
+        let zero = ValueId(1);
+        let i = ValueId(2);
+        let i_plus_1 = ValueId(3);
+        let inst = ValueId(4);
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_object_alloc(OpCode::ObjectNewBoundStack, cls, inst));
+        entry
+            .ops
+            .push(make_store(vec![inst, zero], 0, "store_init"));
+        entry
+            .ops
+            .push(make_store(vec![inst, zero], 8, "store_init"));
+        entry.ops.push(make_store(vec![inst, i], 0, "store"));
+        entry.ops.push(make_store(vec![inst, i_plus_1], 8, "store"));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+        assert_eq!(
+            stats.ops_removed, 4,
+            "both overwritten init stores and final local stores are dead"
+        );
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .all(|op| op.opcode != OpCode::StoreAttr),
+            "all typed-slot stores should be removed"
+        );
+    }
+
+    /// Heap allocations may be externally visible through runtime
+    /// object identity/finalization rules, so final stores remain live
+    /// unless another store overwrites them in the same block.
+    #[test]
+    fn heap_object_final_store_is_not_eliminated() {
+        let mut func = entry_only_func();
+        let cls = ValueId(0);
+        let x = ValueId(1);
+        let inst = ValueId(2);
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_object_alloc(OpCode::ObjectNewBound, cls, inst));
+        entry.ops.push(make_store(vec![inst, x], 0, "store"));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+        assert_eq!(stats.ops_removed, 0);
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::StoreAttr),
+            "heap-object final stores must stay live"
+        );
+    }
+
+    /// A stack allocation passed through the terminator is live beyond
+    /// the current block, so its final store must be preserved.
+    #[test]
+    fn stack_object_store_returned_from_block_is_not_eliminated() {
+        let mut func = entry_only_func();
+        let cls = ValueId(0);
+        let x = ValueId(1);
+        let inst = ValueId(2);
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_object_alloc(OpCode::ObjectNewBoundStack, cls, inst));
+        entry.ops.push(make_store(vec![inst, x], 0, "store"));
+        entry.terminator = Terminator::Return { values: vec![inst] };
+
+        let stats = run(&mut func);
+        assert_eq!(stats.ops_removed, 0);
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::StoreAttr),
+            "terminator live-out must keep the final store"
+        );
     }
 }
