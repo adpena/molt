@@ -8100,9 +8100,13 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
 
     assert len(verification_calls) == 2
     assert verification_calls[0] == verification_calls[1]
-    assert {"stdlib_serial", "stdlib_net", "stdlib_micro", "no-default-features"} <= (
-        verification_calls[0]
-    )
+    assert {"builtin_set", "stdlib_micro", "no-default-features"} <= verification_calls[
+        0
+    ]
+    assert "stdlib_net" not in verification_calls[0]
+    assert "stdlib_serial" not in verification_calls[0]
+    assert "stdlib_compression" not in verification_calls[0]
+    assert "molt_gpu_primitives" not in verification_calls[0]
 
 
 def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen(
@@ -8790,6 +8794,52 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
 
 def test_browser_deploy_profile_defaults_to_full_wasm_profile() -> None:
     assert cli._DEPLOY_PROFILE_DEFAULTS["browser"]["wasm_profile"] == "full"
+
+
+def test_build_cli_defaults_to_micro_stdlib_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("print('ok')\n")
+    seen_profiles: list[str | None] = []
+
+    def fake_build(*args: object, **kwargs: object) -> int:
+        del args
+        seen_profiles.append(cast(str | None, kwargs.get("stdlib_profile")))
+        return 0
+
+    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setattr(sys, "argv", ["molt", "build", str(entry)])
+
+    assert cli.main() == 0
+    assert seen_profiles == ["micro"]
+
+
+def test_build_cli_keeps_deploy_stdlib_profile_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("print('ok')\n")
+    seen_profiles: list[str | None] = []
+
+    def fake_build(*args: object, **kwargs: object) -> int:
+        del args
+        seen_profiles.append(cast(str | None, kwargs.get("stdlib_profile")))
+        return 0
+
+    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["molt", "build", "--target", "wasm", "--profile", "wasi", str(entry)],
+    )
+
+    assert cli.main() == 0
+    assert seen_profiles == ["full"]
 
 
 def test_run_uses_build_profile_flag_for_nested_build(
