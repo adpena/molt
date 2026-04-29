@@ -194,32 +194,30 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             // no value) that are later consumed by type refinement. These
             // ops are structurally valid even without their value attribute.
             match op.opcode {
-                OpCode::Call | OpCode::CallBuiltin => {
-                    // Callee can be either an attribute or the first operand
-                    // (SimpleIR encodes it as `var`, which becomes an operand).
+                OpCode::Call | OpCode::CallBuiltin
                     if !op.attrs.contains_key("callee")
                         && !op.attrs.contains_key("s_value")
-                        && op.operands.is_empty()
-                    {
-                        errors.push(VerifyError::op(
-                            *bid,
-                            op_idx,
-                            format!("{:?} op has no callee (attr or operand)", op.opcode),
-                        ));
-                    }
+                        && op.operands.is_empty() =>
+                {
+                    // Callee can be either an attribute or the first operand
+                    // (SimpleIR encodes it as `var`, which becomes an operand).
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        format!("{:?} op has no callee (attr or operand)", op.opcode),
+                    ));
                 }
-                OpCode::CallMethod => {
+                OpCode::CallMethod
                     if !op.attrs.contains_key("method")
                         && !op.attrs.contains_key("callee")
                         && !op.attrs.contains_key("s_value")
-                        && op.operands.is_empty()
-                    {
-                        errors.push(VerifyError::op(
-                            *bid,
-                            op_idx,
-                            "CallMethod op has no method (attr or operand)",
-                        ));
-                    }
+                        && op.operands.is_empty() =>
+                {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        "CallMethod op has no method (attr or operand)",
+                    ));
                 }
                 OpCode::ObjectNewBoundStack => match op.attrs.get("value") {
                     Some(AttrValue::Int(value)) if *value > 0 => {}

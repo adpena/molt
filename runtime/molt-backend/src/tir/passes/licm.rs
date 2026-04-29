@@ -256,7 +256,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         })
         .collect();
     // Descending depth → innermost first. Stable across ties.
-    headers_with_depth.sort_by(|a, b| b.1.cmp(&a.1));
+    headers_with_depth.sort_by_key(|(_, depth)| std::cmp::Reverse(*depth));
     let loop_headers: Vec<BlockId> = headers_with_depth.into_iter().map(|(h, _)| h).collect();
 
     // Build a set of all values defined in each block for quick lookup.

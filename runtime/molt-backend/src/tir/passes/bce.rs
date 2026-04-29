@@ -167,10 +167,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         if let Some(block) = func.blocks.get(bid) {
             for op in &block.ops {
                 match op.opcode {
-                    OpCode::GetIter => {
-                        if !op.operands.is_empty() && !op.results.is_empty() {
-                            get_iter_source.insert(op.results[0], op.operands[0]);
-                        }
+                    OpCode::GetIter if !op.operands.is_empty() && !op.results.is_empty() => {
+                        get_iter_source.insert(op.results[0], op.operands[0]);
                     }
                     OpCode::CallBuiltin => {
                         let name = op
@@ -203,44 +201,40 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             container_length.insert(result, KnownLength::Constant(len));
                         }
                     }
-                    OpCode::Mul => {
+                    OpCode::Mul if op.operands.len() == 2 && !op.results.is_empty() => {
                         // list_repeat: Mul(list_1_elem, count) -> container
                         // of length `count`.  Only fires when one operand is a
                         // BuildList with exactly 1 element.
-                        if op.operands.len() == 2 && !op.results.is_empty() {
-                            let (a, b) = (op.operands[0], op.operands[1]);
-                            let list_count_pair =
-                                if container_length.get(&a).is_some_and(|l| matches!(l, KnownLength::Constant(1))) {
-                                    Some(b)
-                                } else if container_length.get(&b).is_some_and(|l| matches!(l, KnownLength::Constant(1))) {
-                                    Some(a)
+                        let (a, b) = (op.operands[0], op.operands[1]);
+                        let list_count_pair =
+                            if container_length.get(&a).is_some_and(|l| matches!(l, KnownLength::Constant(1))) {
+                                Some(b)
+                            } else if container_length.get(&b).is_some_and(|l| matches!(l, KnownLength::Constant(1))) {
+                                Some(a)
+                            } else {
+                                None
+                            };
+                        if let Some(count_val) = list_count_pair {
+                            for &result in &op.results {
+                                if let Some(&c) = const_int_value.get(&count_val) {
+                                    container_length.insert(result, KnownLength::Constant(c));
                                 } else {
-                                    None
-                                };
-                            if let Some(count_val) = list_count_pair {
-                                for &result in &op.results {
-                                    if let Some(&c) = const_int_value.get(&count_val) {
-                                        container_length.insert(result, KnownLength::Constant(c));
-                                    } else {
-                                        container_length.insert(result, KnownLength::SameAs(count_val));
-                                    }
+                                    container_length.insert(result, KnownLength::SameAs(count_val));
                                 }
                             }
                         }
                     }
-                    OpCode::Add => {
+                    OpCode::Add if op.operands.len() == 2 && !op.results.is_empty() => {
                         // Track Add(base, const) decomposition for matching
                         // container length = n+1 with loop guard i <= n.
-                        if op.operands.len() == 2 && !op.results.is_empty() {
-                            let (a, b) = (op.operands[0], op.operands[1]);
-                            if let Some(&cv) = const_int_value.get(&b) {
-                                for &result in &op.results {
-                                    add_const_decomp.insert(result, AddConst { base: a, offset: cv });
-                                }
-                            } else if let Some(&cv) = const_int_value.get(&a) {
-                                for &result in &op.results {
-                                    add_const_decomp.insert(result, AddConst { base: b, offset: cv });
-                                }
+                        let (a, b) = (op.operands[0], op.operands[1]);
+                        if let Some(&cv) = const_int_value.get(&b) {
+                            for &result in &op.results {
+                                add_const_decomp.insert(result, AddConst { base: a, offset: cv });
+                            }
+                        } else if let Some(&cv) = const_int_value.get(&a) {
+                            for &result in &op.results {
+                                add_const_decomp.insert(result, AddConst { base: b, offset: cv });
                             }
                         }
                     }

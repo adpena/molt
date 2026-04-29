@@ -172,7 +172,7 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
 
     // Phase 3: apply rewrites. Work from the end to preserve indices.
     // Sort rewrites by phi_idx descending to avoid index invalidation.
-    rewrites.sort_by(|a, b| b.phi_idx.cmp(&a.phi_idx));
+    rewrites.sort_by_key(|rewrite| std::cmp::Reverse(rewrite.phi_idx));
 
     for rewrite in &rewrites {
         // Replace phi with load_var.
@@ -210,7 +210,7 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
     }
 
     // Sort by insertion index descending to maintain correct positions.
-    insertions.sort_by(|a, b| b.0.cmp(&a.0));
+    insertions.sort_by_key(|(idx, _)| std::cmp::Reverse(*idx));
 
     for (idx, op) in insertions {
         ops.insert(idx, op);

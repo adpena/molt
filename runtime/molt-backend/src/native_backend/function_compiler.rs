@@ -1310,7 +1310,6 @@ fn preanalyze_function_ir(
 ) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
-    let has_store: bool;
     let mut var_names: BTreeSet<String> = BTreeSet::new();
     let mut last_use = BTreeMap::new();
     let mut alias_roots = BTreeMap::new();
@@ -1806,7 +1805,7 @@ fn preanalyze_function_ir(
         &float_like_vars,
         &none_like_vars,
     );
-    has_store = func_ir.ops.iter().enumerate().any(|(idx, op)| {
+    let has_store = func_ir.ops.iter().enumerate().any(|(idx, op)| {
         op.kind == "store" && !direct_field_store_ops.contains(&idx)
     });
 
@@ -14973,33 +14972,29 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[count_val]);
                 }
-                "trace_enter_slot" => {
-                    if emit_traces {
-                        let code_id = op.value.unwrap_or(0);
-                        let code_id_val = builder.ins().iconst(types::I64, code_id);
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_trace_enter_slot",
-                            &[types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let _ = builder.ins().call(local_callee, &[code_id_val]);
-                    }
+                "trace_enter_slot" if emit_traces => {
+                    let code_id = op.value.unwrap_or(0);
+                    let code_id_val = builder.ins().iconst(types::I64, code_id);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_trace_enter_slot",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder.ins().call(local_callee, &[code_id_val]);
                 }
-                "trace_exit" => {
-                    if emit_traces {
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_trace_exit",
-                            &[],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let _ = builder.ins().call(local_callee, &[]);
-                    }
+                "trace_exit" if emit_traces => {
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_trace_exit",
+                        &[],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder.ins().call(local_callee, &[]);
                 }
                 "frame_locals_set" => {
                     let arg_names = op.args.as_deref().unwrap_or(&[]);
@@ -17250,7 +17245,7 @@ impl SimpleBackend {
                     // so writing the final whole-i64 chunk is sound
                     // regardless of payload byte count.
                     let zero64 = builder.ins().iconst(types::I64, 0);
-                    let n_chunks = ((total as usize) + 7) / 8;
+                    let n_chunks = (total as usize).div_ceil(8);
                     for chunk in 0..n_chunks {
                         builder
                             .ins()
