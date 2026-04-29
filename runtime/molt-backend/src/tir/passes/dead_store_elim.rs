@@ -53,8 +53,9 @@
 //! - Stores with no resolvable offset attr stay live.
 //! - Only `StoreAttr` ops with `_original_kind in {"store", "store_init"}`
 //!   are considered - other StoreAttr variants (set_attr_name,
-//!   guarded_field_set, module_set_attr, etc.) have different operand
-//!   conventions and effects and are out of scope.
+//!   guarded_field_set, etc.) have different operand conventions and effects
+//!   and are out of scope. Module attribute mutation is represented by the
+//!   first-class `ModuleSetAttr` opcode, not StoreAttr transport.
 //!
 //! ## Statistics
 //!

@@ -144,6 +144,19 @@ pub enum OpCode {
     /// module handle on cache hits, so optimization passes must not treat it
     /// as a pure value copy.
     ModuleCacheGet,
+    /// Write a module object into the runtime module cache by name.
+    ///
+    /// Operands: `[module_name_value, module_value]`.
+    /// Result: none. This mutates the runtime module cache, refcounts the
+    /// cached module entry, synchronizes `sys.modules`, and may run special
+    /// bootstrap side effects for `sys`.
+    ModuleCacheSet,
+    /// Remove a module object from the runtime module cache by name.
+    ///
+    /// Operands: `[module_name_value]`.
+    /// Result: none. This mutates the runtime module cache and `sys.modules`
+    /// and may raise when the name is not a string.
+    ModuleCacheDel,
     /// Read an attribute from a runtime module object.
     ///
     /// Operands: `[module_value, attr_name_value]`.
@@ -164,6 +177,18 @@ pub enum OpCode {
     /// Result: dynamic Molt value. This delegates to module attribute lookup
     /// and therefore may raise.
     ModuleGetName,
+    /// Set a module attribute through the runtime module dictionary path.
+    ///
+    /// Operands: `[module_value, attr_name_value, value]`.
+    /// Result: none. This is not equivalent to generic StoreAttr: module
+    /// assignment has module-dict and annotation-specific runtime semantics.
+    ModuleSetAttr,
+    /// Delete a module global through CPython module dictionary semantics.
+    ///
+    /// Operands: `[module_value, global_name_value]`.
+    /// Result: none. This mutates the module dictionary and raises `NameError`
+    /// when the binding is absent.
+    ModuleDelGlobal,
     // IO / diagnostics
     WarnStderr,
     // Structured control flow (scf dialect)

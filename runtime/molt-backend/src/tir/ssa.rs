@@ -900,7 +900,10 @@ impl<'a> SsaContext<'a> {
                 | "set_attr_generic_obj"
                 | "guarded_field_set"
                 | "guarded_field_set_init"
+                | "module_cache_set"
+                | "module_cache_del"
                 | "module_set_attr"
+                | "module_del_global"
                 | "store"
                 | "store_init"
                 | "store_index"
@@ -1707,7 +1710,6 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         | "set_attr_generic_obj"
         | "guarded_field_set"
         | "guarded_field_set_init"
-        | "module_set_attr"
         | "store"
         | "store_init" => OpCode::StoreAttr,
         "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
@@ -1762,9 +1764,13 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "import" | "import_name" | "module_import" => OpCode::Import,
         "import_from" => OpCode::ImportFrom,
         "module_cache_get" => OpCode::ModuleCacheGet,
+        "module_cache_set" => OpCode::ModuleCacheSet,
+        "module_cache_del" => OpCode::ModuleCacheDel,
         "module_get_attr" => OpCode::ModuleGetAttr,
         "module_get_global" => OpCode::ModuleGetGlobal,
         "module_get_name" => OpCode::ModuleGetName,
+        "module_set_attr" => OpCode::ModuleSetAttr,
+        "module_del_global" => OpCode::ModuleDelGlobal,
         "warn_stderr" => OpCode::WarnStderr,
         // Fallback for unknown ops.
         _ => OpCode::Copy,
@@ -1979,6 +1985,96 @@ mod tests {
         );
     }
 
+    fn assert_first_class_module_mutation(
+        simple_kind: &str,
+        expected_opcode: OpCode,
+        args: &[&str],
+    ) {
+        let ops = vec![
+            op_args_out("module_import", &["builtins"], "module"),
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("answer".to_string()),
+                out: Some("name".to_string()),
+                ..OpIR::default()
+            },
+            op_val_out("const", 42, "value"),
+            OpIR {
+                kind: simple_kind.to_string(),
+                args: Some(args.iter().map(|arg| arg.to_string()).collect()),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let first_class_count = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == expected_opcode)
+            .count();
+        let fallback_count = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| {
+                op.opcode == OpCode::Copy
+                    && matches!(
+                        op.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(kind)) if kind == simple_kind
+                    )
+            })
+            .count();
+
+        assert_eq!(
+            first_class_count, 1,
+            "{simple_kind} must lower to its first-class TIR opcode"
+        );
+        assert_eq!(
+            fallback_count, 0,
+            "{simple_kind} must not lower as Copy[_original_kind]"
+        );
+    }
+
+    #[test]
+    fn module_cache_set_lowers_to_first_class_tir_opcode() {
+        assert_first_class_module_mutation(
+            "module_cache_set",
+            OpCode::ModuleCacheSet,
+            &["name", "module"],
+        );
+    }
+
+    #[test]
+    fn module_cache_del_lowers_to_first_class_tir_opcode() {
+        assert_first_class_module_mutation(
+            "module_cache_del",
+            OpCode::ModuleCacheDel,
+            &["name"],
+        );
+    }
+
+    #[test]
+    fn module_set_attr_lowers_to_first_class_tir_opcode() {
+        assert_first_class_module_mutation(
+            "module_set_attr",
+            OpCode::ModuleSetAttr,
+            &["module", "name", "value"],
+        );
+    }
+
+    #[test]
+    fn module_del_global_lowers_to_first_class_tir_opcode() {
+        assert_first_class_module_mutation(
+            "module_del_global",
+            OpCode::ModuleDelGlobal,
+            &["module", "name"],
+        );
+    }
+
     // Helper: collect all unique ValueIds from block arguments and op results.
     fn all_value_ids(output: &SsaOutput) -> HashSet<ValueId> {
         let mut ids = HashSet::new();
@@ -2067,7 +2163,7 @@ mod tests {
     }
 
     #[test]
-    fn module_set_attr_lowers_to_store_attr_instead_of_copy_fallback() {
+    fn module_set_attr_does_not_lower_as_store_attr_transport() {
         let ops = vec![
             op_args_out("module_import", &["builtins"], "mod"),
             OpIR {
@@ -2092,18 +2188,21 @@ mod tests {
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
         let entry = &output.blocks[0];
-        let module_store = entry
+        let module_store_count = entry
             .ops
             .iter()
-            .find(|op| {
-                op.attrs.get("_original_kind").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                }) == Some("module_set_attr")
+            .filter(|op| {
+                op.opcode == OpCode::StoreAttr
+                    && op.attrs.get("_original_kind").and_then(|v| match v {
+                        AttrValue::Str(s) => Some(s.as_str()),
+                        _ => None,
+                    }) == Some("module_set_attr")
             })
-            .expect("expected module_set_attr to preserve its original kind");
-        assert_eq!(module_store.opcode, OpCode::StoreAttr);
-        assert_eq!(module_store.operands.len(), 3, "{module_store:?}");
+            .count();
+        assert_eq!(
+            module_store_count, 0,
+            "module_set_attr must remain a module op instead of StoreAttr transport"
+        );
     }
 
     #[test]

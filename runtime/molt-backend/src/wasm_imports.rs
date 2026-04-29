@@ -29,6 +29,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("resource_on_free", 1),     // (i32 size) -> void
     // ── INTERNAL: Module system ──
     ("module_cache_get", 2),
+    ("module_cache_del", 2),
     ("module_cache_set", 3),
     ("module_del_global", 3),
     ("module_get_attr", 3),
@@ -1086,6 +1087,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("call_indirect_ic", &["call_indirect_ic"]),
     ("invoke_ffi_ic", &["invoke_ffi_ic"]),
     // ── On-demand: module system extras ──
+    ("module_cache_del", &["module_cache_del"]),
     ("module_del_global", &["module_del_global"]),
     ("module_get_global", &["module_get_global"]),
     ("module_get_name", &["module_get_name"]),
@@ -1589,3 +1591,39 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         ],
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
+
+    #[test]
+    fn module_cache_del_is_registered_as_on_demand_wasm_import() {
+        let import_type = IMPORT_REGISTRY
+            .iter()
+            .find_map(|&(name, type_idx)| (name == "module_cache_del").then_some(type_idx));
+        assert_eq!(
+            import_type,
+            Some(2),
+            "module_cache_del must use the unary i64 -> i64 host import ABI"
+        );
+
+        let structural = OP_IMPORT_DEPS
+            .iter()
+            .find_map(|&(kind, deps)| (kind == "__structural__").then_some(deps))
+            .expect("structural WASM import deps must exist");
+        assert!(
+            !structural.contains(&"module_cache_del"),
+            "module_cache_del is cleanup-only and must not inflate every Auto-profile WASM binary"
+        );
+
+        let op_deps = OP_IMPORT_DEPS
+            .iter()
+            .find_map(|&(kind, deps)| (kind == "module_cache_del").then_some(deps))
+            .expect("module_cache_del op must declare its WASM import dependency");
+        assert_eq!(
+            op_deps,
+            ["module_cache_del"],
+            "module_cache_del codegen must request its runtime import explicitly"
+        );
+    }
+}

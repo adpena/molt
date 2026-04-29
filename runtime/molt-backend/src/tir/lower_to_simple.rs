@@ -1590,6 +1590,18 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
+        OpCode::ModuleCacheSet => Some(OpIR {
+            kind: "module_cache_set".to_string(),
+            args: Some(operand_args(op)),
+            out: Some("none".to_string()),
+            ..OpIR::default()
+        }),
+        OpCode::ModuleCacheDel => Some(OpIR {
+            kind: "module_cache_del".to_string(),
+            args: Some(operand_args(op)),
+            out: Some("none".to_string()),
+            ..OpIR::default()
+        }),
         OpCode::ModuleGetAttr => Some(OpIR {
             kind: "module_get_attr".to_string(),
             args: Some(operand_args(op)),
@@ -1606,6 +1618,18 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             kind: "module_get_name".to_string(),
             args: Some(operand_args(op)),
             out: out_var,
+            ..OpIR::default()
+        }),
+        OpCode::ModuleSetAttr => Some(OpIR {
+            kind: "module_set_attr".to_string(),
+            args: Some(operand_args(op)),
+            out: Some("none".to_string()),
+            ..OpIR::default()
+        }),
+        OpCode::ModuleDelGlobal => Some(OpIR {
+            kind: "module_del_global".to_string(),
+            args: Some(operand_args(op)),
+            out: Some("none".to_string()),
             ..OpIR::default()
         }),
         OpCode::WarnStderr => Some(OpIR {
@@ -3141,6 +3165,57 @@ mod tests {
             .find(|op| op.kind == "module_import")
             .expect("expected module_import op");
         assert_eq!(import_op.args.as_ref().map(Vec::len), Some(1));
+    }
+
+    fn assert_module_mutation_roundtrips(opcode: OpCode, simple_kind: &str, arity: usize) {
+        let mut func = TirFunction::new(
+            format!("{simple_kind}_roundtrip"),
+            std::iter::repeat_n(TirType::DynBox, arity).collect(),
+            TirType::None,
+        );
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: (0..arity as u32).map(ValueId).collect(),
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let module_op = ops
+            .iter()
+            .find(|op| op.kind == simple_kind)
+            .unwrap_or_else(|| panic!("expected {simple_kind} op, got {ops:?}"));
+
+        assert_eq!(module_op.args.as_ref().map(Vec::len), Some(arity));
+        assert_eq!(
+            module_op.out.as_deref(),
+            Some("none"),
+            "{simple_kind} must preserve no-result mutation shape"
+        );
+    }
+
+    #[test]
+    fn lower_module_cache_set_roundtrips() {
+        assert_module_mutation_roundtrips(OpCode::ModuleCacheSet, "module_cache_set", 2);
+    }
+
+    #[test]
+    fn lower_module_cache_del_roundtrips() {
+        assert_module_mutation_roundtrips(OpCode::ModuleCacheDel, "module_cache_del", 1);
+    }
+
+    #[test]
+    fn lower_module_set_attr_roundtrips() {
+        assert_module_mutation_roundtrips(OpCode::ModuleSetAttr, "module_set_attr", 3);
+    }
+
+    #[test]
+    fn lower_module_del_global_roundtrips() {
+        assert_module_mutation_roundtrips(OpCode::ModuleDelGlobal, "module_del_global", 2);
     }
 
     #[test]
