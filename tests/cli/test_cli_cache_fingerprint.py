@@ -87,3 +87,58 @@ def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_proces
     second = cli._cache_tooling_fingerprint()
 
     assert second != first
+
+
+def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "repo"
+    cli_source = root / "src" / "molt" / "cli.py"
+    frontend_init = root / "src" / "molt" / "frontend" / "__init__.py"
+    cfg_analysis = root / "src" / "molt" / "frontend" / "cfg_analysis.py"
+    tv_hooks = root / "src" / "molt" / "frontend" / "tv_hooks.py"
+    type_facts = root / "src" / "molt" / "type_facts.py"
+    for source in (cli_source, frontend_init, cfg_analysis, tv_hooks, type_facts):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"{source.stem.upper()}_MARKER = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "Path", lambda _value: cli_source)
+
+    first = cli._cache_tooling_fingerprint()
+
+    cfg_analysis.write_text("CFG_ANALYSIS_MARKER = 2\n", encoding="utf-8")
+    tv_hooks.write_text("TV_HOOKS_MARKER = 2\n", encoding="utf-8")
+    type_facts.write_text("TYPE_FACTS_MARKER = 2\n", encoding="utf-8")
+
+    second = cli._cache_tooling_fingerprint()
+
+    assert second != first
+
+
+def test_cache_tooling_fingerprint_ignores_frontend_bytecode_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "repo"
+    cli_source = root / "src" / "molt" / "cli.py"
+    frontend_init = root / "src" / "molt" / "frontend" / "__init__.py"
+    pycache = (
+        root
+        / "src"
+        / "molt"
+        / "frontend"
+        / "__pycache__"
+        / "cfg_analysis.cpython-312.pyc"
+    )
+    for source in (cli_source, frontend_init, pycache):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"marker-1\n")
+
+    monkeypatch.setattr(cli, "Path", lambda _value: cli_source)
+
+    first = cli._cache_tooling_fingerprint()
+
+    pycache.write_bytes(b"marker-2\n")
+
+    second = cli._cache_tooling_fingerprint()
+
+    assert second == first

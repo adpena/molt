@@ -7095,9 +7095,7 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
         lambda artifact, fingerprint, stored_fingerprint: (
             verification_calls.append(
                 (
-                    frozenset(
-                        cast(tuple[str, ...], fingerprint["runtime_features"])
-                    ),
+                    frozenset(cast(tuple[str, ...], fingerprint["runtime_features"])),
                     cast(str, fingerprint["rustflags"]),
                 )
             )
@@ -11129,6 +11127,31 @@ def test_kill_stale_backend_daemon_uses_project_canonical_sidecars(
 
     assert killed == [(4321, signal.SIGTERM)]
     assert removed == [pid_path]
+
+
+def test_backend_daemon_stale_check_tracks_active_runtime_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path
+    target_root = project_root / "target"
+    (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    backend_bin = target_root / "dev-fast" / "molt-backend"
+    runtime_lib = target_root / "release-output" / "libmolt_runtime.a"
+    pid_path = target_root / ".molt_state" / "backend_daemon" / "molt-backend.pid"
+    for path in (backend_bin, runtime_lib, pid_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    monkeypatch.delenv("MOLT_SESSION_ID", raising=False)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+
+    old = 1_700_000_000.0
+    current = old + 10.0
+    os.utime(backend_bin, (old, old))
+    os.utime(pid_path, (old + 5.0, old + 5.0))
+    os.utime(runtime_lib, (current, current))
+
+    assert cli._backend_daemon_binary_is_newer(backend_bin, pid_path)
 
 
 def test_sweep_orphaned_backend_daemon_locks_removes_dead_pid_files(
