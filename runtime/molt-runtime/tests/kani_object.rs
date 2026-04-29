@@ -460,11 +460,13 @@ mod object_proofs {
     #[kani::unwind(1)]
     fn alloc_obj_ptr_is_8_aligned() {
         let raw_addr: u64 = kani::any();
+        let header_size = std::mem::size_of::<MoltHeader>() as u64;
         // Model: the allocator returns an 8-aligned address.
         kani::assume(raw_addr % 8 == 0);
-        // Header size is 40, which is a multiple of 8.
-        assert_eq!(std::mem::size_of::<MoltHeader>() % 8, 0);
-        let obj_addr = raw_addr + std::mem::size_of::<MoltHeader>() as u64;
+        // Model: a valid allocation address has enough space for its header.
+        kani::assume(raw_addr <= u64::MAX - header_size);
+        assert_eq!(header_size % 8, 0);
+        let obj_addr = raw_addr + header_size;
         // Therefore the obj pointer is also 8-aligned.
         assert_eq!(obj_addr % 8, 0);
     }
