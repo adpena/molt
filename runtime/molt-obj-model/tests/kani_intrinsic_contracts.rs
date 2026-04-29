@@ -10,21 +10,26 @@
 
 #[cfg(kani)]
 mod intrinsic_contract_proofs {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
     const MAX_LIST_LEN: usize = 4;
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug)]
     struct BoundedI64List {
         len: usize,
         items: [i64; MAX_LIST_LEN],
     }
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug)]
     struct BoundedBoolList {
         len: usize,
         items: [bool; MAX_LIST_LEN],
+    }
+
+    fn model_hash_i64(value: i64) -> u64 {
+        let mut x = value as u64;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51afd7ed558ccd);
+        x ^= x >> 33;
+        x
     }
 
     impl BoundedI64List {
@@ -57,7 +62,9 @@ mod intrinsic_contract_proofs {
                 let mut idx = 1;
                 while idx < self.len {
                     if self.items[idx] < self.items[idx - 1] {
-                        self.items.swap(idx, idx - 1);
+                        let tmp = self.items[idx];
+                        self.items[idx] = self.items[idx - 1];
+                        self.items[idx - 1] = tmp;
                     }
                     idx += 1;
                 }
@@ -72,7 +79,9 @@ mod intrinsic_contract_proofs {
             let mut left = 0;
             let mut right = self.len - 1;
             while left < right {
-                self.items.swap(left, right);
+                let tmp = self.items[left];
+                self.items[left] = self.items[right];
+                self.items[right] = tmp;
                 left += 1;
                 right -= 1;
             }
@@ -92,6 +101,20 @@ mod intrinsic_contract_proofs {
                 read += 1;
             }
             self.len = write;
+        }
+
+        fn model_eq(&self, other: &Self) -> bool {
+            if self.len != other.len {
+                return false;
+            }
+            let mut idx = 0;
+            while idx < self.len {
+                if self.items[idx] != other.items[idx] {
+                    return false;
+                }
+                idx += 1;
+            }
+            true
         }
 
         fn count_positive(&self) -> usize {
@@ -430,40 +453,40 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(1)]
     fn verify_type_int() {
         // Discriminant-based type name for int values
-        let type_name = "int";
-        assert_eq!(type_name, "int");
+        let type_tag = 0u8;
+        assert_eq!(type_tag, 0u8);
     }
 
     /// axiom type_bool : forall (b : Bool), intrinsic_type (.bool b) = "bool"
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_type_bool() {
-        let type_name = "bool";
-        assert_eq!(type_name, "bool");
+        let type_tag = 1u8;
+        assert_eq!(type_tag, 1u8);
     }
 
     /// axiom type_str : forall (s : String), intrinsic_type (.str s) = "str"
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_type_str() {
-        let type_name = "str";
-        assert_eq!(type_name, "str");
+        let type_tag = 2u8;
+        assert_eq!(type_tag, 2u8);
     }
 
     /// axiom type_none : intrinsic_type Value.none = "NoneType"
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_type_none() {
-        let type_name = "NoneType";
-        assert_eq!(type_name, "NoneType");
+        let type_tag = 3u8;
+        assert_eq!(type_tag, 3u8);
     }
 
     /// axiom type_float : forall (f : Int), intrinsic_type (.float f) = "float"
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_type_float() {
-        let type_name = "float";
-        assert_eq!(type_name, "float");
+        let type_tag = 4u8;
+        assert_eq!(type_tag, 4u8);
     }
 
     // ================================================================
@@ -493,14 +516,8 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(1)]
     fn verify_hash_deterministic() {
         let v: i64 = kani::any();
-        let mut h1 = DefaultHasher::new();
-        v.hash(&mut h1);
-        let hash1 = h1.finish();
-
-        let mut h2 = DefaultHasher::new();
-        v.hash(&mut h2);
-        let hash2 = h2.finish();
-
+        let hash1 = model_hash_i64(v);
+        let hash2 = model_hash_i64(v);
         assert_eq!(hash1, hash2);
     }
 
@@ -512,15 +529,8 @@ mod intrinsic_contract_proofs {
         // v1 == v2 (same value)
         let v1 = v;
         let v2 = v;
-
-        let mut h1 = DefaultHasher::new();
-        v1.hash(&mut h1);
-        let hash1 = h1.finish();
-
-        let mut h2 = DefaultHasher::new();
-        v2.hash(&mut h2);
-        let hash2 = h2.finish();
-
+        let hash1 = model_hash_i64(v1);
+        let hash2 = model_hash_i64(v2);
         assert_eq!(hash1, hash2);
     }
 
@@ -616,7 +626,7 @@ mod intrinsic_contract_proofs {
         v.sort_in_place();
         let sorted_once = v;
         v.sort_in_place();
-        assert_eq!(v, sorted_once);
+        assert!(v.model_eq(&sorted_once));
     }
 
     /// axiom sorted_reversed : forall (xs : List Value),
@@ -633,7 +643,7 @@ mod intrinsic_contract_proofs {
 
         v.reverse();
         v.sort_in_place();
-        assert_eq!(v, sorted_original);
+        assert!(v.model_eq(&sorted_original));
     }
 
     // ================================================================
@@ -662,7 +672,7 @@ mod intrinsic_contract_proofs {
         let original = v;
         v.reverse();
         v.reverse();
-        assert_eq!(v, original);
+        assert!(v.model_eq(&original));
     }
 
     /// axiom reversed_nil : intrinsic_reversed [] = []
@@ -685,7 +695,7 @@ mod intrinsic_contract_proofs {
         let sorted = v;
         v.reverse();
         v.reverse();
-        assert_eq!(v, sorted);
+        assert!(v.model_eq(&sorted));
     }
 
     // ================================================================
@@ -771,7 +781,7 @@ mod intrinsic_contract_proofs {
 
     /// axiom set_nil : intrinsic_set [] = []
     #[kani::proof]
-    #[kani::unwind(1)]
+    #[kani::unwind(6)]
     fn verify_set_nil() {
         let mut v = BoundedI64List::empty();
         v.sort_in_place();
@@ -793,7 +803,7 @@ mod intrinsic_contract_proofs {
         // Second dedup pass
         v.sort_in_place();
         v.dedup_sorted();
-        assert_eq!(v, after_first);
+        assert!(v.model_eq(&after_first));
     }
 
     // ================================================================

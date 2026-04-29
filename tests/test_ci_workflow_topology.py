@@ -66,6 +66,8 @@ def test_kani_intrinsic_contracts_avoid_symbolic_std_sort() -> None:
     assert "Vec<" not in kani_text
     assert "Vec::" not in kani_text
     assert ".collect()" not in kani_text
+    assert "DefaultHasher" not in kani_text
+    assert "std::hash" not in kani_text
     assert ".dedup()" not in kani_text
     assert ".sort()" not in kani_text
 
