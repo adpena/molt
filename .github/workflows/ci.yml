@@ -95,7 +95,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          cargo build 2>&1 | tee logs/ci-cargo-build.log
 
       - name: Run molt-backend unit tests (native backend)
         run: cargo test -p molt-backend --features native-backend --lib
@@ -117,10 +120,11 @@ jobs:
 
       - name: Verify zero warnings
         run: |
-          WARNING_COUNT=$(cargo build 2>&1 | grep -c 'warning\[' || true)
+          WARNING_COUNT=$(grep -c 'warning\[' logs/ci-cargo-build.log || true)
           echo "Warnings found: $WARNING_COUNT"
           if [ "$WARNING_COUNT" -ne 0 ]; then
             echo "::error::Build produced $WARNING_COUNT warning(s). Please fix all warnings."
-            cargo build 2>&1 | grep 'warning\[' || true
+            WARNING_LINES=$(grep 'warning\[' logs/ci-cargo-build.log || true)
+            printf '%s\n' "$WARNING_LINES"
             exit 1
           fi

@@ -112,7 +112,7 @@ jobs:
         run: uv sync --python 3.12
 
       - name: Build Molt runtime
-        run: cargo build -p molt-runtime --release
+        run: cargo build -p molt-runtime --profile dev-fast
 
       - name: Run CPython regrtest (G5)
         run: |
@@ -162,7 +162,7 @@ jobs:
         run: uv sync --python 3.12
 
       - name: Build Molt runtime
-        run: cargo build -p molt-runtime --release
+        run: cargo build -p molt-runtime --profile dev-fast
 
       - name: Reproducible build sweep
         run: |
@@ -290,7 +290,7 @@ jobs:
         run: uv sync --python 3.12
 
       - name: Build Molt runtime
-        run: cargo build -p molt-runtime --release
+        run: cargo build -p molt-runtime --profile dev-fast
 
       - name: Run Tier 3 gate
         run: uv run --python 3.12 python3 tools/ci_gate.py --tier 3 --verbose --json > ci_gate_tier3.json
