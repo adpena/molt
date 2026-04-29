@@ -492,6 +492,47 @@ _PYTHON_WARNING_RE = re.compile(
     r"^.+:\d+: (?:Syntax|Deprecation|Runtime|User|Future|Pending\s*Deprecation)Warning: "
 )
 
+# Subset of `_BACKEND_REQUEST_ENV_KNOBS` whose presence causes the backend to
+# emit diagnostic output to stderr (TIR dumps, pass-stats, IR dumps, timing,
+# debug bind traces). When the wrapper invokes the build subprocess with any
+# of these set, it must stream the subprocess stderr through to the user —
+# otherwise the env knob is silently a no-op from the user's perspective,
+# which defeats the purpose of having the knob.
+_BACKEND_DIAGNOSTIC_ENV_KNOBS = frozenset(
+    {
+        "TIR_DUMP",
+        "TIR_OPT_STATS",
+        "MOLT_DUMP_CLIF",
+        "MOLT_DUMP_CLIF_ON_ERROR",
+        "MOLT_DUMP_FINAL_FUNC_IR",
+        "MOLT_DUMP_IR",
+        "MOLT_DEBUG_BIND",
+        "MOLT_DEBUG_CHECK_EXC",
+        "MOLT_DEBUG_CHECK_EXCEPTION",
+        "MOLT_LLVM_DUMP_IR",
+        "MOLT_BACKEND_TIMING",
+    }
+)
+_FALSY_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+def _env_requests_backend_diagnostics(env: Mapping[str, str]) -> bool:
+    """True if any backend-diagnostic env knob is truthy in ``env``.
+
+    The build subprocess captures stderr (to keep it out of stdout's JSON
+    contract), so any diagnostic output the user explicitly opted into via
+    ``TIR_OPT_STATS=1`` or similar would be silently dropped without an
+    explicit pass-through. This predicate detects user intent so the caller
+    can stream the subprocess stderr verbatim.
+    """
+    for key in _BACKEND_DIAGNOSTIC_ENV_KNOBS:
+        value = env.get(key)
+        if value is None:
+            continue
+        if value.strip().lower() not in _FALSY_ENV_VALUES:
+            return True
+    return False
+
 
 def _forward_compilation_warnings(stderr: str) -> None:
     """Forward Python warnings from build subprocess stderr to the user.
@@ -1046,8 +1087,17 @@ def _run_wrapper_build(
         # from the build subprocess so they appear in `molt run` output,
         # matching CPython's behaviour where warnings are emitted during
         # compile() which runs inline with execution.
+        #
+        # When the user has explicitly opted into backend diagnostics via an
+        # env knob (TIR_OPT_STATS, MOLT_BACKEND_TIMING, TIR_DUMP, ...), stream
+        # subprocess stderr verbatim instead — the warning-only filter would
+        # drop the diagnostic output the user asked for.
         if stderr:
-            _forward_compilation_warnings(stderr)
+            if _env_requests_backend_diagnostics(env):
+                sys.stderr.write(stderr)
+                sys.stderr.flush()
+            else:
+                _forward_compilation_warnings(stderr)
     return contract, duration, None
 
 
@@ -19560,7 +19610,17 @@ def _execute_backend_compile(
             # request here defeats the daemon's probe-only warm-cache path.
             daemon_log_path: Path | None = None
             daemon_log_offset: int | None = None
-            if verbose and not json_output:
+            # Stream the daemon log delta back to the user when they have
+            # explicitly asked for backend diagnostics (--verbose, or any of
+            # the diagnostic env knobs like TIR_OPT_STATS=1). Without the
+            # env-knob branch the user can set the knob, run a build, and
+            # see no output — the daemon writes diagnostics to its log
+            # file rather than to the parent's stderr, so the request-scoped
+            # delta is the only path that surfaces them.
+            forward_daemon_log = verbose or _env_requests_backend_diagnostics(
+                os.environ
+            )
+            if forward_daemon_log and not json_output:
                 daemon_log_path = _backend_daemon_log_path(
                     molt_root, backend_cargo_profile
                 )

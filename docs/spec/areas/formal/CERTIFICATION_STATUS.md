@@ -29,10 +29,13 @@ readers must understand its boundaries before drawing conclusions:
    theorems hold by `rfl`. This proves consistency of the model, not actual behavioral
    equivalence of the real backends.
 
-4. **5 of 8 running TIR pipeline passes have no formal proof.** Only constant
-   folding, SCCP (partial), and DCE have Lean proofs. Unboxing, escape analysis,
-   refcount elision, strength reduction, bounds-check elimination, and type guard
-   hoisting are unproven.
+4. **Most running TIR pipeline passes have no formal proof.** Only constant
+   folding, SCCP (partial), and DCE have Lean proofs. The remainder — including
+   unboxing, escape analysis, refcount elision, dead-store elimination,
+   strength reduction, bounds-check elimination, type guard hoisting,
+   vectorization, polyhedral, and the lowering/canonicalization phases — are
+   unproven. The pipeline body in `runtime/molt-backend/src/tir/passes/mod.rs`
+   `run_pipeline` is the canonical source of pass identity and ordering.
 
 5. **The native (Cranelift) backend has zero formal proofs.** This is the production
    backend for non-WASM targets.
@@ -57,7 +60,7 @@ readers must understand its boundaries before drawing conclusions:
 | Files with any sorry | **29 of 111** (82 of 111 files are sorry-free) |
 | Trust axioms (intentional) | **69** across 7 files (8 Lean-proper + 61 intrinsic contracts) |
 | TIR opcode coverage (Lean) | **31 of 92** (34%) |
-| TIR pipeline pass coverage | **3 of 8** running passes (37%) |
+| TIR pipeline pass coverage | **3** passes proven (constant folding, SCCP partial, DCE); see `tir::passes::run_pipeline` for the full set |
 
 The 9 "core chain" sorrys (in lowering, SSA preservation, SCCP validation) are the ones
 blocking the end-to-end correctness theorem. The remaining ~95 sorrys are spread across
