@@ -16,6 +16,7 @@ def _cache_variant() -> str:
         stdlib_split=True,
         codegen_env="codegen=v1",
         linked=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
     )
 
 
