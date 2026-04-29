@@ -3395,6 +3395,47 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::DynBox);
             }
 
+            // ── ModuleCacheSet: module-cache mutation by name ──
+            // operands: [module_name, module]
+            OpCode::ModuleCacheSet => {
+                let set_fn = self.ensure_runtime_i64_fn("molt_module_cache_set", 2);
+                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let module_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        set_fn,
+                        &[name_bits.into(), module_bits.into()],
+                        "module_cache_set",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
+            // ── ModuleCacheDel: module-cache deletion by name ──
+            // operands: [module_name]
+            OpCode::ModuleCacheDel => {
+                let del_fn = self.ensure_runtime_i64_fn("molt_module_cache_del", 1);
+                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(del_fn, &[name_bits.into()], "module_cache_del")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
             // ── ModuleGetAttr: module attribute read ──
             // operands: [module, attr_name]
             OpCode::ModuleGetAttr => {
@@ -3428,6 +3469,44 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ModuleGetName => {
                 let result = self.call_runtime_2_boxed(
                     "molt_module_get_name",
+                    op.operands[0],
+                    op.operands[1],
+                );
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
+            // ── ModuleSetAttr: module attribute mutation ──
+            // operands: [module, attr_name, value]
+            OpCode::ModuleSetAttr => {
+                let set_fn = self.ensure_runtime_i64_fn("molt_module_set_attr", 3);
+                let module_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let attr_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let val_bits = self.materialize_dynbox_operand(op.operands[2]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        set_fn,
+                        &[module_bits.into(), attr_bits.into(), val_bits.into()],
+                        "module_set_attr",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
+            // ── ModuleDelGlobal: CPython-style module global deletion ──
+            // operands: [module, global_name]
+            OpCode::ModuleDelGlobal => {
+                let result = self.call_runtime_2_boxed(
+                    "molt_module_del_global",
                     op.operands[0],
                     op.operands[1],
                 );

@@ -89,9 +89,15 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         // missing globals. Preserve even when the result is unused so
         // compile-time DCE cannot erase an observable failure.
         | OpCode::ModuleCacheGet
+        // Module mutations update runtime cache/module dictionaries and may
+        // raise. Preserve even when their synthetic None result is unused.
+        | OpCode::ModuleCacheSet
+        | OpCode::ModuleCacheDel
         | OpCode::ModuleGetAttr
         | OpCode::ModuleGetGlobal
         | OpCode::ModuleGetName
+        | OpCode::ModuleSetAttr
+        | OpCode::ModuleDelGlobal
         // IO / diagnostics — emits to stderr.
         | OpCode::WarnStderr
         // Deoptimisation must not be silently dropped.
@@ -122,9 +128,13 @@ pub(super) fn is_potentially_throwing(opcode: OpCode) -> bool {
             | OpCode::Import
             | OpCode::ImportFrom
             | OpCode::ModuleCacheGet
+            | OpCode::ModuleCacheSet
+            | OpCode::ModuleCacheDel
             | OpCode::ModuleGetAttr
             | OpCode::ModuleGetGlobal
             | OpCode::ModuleGetName
+            | OpCode::ModuleSetAttr
+            | OpCode::ModuleDelGlobal
             | OpCode::Div
             | OpCode::FloorDiv
             | OpCode::Mod
@@ -555,6 +565,62 @@ mod tests {
                 .iter()
                 .any(|op| op.opcode == OpCode::ModuleGetName),
             "dead module_get_name must be preserved because it reads module attributes"
+        );
+    }
+
+    fn assert_module_mutation_kept_when_result_dead(opcode: OpCode, operands: Vec<ValueId>) {
+        let mut func = TirFunction::new(
+            "f".into(),
+            operands.iter().map(|_| TirType::DynBox).collect(),
+            TirType::None,
+        );
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(opcode, operands, vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert!(
+            is_potentially_throwing(opcode),
+            "{opcode:?} must be modeled as potentially throwing"
+        );
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == opcode),
+            "{opcode:?} must be preserved because it mutates module runtime state"
+        );
+    }
+
+    #[test]
+    fn module_cache_set_kept_when_result_dead() {
+        assert_module_mutation_kept_when_result_dead(
+            OpCode::ModuleCacheSet,
+            vec![ValueId(0), ValueId(1)],
+        );
+    }
+
+    #[test]
+    fn module_cache_del_kept_when_result_dead() {
+        assert_module_mutation_kept_when_result_dead(OpCode::ModuleCacheDel, vec![ValueId(0)]);
+    }
+
+    #[test]
+    fn module_set_attr_kept_when_result_dead() {
+        assert_module_mutation_kept_when_result_dead(
+            OpCode::ModuleSetAttr,
+            vec![ValueId(0), ValueId(1), ValueId(2)],
+        );
+    }
+
+    #[test]
+    fn module_del_global_kept_when_result_dead() {
+        assert_module_mutation_kept_when_result_dead(
+            OpCode::ModuleDelGlobal,
+            vec![ValueId(0), ValueId(1)],
         );
     }
 

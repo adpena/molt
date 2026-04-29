@@ -151,7 +151,7 @@ fn is_alloc_site(opcode: OpCode) -> bool {
 /// variants whose attribute name/class guard is also an SSA operand.
 fn store_attr_value_operand_index(attrs: &AttrDict, operand_count: usize) -> Option<usize> {
     let value_index = match attr_str(attrs, "_original_kind") {
-        Some("module_set_attr") | Some("set_attr_name") => 2,
+        Some("set_attr_name") => 2,
         Some("guarded_field_set") | Some("guarded_field_set_init") => 3,
         Some("set_attr") | Some("store_attr") if operand_count >= 3 => 2,
         _ => 1,
@@ -341,6 +341,23 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                         }
                     }
                     // target or index position: local use.
+                }
+                OpCode::ModuleCacheSet => {
+                    if use_info.operand_index == 1 {
+                        // The module value is retained in the runtime cache
+                        // and mirrored into sys.modules.
+                        escapes.insert(val, EscapeState::GlobalEscape);
+                    }
+                }
+                OpCode::ModuleSetAttr => {
+                    if use_info.operand_index == 2 {
+                        // Module dictionaries outlive the module init frame.
+                        escapes.insert(val, EscapeState::GlobalEscape);
+                    }
+                }
+                OpCode::ModuleCacheDel | OpCode::ModuleDelGlobal => {
+                    // Deletes mutate global module state but do not store the
+                    // operand value anywhere.
                 }
                 // Local ops that don't cause escape.
                 OpCode::Add
@@ -1207,12 +1224,6 @@ mod tests {
 
         let mut alloc_attrs = AttrDict::new();
         alloc_attrs.insert("value".into(), AttrValue::Int(24));
-        let mut store_attrs = AttrDict::new();
-        store_attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("module_set_attr".into()),
-        );
-
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
@@ -1222,11 +1233,10 @@ mod tests {
             attrs: alloc_attrs,
             source_span: None,
         });
-        entry.ops.push(make_op_with_attrs(
-            OpCode::StoreAttr,
+        entry.ops.push(make_op(
+            OpCode::ModuleSetAttr,
             vec![module_obj, attr_name, inst_val],
             vec![],
-            store_attrs,
         ));
         entry
             .ops

@@ -594,9 +594,13 @@ same internal opcode. These aliases are accepted in the JSON:
 | `unbox`, `unbox_to_raw_int`                                             | UnboxVal             |
 | `floor_div` (lowercase)                                                  | FloorDiv             |
 | `module_cache_get`                                                       | ModuleCacheGet       |
+| `module_cache_set`                                                       | ModuleCacheSet       |
+| `module_cache_del`                                                       | ModuleCacheDel       |
 | `module_get_attr`                                                        | ModuleGetAttr        |
 | `module_get_global`                                                      | ModuleGetGlobal      |
 | `module_get_name`                                                        | ModuleGetName        |
+| `module_set_attr`                                                        | ModuleSetAttr        |
+| `module_del_global`                                                      | ModuleDelGlobal      |
 
 **Known TIR alias gaps:** The frontend emits `lshift` and `rshift` for shift
 operations. The TIR `kind_to_opcode` function maps only `shl` and `shr` to
