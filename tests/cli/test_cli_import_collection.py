@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import builtins as py_builtins
 import contextlib
+import hashlib
 import io
 import importlib.util
 import json
@@ -22,6 +23,21 @@ from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _rewrite_preserving_mtime(
+    path: Path, source: str, original: os.stat_result
+) -> None:
+    path.write_text(source, encoding="utf-8")
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+
+def _clear_molt_home_caches() -> None:
+    cli._default_molt_cache_cached.cache_clear()
+    cli._default_molt_home_cached.cache_clear()
+    cli._default_molt_bin_cached.cache_clear()
+    cli._PERSISTED_JSON_OBJECT_CACHE.clear()
+    cli._source_content_sha256_cached.cache_clear()
 
 
 def _compile_c_object(tmp_path: Path, name: str, source: str) -> Path:
@@ -1563,6 +1579,38 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     )
 
 
+def test_persisted_import_scan_cache_tracks_source_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    module_path.parent.mkdir()
+    module_path.write_text("import json\n", encoding="utf-8")
+    original = module_path.stat()
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli._write_persisted_import_scan(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        include_nested=False,
+        imports=("json",),
+    )
+
+    _rewrite_preserving_mtime(module_path, "import math\n", original)
+
+    assert (
+        cli._read_persisted_import_scan(
+            tmp_path,
+            module_path,
+            module_name="pkg.mod",
+            is_package=False,
+            include_nested=False,
+        )
+        is None
+    )
+
+
 def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1613,6 +1661,112 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
             skip_modules=set(),
             stub_parents=set(),
             nested_stdlib_scan_modules=set(),
+        )
+        is None
+    )
+
+
+def test_persisted_module_graph_cache_tracks_source_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry_path = tmp_path / "main.py"
+    entry_path.write_text("import json\n", encoding="utf-8")
+    original = entry_path.stat()
+    roots = [tmp_path]
+    module_roots = [tmp_path]
+    stdlib_root = tmp_path / "stdlib"
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli._write_persisted_module_graph(
+        tmp_path,
+        entry_path,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        skip_modules=set(),
+        stub_parents=set(),
+        nested_stdlib_scan_modules=set(),
+        graph={"__main__": entry_path},
+        explicit_imports={"json"},
+    )
+
+    _rewrite_preserving_mtime(entry_path, "import math\n", original)
+
+    cached = cli._read_persisted_module_graph(
+        tmp_path,
+        entry_path,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        skip_modules=set(),
+        stub_parents=set(),
+        nested_stdlib_scan_modules=set(),
+    )
+    assert cached is not None
+    assert cached.dirty_modules == {"__main__"}
+
+
+def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    module_path.parent.mkdir()
+    module_path.write_text("def f(x=1):\n    return x\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli._write_persisted_module_analysis(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        func_defaults={"f": {"x": 1}},
+        imports=("json",),
+    )
+    assert cli._read_persisted_module_analysis(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+    ) == ({"f": {"x": 1}}, ("json",))
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
+    assert (
+        cli._read_persisted_module_analysis(
+            tmp_path,
+            module_path,
+            module_name="pkg.mod",
+            is_package=False,
+        )
+        is None
+    )
+
+
+def test_persisted_module_analysis_cache_tracks_source_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    module_path.parent.mkdir()
+    module_path.write_text("def f(x=1):\n    return x\n", encoding="utf-8")
+    original = module_path.stat()
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli._write_persisted_module_analysis(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        func_defaults={"f": {"x": 1}},
+        imports=("json",),
+    )
+
+    _rewrite_preserving_mtime(module_path, "def f(x=2):\n    return x\n", original)
+
+    assert (
+        cli._read_persisted_module_analysis(
+            tmp_path,
+            module_path,
+            module_name="pkg.mod",
+            is_package=False,
         )
         is None
     )
@@ -3231,6 +3385,46 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
         context_digest="other",
     )
     assert miss is None
+
+
+def test_persisted_module_lowering_tracks_source_content(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("x = 1\n")
+    original = module_path.stat()
+    context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
+    assert context_digest is not None
+
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+        result={
+            "functions": [],
+            "func_code_ids": {},
+            "local_class_names": [],
+            "local_classes": {},
+            "midend_policy_outcomes_by_function": {},
+            "midend_pass_stats_by_function": {},
+            "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
+        },
+    )
+
+    _rewrite_preserving_mtime(module_path, "x = 2\n", original)
+
+    assert (
+        cli._read_persisted_module_lowering(
+            tmp_path,
+            module_path,
+            module_name="pkg",
+            is_package=False,
+            context_digest=context_digest,
+        )
+        is None
+    )
 
 
 def test_persisted_module_lowering_reuses_process_cache(
@@ -8878,6 +9072,181 @@ def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
     assert "Linking failed" in captured.err
     assert "ld: unresolved symbol" in captured.err
     assert "backend retry log" in captured.err
+
+
+def test_run_wrapper_build_ignores_legacy_mtime_binary_without_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print('ok')\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    xdg_root = tmp_path / "xdg"
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_root))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    _clear_molt_home_caches()
+
+    path_digest = hashlib.sha256(str(entry.resolve()).encode("utf-8")).hexdigest()[:16]
+    stale_bin = xdg_root / "molt" / "home" / "bin" / f"{entry.stem}_{path_digest}_molt"
+    stale_bin.parent.mkdir(parents=True)
+    stale_bin.write_bytes(b"stale-native")
+    future_ns = entry.stat().st_mtime_ns + 1_000_000_000
+    os.utime(stale_bin, ns=(future_ns, future_ns))
+
+    resolved, error = cli._resolve_wrapper_build_entry(
+        file_path=str(entry),
+        module=None,
+        project_root=project,
+        json_output=True,
+        command="run",
+        build_args=["--target", "wasm"],
+    )
+    assert error is None
+    assert resolved is not None
+    built = tmp_path / "built.wasm"
+    built.write_bytes(b"wasm")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(built),
+            "consumer_output": str(built),
+            "artifacts": {"wasm": str(built)},
+        },
+    )
+    seen_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+
+    contract, duration, error_code = cli._run_wrapper_build(
+        file_path=str(entry),
+        module=None,
+        build_args=["--target", "wasm"],
+        env={},
+        project_root=project,
+        json_output=True,
+        command="run",
+        verbose=False,
+        resolved_build_entry=resolved,
+    )
+
+    assert error_code is None
+    assert duration >= 0.0
+    assert contract is not None
+    assert contract.consumer_output == built
+    assert seen_cmds
+
+
+def test_run_wrapper_build_manifest_tracks_args_and_source_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print(1)\n", encoding="utf-8")
+    original = entry.stat()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    _clear_molt_home_caches()
+    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+
+    resolved, error = cli._resolve_wrapper_build_entry(
+        file_path=str(entry),
+        module=None,
+        project_root=project,
+        json_output=True,
+        command="run",
+        build_args=[],
+    )
+    assert error is None
+    assert resolved is not None
+    cached_bin = cli._wrapper_build_default_binary_path(resolved)
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(cached_bin),
+            "consumer_output": str(cached_bin),
+            "artifacts": {},
+        },
+    )
+    seen_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        cached_bin.parent.mkdir(parents=True, exist_ok=True)
+        cached_bin.write_bytes(f"binary-{len(seen_cmds)}".encode("ascii"))
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    common_kwargs = {
+        "file_path": str(entry),
+        "module": None,
+        "env": {},
+        "project_root": project,
+        "json_output": True,
+        "command": "run",
+        "verbose": False,
+        "resolved_build_entry": resolved,
+    }
+
+    first, first_duration, first_error = cli._run_wrapper_build(
+        build_args=[],
+        **common_kwargs,
+    )
+    assert first_error is None
+    assert first_duration >= 0.0
+    assert first is not None
+    assert len(seen_cmds) == 1
+
+    second, second_duration, second_error = cli._run_wrapper_build(
+        build_args=[],
+        **common_kwargs,
+    )
+    assert second_error is None
+    assert second_duration == 0.0
+    assert second is not None
+    assert len(seen_cmds) == 1
+
+    third, third_duration, third_error = cli._run_wrapper_build(
+        build_args=["--target", "wasm"],
+        **common_kwargs,
+    )
+    assert third_error is None
+    assert third_duration >= 0.0
+    assert third is not None
+    assert len(seen_cmds) == 2
+
+    _rewrite_preserving_mtime(entry, "print(2)\n", original)
+    fourth, fourth_duration, fourth_error = cli._run_wrapper_build(
+        build_args=[],
+        **common_kwargs,
+    )
+    assert fourth_error is None
+    assert fourth_duration >= 0.0
+    assert fourth is not None
+    assert len(seen_cmds) == 3
 
 
 def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(

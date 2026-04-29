@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if command -v uv >/dev/null 2>&1; then
-  uv run --python 3.12 python3 tools/secret_guard.py --staged
-else
-  python3 tools/secret_guard.py --staged
+  exec uv run --python 3.12 pre-commit run --hook-stage pre-commit
 fi
+
+exec pre-commit run --hook-stage pre-commit

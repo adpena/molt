@@ -1,15 +1,24 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.10
-    hooks:
-      - id: ruff
-      - id: ruff-format
-        args: ["--check"]
   - repo: local
     hooks:
+      - id: ruff
+        name: ruff
+        entry: uv run --python 3.12 ruff check
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format check
+        entry: uv run --python 3.12 ruff format --check
+        language: system
+        types_or: [python, pyi]
       - id: ty
         name: ty
-        entry: uv run ty check src
+        entry: uv run --python 3.12 ty check src
+        language: system
+        pass_filenames: false
+      - id: secret-guard
+        name: secret guard
+        entry: uv run --python 3.12 python3 tools/secret_guard.py --staged
         language: system
         pass_filenames: false
       - id: staged-whitespace-check
