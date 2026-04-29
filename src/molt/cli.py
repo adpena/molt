@@ -1818,6 +1818,169 @@ def _stat_ctime_ns(stat: os.stat_result) -> int:
     return int(stat.st_ctime * 1_000_000_000)
 
 
+def _stat_device(stat: os.stat_result) -> int:
+    return int(getattr(stat, "st_dev", 0) or 0)
+
+
+_SOURCE_HASH_CACHE_SCHEMA_VERSION = 1
+
+
+def _source_hash_stat_identity_is_strong(
+    *,
+    ctime_ns: int,
+    inode: int,
+    device: int,
+) -> bool:
+    if sys.platform.startswith("win"):
+        return False
+    return ctime_ns > 0 and inode > 0 and device >= 0
+
+
+@functools.lru_cache(maxsize=16384)
+def _source_hash_cache_path_cached(
+    cache_root_str: str,
+    path_str: str,
+    size: int,
+    mtime_ns: int,
+    ctime_ns: int,
+    inode: int,
+    device: int,
+) -> Path:
+    identity = {
+        "path": path_str,
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "ctime_ns": ctime_ns,
+        "inode": inode,
+        "device": device,
+    }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    digest = hashlib.sha256(encoded).hexdigest()
+    return Path(cache_root_str) / "source_hash_cache" / digest[:2] / f"{digest}.json"
+
+
+def _source_hash_cache_path(
+    cache_root: Path,
+    *,
+    path_str: str,
+    size: int,
+    mtime_ns: int,
+    ctime_ns: int,
+    inode: int,
+    device: int,
+) -> Path:
+    return _source_hash_cache_path_cached(
+        os.fspath(cache_root),
+        path_str,
+        size,
+        mtime_ns,
+        ctime_ns,
+        inode,
+        device,
+    )
+
+
+def _read_source_hash_cache_payload(cache_path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_source_hash_cache_payload(
+    cache_path: Path,
+    payload: dict[str, Any],
+) -> None:
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_name(f"{cache_path.name}.tmp")
+        tmp_path.write_text(
+            json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        tmp_path.replace(cache_path)
+    except OSError:
+        return
+
+
+def _read_persistent_source_hash(
+    cache_root: Path,
+    *,
+    path_str: str,
+    size: int,
+    mtime_ns: int,
+    ctime_ns: int,
+    inode: int,
+    device: int,
+) -> str | None:
+    if not _source_hash_stat_identity_is_strong(
+        ctime_ns=ctime_ns, inode=inode, device=device
+    ):
+        return None
+    cache_path = _source_hash_cache_path(
+        cache_root,
+        path_str=path_str,
+        size=size,
+        mtime_ns=mtime_ns,
+        ctime_ns=ctime_ns,
+        inode=inode,
+        device=device,
+    )
+    payload = _read_source_hash_cache_payload(cache_path)
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != _SOURCE_HASH_CACHE_SCHEMA_VERSION
+        or payload.get("path") != path_str
+        or payload.get("size") != size
+        or payload.get("mtime_ns") != mtime_ns
+        or payload.get("ctime_ns") != ctime_ns
+        or payload.get("inode") != inode
+        or payload.get("device") != device
+    ):
+        return None
+    source_hash = payload.get("source_sha256")
+    return source_hash if isinstance(source_hash, str) and source_hash else None
+
+
+def _write_persistent_source_hash(
+    cache_root: Path,
+    *,
+    path_str: str,
+    size: int,
+    mtime_ns: int,
+    ctime_ns: int,
+    inode: int,
+    device: int,
+    source_hash: str,
+) -> None:
+    if not _source_hash_stat_identity_is_strong(
+        ctime_ns=ctime_ns, inode=inode, device=device
+    ):
+        return
+    cache_path = _source_hash_cache_path(
+        cache_root,
+        path_str=path_str,
+        size=size,
+        mtime_ns=mtime_ns,
+        ctime_ns=ctime_ns,
+        inode=inode,
+        device=device,
+    )
+    payload = {
+        "version": _SOURCE_HASH_CACHE_SCHEMA_VERSION,
+        "path": path_str,
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "ctime_ns": ctime_ns,
+        "inode": inode,
+        "device": device,
+        "source_sha256": source_hash,
+    }
+    _write_source_hash_cache_payload(cache_path, payload)
+
+
 @functools.lru_cache(maxsize=16384)
 def _source_content_sha256_cached(
     path_str: str,
@@ -1825,12 +1988,36 @@ def _source_content_sha256_cached(
     mtime_ns: int,
     ctime_ns: int,
     inode: int,
+    device: int,
+    cache_root_str: str,
 ) -> str | None:
-    del size, mtime_ns, ctime_ns, inode
+    cache_root = Path(cache_root_str)
+    cached_hash = _read_persistent_source_hash(
+        cache_root,
+        path_str=path_str,
+        size=size,
+        mtime_ns=mtime_ns,
+        ctime_ns=ctime_ns,
+        inode=inode,
+        device=device,
+    )
+    if cached_hash is not None:
+        return cached_hash
     try:
-        return _sha256_file(Path(path_str))
+        source_hash = _sha256_file(Path(path_str))
     except OSError:
         return None
+    _write_persistent_source_hash(
+        cache_root,
+        path_str=path_str,
+        size=size,
+        mtime_ns=mtime_ns,
+        ctime_ns=ctime_ns,
+        inode=inode,
+        device=device,
+        source_hash=source_hash,
+    )
+    return source_hash
 
 
 def _source_content_sha256(
@@ -1852,6 +2039,8 @@ def _source_content_sha256(
         path_stat.st_mtime_ns,
         _stat_ctime_ns(path_stat),
         int(getattr(path_stat, "st_ino", 0) or 0),
+        _stat_device(path_stat),
+        os.fspath(_default_molt_cache()),
     )
 
 

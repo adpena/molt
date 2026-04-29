@@ -1611,6 +1611,67 @@ def test_persisted_import_scan_cache_tracks_source_content(
     )
 
 
+def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    module_path.parent.mkdir()
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    _clear_molt_home_caches()
+    real_sha256_file = cli._sha256_file
+    hash_calls = 0
+
+    def counting_sha256_file(path: Path) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(cli, "_sha256_file", counting_sha256_file)
+
+    first_hash = cli._source_content_sha256(module_path)
+    assert first_hash is not None
+    assert hash_calls == 1
+
+    cli._source_content_sha256_cached.cache_clear()
+    second_hash = cli._source_content_sha256(module_path)
+
+    assert second_hash == first_hash
+    assert hash_calls == 1
+
+
+def test_source_content_sha256_rehashes_preserved_mtime_content_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    module_path.parent.mkdir()
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    original = module_path.stat()
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    _clear_molt_home_caches()
+    real_sha256_file = cli._sha256_file
+    hash_calls = 0
+
+    def counting_sha256_file(path: Path) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(cli, "_sha256_file", counting_sha256_file)
+
+    first_hash = cli._source_content_sha256(module_path)
+    assert first_hash is not None
+    assert hash_calls == 1
+
+    _rewrite_preserving_mtime(module_path, "VALUE = 2\n", original)
+    cli._source_content_sha256_cached.cache_clear()
+    second_hash = cli._source_content_sha256(module_path)
+
+    assert second_hash is not None
+    assert second_hash != first_hash
+    assert hash_calls == 2
+
+
 def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
