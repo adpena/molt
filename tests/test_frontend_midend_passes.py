@@ -30,6 +30,21 @@ def _undefined_args(lowered: list[dict]) -> list[tuple[int, str, str]]:
     return missing
 
 
+def _module_attr_reads_named(ops: list[dict], name: str) -> list[dict]:
+    const_strings = {
+        op["out"]: op["s_value"]
+        for op in ops
+        if op.get("kind") == "const_str" and "out" in op
+    }
+    return [
+        op
+        for op in ops
+        if op.get("kind") == "module_get_attr"
+        and len(op.get("args") or []) >= 2
+        and const_strings.get(op["args"][1]) == name
+    ]
+
+
 @contextmanager
 def _temp_env(name: str, value: str) -> object:
     prior = os.environ.get(name)
@@ -1417,6 +1432,60 @@ def test_effect_aware_cse_reuses_module_get_attr_without_writes() -> None:
 
     reads = [op for op in lowered if op.get("kind") == "module_get_attr"]
     assert len(reads) == 1
+
+
+def test_same_module_static_class_call_reuses_current_class_binding() -> None:
+    source = """
+class Point:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+total = 0
+for i in range(3):
+    point = Point(i, i)
+    total += i
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    assert _module_attr_reads_named(ops, "Point") == []
+
+
+def test_rebound_same_module_class_call_keeps_runtime_lookup() -> None:
+    source = """
+class Point:
+    def __init__(self, x):
+        self.x = x
+
+Point = int
+value = Point(3)
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    assert all(op.get("kind") != "object_new_bound" for op in ops)
+
+
+def test_globals_escape_keeps_static_class_runtime_lookup() -> None:
+    source = """
+class Point:
+    def __init__(self, x):
+        self.x = x
+
+ns = globals()
+value = Point(3)
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    assert _module_attr_reads_named(ops, "Point")
 
 
 def test_effect_aware_cse_reuses_getattr_generic_obj_without_writes() -> None:
