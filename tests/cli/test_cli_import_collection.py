@@ -1526,6 +1526,98 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     assert "pkg" in graph
 
 
+def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    module_path.parent.mkdir()
+    module_path.write_text("import json\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli._write_persisted_import_scan(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        include_nested=False,
+        imports=("json",),
+    )
+    assert cli._read_persisted_import_scan(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        include_nested=False,
+    ) == ("json",)
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
+    assert (
+        cli._read_persisted_import_scan(
+            tmp_path,
+            module_path,
+            module_name="pkg.mod",
+            is_package=False,
+            include_nested=False,
+        )
+        is None
+    )
+
+
+def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry_path = tmp_path / "main.py"
+    entry_path.write_text("import pkg.mod\n", encoding="utf-8")
+    module_path = tmp_path / "pkg" / "mod.py"
+    module_path.parent.mkdir()
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    roots = [tmp_path]
+    module_roots = [tmp_path]
+    stdlib_root = tmp_path / "stdlib"
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli._write_persisted_module_graph(
+        tmp_path,
+        entry_path,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        skip_modules=set(),
+        stub_parents=set(),
+        nested_stdlib_scan_modules=set(),
+        graph={"__main__": entry_path, "pkg.mod": module_path},
+        explicit_imports={"pkg.mod"},
+    )
+    assert (
+        cli._read_persisted_module_graph(
+            tmp_path,
+            entry_path,
+            roots=roots,
+            module_roots=module_roots,
+            stdlib_root=stdlib_root,
+            skip_modules=set(),
+            stub_parents=set(),
+            nested_stdlib_scan_modules=set(),
+        )
+        is not None
+    )
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
+    assert (
+        cli._read_persisted_module_graph(
+            tmp_path,
+            entry_path,
+            roots=roots,
+            module_roots=module_roots,
+            stdlib_root=stdlib_root,
+            skip_modules=set(),
+            stub_parents=set(),
+            nested_stdlib_scan_modules=set(),
+        )
+        is None
+    )
+
+
 def test_discover_module_graph_skips_persisted_caches_when_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2081,6 +2173,7 @@ def test_module_graph_cache_key_is_cached(tmp_path: Path) -> None:
         ("warnings",),
         ("asyncio",),
         ("tkinter",),
+        "tooling",
     )
     second = cli._module_graph_cache_key(
         str(entry_path),
@@ -2090,6 +2183,7 @@ def test_module_graph_cache_key_is_cached(tmp_path: Path) -> None:
         ("warnings",),
         ("asyncio",),
         ("tkinter",),
+        "tooling",
     )
 
     info = cli._module_graph_cache_key.cache_info()
@@ -2118,6 +2212,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         skip_modules: tuple[str, ...],
         stub_parents: tuple[str, ...],
         nested_stdlib_scan_modules: tuple[str, ...],
+        compiler_fingerprint: str,
     ) -> str:
         nonlocal calls
         calls += 1
@@ -2129,6 +2224,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
             skip_modules,
             stub_parents,
             nested_stdlib_scan_modules,
+            compiler_fingerprint,
         )
 
     monkeypatch.setattr(cli, "_module_graph_cache_key", wrapped, raising=True)
@@ -6317,12 +6413,10 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
             assert (socket_dir / f"moltbd.foreign{idx}.sock").exists()
 
 
-def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
+def test_start_backend_daemon_restarts_stale_daemon_without_running_cargo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import shutil
-
     project_root = tmp_path / "project"
     project_root.mkdir()
     backend_bin = project_root / "target" / "debug" / "molt-backend"
@@ -6332,8 +6426,8 @@ def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
     pid_path = tmp_path / "daemon.pid"
     pid_path.write_text("1234")
     log_path = tmp_path / "daemon.log"
-    explicit_target = tmp_path / "explicit-target"
-    captured_env: dict[str, str] = {}
+    terminated: list[int] = []
+    removed: list[Path] = []
 
     class _FakePopen:
         pid = 4321
@@ -6342,7 +6436,6 @@ def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
             return None
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(explicit_target))
     monkeypatch.setattr(
         cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path
     )
@@ -6356,23 +6449,21 @@ def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
         cli, "_backend_daemon_binary_is_newer", lambda *args, **kwargs: True
     )
     monkeypatch.setattr(
-        cli, "_terminate_backend_daemon_pid", lambda *args, **kwargs: None
+        cli,
+        "_terminate_backend_daemon_pid",
+        lambda pid, **kwargs: terminated.append(pid),
     )
-    monkeypatch.setattr(cli, "_remove_backend_daemon_pid", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_remove_backend_daemon_pid", lambda path: removed.append(path)
+    )
     monkeypatch.setattr(
         cli, "_backend_daemon_wait_until_ready", lambda *args, **kwargs: (True, None)
     )
-    monkeypatch.setattr(cli, "_build_slot", lambda: contextlib.nullcontext(0))
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/cargo")
 
-    def fake_run(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
-        env = cast(dict[str, str] | None, kwargs.get("env"))
-        captured_env.update(env or {})
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    def fail_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("daemon startup must not invoke cargo")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.subprocess, "run", fail_run)
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: _FakePopen())
 
     assert (
@@ -6387,7 +6478,8 @@ def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
         )
         is True
     )
-    assert captured_env["CARGO_TARGET_DIR"] == str(explicit_target)
+    assert terminated == [1234]
+    assert removed == [pid_path]
 
 
 def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_hit(
