@@ -5515,6 +5515,7 @@ fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
                 let active_bits = exception_context_active_bits();
                 if let Some(active_bits) = active_bits {
                     inc_ref_bits(_py, active_bits);
+                    clear_exception(_py);
                     return active_bits;
                 }
                 exception_context_set(_py, bits);
@@ -5559,6 +5560,7 @@ fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
             let active_bits = exception_context_active_bits();
             if let Some(active_bits) = active_bits {
                 inc_ref_bits(_py, active_bits);
+                clear_exception(_py);
                 return active_bits;
             }
             exception_context_set(_py, bits);
