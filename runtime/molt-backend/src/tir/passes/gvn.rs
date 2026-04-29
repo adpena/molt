@@ -1069,6 +1069,122 @@ mod tests {
         );
     }
 
+    /// Mirrors the `bench_struct` body-block pattern: the loop-carried
+    /// induction variable `i: I64` participates in two structurally
+    /// identical `i + 1` computations in the same block (one for `p.y =
+    /// i + 1`, one for the `i += 1` increment). GVN must collapse the
+    /// second into a Copy of the first — within the same block, two
+    /// typed Adds with identical operands are equivalent regardless of
+    /// whether the operand is a phi-fed loop-carried value.
+    ///
+    /// Locks in the contract that drove the dead-store-elim landing:
+    /// `bench_struct` performance hinges on this dedup firing.
+    ///
+    /// The header's branch condition is a `ConstBool` instead of a
+    /// `ConstInt(1)` to keep the dom-tree leader table from
+    /// inadvertently aliasing the body's `1` literals against the
+    /// branch cond — the assertion targets `i + 1` dedup, not constant
+    /// folding across blocks.
+    #[test]
+    fn redundant_add_in_loop_body_dedups() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
+        let p0 = ValueId(0);
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let i = func.fresh_value();
+        let cond = func.fresh_value();
+        let one_a = func.fresh_value();
+        let one_b = func.fresh_value();
+        let plus_a = func.fresh_value();
+        let plus_b = func.fresh_value();
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![p0],
+            };
+        }
+
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: i,
+                    ty: TirType::I64,
+                }],
+                ops: vec![make_const_bool(true, cond)],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+
+        // Body computes `i + 1` twice. A real bench_struct lowering has
+        // a fresh ConstInt SSA for each literal `1`. GVN's intra-block
+        // leader table dedups the second ConstInt against the first,
+        // then dedups the second `Add(i, 1)` against the first.
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    make_const_int(1, one_a),
+                    make_binop(OpCode::Add, i, one_a, plus_a),
+                    make_const_int(1, one_b),
+                    make_binop(OpCode::Add, i, one_b, plus_b),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![plus_b],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![i] },
+            },
+        );
+
+        let _stats = run(&mut func);
+
+        let body_ops = &func.blocks[&body].ops;
+        assert_eq!(
+            body_ops[0].opcode,
+            OpCode::ConstInt,
+            "first `1` literal stays as a const"
+        );
+        assert_eq!(
+            body_ops[1].opcode,
+            OpCode::Add,
+            "first `i + 1` becomes the leader"
+        );
+        assert_eq!(
+            body_ops[2].opcode,
+            OpCode::Copy,
+            "second ConstInt(1) collapses to the first"
+        );
+        assert_eq!(body_ops[2].operands[0], one_a);
+        assert_eq!(
+            body_ops[3].opcode,
+            OpCode::Copy,
+            "second `i + 1` collapses to the first Add"
+        );
+        assert_eq!(body_ops[3].operands[0], plus_a);
+    }
+
     /// Sibling blocks that each define the same constant must NOT see each
     /// other's leaders.  After the dom-tree walk pops the first sibling, the
     /// second sibling enters with a clean (parent-scope) leader table.
