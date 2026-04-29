@@ -9299,6 +9299,89 @@ def test_run_wrapper_build_manifest_tracks_args_and_source_hash(
     assert len(seen_cmds) == 3
 
 
+def test_run_wrapper_build_manifest_tracks_imported_source_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("import helper\nprint(helper.VALUE)\n", encoding="utf-8")
+    helper = project / "helper.py"
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    original_helper = helper.stat()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    _clear_molt_home_caches()
+    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+
+    resolved, error = cli._resolve_wrapper_build_entry(
+        file_path=str(entry),
+        module=None,
+        project_root=project,
+        json_output=True,
+        command="run",
+        build_args=[],
+    )
+    assert error is None
+    assert resolved is not None
+    cached_bin = cli._wrapper_build_default_binary_path(resolved)
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(cached_bin),
+            "consumer_output": str(cached_bin),
+            "artifacts": {},
+        },
+    )
+    seen_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        cached_bin.parent.mkdir(parents=True, exist_ok=True)
+        cached_bin.write_bytes(f"binary-{len(seen_cmds)}".encode("ascii"))
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    common_kwargs = {
+        "file_path": str(entry),
+        "module": None,
+        "build_args": [],
+        "env": {},
+        "project_root": project,
+        "json_output": True,
+        "command": "run",
+        "verbose": False,
+        "resolved_build_entry": resolved,
+    }
+
+    first, first_duration, first_error = cli._run_wrapper_build(**common_kwargs)
+    assert first_error is None
+    assert first_duration >= 0.0
+    assert first is not None
+    assert len(seen_cmds) == 1
+
+    second, second_duration, second_error = cli._run_wrapper_build(**common_kwargs)
+    assert second_error is None
+    assert second_duration == 0.0
+    assert second is not None
+    assert len(seen_cmds) == 1
+
+    _rewrite_preserving_mtime(helper, "VALUE = 2\n", original_helper)
+    third, third_duration, third_error = cli._run_wrapper_build(**common_kwargs)
+    assert third_error is None
+    assert third_duration >= 0.0
+    assert third is not None
+    assert len(seen_cmds) == 2
+
+
 def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -10351,6 +10434,101 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
     assert daemon_request_bytes == [None, None]
     assert result.backend_daemon_cached is True
     assert result.backend_daemon_cache_tier == "module"
+
+
+def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    artifacts_root = tmp_path / "artifacts"
+    output_artifact = project_root / "build" / "main.o"
+    log_path = tmp_path / "daemon.log"
+    log_path.write_text("old stdlib compile line\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
+    )
+
+    def fake_compile_with_backend_daemon(
+        socket_path: Path,
+        **kwargs: object,
+    ) -> cli._BackendDaemonCompileResult:
+        assert socket_path == tmp_path / "daemon.sock"
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write("fresh incremental compile line\n")
+        backend_output = cast(Path, kwargs["backend_output"])
+        backend_output.parent.mkdir(parents=True, exist_ok=True)
+        backend_output.write_bytes(b"object")
+        return cli._BackendDaemonCompileResult(
+            True,
+            None,
+            {"pid": 42},
+            False,
+            None,
+            True,
+            True,
+        )
+
+    monkeypatch.setattr(
+        cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+    )
+
+    result, error = cli._execute_backend_compile(
+        cache=False,
+        cache_path=None,
+        function_cache_path=None,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=True,
+        daemon_socket=tmp_path / "daemon.sock",
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key=None,
+        function_cache_key=None,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=False,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest="digest123",
+        entry_module="pkg.app",
+        ir={"functions": [{"name": "changed"}]},
+        json_output=False,
+        warnings=[],
+        verbose=True,
+        backend_bin=tmp_path / "backend-bin",
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        _ensure_backend_ir_bytes=lambda: b"{}",
+        _get_backend_ir_fmt=lambda: "json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert error is None
+    assert result is not None
+    stderr = capsys.readouterr().err
+    assert "fresh incremental compile line" in stderr
+    assert "old stdlib compile line" not in stderr
 
 
 def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
