@@ -58,6 +58,16 @@ def test_ci_clippy_failures_are_not_swallowed() -> None:
     ]
 
 
+def test_kani_intrinsic_contracts_avoid_symbolic_std_sort() -> None:
+    kani_text = _read("runtime/molt-obj-model/tests/kani_intrinsic_contracts.rs")
+
+    assert "struct BoundedI64List" in kani_text
+    assert "std::cmp::Reverse" not in kani_text
+    assert "Vec<i64>" in kani_text
+    assert ".dedup()" not in kani_text
+    assert ".sort()" not in kani_text
+
+
 def test_nightly_contains_correctness_jobs() -> None:
     nightly_text = _read(".github/workflows/nightly.yml")
 

@@ -13,6 +13,94 @@ mod intrinsic_contract_proofs {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
+    const MAX_LIST_LEN: usize = 4;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct BoundedI64List {
+        len: usize,
+        items: [i64; MAX_LIST_LEN],
+    }
+
+    impl BoundedI64List {
+        fn empty() -> Self {
+            Self {
+                len: 0,
+                items: [0; MAX_LIST_LEN],
+            }
+        }
+
+        fn symbolic(len: usize) -> Self {
+            kani::assume(len <= MAX_LIST_LEN);
+            Self {
+                len,
+                items: [kani::any(), kani::any(), kani::any(), kani::any()],
+            }
+        }
+
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        fn is_empty(&self) -> bool {
+            self.len == 0
+        }
+
+        fn sort_in_place(&mut self) {
+            let mut pass = 0;
+            while pass < MAX_LIST_LEN {
+                let mut idx = 1;
+                while idx < self.len {
+                    if self.items[idx] < self.items[idx - 1] {
+                        self.items.swap(idx, idx - 1);
+                    }
+                    idx += 1;
+                }
+                pass += 1;
+            }
+        }
+
+        fn reverse(&mut self) {
+            if self.len <= 1 {
+                return;
+            }
+            let mut left = 0;
+            let mut right = self.len - 1;
+            while left < right {
+                self.items.swap(left, right);
+                left += 1;
+                right -= 1;
+            }
+        }
+
+        fn dedup_sorted(&mut self) {
+            if self.len <= 1 {
+                return;
+            }
+            let mut read = 1;
+            let mut write = 1;
+            while read < self.len {
+                if self.items[read] != self.items[write - 1] {
+                    self.items[write] = self.items[read];
+                    write += 1;
+                }
+                read += 1;
+            }
+            self.len = write;
+        }
+
+        fn count_positive(&self) -> usize {
+            let mut count = 0;
+            let mut idx = 0;
+            while idx < self.len {
+                if self.items[idx] > 0 {
+                    count += 1;
+                }
+                idx += 1;
+            }
+            count
+        }
+    }
+
     // ================================================================
     // Section 1: len axioms
     // ================================================================
@@ -474,13 +562,9 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_sorted_length() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
+        let mut v = BoundedI64List::symbolic(len);
         let original_len = v.len();
-        v.sort();
+        v.sort_in_place();
         assert_eq!(v.len(), original_len);
     }
 
@@ -490,14 +574,10 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_sorted_idempotent() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
-        v.sort();
-        let sorted_once = v.clone();
-        v.sort();
+        let mut v = BoundedI64List::symbolic(len);
+        v.sort_in_place();
+        let sorted_once = v;
+        v.sort_in_place();
         assert_eq!(v, sorted_once);
     }
 
@@ -509,16 +589,12 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_sorted_reversed() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
-        let mut sorted_original = v.clone();
-        sorted_original.sort();
+        let mut v = BoundedI64List::symbolic(len);
+        let mut sorted_original = v;
+        sorted_original.sort_in_place();
 
         v.reverse();
-        v.sort();
+        v.sort_in_place();
         assert_eq!(v, sorted_original);
     }
 
@@ -574,13 +650,9 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_reversed_sorted_reversed() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
-        v.sort();
-        let sorted = v.clone();
+        let mut v = BoundedI64List::symbolic(len);
+        v.sort_in_place();
+        let sorted = v;
         v.reverse();
         v.reverse();
         assert_eq!(v, sorted);
@@ -672,14 +744,10 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_set_length_le() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
+        let mut v = BoundedI64List::symbolic(len);
         let original_len = v.len();
-        v.sort();
-        v.dedup();
+        v.sort_in_place();
+        v.dedup_sorted();
         assert!(v.len() <= original_len);
     }
 
@@ -687,9 +755,9 @@ mod intrinsic_contract_proofs {
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_set_nil() {
-        let mut v: Vec<i64> = Vec::new();
-        v.sort();
-        v.dedup();
+        let mut v = BoundedI64List::empty();
+        v.sort_in_place();
+        v.dedup_sorted();
         assert!(v.is_empty());
     }
 
@@ -699,18 +767,14 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_set_idempotent() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
+        let mut v = BoundedI64List::symbolic(len);
         // First dedup pass
-        v.sort();
-        v.dedup();
-        let after_first = v.clone();
+        v.sort_in_place();
+        v.dedup_sorted();
+        let after_first = v;
         // Second dedup pass
-        v.sort();
-        v.dedup();
+        v.sort_in_place();
+        v.dedup_sorted();
         assert_eq!(v, after_first);
     }
 
@@ -834,14 +898,9 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_filter_sorted_length() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
+        let mut v = BoundedI64List::symbolic(len);
         let original_len = v.len();
-        v.sort();
-        let filtered: Vec<&i64> = v.iter().filter(|&&x| x > 0).collect();
-        assert!(filtered.len() <= original_len);
+        v.sort_in_place();
+        assert!(v.count_positive() <= original_len);
     }
 }
