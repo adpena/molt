@@ -57,6 +57,8 @@ from typing import (
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
 from molt.compat import CompatibilityError
 from molt._wasm_runtime_exports import (
     wasm_runtime_export_link_args,
@@ -229,6 +231,38 @@ _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
 CapabilityInput = str | list[str] | dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class TargetPythonVersion:
+    major: int
+    minor: int
+    micro: int
+    release: str = "final"
+    serial: int = 0
+
+    @property
+    def feature_version(self) -> tuple[int, int]:
+        return (self.major, self.minor)
+
+    @property
+    def short(self) -> str:
+        return f"{self.major}.{self.minor}"
+
+    @property
+    def tag(self) -> str:
+        return f"py{self.major}{self.minor}"
+
+
+_SUPPORTED_TARGET_PYTHON_VERSIONS: tuple[TargetPythonVersion, ...] = (
+    TargetPythonVersion(3, 12, 0),
+    TargetPythonVersion(3, 13, 0),
+    TargetPythonVersion(3, 14, 0),
+)
+_SUPPORTED_TARGET_PYTHON_BY_SHORT = {
+    version.short: version for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
+}
+_DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"]
+
+
 def _dedupe_preserve_order(items: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     deduped: list[str] = []
@@ -242,6 +276,104 @@ def _dedupe_preserve_order(items: Iterable[str]) -> list[str]:
 
 def _split_tokens(value: str) -> list[str]:
     return [token for token in re.split(r"[,\s]+", value) if token]
+
+
+def _parse_target_python_version(value: str | None) -> TargetPythonVersion:
+    if value is None or not value.strip():
+        return _DEFAULT_TARGET_PYTHON_VERSION
+    raw = value.strip().lower()
+    if raw.startswith("py") and len(raw) == 5 and raw[2:].isdigit():
+        raw = f"{raw[2]}.{raw[3:]}"
+    try:
+        parsed = Version(raw)
+    except InvalidVersion as exc:
+        raise ValueError(f"invalid Python target version {value!r}") from exc
+    key = f"{parsed.major}.{parsed.minor}"
+    target = _SUPPORTED_TARGET_PYTHON_BY_SHORT.get(key)
+    if target is None:
+        supported = ", ".join(
+            version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
+        )
+        raise ValueError(
+            f"unsupported Python target version {value!r}; supported versions: {supported}"
+        )
+    return target
+
+
+def _project_requires_python(project_root: Path) -> str | None:
+    pyproject = project_root / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    raw = data.get("project", {}).get("requires-python")
+    return raw if isinstance(raw, str) and raw.strip() else None
+
+
+def _target_python_from_requires_python(
+    requires_python: str | None,
+) -> TargetPythonVersion:
+    if not requires_python:
+        return _DEFAULT_TARGET_PYTHON_VERSION
+    try:
+        specifier = SpecifierSet(requires_python)
+    except InvalidSpecifier as exc:
+        raise ValueError(
+            f"invalid project.requires-python specifier {requires_python!r}"
+        ) from exc
+    for target in _SUPPORTED_TARGET_PYTHON_VERSIONS:
+        if Version(target.short) in specifier:
+            return target
+    supported = ", ".join(
+        version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
+    )
+    raise ValueError(
+        f"project.requires-python {requires_python!r} does not admit any "
+        f"supported Molt target ({supported})"
+    )
+
+
+def _resolve_target_python_version(
+    *,
+    explicit: str | None,
+    build_config: Mapping[str, Any] | None,
+    project_root: Path,
+) -> TargetPythonVersion:
+    if explicit is not None and explicit.strip():
+        return _parse_target_python_version(explicit)
+    if build_config is not None:
+        for key in (
+            "python_version",
+            "python-version",
+            "target_python",
+            "target-python",
+        ):
+            raw_config = build_config.get(key)
+            if isinstance(raw_config, str) and raw_config.strip():
+                return _parse_target_python_version(raw_config)
+    return _target_python_from_requires_python(_project_requires_python(project_root))
+
+
+def _parse_source_for_target(
+    source: str,
+    *,
+    filename: str = "<unknown>",
+    target_python: TargetPythonVersion,
+) -> ast.AST:
+    frontend_version = (sys.version_info.major, sys.version_info.minor)
+    if frontend_version < target_python.feature_version:
+        raise SyntaxError(
+            f"Molt target Python {target_python.short} requires a Python "
+            f"{target_python.short}+ frontend; run the build with "
+            f"`uv run --python {target_python.short} -m molt.cli ...`"
+        )
+    return ast.parse(
+        source,
+        filename=filename,
+        feature_version=target_python.feature_version,
+    )
 
 
 @dataclass(frozen=True)
@@ -566,6 +698,29 @@ def _build_args_has_json_flag(args: Sequence[str]) -> bool:
     return any(arg == "--json" for arg in args)
 
 
+def _build_args_has_python_version_flag(args: Sequence[str]) -> bool:
+    return any(
+        arg == "--python-version" or arg.startswith("--python-version=") for arg in args
+    )
+
+
+def _wrapper_target_python(
+    build_args: Sequence[str],
+    *,
+    project_root: Path,
+) -> TargetPythonVersion:
+    for index, arg in enumerate(build_args):
+        if arg == "--python-version" and index + 1 < len(build_args):
+            return _parse_target_python_version(build_args[index + 1])
+        if arg.startswith("--python-version="):
+            return _parse_target_python_version(arg.split("=", 1)[1])
+    return _resolve_target_python_version(
+        explicit=None,
+        build_config=_resolve_build_config(_load_molt_config(project_root)),
+        project_root=project_root,
+    )
+
+
 _WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 1
 _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
@@ -617,6 +772,7 @@ def _wrapper_build_dependency_fingerprints(
             stdlib_root,
             project_root,
             _stdlib_allowlist(),
+            target_python=resolved_build_entry.target_python,
         )
     except (OSError, SyntaxError, UnicodeDecodeError):
         return None
@@ -674,6 +830,10 @@ def _wrapper_build_cache_input(
         "runtime_backend_fingerprint": _cache_fingerprint(),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
+        "target_python": _wrapper_target_python(
+            build_args,
+            project_root=project_root,
+        ).tag,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return payload, hashlib.sha256(encoded).hexdigest()
@@ -1327,6 +1487,7 @@ class _FrontendLayerExecutionContext:
     frontend_module_costs: Mapping[str, float]
     stdlib_like_by_module: Mapping[str, bool]
     known_classes: Mapping[str, Any]
+    target_python: TargetPythonVersion
 
 
 @dataclass(frozen=True)
@@ -1380,6 +1541,7 @@ class _SerialFrontendLoweringContext:
     module_path_stats: Mapping[str, os.stat_result | None] | None
     known_classes: Mapping[str, Any]
     frontend_phase_timeout: float | None
+    target_python: TargetPythonVersion
 
 
 @dataclass(frozen=True)
@@ -1421,6 +1583,7 @@ class _EntryFrontendLoweringContext:
     optimization_profile: str
     pgo_hot_function_names: Collection[str]
     frontend_phase_timeout: float | None
+    target_python: TargetPythonVersion
 
 
 @dataclass
@@ -1533,6 +1696,7 @@ class _ResolvedBuildEntry:
     module_roots: list[Path]
     entry_source: str
     entry_tree: ast.AST
+    target_python: TargetPythonVersion
 
 
 @dataclass(frozen=True)
@@ -1567,6 +1731,7 @@ class _PreparedBuildConfig:
     capability_profiles: list[str]
     capabilities_source: str | None
     manifest_env_vars: dict[str, str]
+    target_python: TargetPythonVersion
 
 
 @dataclass(frozen=True)
@@ -3436,8 +3601,10 @@ class _ModuleResolutionCache:
     )
     source_cache: dict[Path, str] = field(default_factory=dict)
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
-    ast_cache: dict[tuple[Path, str], ast.AST] = field(default_factory=dict)
-    ast_error_cache: dict[tuple[Path, str], SyntaxError] = field(default_factory=dict)
+    ast_cache: dict[tuple[Path, str, str], ast.AST] = field(default_factory=dict)
+    ast_error_cache: dict[tuple[Path, str, str], SyntaxError] = field(
+        default_factory=dict
+    )
     runtime_import_protocol_cache: dict[tuple[Path, str | None, bool], bool] = field(
         default_factory=dict
     )
@@ -3624,8 +3791,15 @@ class _ModuleResolutionCache:
         self.path_stat_cache[cache_key] = stat_result
         return stat_result
 
-    def parse_module_ast(self, path: Path, source: str, *, filename: str) -> ast.AST:
-        cache_key = (self.resolved_path(path), filename)
+    def parse_module_ast(
+        self,
+        path: Path,
+        source: str,
+        *,
+        filename: str,
+        target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    ) -> ast.AST:
+        cache_key = (self.resolved_path(path), filename, target_python.tag)
         tree = self.ast_cache.get(cache_key)
         if tree is not None:
             return tree
@@ -3633,7 +3807,11 @@ class _ModuleResolutionCache:
         if cached_error is not None:
             raise cached_error
         try:
-            tree = ast.parse(source, filename=filename)
+            tree = _parse_source_for_target(
+                source,
+                filename=filename,
+                target_python=target_python,
+            )
         except SyntaxError as exc:
             self.ast_error_cache[cache_key] = exc
             raise
@@ -3716,6 +3894,7 @@ def _resolve_build_entry(
     json_output: bool,
     command: str = "build",
     lib_paths: list[str] | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
     module_roots = _resolve_module_roots(
         project_root,
@@ -3767,7 +3946,11 @@ def _resolve_build_entry(
             command=command,
         )
     try:
-        entry_tree = ast.parse(entry_source, filename=str(source_path))
+        entry_tree = _parse_source_for_target(
+            entry_source,
+            filename=str(source_path),
+            target_python=target_python,
+        )
     except SyntaxError as exc:
         return None, _fail(
             f"Syntax error in {source_path}: {exc}",
@@ -3816,6 +3999,7 @@ def _resolve_build_entry(
         module_roots=list(dict.fromkeys(root.resolve() for root in module_roots)),
         entry_source=entry_source,
         entry_tree=entry_tree,
+        target_python=target_python,
     ), None
 
 
@@ -3830,7 +4014,17 @@ def _prepare_build_config(
     capabilities: CapabilityInput | None,
     capability_manifest: str | None = None,
     require_signed_manifest: bool = False,
+    python_version: str | None = None,
+    build_config: Mapping[str, Any] | None = None,
 ) -> tuple[_PreparedBuildConfig | None, _CliFailure | None]:
+    try:
+        target_python = _resolve_target_python_version(
+            explicit=python_version,
+            build_config=build_config,
+            project_root=project_root,
+        )
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command="build")
     pgo_profile_summary: PgoProfileSummary | None = None
     pgo_profile_path: Path | None = None
     runtime_feedback_summary: RuntimeFeedbackSummary | None = None
@@ -3984,6 +4178,7 @@ def _prepare_build_config(
         capability_profiles=capability_profiles,
         capabilities_source=capabilities_source,
         manifest_env_vars=manifest_env_vars,
+        target_python=target_python,
     ), None
 
 
@@ -4162,6 +4357,8 @@ def _prepare_build_inputs(
     require_signed_manifest: bool = False,
     respect_pythonpath: bool = False,
     lib_paths: list[str] | None = None,
+    python_version: str | None = None,
+    build_config: Mapping[str, Any] | None = None,
 ) -> tuple[
     tuple[
         _PreparedBuildPreamble,
@@ -4205,6 +4402,8 @@ def _prepare_build_inputs(
         capabilities=capabilities,
         capability_manifest=capability_manifest,
         require_signed_manifest=require_signed_manifest,
+        python_version=python_version,
+        build_config=build_config,
     )
     if prepared_build_config_error is not None:
         return None, prepared_build_config_error
@@ -4219,6 +4418,7 @@ def _prepare_build_inputs(
         respect_pythonpath=respect_pythonpath,
         json_output=json_output,
         lib_paths=lib_paths or [],
+        target_python=prepared_build_config.target_python,
     )
     if resolved_build_entry_error is not None:
         return None, resolved_build_entry_error
@@ -4346,6 +4546,10 @@ def _resolve_wrapper_build_entry(
     if isinstance(cfg_lib_paths, str):
         cfg_lib_paths = [cfg_lib_paths]
     lib_paths = _build_args_lib_paths(build_args) + list(cfg_lib_paths)
+    try:
+        target_python = _wrapper_target_python(build_args, project_root=project_root)
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command=command)
     cwd_root = _find_project_root(Path.cwd())
     return _resolve_build_entry(
         file_path=file_path,
@@ -4357,6 +4561,7 @@ def _resolve_wrapper_build_entry(
         json_output=json_output,
         command=command,
         lib_paths=lib_paths or None,
+        target_python=target_python,
     )
 
 
@@ -5059,6 +5264,7 @@ def _module_uses_runtime_import_protocol(
     module_name: str,
     module_path: Path,
     module_resolution_cache: "_ModuleResolutionCache",
+    target_python: TargetPythonVersion,
     tree: ast.AST | None = None,
 ) -> bool:
     if module_name in _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES:
@@ -5078,6 +5284,7 @@ def _module_uses_runtime_import_protocol(
                 module_path,
                 source,
                 filename=str(module_path),
+                target_python=target_python,
             )
         except SyntaxError:
             return True
@@ -5097,6 +5304,7 @@ def _module_graph_needs_runtime_import_support(
     entry_module: str,
     entry_path: Path,
     entry_tree: ast.AST,
+    target_python: TargetPythonVersion,
 ) -> _RuntimeImportSupportPolicy:
     needs_generated_importer = _explicit_imports_reference_generated_importer(
         explicit_imports
@@ -5116,6 +5324,7 @@ def _module_graph_needs_runtime_import_support(
             module_name=module_name,
             module_path=module_path,
             module_resolution_cache=module_resolution_cache,
+            target_python=target_python,
             tree=tree,
         ):
             return _RuntimeImportSupportPolicy(
@@ -6141,6 +6350,7 @@ def _extend_module_graph_with_closure(
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
     nested_stdlib_scan_modules: set[str] | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
     if not entry_paths:
         return
@@ -6155,6 +6365,7 @@ def _extend_module_graph_with_closure(
         stub_parents=stub_parents,
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
         resolver_cache=resolver_cache,
+        target_python=target_python,
     )
     if diagnostics_enabled:
         for name, path in closure_graph.items():
@@ -7371,6 +7582,9 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
     optimization_profile = cast(BuildProfile, payload["optimization_profile"])
+    target_python = _parse_target_python_version(
+        cast(str | None, payload.get("target_python"))
+    )
     pgo_hot_functions = {
         symbol.strip()
         for symbol in cast(list[str], payload.get("pgo_hot_functions", []))
@@ -7380,7 +7594,11 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     visit_s = 0.0
     lower_s = 0.0
     try:
-        tree = ast.parse(source, filename=logical_source_path)
+        tree = _parse_source_for_target(
+            source,
+            filename=logical_source_path,
+            target_python=target_python,
+        )
     except SyntaxError as exc:
         worker_finished_ns = time.time_ns()
         return {
@@ -7490,6 +7708,7 @@ def _discover_module_graph_from_paths(
     nested_stdlib_scan_modules: set[str] | None = None,
     resolver_cache: _ModuleResolutionCache | None = None,
     precomputed_imports_by_path: Mapping[Path, Collection[str]] | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[dict[str, Path], set[str]]:
     entry_paths = tuple(entry_paths)
     if not entry_paths:
@@ -7525,6 +7744,7 @@ def _discover_module_graph_from_paths(
             stub_parents=stub_parents,
             nested_stdlib_scan_modules=nested_stdlib_scan_modules,
             resolution_cache=resolution_cache,
+            target_python=target_python,
         )
         if persisted_graph is not None:
             if not persisted_graph.dirty_modules:
@@ -7570,6 +7790,7 @@ def _discover_module_graph_from_paths(
                         is_package=is_package,
                         include_nested=include_nested_imports,
                         imports=imports,
+                        target_python=target_python,
                     )
         else:
             persisted_imports = None
@@ -7580,6 +7801,7 @@ def _discover_module_graph_from_paths(
                     module_name=module_name,
                     is_package=is_package,
                     include_nested=include_nested_imports,
+                    target_python=target_python,
                 )
             if persisted_imports is None:
                 try:
@@ -7588,7 +7810,10 @@ def _discover_module_graph_from_paths(
                     continue
                 try:
                     tree = resolution_cache.parse_module_ast(
-                        path, source, filename=str(path)
+                        path,
+                        source,
+                        filename=str(path),
+                        target_python=target_python,
                     )
                 except SyntaxError:
                     continue
@@ -7600,6 +7825,7 @@ def _discover_module_graph_from_paths(
                     tree=tree,
                     resolution_cache=resolution_cache,
                     project_root=project_root,
+                    target_python=target_python,
                 )
             else:
                 imports = persisted_imports
@@ -7635,6 +7861,7 @@ def _discover_module_graph_from_paths(
                 nested_stdlib_scan_modules=nested_stdlib_scan_modules,
                 graph=graph,
                 explicit_imports=explicit_imports,
+                target_python=target_python,
             )
     return graph, explicit_imports
 
@@ -7651,6 +7878,7 @@ def _discover_module_graph(
     nested_stdlib_scan_modules: set[str] | None = None,
     resolver_cache: _ModuleResolutionCache | None = None,
     precomputed_imports: Collection[str] | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[dict[str, Path], set[str]]:
     precomputed_imports_by_path = (
         {entry_path: precomputed_imports} if precomputed_imports is not None else None
@@ -7667,6 +7895,7 @@ def _discover_module_graph(
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
         resolver_cache=resolver_cache,
         precomputed_imports_by_path=precomputed_imports_by_path,
+        target_python=target_python,
     )
 
 
@@ -7725,6 +7954,7 @@ def _module_graph_cache_key(
     stub_parents: tuple[str, ...],
     nested_stdlib_scan_modules: tuple[str, ...],
     compiler_fingerprint: str,
+    target_python_tag: str = _DEFAULT_TARGET_PYTHON_VERSION.tag,
 ) -> str:
     return hashlib.sha256(
         json.dumps(
@@ -7738,6 +7968,7 @@ def _module_graph_cache_key(
                 "skip_modules": list(skip_modules),
                 "stub_parents": list(stub_parents),
                 "nested_stdlib_scan_modules": list(nested_stdlib_scan_modules),
+                "target_python": target_python_tag,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -13791,6 +14022,7 @@ def _import_scan_cache_path(
     module_name: str,
     is_package: bool,
     include_nested: bool,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -13801,6 +14033,7 @@ def _import_scan_cache_path(
         module_name,
         "pkg" if is_package else "mod",
         "nested" if include_nested else "top",
+        target_python.tag,
         _cache_tooling_fingerprint(),
     )
     return root / f"{path.stem}.{cache_key}.json"
@@ -13813,6 +14046,7 @@ def _module_analysis_cache_path(
     kind: str = "module_analysis_cache",
     module_name: str,
     is_package: bool | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -13824,6 +14058,7 @@ def _module_analysis_cache_path(
         module_name,
         package_kind,
         kind,
+        target_python.tag,
         _cache_tooling_fingerprint(),
     )
     return root / f"{path.stem}.{cache_key}.json"
@@ -13835,6 +14070,7 @@ def _module_lowering_cache_path(
     *,
     module_name: str,
     is_package: bool,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -13844,6 +14080,7 @@ def _module_lowering_cache_path(
         os.fspath(path),
         module_name,
         "pkg" if is_package else "mod",
+        target_python.tag,
     )
     return root / f"{path.stem}.{cache_key}.json"
 
@@ -13858,6 +14095,7 @@ def _module_graph_cache_path(
     skip_modules: set[str],
     stub_parents: set[str],
     nested_stdlib_scan_modules: set[str],
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -13872,6 +14110,7 @@ def _module_graph_cache_path(
         tuple(sorted(stub_parents)),
         tuple(sorted(nested_stdlib_scan_modules)),
         _cache_tooling_fingerprint(),
+        target_python.tag,
     )
     return root / f"{entry_path.stem}.{cache_key}.json"
 
@@ -13887,6 +14126,7 @@ def _read_persisted_module_graph(
     stub_parents: set[str],
     nested_stdlib_scan_modules: set[str],
     resolution_cache: _ModuleResolutionCache | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> _PersistedModuleGraphState | None:
     cache_path = _module_graph_cache_path(
         project_root,
@@ -13897,6 +14137,7 @@ def _read_persisted_module_graph(
         skip_modules=skip_modules,
         stub_parents=stub_parents,
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        target_python=target_python,
     )
     payload = _read_cached_json_object(cache_path)
     if payload is None:
@@ -13970,6 +14211,7 @@ def _write_persisted_module_graph(
     nested_stdlib_scan_modules: set[str],
     graph: dict[str, Path],
     explicit_imports: set[str],
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
     modules: list[dict[str, Any]] = []
     for module_name, path in sorted(graph.items()):
@@ -14001,6 +14243,7 @@ def _write_persisted_module_graph(
         skip_modules=skip_modules,
         stub_parents=stub_parents,
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        target_python=target_python,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_cached_json_object(cache_path, payload)
@@ -14014,6 +14257,7 @@ def _read_persisted_import_scan(
     is_package: bool,
     include_nested: bool,
     path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[str, ...] | None:
     cache_path = _import_scan_cache_path(
         project_root,
@@ -14021,6 +14265,7 @@ def _read_persisted_import_scan(
         module_name=module_name,
         is_package=is_package,
         include_nested=include_nested,
+        target_python=target_python,
     )
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
@@ -14053,6 +14298,7 @@ def _write_persisted_import_scan(
     is_package: bool,
     include_nested: bool,
     imports: Iterable[str],
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
     cache_path = _import_scan_cache_path(
         project_root,
@@ -14060,6 +14306,7 @@ def _write_persisted_import_scan(
         module_name=module_name,
         is_package=is_package,
         include_nested=include_nested,
+        target_python=target_python,
     )
     stat = path.stat()
     source_sha256 = _source_content_sha256(path, stat)
@@ -14071,6 +14318,7 @@ def _write_persisted_import_scan(
         "module_name": module_name,
         "is_package": is_package,
         "include_nested": include_nested,
+        "target_python": target_python.tag,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
         "source_sha256": source_sha256,
@@ -14088,12 +14336,14 @@ def _read_persisted_module_analysis(
     is_package: bool,
     path_stat: os.stat_result | None = None,
     validate_stat: bool = True,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[dict[str, dict[str, Any]], tuple[str, ...] | None] | None:
     cache_path = _module_analysis_cache_path(
         project_root,
         path,
         module_name=module_name,
         is_package=is_package,
+        target_python=target_python,
     )
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
@@ -14141,12 +14391,14 @@ def _write_persisted_module_analysis(
     is_package: bool,
     func_defaults: dict[str, dict[str, Any]],
     imports: Iterable[str] | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
     cache_path = _module_analysis_cache_path(
         project_root,
         path,
         module_name=module_name,
         is_package=is_package,
+        target_python=target_python,
     )
     stat = path.stat()
     source_sha256 = _source_content_sha256(path, stat)
@@ -14157,6 +14409,7 @@ def _write_persisted_module_analysis(
         "compiler_fingerprint": _cache_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
+        "target_python": target_python.tag,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
         "source_sha256": source_sha256,
@@ -14209,6 +14462,7 @@ def _load_module_imports(
     tree: ast.AST,
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[str, ...]:
     if project_root is not None:
         persisted_imports = _read_persisted_import_scan(
@@ -14217,6 +14471,7 @@ def _load_module_imports(
             module_name=module_name,
             is_package=is_package,
             include_nested=include_nested,
+            target_python=target_python,
         )
         if persisted_imports is not None:
             return persisted_imports
@@ -14236,6 +14491,7 @@ def _load_module_imports(
                 is_package=is_package,
                 include_nested=include_nested,
                 imports=imports,
+                target_python=target_python,
             )
     return imports
 
@@ -14251,6 +14507,7 @@ def _load_module_analysis(
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
     path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[
     ast.AST | None,
     tuple[str, ...],
@@ -14270,6 +14527,7 @@ def _load_module_analysis(
             module_name=module_name,
             is_package=is_package,
             path_stat=path_stat,
+            target_python=target_python,
         )
         if project_root is not None
         else None
@@ -14281,6 +14539,7 @@ def _load_module_analysis(
             module_name=module_name,
             is_package=is_package,
             validate_stat=False,
+            target_python=target_python,
         )
         if project_root is not None
         else None
@@ -14300,6 +14559,7 @@ def _load_module_analysis(
             is_package=is_package,
             include_nested=include_nested,
             path_stat=path_stat,
+            target_python=target_python,
         )
     if persisted_imports is not None and persisted_defaults is not None:
         return None, persisted_imports, persisted_defaults, None, True, False, path_stat
@@ -14307,7 +14567,12 @@ def _load_module_analysis(
     if source is None:
         source = resolution_cache.read_module_source(path)
 
-    tree = resolution_cache.parse_module_ast(path, source, filename=logical_source_path)
+    tree = resolution_cache.parse_module_ast(
+        path,
+        source,
+        filename=logical_source_path,
+        target_python=target_python,
+    )
     imports = persisted_imports
     if imports is None:
         imports = _load_module_imports(
@@ -14318,6 +14583,7 @@ def _load_module_analysis(
             tree=tree,
             resolution_cache=resolution_cache,
             project_root=project_root,
+            target_python=target_python,
         )
     func_defaults = persisted_defaults
     if func_defaults is None:
@@ -14331,6 +14597,7 @@ def _load_module_analysis(
                     is_package=is_package,
                     func_defaults=func_defaults,
                     imports=imports,
+                    target_python=target_python,
                 )
     interface_changed = True
     if stale_analysis is not None:
@@ -14839,7 +15106,10 @@ def _resolve_tree_for_serial_frontend_module(
     )
     try:
         return lowering_context.module_resolution_cache.parse_module_ast(
-            module_path, source, filename=logical_source_path
+            module_path,
+            source,
+            filename=logical_source_path,
+            target_python=lowering_context.target_python,
         )
     except SyntaxError as exc:
         raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
@@ -14909,6 +15179,7 @@ def _lower_module_serial_with_context(
             scoped_known_classes=scoped_known_classes,
             is_package=is_package,
             path_stat=path_stat,
+            target_python=lowering_context.target_python,
         )
         if (
             context_digest is not None
@@ -14921,6 +15192,7 @@ def _lower_module_serial_with_context(
                 is_package=is_package,
                 context_digest=context_digest,
                 path_stat=path_stat,
+                target_python=lowering_context.target_python,
             )
             if cached_payload is not None:
                 return cached_payload, 0.0, 0.0, 0.0
@@ -15012,6 +15284,7 @@ def _lower_module_serial_with_context(
                 is_package=is_package,
                 context_digest=context_digest,
                 result=payload,
+                target_python=lowering_context.target_python,
             )
     return payload, visit_s, lower_s, total_s
 
@@ -15211,7 +15484,11 @@ def _lower_entry_module_as_main(
             command="build",
         )
     try:
-        tree = ast.parse(source, filename=str(lowering_context.entry_path))
+        tree = _parse_source_for_target(
+            source,
+            filename=str(lowering_context.entry_path),
+            target_python=lowering_context.target_python,
+        )
     except SyntaxError as exc:
         return fail(
             f"Syntax error in {lowering_context.entry_path}: {exc}",
@@ -15368,14 +15645,19 @@ def _append_module_code_slot_ops(
     return next_var
 
 
-_MOLT_TARGET_VERSION = (3, 12, 0, "final", 0)
+_MOLT_TARGET_VERSION = _DEFAULT_TARGET_PYTHON_VERSION
 
 
-def _python_version_display() -> tuple[str, str, int]:
-    # Use molt's target version, NOT the host Python version, so that
-    # compiled binaries always report 3.12 regardless of the host used
-    # to run the compiler.
-    major, minor, micro, release, serial = _MOLT_TARGET_VERSION
+def _python_version_display(
+    target_python: TargetPythonVersion,
+) -> tuple[str, str, int]:
+    # Use Molt's selected target version, not the host Python version, so
+    # compiled binaries report the semantics they were parsed and lowered for.
+    major = target_python.major
+    minor = target_python.minor
+    micro = target_python.micro
+    release = target_python.release
+    serial = target_python.serial
     version_suffix = ""
     if release == "alpha":
         version_suffix = f"a{serial}"
@@ -15392,9 +15674,14 @@ def _python_version_display() -> tuple[str, str, int]:
 def _build_version_info_ops(
     *,
     register_global_code_id: Callable[[str], int],
+    target_python: TargetPythonVersion,
 ) -> list[dict[str, Any]]:
-    major, minor, micro, version_release, version_serial = _MOLT_TARGET_VERSION
-    _, version_str, _ = _python_version_display()
+    major = target_python.major
+    minor = target_python.minor
+    micro = target_python.micro
+    version_release = target_python.release
+    version_serial = target_python.serial
+    _, version_str, _ = _python_version_display(target_python)
     return [
         {"kind": "const", "value": major, "out": "v3_raw"},
         {"kind": "box", "args": ["v3_raw"], "out": "v3"},
@@ -15934,6 +16221,7 @@ def _prepare_backend_ir(
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
     emit_ir_path: Path | None,
+    target_python: TargetPythonVersion,
     stdlib_profile: str | None = "micro",
 ) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
     entry_path: Path | None = None
@@ -15984,7 +16272,10 @@ def _prepare_backend_ir(
         name == "sys" or name.startswith("sys.") for name in explicit_imports
     )
     version_ops = (
-        _build_version_info_ops(register_global_code_id=register_global_code_id)
+        _build_version_info_ops(
+            register_global_code_id=register_global_code_id,
+            target_python=target_python,
+        )
         if needs_sys_version_bootstrap
         else []
     )
@@ -17919,6 +18210,7 @@ def _augment_support_modules(
     needs_generated_importer: bool,
     needs_runtime_import_support: bool,
     diagnostics_enabled: bool,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> _SupportModuleAugmentation:
     namespace_parents = _collect_namespace_parents(
         module_graph,
@@ -17976,6 +18268,7 @@ def _augment_support_modules(
             diagnostics_enabled=diagnostics_enabled,
             module_reasons=module_reasons,
             reason="import_support",
+            target_python=target_python,
         )
     if needs_generated_importer and IMPORTER_MODULE_NAME not in module_graph:
         importer_names = sorted(
@@ -18017,6 +18310,7 @@ def _augment_module_graph_for_entry_and_runtime(
     diagnostics_enabled: bool,
     json_output: bool,
     target: str,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[_ModuleGraphAugmentation, _CliFailure | None]:
     roots = list(roots)
     module_roots = list(module_roots)
@@ -18049,6 +18343,7 @@ def _augment_module_graph_for_entry_and_runtime(
         skip_modules=stub_skip_modules,
         stub_parents=stub_parents,
         nested_stdlib_scan_modules=set(),
+        target_python=target_python,
     )
     spawn_enabled = False
     spawn_required = target != "wasm" and _requires_spawn_entry_override(
@@ -18089,6 +18384,7 @@ def _augment_module_graph_for_entry_and_runtime(
             reason="spawn_closure",
             skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
+            target_python=target_python,
         )
     return _ModuleGraphAugmentation(
         spawn_enabled=spawn_enabled,
@@ -18109,6 +18405,7 @@ def _prepare_entry_module_graph(
     module_reasons: MutableMapping[str, set[str]],
     json_output: bool,
     target: str,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
     stdlib_allowlist = _stdlib_allowlist()
     roots = module_roots + [stdlib_root]
@@ -18127,6 +18424,7 @@ def _prepare_entry_module_graph(
         stub_parents=STUB_PARENT_MODULES,
         resolver_cache=module_resolution_cache,
         precomputed_imports=entry_imports,
+        target_python=target_python,
     )
     if diagnostics_enabled:
         for name in module_graph:
@@ -18175,6 +18473,7 @@ def _prepare_entry_module_graph(
         diagnostics_enabled=diagnostics_enabled,
         json_output=json_output,
         target=target,
+        target_python=target_python,
     )
     if augmentation_error is not None:
         return None, augmentation_error
@@ -18185,6 +18484,7 @@ def _prepare_entry_module_graph(
         entry_module=entry_module,
         entry_path=source_path,
         entry_tree=entry_tree,
+        target_python=target_python,
     )
     if runtime_import_support_policy.needs_runtime_import_support:
         import_support_paths: list[Path] = []
@@ -18210,6 +18510,7 @@ def _prepare_entry_module_graph(
             diagnostics_enabled=diagnostics_enabled,
             module_reasons=module_reasons,
             reason="runtime_import_support",
+            target_python=target_python,
         )
         if diagnostics_enabled:
             _record_new_module_reasons(
@@ -18262,6 +18563,7 @@ def _prepare_build_module_outputs(
     output_base: str,
     out_dir_path: Path | None,
     project_root: Path,
+    target_python: TargetPythonVersion,
 ) -> tuple[_PreparedBuildModuleOutputs | None, str | None]:
     support_modules = _augment_support_modules(
         module_graph=module_graph,
@@ -18277,6 +18579,7 @@ def _prepare_build_module_outputs(
         needs_generated_importer=needs_generated_importer,
         needs_runtime_import_support=needs_runtime_import_support,
         diagnostics_enabled=diagnostics_enabled,
+        target_python=target_python,
     )
     namespace_module_names = set(support_modules.namespace_module_names)
     generated_module_source_paths = support_modules.generated_module_source_paths
@@ -18331,6 +18634,7 @@ def _prepare_frontend_analysis(
     project_root: Path,
     entry_module: str,
     json_output: bool,
+    target_python: TargetPythonVersion,
 ) -> tuple[_PreparedFrontendAnalysis | None, _CliFailure | None]:
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
@@ -18363,6 +18667,7 @@ def _prepare_frontend_analysis(
                 ],
                 resolution_cache=module_resolution_cache,
                 project_root=project_root,
+                target_python=target_python,
             )
             module_path_stats[module_name] = path_stat
             if source is not None:
@@ -18624,6 +18929,7 @@ def _prepare_frontend_execution(
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
     midend_policy_outcomes_by_function: dict[str, dict[str, Any]],
     midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
+    target_python: TargetPythonVersion,
 ) -> tuple[
     _FrontendLayerExecutionContext,
     _FrontendLayerRuntimeHooks,
@@ -18660,6 +18966,7 @@ def _prepare_frontend_execution(
         frontend_module_costs=frontend_module_costs,
         stdlib_like_by_module=stdlib_like_by_module,
         known_classes=known_classes,
+        target_python=target_python,
     )
     serial_frontend_lowering_context = _SerialFrontendLoweringContext(
         syntax_error_modules=syntax_error_modules,
@@ -18691,6 +18998,7 @@ def _prepare_frontend_execution(
         module_path_stats=module_path_stats,
         known_classes=known_classes,
         frontend_phase_timeout=frontend_phase_timeout,
+        target_python=target_python,
     )
     serial_frontend_lowering_hooks = _SerialFrontendLoweringHooks(
         record_frontend_timing=record_frontend_timing,
@@ -18769,6 +19077,7 @@ def _prepare_backend_setup(
     ir: Mapping[str, Any],
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
+    target_python: TargetPythonVersion,
     resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     runtime_state = _initialize_runtime_artifact_state(
@@ -18796,6 +19105,7 @@ def _prepare_backend_setup(
         warnings=warnings,
         entry_module=entry_module,
         module_graph_metadata=module_graph_metadata,
+        target_python=target_python,
     )
     if emit_mode != "obj":
         _maybe_start_native_runtime_lib_ready_async(
@@ -19936,6 +20246,7 @@ def _run_backend_pipeline(
         pgo_profile_summary=prepared_build_config.pgo_profile_summary,
         runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
         emit_ir_path=output_layout.emit_ir_path,
+        target_python=prepared_build_config.target_python,
         stdlib_profile=stdlib_profile,
     )
     if prepared_backend_ir_error is not None:
@@ -19974,6 +20285,7 @@ def _run_backend_pipeline(
         ir=ir,
         entry_module=resolved_build_entry.entry_module,
         module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
+        target_python=prepared_build_config.target_python,
         resolved_modules=resolved_modules,
     )
     if prepared_backend_setup_error is not None:
@@ -21034,6 +21346,7 @@ def _run_build_pipeline(
             pgo_profile_summary=prepared_build_config.pgo_profile_summary,
             runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
             emit_ir_path=output_layout.emit_ir_path,
+            target_python=prepared_build_config.target_python,
             stdlib_profile=stdlib_profile,
         )
         if prepared_backend_ir_error is not None:
@@ -21234,6 +21547,7 @@ def _prepare_frontend_stage_state(
         diagnostics_enabled=diagnostics_enabled,
         json_output=json_output,
         target=target,
+        target_python=prepared_build_config.target_python,
     )
     if prepared_module_graph_error is not None:
         return None, prepared_module_graph_error
@@ -21301,6 +21615,7 @@ def _prepare_frontend_stage_state(
             output_base=output_base,
             out_dir_path=out_dir_path,
             project_root=project_root,
+            target_python=prepared_build_config.target_python,
         )
     )
     if prepared_build_outputs_error is not None:
@@ -21316,6 +21631,7 @@ def _prepare_frontend_stage_state(
             project_root=project_root,
             entry_module=entry_module,
             json_output=json_output,
+            target_python=prepared_build_config.target_python,
         )
     )
     if prepared_frontend_analysis_error is not None:
@@ -21533,6 +21849,7 @@ def _prepare_frontend_pipeline(
         record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
         midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
         midend_pass_stats_by_function=midend_pass_stats_by_function,
+        target_python=prepared_build_config.target_python,
     )
     _dme_module_order: list[str] = list(prepared_frontend_analysis.module_order)
     _dme_module_layers: list[list[str]] = list(prepared_frontend_analysis.module_layers)
@@ -21606,6 +21923,7 @@ def _build_cache_variant(
     stdlib_split: bool,
     codegen_env: str,
     linked: bool,
+    target_python: TargetPythonVersion,
     partition_mode: bool = False,
 ) -> str:
     """Build a cache variant key from build configuration.
@@ -21620,6 +21938,7 @@ def _build_cache_variant(
         f"emit={emit}",
         f"stdlib_split={int(stdlib_split)}",
         f"codegen_env={codegen_env}",
+        f"target_python={target_python.tag}",
     ]
     if linked:
         parts.append("linked=1")
@@ -21646,6 +21965,7 @@ def _prepare_backend_cache_setup(
     warnings: list[str],
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
+    target_python: TargetPythonVersion,
 ) -> _BackendCacheSetup:
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
@@ -21656,6 +21976,16 @@ def _prepare_backend_cache_setup(
         _encode_stdlib_module_symbols(stdlib_module_symbols)
         if split_stdlib_object
         else None
+    )
+    cache_variant = _build_cache_variant(
+        profile=profile,
+        runtime_cargo=runtime_cargo_profile,
+        backend_cargo=backend_cargo_profile,
+        emit=emit_mode,
+        stdlib_split=split_stdlib_object,
+        codegen_env=_backend_codegen_env_digest(is_wasm=is_wasm),
+        linked=linked,
+        target_python=target_python,
     )
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the
@@ -21670,7 +22000,7 @@ def _prepare_backend_cache_setup(
                 entry_module=entry_module,
                 stdlib_module_symbols=stdlib_module_symbols,
                 target_triple=target_triple,
-                cache_variant="",
+                cache_variant=cache_variant,
             )
             _nocache_cache_root = _resolve_cache_root(project_root, cache_dir)
             try:
@@ -21700,15 +22030,6 @@ def _prepare_backend_cache_setup(
             cache_hit_tier=None,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
         )
-    cache_variant = _build_cache_variant(
-        profile=profile,
-        runtime_cargo=runtime_cargo_profile,
-        backend_cargo=backend_cargo_profile,
-        emit=emit_mode,
-        stdlib_split=split_stdlib_object,
-        codegen_env=_backend_codegen_env_digest(is_wasm=is_wasm),
-        linked=linked,
-    )
     module_cache_payload, backend_cache_payload = _cache_payloads_for_ir(ir)
     cache_key = _cache_key(
         ir,
@@ -22135,6 +22456,7 @@ def _run_frontend_parallel_layer_batches(
     module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs | None,
     dirty_lowering_modules: Collection[str],
+    target_python: TargetPythonVersion,
 ) -> tuple[_FrontendParallelLayerState, str | None, str | None]:
     layer_state = _fresh_frontend_parallel_layer_state()
     known_classes_snapshot = _known_classes_snapshot_copy(known_classes_snapshot_source)
@@ -22181,6 +22503,7 @@ def _run_frontend_parallel_layer_batches(
             scoped_lowering_inputs=scoped_lowering_inputs,
             scoped_known_classes_by_module=scoped_known_classes_by_module,
             dirty_lowering_modules=dirty_lowering_modules,
+            target_python=target_python,
         )
         if batch_error is not None:
             return layer_state, batch_error, None
@@ -22249,6 +22572,7 @@ def _write_parallel_persisted_module_lowering(
     worker_mode: str,
     context_digest: str | None,
     result: Mapping[str, Any],
+    target_python: TargetPythonVersion,
 ) -> None:
     if (
         project_root is None
@@ -22264,6 +22588,7 @@ def _write_parallel_persisted_module_lowering(
             is_package=module_path.name == "__init__.py",
             context_digest=context_digest,
             result={key: value for key, value in result.items() if key != "ok"},
+            target_python=target_python,
         )
 
 
@@ -22376,6 +22701,7 @@ def _consume_frontend_parallel_layer_result(
     module_name: str,
     module_path: Path,
     result: Mapping[str, Any],
+    target_python: TargetPythonVersion,
 ) -> _CliFailure | None:
     result_error = _frontend_parallel_result_error(module_name, result)
     if result_error is not None:
@@ -22397,6 +22723,7 @@ def _consume_frontend_parallel_layer_result(
         worker_mode=worker_mode,
         context_digest=layer_state.context_digests.get(module_name),
         result=result,
+        target_python=target_python,
     )
     return _consume_frontend_module_result(
         module_name=module_name,
@@ -22552,6 +22879,7 @@ def _run_frontend_layer(
                 module_chunking=execution_context.module_chunking,
                 scoped_lowering_inputs=execution_context.scoped_lowering_inputs,
                 dirty_lowering_modules=execution_context.dirty_lowering_modules,
+                target_python=execution_context.target_python,
             )
         )
         if batch_error is not None:
@@ -22592,6 +22920,7 @@ def _run_frontend_layer(
                 module_name=module_name,
                 module_path=module_path,
                 result=result,
+                target_python=execution_context.target_python,
             )
             if consume_error is not None:
                 return None, consume_error
@@ -22660,6 +22989,7 @@ def _module_lowering_context_payload(
     scoped_known_classes: dict[str, Any] | None = None,
     is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> dict[str, Any] | None:
     if path_stat is None:
         try:
@@ -22703,6 +23033,7 @@ def _module_lowering_context_payload(
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_override,
         "compiler_fingerprint": _cache_tooling_fingerprint(),
+        "target_python": target_python.tag,
         "size": path_stat.st_size,
         "mtime_ns": path_stat.st_mtime_ns,
         "parse_codec": parse_codec,
@@ -22776,6 +23107,7 @@ def _module_lowering_context_digest_for_module(
     scoped_known_classes: dict[str, Any] | None = None,
     is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> str | None:
     context_payload = _module_lowering_context_payload(
         module_name,
@@ -22807,6 +23139,7 @@ def _module_lowering_context_digest_for_module(
         scoped_known_classes=scoped_known_classes,
         is_package=is_package,
         path_stat=path_stat,
+        target_python=target_python,
     )
     if context_payload is None:
         return None
@@ -22821,12 +23154,14 @@ def _read_persisted_module_lowering(
     is_package: bool,
     context_digest: str,
     path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> dict[str, Any] | None:
     cache_path = _module_lowering_cache_path(
         project_root,
         path,
         module_name=module_name,
         is_package=is_package,
+        target_python=target_python,
     )
     payload = _read_cached_json_object(cache_path)
     if payload is None:
@@ -22865,12 +23200,14 @@ def _write_persisted_module_lowering(
     is_package: bool,
     context_digest: str,
     result: dict[str, Any],
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
     cache_path = _module_lowering_cache_path(
         project_root,
         path,
         module_name=module_name,
         is_package=is_package,
+        target_python=target_python,
     )
     stat = path.stat()
     source_sha256 = _source_content_sha256(path, stat)
@@ -22879,6 +23216,7 @@ def _write_persisted_module_lowering(
     payload = {
         "version": _MODULE_LOWERING_CACHE_SCHEMA_VERSION,
         "context_digest": context_digest,
+        "target_python": target_python.tag,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
         "source_sha256": source_sha256,
@@ -22922,6 +23260,7 @@ def _load_cached_module_lowering_result(
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
     path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> dict[str, Any] | None:
     if project_root is None:
         return None
@@ -22959,6 +23298,7 @@ def _load_cached_module_lowering_result(
             scoped_known_classes=scoped_known_classes,
             is_package=is_package,
             path_stat=path_stat,
+            target_python=target_python,
         )
         if context_digest is None:
             return None
@@ -22969,6 +23309,7 @@ def _load_cached_module_lowering_result(
         is_package=is_package,
         context_digest=context_digest,
         path_stat=path_stat,
+        target_python=target_python,
     )
 
 
@@ -23000,6 +23341,7 @@ def _module_worker_payload(
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     scoped_known_classes: dict[str, Any] | None = None,
     stdlib_allowlist_payload: list[str] | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> dict[str, Any]:
     if scoped_inputs is None:
         scoped_inputs = _scoped_lowering_input_view(
@@ -23044,6 +23386,7 @@ def _module_worker_payload(
         "optimization_profile": optimization_profile,
         "pgo_hot_functions": scoped_inputs.pgo_hot_function_names_payload,
         "type_facts": scoped_inputs.type_facts,
+        "target_python": target_python.short,
     }
 
 
@@ -23077,6 +23420,7 @@ def _prepare_frontend_parallel_batch(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     dirty_lowering_modules: Collection[str],
+    target_python: TargetPythonVersion,
 ) -> tuple[
     dict[str, dict[str, Any]],
     list[tuple[str, dict[str, Any]]],
@@ -23153,6 +23497,7 @@ def _prepare_frontend_parallel_batch(
                 scoped_known_classes=scoped_known_classes,
                 is_package=is_package,
                 path_stat=path_stat,
+                target_python=target_python,
             )
             if context_digest is not None:
                 context_digest_by_module[module_name] = context_digest
@@ -23190,6 +23535,7 @@ def _prepare_frontend_parallel_batch(
                 context_digest=context_digest_by_module.get(module_name),
                 resolution_cache=module_resolution_cache,
                 path_stat=path_stat,
+                target_python=target_python,
             )
             if cached_result is not None:
                 cached_results[module_name] = cached_result
@@ -23233,6 +23579,7 @@ def _prepare_frontend_parallel_batch(
                     scoped_inputs=scoped_inputs,
                     scoped_known_classes_by_module=scoped_known_classes_by_module,
                     scoped_known_classes=scoped_known_classes,
+                    target_python=target_python,
                 ),
             )
         )
@@ -26697,6 +27044,8 @@ def build(
     audit_log: str | None = None,
     io_mode: str | None = None,
     type_gate: bool = False,
+    python_version: str | None = None,
+    build_config: Mapping[str, Any] | None = None,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -26753,6 +27102,8 @@ def build(
         require_signed_manifest=require_signed_manifest,
         respect_pythonpath=respect_pythonpath,
         lib_paths=lib_paths or [],
+        python_version=python_version,
+        build_config=build_config,
     )
     if prepared_build_inputs_error is not None:
         return prepared_build_inputs_error
@@ -27560,6 +27911,7 @@ def compare(
         if parsed is not None:
             env["MOLT_CAPABILITIES"] = ",".join(parsed)
 
+    requested_python_selector = python_exe
     python_exe = _resolve_python_exe(python_exe)
     if module:
         cpy_cmd = [python_exe, "-m", module, *script_args]
@@ -27574,6 +27926,17 @@ def compare(
     )
 
     build_args = list(build_args or [])
+    if (
+        requested_python_selector is not None
+        and not _build_args_has_python_version_flag(build_args)
+    ):
+        with contextlib.suppress(ValueError):
+            build_args.extend(
+                [
+                    "--python-version",
+                    _parse_target_python_version(requested_python_selector).short,
+                ]
+            )
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
         build_args.extend(["--build-profile", build_profile])
@@ -28010,6 +28373,7 @@ def _internal_batch_build_server(
                         ),
                         module=params.get("module"),
                         diagnostics_verbosity=params.get("diagnostics_verbosity"),
+                        python_version=params.get("python_version"),
                     )
         except Exception as exc:  # pragma: no cover - defensive server hardening
             _emit_response(
@@ -34166,6 +34530,14 @@ def main() -> int:
         help="Path to type facts JSON from `molt check`.",
     )
     build_parser.add_argument(
+        "--python-version",
+        default=None,
+        help=(
+            "Target Python semantics (3.12, 3.13, or 3.14). Defaults from "
+            "[tool.molt.build] or project.requires-python."
+        ),
+    )
+    build_parser.add_argument(
         "--pgo-profile",
         help="Path to a Molt profile artifact (molt_profile.json) for PGO hints.",
     )
@@ -34813,6 +35185,11 @@ def main() -> int:
         action="append",
         default=[],
         help="Extra args passed to `molt build`.",
+    )
+    run_parser.add_argument(
+        "--python-version",
+        default=None,
+        help=("Target Python semantics for the build side (3.12, 3.13, or 3.14)."),
     )
     run_parser.add_argument(
         "--profile",
@@ -36039,6 +36416,8 @@ def main() -> int:
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
             type_gate=getattr(args, "type_gate", False),
+            python_version=getattr(args, "python_version", None),
+            build_config=build_cfg,
         )
 
         # --bolt: post-link BOLT optimization for native targets.
@@ -36159,6 +36538,13 @@ def main() -> int:
         run_backend = getattr(args, "backend", None)
         if run_backend and not any(a.startswith("--backend") for a in build_args):
             build_args.extend(["--backend", run_backend])
+        run_python_version = (
+            getattr(args, "python_version", None)
+            or run_cfg.get("python_version")
+            or run_cfg.get("python-version")
+        )
+        if run_python_version and not _build_args_has_python_version_flag(build_args):
+            build_args.extend(["--python-version", str(run_python_version)])
         run_target = getattr(args, "target", None) or run_cfg.get("target") or "native"
         run_profile = (
             ("release" if getattr(args, "release", False) else None)
@@ -36245,6 +36631,14 @@ def main() -> int:
     if args.command == "compare":
         python_exe = args.python or args.python_version
         build_args = _strip_leading_double_dash(args.build_arg)
+        compare_target_python = args.python_version
+        if compare_target_python is None and args.python:
+            with contextlib.suppress(ValueError):
+                compare_target_python = _parse_target_python_version(args.python).short
+        if compare_target_python and not _build_args_has_python_version_flag(
+            build_args
+        ):
+            build_args.extend(["--python-version", compare_target_python])
         compare_profile = (
             args.profile
             or compare_cfg.get("profile")

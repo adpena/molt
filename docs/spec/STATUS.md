@@ -18,6 +18,11 @@ It is current-state only. For forward-looking priorities, use
 - Native AOT compilation is real and active.
 - Standalone binary workflows are a first-class product requirement.
 - Differential testing against CPython is a core validation path.
+- Build target semantics are explicit for Python `3.12`, `3.13`, and `3.14`:
+  `molt build --python-version`, `[tool.molt.build] python-version`, and
+  `project.requires-python` resolve the target version before parsing, module
+  graph discovery, frontend cache lookup, backend cache lookup, and runtime
+  `sys.version_info` bootstrap. The default target remains Python `3.12`.
 - Rust-first stdlib lowering is the canonical direction, with generated audit
   surfaces under `docs/spec/areas/compat/surfaces/stdlib/`.
 - WASM remains a supported target area, but same-contract parity with native is

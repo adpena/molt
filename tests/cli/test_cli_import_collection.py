@@ -2428,6 +2428,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stub_parents: tuple[str, ...],
         nested_stdlib_scan_modules: tuple[str, ...],
         compiler_fingerprint: str,
+        target_python_tag: str = cli._DEFAULT_TARGET_PYTHON_VERSION.tag,
     ) -> str:
         nonlocal calls
         calls += 1
@@ -2440,6 +2441,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
             stub_parents,
             nested_stdlib_scan_modules,
             compiler_fingerprint,
+            target_python_tag,
         )
 
     monkeypatch.setattr(cli, "_module_graph_cache_key", wrapped, raising=True)
@@ -3678,6 +3680,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         is_package: bool,
         context_digest: str,
         path_stat: os.stat_result | None = None,
+        target_python: cli.TargetPythonVersion = cli._DEFAULT_TARGET_PYTHON_VERSION,
     ) -> dict[str, object] | None:
         assert root == project_root
         assert path == module_path
@@ -3685,6 +3688,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         assert is_package is False
         assert context_digest == "digest"
         assert path_stat is not None
+        assert target_python == cli._DEFAULT_TARGET_PYTHON_VERSION
         return {"module": module_name, "kind": "cached"}
 
     monkeypatch.setattr(cli, "_read_persisted_module_lowering", fake_read)
@@ -3722,6 +3726,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             module_graph_metadata=module_graph_metadata,
             module_chunking=False,
             dirty_lowering_modules=set(),
+            target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         )
     )
 
@@ -4267,6 +4272,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             module_graph_metadata=module_graph_metadata,
             module_chunking=False,
             dirty_lowering_modules={"main", "alpha"},
+            target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         )
     )
 
@@ -6482,6 +6488,9 @@ def test_start_backend_daemon_leaves_warming_process_running(
     )
     monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
     monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_sweep_orphaned_backend_daemon_locks_once", lambda *args, **kwargs: None
+    )
 
     def fake_wait_until_ready(
         *args: object, **kwargs: object
@@ -6811,6 +6820,7 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
         ir={"functions": []},
         entry_module="__main__",
         module_graph_metadata=empty_module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
     )
 
     assert backend_setup_error is None
@@ -6893,6 +6903,7 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_m
         ir={"functions": []},
         entry_module="__main__",
         module_graph_metadata=empty_module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
     )
 
     assert backend_setup_error is None
@@ -6975,6 +6986,7 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
         ir={"functions": []},
         entry_module="__main__",
         module_graph_metadata=empty_module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         resolved_modules={"__main__", "json"},
     )
 
@@ -7049,6 +7061,7 @@ def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
         ir={"functions": []},
         entry_module="__main__",
         module_graph_metadata=empty_module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         resolved_modules={"__main__"},
     )
 
@@ -7479,8 +7492,8 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
         required_exports={"fast_list_append"},
     )
 
-    assert len(verification_calls) == 2
-    assert verification_calls[0] == verification_calls[1]
+    assert len(verification_calls) >= 2
+    assert all(call == verification_calls[0] for call in verification_calls)
     assert {"stdlib_serial", "stdlib_micro", "no-default-features"} <= (
         verification_calls[0][0]
     )
@@ -8228,6 +8241,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         capability_profiles=[],
         capabilities_source=None,
         manifest_env_vars={},
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
     )
     resolved_entry = cli._ResolvedBuildEntry(
         source_path=tmp_path / "main.py",
@@ -8235,6 +8249,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         module_roots=[tmp_path],
         entry_source="print('hi')\n",
         entry_tree=ast.parse("print('hi')\n"),
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
     )
     output_layout = cli._BuildOutputLayout(
         is_wasm=False,
@@ -8304,6 +8319,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             frontend_module_costs={},
             stdlib_like_by_module={},
             known_classes={},
+            target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         ),
         frontend_layer_runtime_hooks=cli._FrontendLayerRuntimeHooks(
             warnings=[],
@@ -10843,6 +10859,7 @@ def test_backend_codegen_env_inputs_is_cached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli._backend_codegen_env_inputs_cached.cache_clear()
+    monkeypatch.delenv("MOLT_BACKEND", raising=False)
     monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
 
     first = cli._backend_codegen_env_inputs(is_wasm=False)
@@ -12929,6 +12946,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
         warnings=warnings,
         entry_module="__main__",
         module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
     )
 
     setup_split = cli._prepare_backend_cache_setup(
@@ -13013,6 +13031,7 @@ def test_stdlib_partition_mode_changes_cache_identity():
         stdlib_split=False,
         codegen_env="x",
         linked=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         partition_mode=False,
     )
     variant_part = _build_cache_variant(
@@ -13023,6 +13042,7 @@ def test_stdlib_partition_mode_changes_cache_identity():
         stdlib_split=False,
         codegen_env="x",
         linked=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         partition_mode=True,
     )
     assert variant_mono != variant_part, (

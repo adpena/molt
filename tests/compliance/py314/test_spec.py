@@ -45,6 +45,12 @@ def _python_for(min_version: tuple[int, int]) -> str:
     return sys.executable
 
 
+def _target_version_arg(min_version: tuple[int, int]) -> list[str]:
+    if min_version <= (3, 12):
+        return []
+    return ["--python-version", f"{min_version[0]}.{min_version[1]}"]
+
+
 def _compile_and_run(
     python_source: str, *, min_version: tuple[int, int] = (3, 12)
 ) -> str:
@@ -74,6 +80,7 @@ def _compile_and_run(
                 str(src_path),
                 "--out-dir",
                 str(tmp),
+                *_target_version_arg(min_version),
             ],
             capture_output=True,
             text=True,
@@ -109,6 +116,43 @@ def _compile_and_run(
         if run.returncode != 0:
             pytest.fail(f"Runtime error: {run.stderr[:300]}")
         return run.stdout.strip()
+
+
+def _compile_source(
+    python_source: str, *, min_version: tuple[int, int] = (3, 12), target: str | None
+) -> subprocess.CompletedProcess[str]:
+    python_exe = _python_for(min_version)
+    with tempfile.TemporaryDirectory() as tmp:
+        src_path = Path(tmp) / "test_input.py"
+        src_path.write_text(python_source)
+        args = [
+            python_exe,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src_path),
+            "--out-dir",
+            str(tmp),
+        ]
+        if target is not None:
+            args.extend(["--python-version", target])
+        env = {
+            **os.environ,
+            "MOLT_EXT_ROOT": str(ARTIFACT_ROOT),
+            "CARGO_TARGET_DIR": os.environ.get(
+                "CARGO_TARGET_DIR", str(ARTIFACT_ROOT / "target")
+            ),
+            "RUSTC_WRAPPER": "",
+            "PYTHONPATH": str(MOLT_DIR / "src"),
+        }
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=240,
+            env=env,
+            cwd=str(MOLT_DIR),
+        )
 
 
 def _python_output(source: str, *, min_version: tuple[int, int] = (3, 12)) -> str:
@@ -186,6 +230,20 @@ for k in keys:
 
 class TestPEP750TemplateStrings:
     """PEP 750 introduces t-string syntax: t'Hello {name}'."""
+
+    def test_tstring_rejected_by_default_py312_target(self):
+        build = _compile_source(
+            """\
+name = "world"
+template = t"Hello {name}"
+print(type(template).__name__)
+""",
+            min_version=(3, 14),
+            target=None,
+        )
+
+        assert build.returncode != 0
+        assert "Python 3.14" in build.stderr or "3.14" in build.stderr
 
     def test_tstring_basic(self):
         _assert_match(
