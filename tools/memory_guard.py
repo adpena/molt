@@ -5,7 +5,9 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
+import json
 import os
+from pathlib import Path
 import signal
 import subprocess
 import sys
@@ -23,6 +25,7 @@ class ProcessSample:
     ppid: int
     rss_kb: int
     command: str
+    pgid: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +43,7 @@ class RssViolation:
 class GuardResult:
     returncode: int
     violation: RssViolation | None
+    peak: RssViolation | None
     stdout: str
     stderr: str
 
@@ -50,28 +54,56 @@ def parse_process_table(text: str) -> dict[int, ProcessSample]:
         line = raw_line.strip()
         if not line:
             continue
-        parts = line.split(None, 3)
-        if len(parts) < 4:
-            continue
-        pid_text, ppid_text, rss_text, command = parts
-        try:
-            pid = int(pid_text)
-            ppid = int(ppid_text)
-            rss_kb = int(rss_text)
-        except ValueError:
-            continue
+        pid: int
+        ppid: int
+        rss_kb: int
+        command: str
+        pgid: int | None
+        parts = line.split(None, 4)
+        if len(parts) >= 5:
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+                pgid = int(parts[2])
+                rss_kb = int(parts[3])
+                command = parts[4]
+            except ValueError:
+                legacy_parts = line.split(None, 3)
+                if len(legacy_parts) < 4:
+                    continue
+                try:
+                    pid = int(legacy_parts[0])
+                    ppid = int(legacy_parts[1])
+                    rss_kb = int(legacy_parts[2])
+                except ValueError:
+                    continue
+                command = legacy_parts[3]
+                pgid = None
+        else:
+            legacy_parts = line.split(None, 3)
+            if len(legacy_parts) < 4:
+                continue
+            try:
+                pid = int(legacy_parts[0])
+                ppid = int(legacy_parts[1])
+                rss_kb = int(legacy_parts[2])
+            except ValueError:
+                continue
+            command = legacy_parts[3]
+            pgid = None
         samples[pid] = ProcessSample(
             pid=pid,
             ppid=ppid,
             rss_kb=rss_kb,
             command=command,
+            pgid=pgid,
         )
     return samples
 
 
 def sample_processes() -> dict[int, ProcessSample]:
     result = subprocess.run(
-        ["ps", "-axo", "pid=,ppid=,rss=,command="],
+        ["ps", "-axo", "pid=,ppid=,pgid=,rss=,command="],
         capture_output=True,
         text=True,
         check=False,
@@ -95,17 +127,42 @@ def descendant_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[
     return descendants
 
 
+def watched_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[int]:
+    watched = descendant_pids(samples, root_pid)
+    for sample in samples.values():
+        if sample.pgid == root_pid:
+            watched.add(sample.pid)
+    return watched
+
+
+def peak_rss(
+    samples: Mapping[int, ProcessSample],
+    *,
+    root_pid: int,
+) -> RssViolation | None:
+    watched = watched_pids(samples, root_pid)
+    candidates = [sample for pid, sample in samples.items() if pid in watched]
+    if not candidates:
+        return None
+    worst = max(candidates, key=lambda sample: sample.rss_kb)
+    return RssViolation(
+        pid=worst.pid,
+        rss_kb=worst.rss_kb,
+        command=worst.command,
+    )
+
+
 def find_rss_violation(
     samples: Mapping[int, ProcessSample],
     *,
     root_pid: int,
     max_rss_kb: int,
 ) -> RssViolation | None:
-    descendants = descendant_pids(samples, root_pid)
+    watched = watched_pids(samples, root_pid)
     candidates = [
         sample
         for pid, sample in samples.items()
-        if pid in descendants and sample.rss_kb > max_rss_kb
+        if pid in watched and sample.rss_kb > max_rss_kb
     ]
     if not candidates:
         return None
@@ -169,14 +226,23 @@ def run_guarded(
         start_new_session=True,
     )
     violation: RssViolation | None = None
-    while proc.poll() is None:
+    peak: RssViolation | None = None
+    while True:
+        samples = sampler()
+        observed_peak = peak_rss(samples, root_pid=proc.pid)
+        if observed_peak is not None and (
+            peak is None or observed_peak.rss_kb > peak.rss_kb
+        ):
+            peak = observed_peak
         violation = find_rss_violation(
-            sampler(),
+            samples,
             root_pid=proc.pid,
             max_rss_kb=max_rss_kb,
         )
         if violation is not None:
             _terminate_process_group(proc.pid)
+            break
+        if proc.poll() is not None:
             break
         time.sleep(poll_interval)
     stdout, stderr = proc.communicate()
@@ -186,14 +252,50 @@ def run_guarded(
     return GuardResult(
         returncode=returncode,
         violation=violation,
+        peak=peak,
         stdout=stdout or "",
         stderr=stderr or "",
     )
 
 
+def _rss_record_payload(record: RssViolation | None) -> dict[str, object] | None:
+    if record is None:
+        return None
+    return {
+        "pid": record.pid,
+        "rss_kb": record.rss_kb,
+        "rss_gb": record.rss_gb,
+        "command": record.command,
+    }
+
+
+def _write_summary_json(
+    path: str,
+    *,
+    command: Sequence[str],
+    max_rss_kb: int,
+    result: GuardResult,
+) -> None:
+    summary_path = Path(path)
+    if summary_path.parent:
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "command": list(command),
+        "returncode": result.returncode,
+        "max_rss_kb": max_rss_kb,
+        "max_rss_gb": max_rss_kb / (1024 * 1024),
+        "violation": _rss_record_payload(result.violation),
+        "peak": _rss_record_payload(result.peak),
+    }
+    summary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a command with a process-tree RSS ceiling."
+        description="Run a command with a process-tree/process-group RSS ceiling."
     )
     parser.add_argument(
         "--max-rss-gb",
@@ -212,6 +314,10 @@ def _parser() -> argparse.ArgumentParser:
             "Process sampling interval in seconds "
             f"(default: {DEFAULT_POLL_INTERVAL_SEC})."
         ),
+    )
+    parser.add_argument(
+        "--summary-json",
+        help="Write command result, violation, and peak RSS details as JSON.",
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser
@@ -239,6 +345,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         poll_interval=poll_interval,
         capture_output=False,
     )
+    if args.summary_json:
+        try:
+            _write_summary_json(
+                args.summary_json,
+                command=command,
+                max_rss_kb=max_rss_kb,
+                result=result,
+            )
+        except OSError as exc:
+            print(f"memory_guard: failed to write summary JSON: {exc}", file=sys.stderr)
+            return 2 if result.returncode == 0 else result.returncode
     if result.violation is not None:
         print(
             "memory_guard: RSS limit exceeded: "
