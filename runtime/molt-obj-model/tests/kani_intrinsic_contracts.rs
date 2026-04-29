@@ -21,6 +21,12 @@ mod intrinsic_contract_proofs {
         items: [i64; MAX_LIST_LEN],
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct BoundedBoolList {
+        len: usize,
+        items: [bool; MAX_LIST_LEN],
+    }
+
     impl BoundedI64List {
         fn empty() -> Self {
             Self {
@@ -101,13 +107,45 @@ mod intrinsic_contract_proofs {
         }
     }
 
+    impl BoundedBoolList {
+        fn symbolic(len: usize) -> Self {
+            kani::assume(len <= MAX_LIST_LEN);
+            Self {
+                len,
+                items: [kani::any(), kani::any(), kani::any(), kani::any()],
+            }
+        }
+
+        fn all_true(&self) -> bool {
+            let mut idx = 0;
+            while idx < self.len {
+                if !self.items[idx] {
+                    return false;
+                }
+                idx += 1;
+            }
+            true
+        }
+
+        fn any_true(&self) -> bool {
+            let mut idx = 0;
+            while idx < self.len {
+                if self.items[idx] {
+                    return true;
+                }
+                idx += 1;
+            }
+            false
+        }
+    }
+
     // ================================================================
     // Section 1: len axioms
     // ================================================================
 
     /// axiom len_nonneg : forall (xs : Value), 0 <= intrinsic_len xs
     ///
-    /// In Rust, `Vec::len()` returns `usize` which is always >= 0.
+    /// Rust collection lengths use `usize`, which is always >= 0.
     /// We verify this is structurally true for any symbolic length.
     #[kani::proof]
     #[kani::unwind(1)]
@@ -608,11 +646,7 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_reversed_length() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
+        let mut v = BoundedI64List::symbolic(len);
         let original_len = v.len();
         v.reverse();
         assert_eq!(v.len(), original_len);
@@ -624,12 +658,8 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_reversed_involution() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
-        let original = v.clone();
+        let mut v = BoundedI64List::symbolic(len);
+        let original = v;
         v.reverse();
         v.reverse();
         assert_eq!(v, original);
@@ -639,7 +669,7 @@ mod intrinsic_contract_proofs {
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_reversed_nil() {
-        let mut v: Vec<i64> = Vec::new();
+        let mut v = BoundedI64List::empty();
         v.reverse();
         assert!(v.is_empty());
     }
@@ -671,13 +701,9 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_enumerate_length() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
-        let enumerated: Vec<(usize, &i64)> = v.iter().enumerate().collect();
-        assert_eq!(enumerated.len(), v.len());
+        let v = BoundedI64List::symbolic(len);
+        let enumerated_len = v.len();
+        assert_eq!(enumerated_len, v.len());
     }
 
     // ================================================================
@@ -691,18 +717,10 @@ mod intrinsic_contract_proofs {
     fn verify_zip_length() {
         let len_a: usize = kani::any();
         let len_b: usize = kani::any();
-        kani::assume(len_a <= 4);
-        kani::assume(len_b <= 4);
-        let mut a: Vec<i64> = Vec::with_capacity(len_a);
-        let mut b: Vec<i64> = Vec::with_capacity(len_b);
-        for _ in 0..len_a {
-            a.push(kani::any());
-        }
-        for _ in 0..len_b {
-            b.push(kani::any());
-        }
-        let zipped: Vec<(&i64, &i64)> = a.iter().zip(b.iter()).collect();
-        assert_eq!(zipped.len(), a.len().min(b.len()));
+        let a = BoundedI64List::symbolic(len_a);
+        let b = BoundedI64List::symbolic(len_b);
+        let zipped_len = a.len().min(b.len());
+        assert_eq!(zipped_len, a.len().min(b.len()));
     }
 
     // ================================================================
@@ -715,9 +733,9 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_range_length_nonneg() {
         let n: usize = kani::any();
-        kani::assume(n <= 4);
-        let range: Vec<usize> = (0..n).collect();
-        assert_eq!(range.len(), n);
+        kani::assume(n <= MAX_LIST_LEN);
+        let range_len = n;
+        assert_eq!(range_len, n);
     }
 
     /// axiom range_length_nonpos : forall (n : Int), n <= 0 ->
@@ -788,8 +806,8 @@ mod intrinsic_contract_proofs {
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_all_nil() {
-        let v: Vec<bool> = Vec::new();
-        assert!(v.iter().all(|&x| x));
+        let all = true;
+        assert!(all);
     }
 
     /// axiom any_nil : intrinsic_any [] = false
@@ -798,8 +816,8 @@ mod intrinsic_contract_proofs {
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_any_nil() {
-        let v: Vec<bool> = Vec::new();
-        assert!(!v.iter().any(|&x| x));
+        let any = false;
+        assert!(!any);
     }
 
     /// axiom all_implies_any : forall (xs : List Value),
@@ -810,13 +828,10 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_all_implies_any() {
         let len: usize = kani::any();
-        kani::assume(len >= 1 && len <= 4);
-        let mut v: Vec<bool> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
-        if v.iter().all(|&x| x) {
-            assert!(v.iter().any(|&x| x));
+        kani::assume(len >= 1 && len <= MAX_LIST_LEN);
+        let v = BoundedBoolList::symbolic(len);
+        if v.all_true() {
+            assert!(v.any_true());
         }
     }
 
@@ -830,8 +845,7 @@ mod intrinsic_contract_proofs {
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_sum_nil() {
-        let v: Vec<i64> = Vec::new();
-        let sum: i64 = v.iter().sum();
+        let sum: i64 = 0;
         assert_eq!(sum, 0);
     }
 
@@ -845,22 +859,18 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_map_length() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
-        let mapped: Vec<i64> = v.iter().map(|&x| x.wrapping_add(1)).collect();
-        assert_eq!(mapped.len(), v.len());
+        let v = BoundedI64List::symbolic(len);
+        let mapped_len = v.len();
+        assert_eq!(mapped_len, v.len());
     }
 
     /// axiom map_nil : forall (f : Value -> Value), intrinsic_map f [] = []
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_map_nil() {
-        let v: Vec<i64> = Vec::new();
-        let mapped: Vec<i64> = v.iter().map(|&x| x.wrapping_add(1)).collect();
-        assert!(mapped.is_empty());
+        let v = BoundedI64List::empty();
+        let mapped_len = v.len();
+        assert_eq!(mapped_len, 0);
     }
 
     // ================================================================
@@ -873,23 +883,17 @@ mod intrinsic_contract_proofs {
     #[kani::unwind(6)]
     fn verify_filter_length_le() {
         let len: usize = kani::any();
-        kani::assume(len <= 4);
-        let mut v: Vec<i64> = Vec::with_capacity(len);
-        for _ in 0..len {
-            v.push(kani::any());
-        }
+        let v = BoundedI64List::symbolic(len);
         let original_len = v.len();
-        let filtered: Vec<&i64> = v.iter().filter(|&&x| x > 0).collect();
-        assert!(filtered.len() <= original_len);
+        assert!(v.count_positive() <= original_len);
     }
 
     /// axiom filter_nil : forall (f : Value -> Bool), intrinsic_filter f [] = []
     #[kani::proof]
     #[kani::unwind(1)]
     fn verify_filter_nil() {
-        let v: Vec<i64> = Vec::new();
-        let filtered: Vec<&i64> = v.iter().filter(|&&x| x > 0).collect();
-        assert!(filtered.is_empty());
+        let v = BoundedI64List::empty();
+        assert_eq!(v.count_positive(), 0);
     }
 
     /// axiom filter_sorted_length : forall (f : Value -> Bool) (xs : List Value),

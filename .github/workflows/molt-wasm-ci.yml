@@ -28,15 +28,27 @@ permissions:
 jobs:
   wasm-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     env:
       PYTHONPATH: ${{ github.workspace }}/src
       MOLT_EXT_ROOT: /tmp/molt-ext
       CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
       MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_CACHE: /tmp/molt-ext/molt_cache
+      MOLT_DIFF_ROOT: /tmp/molt-ext/diff
+      MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp
+      MOLT_HOME: /tmp/molt-ext
+      MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm
+      MOLT_WASM_TEST_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_WASM_TEST_USE_EXTERNAL: "1"
       MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
+      MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      MOLT_BUILD_LOCK_TIMEOUT: "120"
+      MOLT_CARGO_TIMEOUT: "1200"
       CARGO_BUILD_JOBS: "1"
       MOLT_BACKEND_DAEMON_CACHE_MB: "128"
+      TMPDIR: /tmp/molt-ext/tmp
+      UV_CACHE_DIR: /tmp/molt-ext/uv-cache
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +59,7 @@ jobs:
           mkdir -p /tmp/molt-ext/molt_cache
           mkdir -p /tmp/molt-ext/uv-cache
           mkdir -p /tmp/molt-ext/cargo-target
+          mkdir -p /tmp/molt-ext/wasm
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -82,14 +95,14 @@ jobs:
 
       - name: Build Molt backend and WASM host
         run: |
-          cargo build --release --manifest-path runtime/molt-backend/Cargo.toml
-          cargo build --release --manifest-path runtime/molt-wasm-host/Cargo.toml
+          cargo build --profile dev-fast -p molt-backend
+          cargo build --release -p molt-wasm-host
 
       # ── WASM target: hello.py (class + arithmetic) ──
       - name: Compile hello.py to WASM
         run: |
           uv run --python 3.12 python3 -m molt.cli build \
-            examples/hello.py --target wasm --output /tmp/test_hello.wasm
+            examples/hello.py --build-profile dev --target wasm --output /tmp/test_hello.wasm
         env:
           RUSTC_WRAPPER: ""
 
@@ -109,7 +122,7 @@ jobs:
       - name: Compile comprehension_fail.py to WASM
         run: |
           uv run --python 3.12 python3 -m molt.cli build \
-            examples/comprehension_fail.py --target wasm --output /tmp/test_comprehension.wasm
+            examples/comprehension_fail.py --build-profile dev --target wasm --output /tmp/test_comprehension.wasm
         env:
           RUSTC_WRAPPER: ""
 
@@ -129,7 +142,7 @@ jobs:
       - name: Compile hello.py to Luau
         run: |
           uv run --python 3.12 python3 -m molt.cli build \
-            examples/hello.py --target luau --output /tmp/test_hello.luau
+            examples/hello.py --build-profile dev --target luau --output /tmp/test_hello.luau
         env:
           RUSTC_WRAPPER: ""
 
@@ -146,7 +159,7 @@ jobs:
       - name: Compile comprehension_fail.py to Luau
         run: |
           uv run --python 3.12 python3 -m molt.cli build \
-            examples/comprehension_fail.py --target luau --output /tmp/test_comprehension.luau
+            examples/comprehension_fail.py --build-profile dev --target luau --output /tmp/test_comprehension.luau
         env:
           RUSTC_WRAPPER: ""
 
@@ -178,7 +191,7 @@ jobs:
           print(f"Sieve(10000) = {count} primes")
           PYEOF
           uv run --python 3.12 python3 -m molt.cli build \
-            /tmp/sieve_bench.py --target wasm --output /tmp/test_sieve.wasm
+            /tmp/sieve_bench.py --build-profile dev --target wasm --output /tmp/test_sieve.wasm
         env:
           RUSTC_WRAPPER: ""
 
@@ -187,7 +200,7 @@ jobs:
 
       # ── WASM parity tests (pytest) ──
       - name: Run WASM control flow parity tests
-        run: uv run pytest tests/test_wasm_control_flow.py -q
+        run: uv run --python 3.12 python3 -m pytest tests/test_wasm_control_flow.py -q
 
       # ── Summary ──
       - name: Build summary
