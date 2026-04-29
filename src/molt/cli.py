@@ -7888,7 +7888,8 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "stdlib_csv",
     "stdlib_signal",
     "stdlib_select",
-    # Heavy domains — now gated by import graph in micro profile
+    # Heavy domains excluded from native micro profile; explicit full/server
+    # profiles keep them stable without making tiny native builds pay for them.
     "stdlib_crypto",
     "stdlib_compression",
     "stdlib_math",
@@ -7934,7 +7935,7 @@ def _runtime_builtin_features_for_profile(
             for feature in all_features
             if feature not in _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES
         ]
-    return all_features
+    return list(_ALL_BUILTIN_FEATURES)
 
 
 def _builtin_features_from_import_graph(
@@ -35630,6 +35631,8 @@ def main() -> int:
                 default_stdlib_profile = defaults.get("stdlib_profile")
                 if isinstance(default_stdlib_profile, str):
                     stdlib_profile = default_stdlib_profile
+        if stdlib_profile is None:
+            stdlib_profile = "micro"
 
         # --backend: resolve effective backend and propagate via MOLT_BACKEND.
         # "auto" defaults to cranelift for all builds. LLVM remains opt-in
