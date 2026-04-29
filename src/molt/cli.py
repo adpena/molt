@@ -601,6 +601,46 @@ def _wrapper_build_cache_semantic_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+def _wrapper_build_dependency_fingerprints(
+    *,
+    resolved_build_entry: _ResolvedBuildEntry,
+    project_root: Path,
+) -> list[dict[str, Any]] | None:
+    stdlib_root = _stdlib_root_path()
+    module_roots = list(resolved_build_entry.module_roots)
+    roots = list(dict.fromkeys([*module_roots, stdlib_root]))
+    try:
+        graph, _explicit_imports = _discover_module_graph(
+            resolved_build_entry.source_path,
+            roots,
+            module_roots,
+            stdlib_root,
+            project_root,
+            _stdlib_allowlist(),
+        )
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+    dependencies: list[dict[str, Any]] = []
+    for module_name, path in sorted(graph.items()):
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        source_hash = _source_content_sha256(path, stat)
+        if source_hash is None:
+            return None
+        dependencies.append(
+            {
+                "module": module_name,
+                "path": os.fspath(path.resolve()),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "source_sha256": source_hash,
+            }
+        )
+    return dependencies
+
+
 def _wrapper_build_cache_input(
     *,
     resolved_build_entry: _ResolvedBuildEntry,
@@ -616,10 +656,17 @@ def _wrapper_build_cache_input(
     source_hash = _source_content_sha256(resolved_source_path)
     if source_hash is None:
         return None
+    dependencies = _wrapper_build_dependency_fingerprints(
+        resolved_build_entry=resolved_build_entry,
+        project_root=project_root,
+    )
+    if dependencies is None:
+        return None
     payload: dict[str, Any] = {
         "version": _WRAPPER_BUILD_CACHE_SCHEMA_VERSION,
         "source_path": os.fspath(resolved_source_path),
         "source_sha256": source_hash,
+        "module_sources": dependencies,
         "entry_module": resolved_build_entry.entry_module,
         "project_root": os.fspath(project_root.resolve()),
         "build_args": list(build_args),
@@ -11544,6 +11591,50 @@ def _backend_daemon_log_tail(log_path: Path, *, max_lines: int = 30) -> str | No
     return "\n".join(tail).strip() or None
 
 
+_BACKEND_DAEMON_VERBOSE_LOG_MAX_BYTES = 1024 * 1024
+
+
+def _backend_daemon_log_mark(log_path: Path) -> int:
+    try:
+        return log_path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _backend_daemon_log_since(
+    log_path: Path,
+    offset: int,
+    *,
+    max_bytes: int = _BACKEND_DAEMON_VERBOSE_LOG_MAX_BYTES,
+) -> str | None:
+    if max_bytes <= 0:
+        max_bytes = _BACKEND_DAEMON_VERBOSE_LOG_MAX_BYTES
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return None
+    if offset < 0 or offset > size:
+        offset = 0
+    start = offset
+    truncated = False
+    if size - start > max_bytes:
+        start = max(offset, size - max_bytes)
+        truncated = start > offset
+    try:
+        with log_path.open("rb") as handle:
+            handle.seek(start)
+            data = handle.read()
+    except OSError:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    if truncated:
+        first_newline = text.find("\n")
+        if first_newline >= 0:
+            text = text[first_newline + 1 :]
+        text = "...(daemon log truncated to recent output)\n" + text
+    return text.strip() or None
+
+
 # Maximum daemon log size before rotation. The daemon writes structured
 # diagnostic lines for every compile and warm-cache decision; on long-running
 # sessions this naturally grows multiple megabytes. Rotating at 5 MiB keeps
@@ -18963,6 +19054,13 @@ def _execute_backend_compile(
             # Keep probe/full request selection centralized in
             # _compile_with_backend_daemon(). Eagerly encoding the full
             # request here defeats the daemon's probe-only warm-cache path.
+            daemon_log_path: Path | None = None
+            daemon_log_offset: int | None = None
+            if verbose and not json_output:
+                daemon_log_path = _backend_daemon_log_path(
+                    molt_root, backend_cargo_profile
+                )
+                daemon_log_offset = _backend_daemon_log_mark(daemon_log_path)
             daemon_compile = _compile_with_backend_daemon(
                 daemon_socket,
                 ir=ir,
@@ -18990,13 +19088,15 @@ def _execute_backend_compile(
             backend_output_written = daemon_compile.output_written
             daemon_error = daemon_compile.error
             backend_output_exists = daemon_compile.output_exists
-            # Show daemon log tail on verbose — essential for debugging
-            # backend issues (the daemon captures all stderr to log).
-            if verbose and not json_output:
-                _daemon_log = _backend_daemon_log_path(molt_root, backend_cargo_profile)
-                _log_tail = _backend_daemon_log_tail(_daemon_log, max_lines=50)
-                if _log_tail:
-                    print(_log_tail, file=sys.stderr)
+            # Show only the daemon output produced by this request. Printing
+            # a rolling tail replays previous builds and makes warm user-code
+            # compiles look like they recompiled stdlib batches.
+            if daemon_log_path is not None and daemon_log_offset is not None:
+                daemon_log_delta = _backend_daemon_log_since(
+                    daemon_log_path, daemon_log_offset
+                )
+                if daemon_log_delta:
+                    print(daemon_log_delta, file=sys.stderr)
             if daemon_compile.cached is not None:
                 backend_daemon_cached = daemon_compile.cached
             if daemon_compile.cache_tier is not None:
