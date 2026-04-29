@@ -698,9 +698,13 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::Import
         | OpCode::ImportFrom
         | OpCode::ModuleCacheGet
+        | OpCode::ModuleCacheSet
+        | OpCode::ModuleCacheDel
         | OpCode::ModuleGetAttr
         | OpCode::ModuleGetGlobal
         | OpCode::ModuleGetName
+        | OpCode::ModuleSetAttr
+        | OpCode::ModuleDelGlobal
         | OpCode::Pow
         | OpCode::Is
         | OpCode::IsNot

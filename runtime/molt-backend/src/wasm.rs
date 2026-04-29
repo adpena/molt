@@ -12119,8 +12119,30 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(module));
                         emit_call(func, reloc_enabled, import_ids["module_cache_set"]);
                         if let Some(out) = op.out.as_ref() {
-                            let res = locals[out];
-                            func.instruction(&Instruction::LocalSet(res));
+                            if out != "none" {
+                                let res = locals[out];
+                                func.instruction(&Instruction::LocalSet(res));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "module_cache_del" => {
+                        let args = op.args.as_ref().unwrap();
+                        let name = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(name));
+                        emit_call(func, reloc_enabled, import_ids["module_cache_del"]);
+                        if let Some(out) = op.out.as_ref() {
+                            if out != "none" {
+                                let res = locals[out];
+                                func.instruction(&Instruction::LocalSet(res));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        } else {
+                            func.instruction(&Instruction::Drop);
                         }
                     }
                     "module_get_attr" => {
@@ -12193,7 +12215,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["module_set_attr"]);
                         if let Some(out) = op.out.as_ref() {
-                            func.instruction(&Instruction::LocalSet(locals[out]));
+                            if out != "none" {
+                                func.instruction(&Instruction::LocalSet(locals[out]));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
                         } else {
                             func.instruction(&Instruction::Drop);
                         }
