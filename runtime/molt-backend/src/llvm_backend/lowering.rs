@@ -3378,6 +3378,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
+            // ── ModuleGetAttr: module attribute read ──
+            // operands: [module, attr_name]
+            OpCode::ModuleGetAttr => {
+                let result = self.call_runtime_2_boxed(
+                    "molt_module_get_attr",
+                    op.operands[0],
+                    op.operands[1],
+                );
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
             // ── SCF dialect ops ──
             // Structured control flow ops are desugared into LLVM basic blocks.
             // ScfIf uses conditional branches to then/else blocks with a merge phi.

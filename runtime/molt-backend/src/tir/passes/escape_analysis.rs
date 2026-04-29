@@ -425,6 +425,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::ConstBytes
                 | OpCode::Import
                 | OpCode::ImportFrom
+                | OpCode::ModuleGetAttr
                 | OpCode::StateTransition
                 | OpCode::StateYield
                 | OpCode::ChanSendYield

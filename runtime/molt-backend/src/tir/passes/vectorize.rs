@@ -56,7 +56,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, OpCode};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -169,12 +169,12 @@ fn is_disqualifying(opcode: OpCode) -> bool {
         )
 }
 
-/// Returns `true` if an opcode is pure arithmetic on numeric scalars.
+/// Returns `true` if an op is pure arithmetic on numeric scalars.
 /// These are the only ops allowed inside a vectorizable body.
 #[inline]
-fn is_scalar_arithmetic(opcode: OpCode) -> bool {
+fn is_scalar_arithmetic(op: &TirOp) -> bool {
     matches!(
-        opcode,
+        op.opcode,
         OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
@@ -199,10 +199,9 @@ fn is_scalar_arithmetic(opcode: OpCode) -> bool {
             | OpCode::ConstInt
             | OpCode::ConstFloat
             | OpCode::ConstBool
-            | OpCode::Copy
             | OpCode::UnboxVal
             | OpCode::BoxVal
-    )
+    ) || op.is_plain_value_copy()
 }
 
 /// SIMD lane category used for promotion analysis: `Int` covers `I64` / `Bool`
@@ -529,7 +528,7 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
                 break;
             }
 
-            if !is_scalar_arithmetic(op.opcode) {
+            if !is_scalar_arithmetic(op) {
                 // Any op not in our allowed arithmetic set is disqualifying.
                 vectorizable = false;
                 break;

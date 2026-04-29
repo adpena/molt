@@ -136,6 +136,13 @@ pub enum OpCode {
     // Import
     Import,
     ImportFrom,
+    /// Read an attribute from a runtime module object.
+    ///
+    /// Operands: `[module_value, attr_name_value]`.
+    /// Result: dynamic Molt value. This may raise when the module does
+    /// not define the requested attribute, so optimization passes must
+    /// not treat it as a pure value copy.
+    ModuleGetAttr,
     // IO / diagnostics
     WarnStderr,
     // Structured control flow (scf dialect)
@@ -175,4 +182,21 @@ pub struct TirOp {
     pub attrs: AttrDict,
     /// Source location for diagnostics (byte offset range).
     pub source_span: Option<(u32, u32)>,
+}
+
+impl TirOp {
+    /// True only for a structural SSA value copy.
+    ///
+    /// `OpCode::Copy` is also the legacy fallback carrier for SimpleIR
+    /// operations that have not yet been promoted into first-class TIR
+    /// opcodes.  Those fallback copies carry semantic attributes such as
+    /// `_original_kind` and must not be propagated, hoisted, vectorized, or
+    /// otherwise treated as transparent copies.
+    #[inline]
+    pub fn is_plain_value_copy(&self) -> bool {
+        self.opcode == OpCode::Copy
+            && self.operands.len() == 1
+            && self.results.len() == 1
+            && self.attrs.is_empty()
+    }
 }

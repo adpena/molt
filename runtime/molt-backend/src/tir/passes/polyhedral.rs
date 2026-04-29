@@ -63,7 +63,6 @@ fn check_affine_body(func: &TirFunction, _bid: BlockId) -> bool {
                     | OpCode::ConstFloat
                     | OpCode::ConstBool
                     | OpCode::ConstNone
-                    | OpCode::Copy
                     | OpCode::Lt
                     | OpCode::Le
                     | OpCode::Gt
@@ -75,7 +74,7 @@ fn check_affine_body(func: &TirFunction, _bid: BlockId) -> bool {
                     | OpCode::ScfYield
                     | OpCode::GetIter
                     | OpCode::IterNext
-            )
+            ) || op.is_plain_value_copy()
         })
     })
 }

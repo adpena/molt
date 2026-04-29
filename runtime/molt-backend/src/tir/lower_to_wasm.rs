@@ -697,6 +697,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ClosureStore
         | OpCode::Import
         | OpCode::ImportFrom
+        | OpCode::ModuleGetAttr
         | OpCode::Pow
         | OpCode::Is
         | OpCode::IsNot
