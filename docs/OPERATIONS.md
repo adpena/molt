@@ -420,7 +420,7 @@ MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run --python 3.12 python3 -u t
 ## Build Throughput (Multi-Agent)
 - **Stable cache keys**: the CLI enforces `PYTHONHASHSEED=0` by default to keep IR/cache keys deterministic across invocations.
 - **Hash-seed override**: set `MOLT_HASH_SEED=<value>` to override; set `MOLT_HASH_SEED=random` to opt out.
-- **Cache invalidation scope**: object-cache keys use IR payload + runtime/backend fingerprint. Unrelated stdlib file edits do not invalidate every cached object unless they affect generated IR for that build.
+- **Cache invalidation scope**: object-cache keys use IR payload plus runtime/backend/tooling content and source-tree metadata fingerprints. Unrelated stdlib file edits do not invalidate every cached object unless they affect generated IR for that build, but compiler/runtime/tooling source metadata changes do invalidate caches to prevent stale outputs in long-lived processes.
 - **Lock-check cache**: deterministic lock checks are cached in `target/lock_checks/` to avoid repeated `uv lock --check` and `cargo metadata --locked` on every build.
 - **Concurrent rebuild suppression**: backend/runtime Cargo rebuilds acquire file locks under `<CARGO_TARGET_DIR>/.molt_state/build_locks/` so parallel agents sharing a target dir wait instead of duplicating rebuilds.
 - **Build state override**: set `MOLT_BUILD_STATE_DIR=<path>` to pin lock/fingerprint metadata to a custom shared location; by default it lives under `<CARGO_TARGET_DIR>/.molt_state/`.
