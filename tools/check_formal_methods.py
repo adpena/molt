@@ -97,28 +97,43 @@ EXPECTED_LEAN_FILES = [
     "MoltTIR/Tests/Smoke.lean",
 ]
 
-EXPECTED_QUINT_FILES = [
-    "molt_build_determinism.qnt",
-    "molt_runtime_determinism.qnt",
-    "molt_midend_pipeline.qnt",
-    "molt_luau_transpiler.qnt",
-    "molt_calling_convention.qnt",
-]
-
 # Quint models, their invariants, and max steps for CI simulation.
 QUINT_MODELS: list[tuple[str, str, int]] = [
     ("molt_build_determinism.qnt", "Inv", 12),
-    ("molt_runtime_determinism.qnt", "Inv", 15),
-    ("molt_midend_pipeline.qnt", "inv", 20),
-    ("molt_luau_transpiler.qnt", "Inv", 15),
+    ("molt_cache_coherence.qnt", "Inv", 15),
     ("molt_calling_convention.qnt", "Inv", 15),
+    ("molt_concurrency.qnt", "Inv", 20),
+    ("molt_control_flow.qnt", "Inv", 15),
+    ("molt_cross_version.qnt", "Inv", 15),
+    ("molt_exception_handling.qnt", "Inv", 15),
+    ("molt_gc_safety.qnt", "Inv", 20),
+    ("molt_luau_transpiler.qnt", "Inv", 15),
+    ("molt_midend_pipeline.qnt", "Inv", 15),
+    ("molt_nanbox_object_model.qnt", "Inv", 20),
+    ("molt_nanbox_operations.qnt", "Inv", 15),
+    ("molt_optimization_pipeline.qnt", "Inv", 20),
+    ("molt_refcount_protocol.qnt", "Inv", 20),
+    ("molt_runtime_determinism.qnt", "Inv", 15),
+    ("molt_scheduler_fairness.qnt", "Inv", 20),
 ]
+
+EXPECTED_QUINT_FILES = [model for model, _invariant, _max_steps in QUINT_MODELS]
+
+# Deterministic simulation seeds. The last two are regression seeds that exposed
+# previously unmodeled refcount ownership edges; keep them in the gate.
+QUINT_RUN_SEEDS = (
+    "0x4d4f4c5400000001",
+    "0x4d4f4c5400000002",
+    "0xefd9b00a0dfe6ba",
+    "0x8ccc0ae2ed66b340",
+)
 
 # Known-bad model meta-test: this SHOULD fail (order-dependent hashing).
 KNOWN_BAD_MODEL = "molt_build_determinism.qnt"
 KNOWN_BAD_MODULE = "molt_build_order_dependent"
 KNOWN_BAD_INV = "OrderDependentInv"
 KNOWN_BAD_STEPS = 10
+KNOWN_BAD_SEED = "0x4d4f4c54bad00001"
 
 # NaN-boxing constants to cross-check between Rust and Lean.
 # name → (rust_regex, lean_regex)
@@ -313,44 +328,50 @@ def check_quint_models() -> list[CheckResult]:
             continue
 
         label = f"Quint {model_file}"
-        print(
-            f"  Running: quint run {model_file} --invariant={invariant} --max-steps={max_steps} ..."
-        )
-
         t0 = time.monotonic()
-        try:
-            proc = subprocess.run(
-                [
-                    quint,
-                    "run",
-                    str(model_path),
-                    f"--invariant={invariant}",
-                    f"--max-steps={max_steps}",
-                    "--max-samples=200",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
+        failed: CheckResult | None = None
+        for seed in QUINT_RUN_SEEDS:
+            print(
+                f"  Running: quint run {model_file} --invariant={invariant} "
+                f"--max-steps={max_steps} --seed={seed} ..."
             )
-        except subprocess.TimeoutExpired:
-            results.append(CheckResult(label, False, "timed out (>120s)"))
-            continue
+            try:
+                proc = subprocess.run(
+                    [
+                        quint,
+                        "run",
+                        str(model_path),
+                        f"--invariant={invariant}",
+                        f"--max-steps={max_steps}",
+                        "--max-samples=200",
+                        f"--seed={seed}",
+                        "--backend=rust",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                failed = CheckResult(label, False, f"seed {seed} timed out (>120s)")
+                break
 
-        elapsed = time.monotonic() - t0
-        output = (proc.stdout + proc.stderr).strip()
+            elapsed = time.monotonic() - t0
+            output = (proc.stdout + proc.stderr).strip()
 
-        if proc.returncode != 0:
-            tail = "\n".join(output.splitlines()[-10:])
-            results.append(
-                CheckResult(
+            if proc.returncode != 0:
+                tail = "\n".join(output.splitlines()[-10:])
+                failed = CheckResult(
                     label,
                     False,
-                    f"FAILED (exit {proc.returncode}, {elapsed:.1f}s)\n{tail}",
+                    f"FAILED seed {seed} (exit {proc.returncode}, {elapsed:.1f}s)\n{tail}",
                 )
-            )
+                break
+
+        if failed is not None:
+            results.append(failed)
         else:
-            # Try to extract states/samples from output
-            detail = f"PASS ({elapsed:.1f}s)"
+            elapsed = time.monotonic() - t0
+            detail = f"PASS ({elapsed:.1f}s, {len(QUINT_RUN_SEEDS)} seeds)"
             results.append(CheckResult(label, True, detail))
 
     return results
@@ -388,6 +409,8 @@ def check_known_bad_model() -> CheckResult:
                 f"--invariant={KNOWN_BAD_INV}",
                 f"--max-steps={KNOWN_BAD_STEPS}",
                 "--max-samples=500",
+                f"--seed={KNOWN_BAD_SEED}",
+                "--backend=rust",
             ],
             capture_output=True,
             text=True,

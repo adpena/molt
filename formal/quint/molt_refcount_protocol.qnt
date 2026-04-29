@@ -70,6 +70,14 @@ module molt_refcount_protocol {
   // Root set: objects reachable from variables on the stack (not via borrows).
   var roots: Set[ObjId]
 
+  // Counted root references. `roots` is the reachability projection; this map
+  // preserves multiplicity when multiple stack slots reference the same object.
+  var rootCounts: ObjId -> int
+
+  // Counted heap/container references. Container slots are modeled separately
+  // from roots so `storeToHeap`/`removeFromHeap` preserve refcount ownership.
+  var heapCounts: ObjId -> int
+
   // Active borrows: borrowed references that skip inc_ref.
   var borrows: Set[Borrow]
 
@@ -91,6 +99,8 @@ module molt_refcount_protocol {
   action init = all {
     heap' = ObjIds.mapBy(oid => { id: oid, refcount: 0, alive: false }),
     roots' = Set(),
+    rootCounts' = ObjIds.mapBy(_oid => 0),
+    heapCounts' = ObjIds.mapBy(_oid => 0),
     borrows' = Set(),
     frames' = FrameIds.mapBy(fid => {
       frameId: fid,
@@ -109,8 +119,12 @@ module molt_refcount_protocol {
   // =========================================================================
 
   // Count references to an object from roots.
-  pure def rootRefCount(oid: ObjId, rs: Set[ObjId]): int =
-    if (rs.contains(oid)) 1 else 0
+  pure def rootRefCount(oid: ObjId, rcs: ObjId -> int): int =
+    rcs.get(oid)
+
+  // Count references to an object from heap/container slots.
+  pure def heapRefCount(oid: ObjId, hcs: ObjId -> int): int =
+    hcs.get(oid)
 
   // Count references from active call frames.
   pure def frameRefCount(oid: ObjId, fs: int -> CallFrame, afids: Set[int]): int =
@@ -121,9 +135,11 @@ module molt_refcount_protocol {
     )
 
   // Check if an object is reachable (from roots or active frames).
-  pure def isReachable(oid: ObjId, rs: Set[ObjId], fs: int -> CallFrame,
+  pure def isReachable(oid: ObjId, rcs: ObjId -> int, hcs: ObjId -> int, fs: int -> CallFrame,
                        afids: Set[int]): bool =
-    rs.contains(oid) or afids.exists(fid => fs.get(fid).args.contains(oid))
+    rcs.get(oid) > 0 or
+    hcs.get(oid) > 0 or
+    afids.exists(fid => fs.get(fid).args.contains(oid))
 
   // =========================================================================
   // Actions
@@ -136,6 +152,8 @@ module molt_refcount_protocol {
     all {
       heap' = heap.set(oid, { id: oid, refcount: 1, alive: true }),
       roots' = roots.union(Set(oid)),
+      rootCounts' = rootCounts.set(oid, 1),
+      heapCounts' = heapCounts,
       borrows' = borrows,
       frames' = frames,
       activeFrameIds' = activeFrameIds,
@@ -152,6 +170,8 @@ module molt_refcount_protocol {
     all {
       heap' = heap.set(oid, { ...obj, refcount: obj.refcount + 1 }),
       roots' = roots.union(Set(oid)),
+      rootCounts' = rootCounts.set(oid, rootCounts.get(oid) + 1),
+      heapCounts' = heapCounts,
       borrows' = borrows,
       frames' = frames,
       activeFrameIds' = activeFrameIds,
@@ -164,23 +184,33 @@ module molt_refcount_protocol {
   // because each root entry represents exactly one counted reference.
   // If refcount reaches 0, deallocate.
   action decRef = {
-    val liveRooted = roots.filter(oid => heap.get(oid).alive and heap.get(oid).refcount > 0)
+    val liveRooted = roots.filter(oid =>
+      heap.get(oid).alive and heap.get(oid).refcount > 0 and rootCounts.get(oid) > 0
+    )
     nondet oid = liveRooted.oneOf()
     val obj = heap.get(oid)
     val newRc = obj.refcount - 1
+    val newRootCount = rootCounts.get(oid) - 1
+    val stillReferenced = newRootCount > 0 or
+                          heapCounts.get(oid) > 0 or
+                          activeFrameIds.exists(fid => frames.get(fid).args.contains(oid))
     val newObj = if (newRc == 0)
       { ...obj, refcount: 0, alive: false }
     else
       { ...obj, refcount: newRc }
     all {
+      // A root drop cannot free an object still owned elsewhere.
+      newRc > 0 or not(stillReferenced),
       heap' = heap.set(oid, newObj),
-      // Always remove from roots: this root reference is being dropped.
-      roots' = roots.exclude(Set(oid)),
+      // Remove the reachability projection only when the final root slot drops.
+      roots' = if (newRootCount == 0) roots.exclude(Set(oid)) else roots,
+      rootCounts' = rootCounts.set(oid, newRootCount),
+      heapCounts' = heapCounts,
       // Invalidate any borrows of a freed object.
       borrows' = if (newRc == 0) borrows.filter(b => b.owner != oid) else borrows,
       frames' = frames,
       activeFrameIds' = activeFrameIds,
-      accessed' = Set(oid),
+      accessed' = if (newRc == 0) Set() else Set(oid),
       nextId' = nextId,
     }
   }
@@ -193,6 +223,8 @@ module molt_refcount_protocol {
     all {
       heap' = heap.set(oid, { ...obj, refcount: obj.refcount + 1 }),
       roots' = roots,
+      rootCounts' = rootCounts,
+      heapCounts' = heapCounts.set(oid, heapCounts.get(oid) + 1),
       borrows' = borrows,
       frames' = frames,
       activeFrameIds' = activeFrameIds,
@@ -207,26 +239,31 @@ module molt_refcount_protocol {
   // If this is the last reference, the container owns it and freeing is correct.
   action removeFromHeap = {
     val liveObjs = ObjIds.filter(oid => oid < nextId and heap.get(oid).alive
-                                   and heap.get(oid).refcount > 0)
+                                   and heap.get(oid).refcount > 0
+                                   and heapCounts.get(oid) > 0)
     nondet oid = liveObjs.oneOf()
     val obj = heap.get(oid)
     val newRc = obj.refcount - 1
+    val newHeapCount = heapCounts.get(oid) - 1
     val newObj = if (newRc == 0)
       { ...obj, refcount: 0, alive: false }
     else
       { ...obj, refcount: newRc }
     // Only allow freeing (newRc == 0) if not referenced by roots or active frames.
-    val stillReferenced = roots.contains(oid) or
+    val stillReferenced = rootCounts.get(oid) > 0 or
+                          newHeapCount > 0 or
                           activeFrameIds.exists(fid => frames.get(fid).args.contains(oid))
     all {
       // Cannot free an object that's still referenced elsewhere.
       newRc > 0 or not(stillReferenced),
       heap' = heap.set(oid, newObj),
       roots' = if (newRc == 0) roots.exclude(Set(oid)) else roots,
+      rootCounts' = rootCounts,
+      heapCounts' = heapCounts.set(oid, newHeapCount),
       borrows' = if (newRc == 0) borrows.filter(b => b.owner != oid) else borrows,
       frames' = frames,
       activeFrameIds' = activeFrameIds,
-      accessed' = Set(oid),
+      accessed' = if (newRc == 0) Set() else Set(oid),
       nextId' = nextId,
     }
   }
@@ -261,6 +298,8 @@ module molt_refcount_protocol {
         }),
         activeFrameIds' = activeFrameIds.union(Set(fid)),
         roots' = roots,
+        rootCounts' = rootCounts,
+        heapCounts' = heapCounts,
         borrows' = borrows,
         accessed' = argSet,
         nextId' = nextId,
@@ -298,6 +337,8 @@ module molt_refcount_protocol {
           protectedReturn: isAliased,
         }),
         roots' = roots.union(Set(retOid)),
+        rootCounts' = rootCounts.set(retOid, rootCounts.get(retOid) + 1),
+        heapCounts' = heapCounts,
         borrows' = if (not(isAliased))
           borrows.union(Set({ borrower: fid, owner: retOid }))
         else
@@ -326,18 +367,23 @@ module molt_refcount_protocol {
       else
         h.set(oid, { ...obj, refcount: newRc })
     )
-    // Remove borrows for this frame.
-    val newBorrows = borrows.filter(b => b.borrower != fid)
+    // Remove borrows for this frame and any borrow whose owner died during
+    // callargs cleanup.
+    val newBorrows = borrows.filter(b => b.borrower != fid and newHeap.get(b.owner).alive)
     // If return val was freed (not protected), remove from roots.
     val retAlive = newHeap.get(f.returnVal).alive
     val newRoots = if (not(retAlive)) roots.exclude(Set(f.returnVal)) else roots
+    val liveArgs = f.args.filter(oid => newHeap.get(oid).alive)
+    val liveReturn = if (retAlive) Set(f.returnVal) else Set()
     all {
       heap' = newHeap,
       frames' = frames.set(fid, { ...f, active: false, args: Set() }),
       activeFrameIds' = activeFrameIds.exclude(Set(fid)),
       roots' = newRoots,
+      rootCounts' = rootCounts,
+      heapCounts' = heapCounts,
       borrows' = newBorrows,
-      accessed' = f.args.union(Set(f.returnVal)),
+      accessed' = liveArgs.union(liveReturn),
       nextId' = nextId,
     }
   }
@@ -355,6 +401,8 @@ module molt_refcount_protocol {
         borrows' = borrows.union(Set({ borrower: slot, owner: oid })),
         heap' = heap,
         roots' = roots,
+        rootCounts' = rootCounts,
+        heapCounts' = heapCounts,
         frames' = frames,
         activeFrameIds' = activeFrameIds,
         accessed' = Set(oid),
@@ -370,6 +418,8 @@ module molt_refcount_protocol {
       borrows' = borrows.exclude(Set(b)),
       heap' = heap,
       roots' = roots,
+      rootCounts' = rootCounts,
+      heapCounts' = heapCounts,
       frames' = frames,
       activeFrameIds' = activeFrameIds,
       accessed' = Set(),
@@ -390,6 +440,8 @@ module molt_refcount_protocol {
     all {
       heap' = heap,
       roots' = roots,
+      rootCounts' = rootCounts,
+      heapCounts' = heapCounts,
       borrows' = borrows,
       frames' = frames,
       activeFrameIds' = activeFrameIds,
@@ -401,6 +453,8 @@ module molt_refcount_protocol {
   action stutter = all {
     heap' = heap,
     roots' = roots,
+    rootCounts' = rootCounts,
+    heapCounts' = heapCounts,
     borrows' = borrows,
     frames' = frames,
     activeFrameIds' = activeFrameIds,
@@ -444,7 +498,7 @@ module molt_refcount_protocol {
   val NoLeak =
     ObjIds.forall(oid =>
       (oid < nextId and heap.get(oid).alive and
-       not(isReachable(oid, roots, frames, activeFrameIds)))
+       not(isReachable(oid, rootCounts, heapCounts, frames, activeFrameIds)))
       implies
       heap.get(oid).refcount == 0
     )
@@ -489,13 +543,26 @@ module molt_refcount_protocol {
       oid >= 0 and oid < nextId and heap.get(oid).alive
     )
 
-  // I8: Alive objects have positive refcount.
+  // I8: Counted root/heap references are well-formed and reflected in roots.
+  val CountedRefsWellFormed =
+    ObjIds.forall(oid =>
+      (oid < nextId implies (
+        rootCounts.get(oid) >= 0 and
+        heapCounts.get(oid) >= 0 and
+        (rootCounts.get(oid) > 0 iff roots.contains(oid))
+      )) and
+      (oid >= nextId implies (
+        rootCounts.get(oid) == 0 and heapCounts.get(oid) == 0
+      ))
+    )
+
+  // I9: Alive objects have positive refcount.
   val AlivePositiveRefcount =
     ObjIds.forall(oid =>
       (oid < nextId and heap.get(oid).alive) implies heap.get(oid).refcount > 0
     )
 
-  // I9: Elision correctness — objects with refcount >= 2 can safely skip
+  // I10: Elision correctness — objects with refcount >= 2 can safely skip
   // an inc_ref/dec_ref pair without becoming dangling.
   val ElisionCorrect =
     ObjIds.forall(oid =>
@@ -507,11 +574,14 @@ module molt_refcount_protocol {
 
   // Combined invariant for verification.
   val Inv = and {
+    NoUseAfterFree,
     NoDoubleFree,
+    NoLeak,
     BorrowSafe,
     FrameConsistent,
     AliasProtection,
     RootsAlive,
+    CountedRefsWellFormed,
     AlivePositiveRefcount,
     ElisionCorrect,
   }
