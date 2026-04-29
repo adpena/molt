@@ -7428,6 +7428,29 @@ def _hash_runtime_file(path: Path, root: Path, hasher: Any) -> None:
     hasher.update(b"\0")
 
 
+_SOURCE_FINGERPRINT_IGNORED_DIRS = frozenset({"__pycache__"})
+_SOURCE_FINGERPRINT_IGNORED_SUFFIXES = frozenset({".pyc", ".pyo"})
+
+
+def _source_fingerprint_should_skip(path: Path) -> bool:
+    return (
+        any(part in _SOURCE_FINGERPRINT_IGNORED_DIRS for part in path.parts)
+        or path.suffix in _SOURCE_FINGERPRINT_IGNORED_SUFFIXES
+    )
+
+
+def _source_fingerprint_files(path: Path) -> list[Path]:
+    if path.is_dir():
+        return [
+            item
+            for item in sorted(path.rglob("*"), key=lambda p: str(p))
+            if item.is_file() and not _source_fingerprint_should_skip(item)
+        ]
+    if path.exists() and path.is_file() and not _source_fingerprint_should_skip(path):
+        return [path]
+    return []
+
+
 def _hash_source_tree_metadata(
     paths: list[Path],
     root: Path,
@@ -7436,38 +7459,16 @@ def _hash_source_tree_metadata(
     file_count = 0
     try:
         for path in sorted(paths, key=lambda p: str(p)):
-            if path.is_dir():
-                for item in sorted(path.rglob("*"), key=lambda p: str(p)):
-                    if not item.is_file():
-                        continue
-                    try:
-                        stat = item.stat()
-                    except OSError:
-                        return None
-                    try:
-                        rel_path = item.relative_to(root)
-                        rel_text = str(rel_path)
-                    except ValueError:
-                        rel_text = str(item)
-                    hasher.update(rel_text.encode("utf-8"))
-                    hasher.update(b"\0")
-                    hasher.update(str(stat.st_size).encode("utf-8"))
-                    hasher.update(b"\0")
-                    hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
-                    hasher.update(b"\0")
-                    hasher.update(str(stat.st_ctime_ns).encode("utf-8"))
-                    hasher.update(b"\0")
-                    file_count += 1
-            elif path.exists():
+            for item in _source_fingerprint_files(path):
                 try:
-                    stat = path.stat()
+                    stat = item.stat()
                 except OSError:
                     return None
                 try:
-                    rel_path = path.relative_to(root)
+                    rel_path = item.relative_to(root)
                     rel_text = str(rel_path)
                 except ValueError:
-                    rel_text = str(path)
+                    rel_text = str(item)
                 hasher.update(rel_text.encode("utf-8"))
                 hasher.update(b"\0")
                 hasher.update(str(stat.st_size).encode("utf-8"))
@@ -9191,6 +9192,25 @@ def _backend_source_paths(
     backend_features: tuple[str, ...] = (),
 ) -> list[Path]:
     return list(_backend_source_paths_cached(os.fspath(project_root), backend_features))
+
+
+@functools.lru_cache(maxsize=128)
+def _frontend_tooling_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
+    project_root = pathlib.Path(project_root_str)
+    molt_root = project_root / "src" / "molt"
+    return (
+        molt_root / "cli.py",
+        molt_root / "frontend",
+        molt_root / "type_facts.py",
+        molt_root / "capabilities.py",
+        molt_root / "capability_manifest.py",
+        molt_root / "compat.py",
+        molt_root / "_wasm_runtime_exports.py",
+    )
+
+
+def _frontend_tooling_source_paths(project_root: Path) -> list[Path]:
+    return list(_frontend_tooling_source_paths_cached(os.fspath(project_root)))
 
 
 _DEFAULT_BACKEND_FEATURES: tuple[str, ...] = ("native-backend",)
@@ -11101,6 +11121,34 @@ def _resolve_backend_cargo_profile_name(
     )
 
 
+def _active_artifact_profile_dirs() -> tuple[str, ...]:
+    """Cargo profile directories that may hold live Molt build artifacts.
+
+    Artifact freshness checks must follow the same profile policy as actual
+    builds.  Literal-only scans miss defaults such as ``dev-fast`` and
+    ``release-output``, leaving daemon and shared-stdlib caches stale after a
+    correct rebuild.
+    """
+    profiles = [
+        "release",
+        "release-fast",
+        "debug",
+        _resolve_cargo_profile_name("dev")[0],
+        _resolve_cargo_profile_name("release")[0],
+        _resolve_backend_cargo_profile_name("dev")[0],
+        _resolve_backend_cargo_profile_name("release")[0],
+    ]
+    seen: set[str] = set()
+    profile_dirs: list[str] = []
+    for profile in profiles:
+        profile_dir = _cargo_profile_dir(profile)
+        if profile_dir in seen:
+            continue
+        seen.add(profile_dir)
+        profile_dirs.append(profile_dir)
+    return tuple(profile_dirs)
+
+
 @functools.lru_cache(maxsize=32)
 def _resolve_wasm_cargo_profile_cached(
     cargo_profile: str,
@@ -11748,7 +11796,7 @@ def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
         # Resolve the runtime artifact root through the canonical cargo-target
         # resolver so explicit CARGO_TARGET_DIR always wins over session fallback.
         target_root = _cargo_target_root(candidate)
-        for profile_dir in ("release", "release-fast", "debug"):
+        for profile_dir in _active_artifact_profile_dirs():
             runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
             try:
                 if runtime_lib.stat().st_mtime > pid_mtime:
@@ -16035,7 +16083,7 @@ def _invalidate_stale_stdlib_cache(
     target_root = _cargo_target_root(_root)
 
     # Check backend binary and runtime library across all profile dirs.
-    for profile_dir in ("release", "release-fast", "debug"):
+    for profile_dir in _active_artifact_profile_dirs():
         for artifact_name in ("molt-backend", "libmolt_runtime.a"):
             artifact = target_root / profile_dir / artifact_name
             try:
@@ -25447,12 +25495,8 @@ def _source_tree_content_digest_cached(
     hasher.update(b"\0")
     for path_key in path_keys:
         path = pathlib.Path(path_key)
-        if path.is_dir():
-            for item in sorted(path.rglob("*"), key=lambda candidate: str(candidate)):
-                if item.is_file():
-                    _hash_runtime_file(item, root, hasher)
-        elif path.exists():
-            _hash_runtime_file(path, root, hasher)
+        for item in _source_fingerprint_files(path):
+            _hash_runtime_file(item, root, hasher)
     return hasher.hexdigest()
 
 
@@ -25517,14 +25561,9 @@ def _cache_fingerprint() -> str:
 
 def _cache_tooling_fingerprint() -> str:
     root = Path(__file__).resolve().parents[2]
-    tooling_paths = [
-        Path(__file__).resolve(),
-        root / "src/molt/frontend/__init__.py",
-        root / "src/molt/cli.py",
-    ]
     return _source_tree_cache_fingerprint(
         root=root,
-        source_paths=tooling_paths,
+        source_paths=_frontend_tooling_source_paths(root),
         scope="frontend-tooling",
         extra_fingerprint_inputs="",
     )
