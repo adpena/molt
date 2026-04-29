@@ -4,10 +4,19 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW_ROOT = REPO_ROOT / ".github" / "workflows"
 
 
 def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _default_python_version() -> str:
+    version = _read(".python-version").strip()
+    components = version.split(".")
+    assert len(components) == 2
+    assert all(component.isdigit() for component in components)
+    return version
 
 
 def test_ci_push_path_is_cheap_only() -> None:
@@ -34,19 +43,40 @@ def test_ci_push_path_is_cheap_only() -> None:
 
 
 def test_pre_commit_hooks_are_read_only_by_default() -> None:
+    default_python = _default_python_version()
     pre_commit_text = _read(".pre-commit-config.yaml")
 
     assert "- id: ruff" in pre_commit_text
     assert "repo: https://github.com/astral-sh/ruff-pre-commit" not in pre_commit_text
-    assert "uv run --python 3.12 ruff check" in pre_commit_text
+    assert "uv run ruff check" in pre_commit_text
+    assert f"--python {default_python}" not in pre_commit_text
     assert "--fix" not in pre_commit_text
     assert "- id: ruff-format" in pre_commit_text
-    assert "uv run --python 3.12 ruff format --check" in pre_commit_text
-    assert "uv run --python 3.12 ty check src" in pre_commit_text
+    assert "uv run ruff format --check" in pre_commit_text
+    assert "uv run ty check src" in pre_commit_text
     assert "tools/secret_guard.py --staged" in pre_commit_text
     assert "- id: end-of-file-fixer" not in pre_commit_text
     assert "- id: trailing-whitespace" not in pre_commit_text
     assert "git diff --cached --check" in pre_commit_text
+
+
+def test_default_ci_python_version_comes_from_single_file() -> None:
+    default_python = _default_python_version()
+
+    checked_files = [".pre-commit-config.yaml"] + [
+        f".github/workflows/{path.name}" for path in sorted(WORKFLOW_ROOT.glob("*.yml"))
+    ]
+    for path in checked_files:
+        text = _read(path)
+        assert f"--python {default_python}" not in text
+        assert f"uv python install {default_python}" not in text
+        assert f'python-version: "{default_python}"' not in text
+        assert f"python-version: '{default_python}'" not in text
+
+    for workflow in ("ci.yml", "formal.yml", "perf-validation.yml", "release.yml"):
+        assert 'python-version-file: ".python-version"' in _read(
+            f".github/workflows/{workflow}"
+        )
 
 
 def test_repo_githook_delegates_to_pre_commit_authority() -> None:
@@ -98,6 +128,14 @@ def test_kani_intrinsic_contracts_avoid_symbolic_std_sort() -> None:
     assert ".sort()" not in kani_text
 
 
+def test_kani_workflow_has_single_cargo_cache_authority() -> None:
+    kani_workflow = _read(".github/workflows/kani.yml")
+
+    assert "swatinem/rust-cache@v2" in kani_workflow
+    assert "actions/cache@v4" not in kani_workflow
+    assert "Cache cargo registry and target" not in kani_workflow
+
+
 def test_nightly_contains_correctness_jobs() -> None:
     nightly_text = _read(".github/workflows/nightly.yml")
 
@@ -118,6 +156,9 @@ def test_nightly_contains_correctness_jobs() -> None:
     assert "~/.molt/build/" not in nightly_text
     assert "cargo build -p molt-runtime --profile dev-fast" in nightly_text
     assert "cargo build -p molt-runtime --release" not in nightly_text
+    assert "A/B Molt caches and build-state roots are intentionally cold" in (
+        nightly_text
+    )
 
 
 def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
@@ -137,6 +178,25 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "tools/bench.py" in perf_text
     assert "--molt-profile release" in perf_text
     assert "bench/results/" in perf_text
+
+
+def test_perf_demo_workflow_uses_canonical_env_and_single_uv_sync() -> None:
+    perf_demo_text = _read(".github/workflows/perf_demo.yml")
+    run_stack_text = _read("bench/scripts/run_stack.sh")
+
+    assert "MOLT_SESSION_ID: perf-demo-${{ github.run_id }}" in perf_demo_text
+    assert "CARGO_TARGET_DIR: ${{ github.workspace }}/target" in perf_demo_text
+    assert "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target" in (
+        perf_demo_text
+    )
+    assert "MOLT_CACHE: ${{ github.workspace }}/.molt_cache" in perf_demo_text
+    assert "TMPDIR: ${{ github.workspace }}/tmp" in perf_demo_text
+    assert "UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache" in perf_demo_text
+    assert 'MOLT_UV_SYNC: "0"' in perf_demo_text
+    assert 'if [[ "${MOLT_UV_SYNC:-1}" != "0" ]]' in run_stack_text
+    assert 'cargo build --profile "$CARGO_PROFILE" -p molt-worker' in run_stack_text
+    assert 'CARGO_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"' in run_stack_text
+    assert 'WORKER_BIN="$CARGO_ROOT/$CARGO_PROFILE/molt-worker"' in run_stack_text
 
 
 def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
@@ -165,6 +225,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
 
     assert "MOLT_EXT_ROOT: /tmp/molt-ext" in wasm_text
+    assert "- '.python-version'" in wasm_text
     assert "CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target" in wasm_text
     assert "MOLT_CACHE: /tmp/molt-ext/molt_cache" in wasm_text
     assert "MOLT_DIFF_ROOT: /tmp/molt-ext/diff" in wasm_text
@@ -184,9 +245,6 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         not in wasm_text
     )
     assert "cargo build --release -p molt-wasm-host" not in wasm_text
-    assert (
-        "uv run --python 3.12 python3 -m pytest tests/test_wasm_control_flow.py -q"
-        in wasm_text
-    )
+    assert "uv run python3 -m pytest tests/test_wasm_control_flow.py -q" in wasm_text
     assert wasm_text.count("--build-profile dev") >= 5
     assert "/home/runner/.cache/molt" not in wasm_text

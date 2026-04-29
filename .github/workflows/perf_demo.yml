@@ -11,16 +11,24 @@ permissions:
 jobs:
   demo-perf:
     runs-on: ubuntu-latest
+    env:
+      MOLT_SESSION_ID: perf-demo-${{ github.run_id }}-${{ github.run_attempt }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MOLT_CACHE: ${{ github.workspace }}/.molt_cache
+      TMPDIR: ${{ github.workspace }}/tmp
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+      MOLT_UV_SYNC: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up project Python
+        run: uv python install "$(cat .python-version)"
       - name: Install deps (accel + dev)
-        run: uv sync --frozen --python 3.12 --dev
+        run: uv sync --frozen --dev
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Rust cache
