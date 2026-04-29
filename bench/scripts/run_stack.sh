@@ -7,7 +7,8 @@ export MOLT_REPO_ROOT="$ROOT"
 # Use uv for reproducible demo deps when available.
 if command -v uv >/dev/null 2>&1; then
   UV_GROUP="${MOLT_UV_GROUP:-demo}"
-  UV_PYTHON="${MOLT_UV_PYTHON:-3.12}"
+  DEFAULT_UV_PYTHON="$(tr -d '[:space:]' < "$ROOT/.python-version")"
+  UV_PYTHON="${MOLT_UV_PYTHON:-$DEFAULT_UV_PYTHON}"
   RUN_PY=(uv run --project "$ROOT" --group "$UV_GROUP" --python "$UV_PYTHON" python3)
   if [[ "${MOLT_UV_SYNC:-1}" != "0" ]]; then
     uv sync --group "$UV_GROUP" --python "$UV_PYTHON"
@@ -66,8 +67,10 @@ export MOLT_SERVER="$SERVER"
 
 # Build worker if needed
 if ! command -v molt-worker >/dev/null 2>&1; then
-  cargo build -p molt-worker
-  WORKER_BIN="$ROOT/target/debug/molt-worker"
+  CARGO_PROFILE="${MOLT_WORKER_CARGO_PROFILE:-dev-fast}"
+  cargo build --profile "$CARGO_PROFILE" -p molt-worker
+  CARGO_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"
+  WORKER_BIN="$CARGO_ROOT/$CARGO_PROFILE/molt-worker"
 else
   WORKER_BIN="$(command -v molt-worker)"
 fi

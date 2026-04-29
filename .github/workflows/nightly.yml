@@ -17,14 +17,14 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Sync Python environment
-        run: uv sync --group dev --python 3.12
+        run: uv sync --group dev
 
       - name: Add local venv tools to PATH
         run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
@@ -53,21 +53,21 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Sync Python environment
-        run: uv sync --group dev --python 3.12
+        run: uv sync --group dev
 
       - name: Run differential correctness lane
         env:
           MOLT_DIFF_MEASURE_RSS: "1"
           MOLT_DIFF_RLIMIT_GB: "10"
         run: |
-          PYTHONPATH=src uv run --python 3.12 python3 -u tests/molt_diff.py \
+          PYTHONPATH=src uv run python3 -u tests/molt_diff.py \
             --build-profile dev \
             tests/differential/basic \
             tests/differential/stdlib
@@ -83,8 +83,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up project Python
+        run: uv python install "$(cat .python-version)"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -109,15 +109,15 @@ jobs:
             uv-${{ runner.os }}-nightly-
 
       - name: Install dependencies
-        run: uv sync --python 3.12
+        run: uv sync
 
       - name: Build Molt runtime
         run: cargo build -p molt-runtime --profile dev-fast
 
       - name: Run CPython regrtest (G5)
         run: |
-          uv run --python 3.12 python3 tools/cpython_regrtest.py \
-            --uv --uv-python 3.12 --uv-prepare \
+          uv run python3 tools/cpython_regrtest.py \
+            --uv --uv-python "$(cat .python-version)" --uv-prepare \
             --timeout 600
         continue-on-error: true
 
@@ -141,8 +141,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up project Python
+        run: uv python install "$(cat .python-version)"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -159,7 +159,7 @@ jobs:
             cargo-${{ runner.os }}-nightly-
 
       - name: Install dependencies
-        run: uv sync --python 3.12
+        run: uv sync
 
       - name: Build Molt runtime
         run: cargo build -p molt-runtime --profile dev-fast
@@ -173,11 +173,15 @@ jobs:
             rm -rf "$REPRO_ROOT"
             mkdir -p "$REPRO_ROOT"
             # Use --emit obj to skip linker and keep all sweep state repo-local.
+            # The A/B Molt caches and build-state roots are intentionally cold
+            # and separate; Cargo target artifacts stay shared through the
+            # default workspace target root so the sweep tests deterministic
+            # compiler output rather than Cargo rebuild behavior.
             MOLT_CACHE="$REPRO_ROOT/cache_a" MOLT_BUILD_STATE_DIR="$REPRO_ROOT/state_a" TMPDIR="$REPRO_ROOT/tmp_a" PYTHONPATH=src PYTHONHASHSEED=0 \
-              uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/a.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
+              uv run python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/a.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
             MOLT_CACHE="$REPRO_ROOT/cache_b" MOLT_BUILD_STATE_DIR="$REPRO_ROOT/state_b" TMPDIR="$REPRO_ROOT/tmp_b" PYTHONPATH=src PYTHONHASHSEED=0 \
-              uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/b.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
-            uv run --python 3.12 python3 tools/check_reproducible_build.py --object "$REPRO_ROOT/a.json" "$REPRO_ROOT/b.json" || failures=$((failures + 1))
+              uv run python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/b.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
+            uv run python3 tools/check_reproducible_build.py --object "$REPRO_ROOT/a.json" "$REPRO_ROOT/b.json" || failures=$((failures + 1))
             rm -rf "$REPRO_ROOT"
           done
           echo "Reproducible build sweep: $failures failures"
@@ -187,12 +191,12 @@ jobs:
         run: |
           for example in examples/*.py; do
             echo "=== Testing $example ==="
-            PYTHONPATH=src uv run --python 3.12 python3 tools/check_deterministic_runtime.py --runs 3 "$example" || true
+            PYTHONPATH=src uv run python3 tools/check_deterministic_runtime.py --runs 3 "$example" || true
           done
 
       - name: IR verification sweep
         run: |
-          PYTHONPATH=src uv run --python 3.12 python3 tools/verify_ir_suite.py \
+          PYTHONPATH=src uv run python3 tools/verify_ir_suite.py \
             --dir tests/differential/basic --examples
         continue-on-error: true
 
@@ -236,8 +240,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up project Python
+        run: uv python install "$(cat .python-version)"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -287,20 +291,20 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: uv sync --python 3.12
+        run: uv sync
 
       - name: Build Molt runtime
         run: cargo build -p molt-runtime --profile dev-fast
 
       - name: Run Tier 3 gate
-        run: uv run --python 3.12 python3 tools/ci_gate.py --tier 3 --verbose --json > ci_gate_tier3.json
+        run: uv run python3 tools/ci_gate.py --tier 3 --verbose --json > ci_gate_tier3.json
         continue-on-error: true
 
       - name: Report Tier 3 results
         if: always()
         run: |
           if [ -f ci_gate_tier3.json ]; then
-            uv run --python 3.12 python3 -c "
+            uv run python3 -c "
           import json, sys
           data = json.load(open('ci_gate_tier3.json'))
           s = data['summary']
