@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0-alpha"
+from ._version import version as _resolve_version
+
+__version__ = _resolve_version()
 
 _CONCURRENCY_EXPORTS = {
     "Channel",
