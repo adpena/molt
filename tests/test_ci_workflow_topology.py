@@ -136,6 +136,15 @@ def test_kani_workflow_has_single_cargo_cache_authority() -> None:
     assert "Cache cargo registry and target" not in kani_workflow
 
 
+def test_formal_workflow_uses_bounded_blocking_quint_gate() -> None:
+    formal_workflow = _read(".github/workflows/formal.yml")
+
+    assert "python3 tools/check_formal_methods.py --quint-only" in formal_workflow
+    assert "for model in *.qnt" not in formal_workflow
+    assert 'quint verify "$model"' not in formal_workflow
+    assert "failed verification (non-blocking)" not in formal_workflow
+
+
 def test_nightly_contains_correctness_jobs() -> None:
     nightly_text = _read(".github/workflows/nightly.yml")
 
