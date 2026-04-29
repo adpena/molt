@@ -1160,6 +1160,8 @@ class ClassInfo(TypedDict, total=False):
     exception_subclass: bool
     needs_classcell: bool
     custom_metaclass: bool
+    class_value_name: str
+    decorated: bool
 
 
 class FuncInfo(TypedDict):
@@ -1329,6 +1331,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_defined_funcs: set[str] = set()
         self.class_definition_pending: set[str] = set()
         self.module_global_mutations: set[str] = set()
+        self.module_globals_dict_escaped = False
         self.module_intrinsic_globals: dict[str, str] = {}
         # Track the last-known type hint for module-scope attributes.
         # Populated by _emit_module_attr_set_on and read by _emit_module_attr_get.
@@ -3803,6 +3806,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prev_annotation_exec_counter = self.module_annotation_exec_counter
         prev_annotation_emitted = self.module_annotation_emitted
         prev_global_mutations = self.module_global_mutations
+        prev_globals_dict_escaped = self.module_globals_dict_escaped
         prev_module_intrinsic_globals = self.module_intrinsic_globals
         prev_module_chunk_globals = self.module_chunk_globals
         prev_pending_classes = self.class_definition_pending
@@ -3829,6 +3833,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_annotation_exec_counter = 0
         self.module_annotation_emitted = False
         self.module_global_mutations = set()
+        self.module_globals_dict_escaped = self._module_globals_dict_escapes(node)
         self.module_intrinsic_globals = {}
         self.module_chunk_globals = set()
         self._ensure_globals_builtin()
@@ -3994,6 +3999,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_annotation_exec_counter = prev_annotation_exec_counter
         self.module_annotation_emitted = prev_annotation_emitted
         self.module_global_mutations = prev_global_mutations
+        self.module_globals_dict_escaped = prev_globals_dict_escaped
         self.module_intrinsic_globals = prev_module_intrinsic_globals
         self.module_chunk_globals = prev_module_chunk_globals
         return None
@@ -5601,11 +5607,40 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
 
     def _emit_class_ref(self, class_name: str) -> MoltValue:
+        static_ref = self._current_module_static_class_ref(class_name)
+        if static_ref is not None:
+            return static_ref
         class_info = self.classes.get(class_name)
         module_name = class_info.get("module") if class_info else None
         if module_name and module_name != self.module_name:
             return self._emit_module_attr_get_on(module_name, class_name)
         return self._emit_module_attr_get(class_name)
+
+    def _current_module_static_class_ref(self, class_name: str) -> MoltValue | None:
+        if self.current_func_name != "molt_main":
+            return None
+        if self.module_globals_dict_escaped:
+            return None
+        if class_name in self.module_global_mutations:
+            return None
+        if class_name in self.class_definition_pending:
+            return None
+        class_info = self.classes.get(class_name)
+        if class_info is None:
+            return None
+        if class_info.get("module") != self.module_name:
+            return None
+        if class_info.get("decorated"):
+            return None
+        if not self._class_layout_stable(class_name):
+            return None
+        static_name = class_info.get("class_value_name")
+        if not static_name:
+            return None
+        current = self.globals.get(class_name)
+        if current is None or current.name != static_name:
+            return None
+        return current
 
     def _emit_global_get(self, name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
@@ -8233,6 +8268,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for stmt in nodes:
             collector.visit(stmt)
         return collector.names
+
+    def _module_globals_dict_escapes(self, node: ast.Module) -> bool:
+        class GlobalsEscapeCollector(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.escaped = False
+
+            def visit_Call(self, call: ast.Call) -> None:
+                if (
+                    isinstance(call.func, ast.Name)
+                    and call.func.id in {"globals", "vars"}
+                    and not call.args
+                    and not call.keywords
+                ):
+                    self.escaped = True
+                    return
+                self.generic_visit(call)
+
+            def visit_Name(self, node: ast.Name) -> None:
+                if isinstance(node.ctx, ast.Load) and node.id in {"globals", "vars"}:
+                    self.escaped = True
+                    return
+
+        collector = GlobalsEscapeCollector()
+        collector.visit(node)
+        return collector.escaped
 
     def _collect_nonlocal_decls(self, nodes: list[ast.stmt]) -> set[str]:
         class NonlocalCollector(ast.NodeVisitor):
@@ -13661,6 +13721,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "custom_metaclass": has_metaclass_kw
                 or inherits_custom_meta
                 or dynamic_build,
+                "decorated": bool(other_decorators),
             }
         else:
             fields: dict[str, int] = {}
@@ -13813,6 +13874,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 custom_metaclass=has_metaclass_kw
                 or inherits_custom_meta
                 or dynamic_build,
+                decorated=bool(other_decorators),
             )
 
         method_names = {
@@ -16319,6 +16381,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._emit_module_attr_set(node.name, class_val)
             else:
                 self._store_local_value(node.name, class_val)
+
+        bound_class = self.globals.get(node.name)
+        if (
+            self.current_func_name == "molt_main"
+            and not decorator_vals
+            and not dynamic_build
+            and bound_class is not None
+            and bound_class.name == class_val.name
+            and not class_info.get("dataclass")
+        ):
+            class_info["class_value_name"] = class_val.name
+        else:
+            class_info.pop("class_value_name", None)
 
         self.class_annotation_items = prev_class_annotations
         self.class_annotation_exec_map = prev_class_exec_map
@@ -20053,6 +20128,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             class_id = None
             if func_id in self.classes:
                 class_id = func_id
+            if class_id is not None and target_info is not None:
+                class_value_name = self.classes[class_id].get("class_value_name")
+                if (
+                    class_value_name is not None
+                    and target_info.name != class_value_name
+                ):
+                    class_id = None
+                elif class_value_name is None and self.current_func_name == "molt_main":
+                    class_id = None
             if class_id is not None:
                 if imported_from:
                     class_ref = self._emit_module_attr_get_on(imported_from, class_id)
@@ -20072,11 +20156,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     return res
                 class_info = self.classes[class_id]
-                local_class = self._load_local_value(class_id)
-                if local_class is not None:
-                    class_ref = local_class
+                static_class_ref = self._current_module_static_class_ref(class_id)
+                if static_class_ref is not None:
+                    class_ref = static_class_ref
                 else:
-                    class_ref = self._emit_module_attr_get(class_id)
+                    local_class = self._load_local_value(class_id)
+                    if local_class is not None:
+                        class_ref = local_class
+                    else:
+                        class_ref = self._emit_module_attr_get(class_id)
                 if self._class_is_exception_subclass(class_id, class_info):
                     new_method = class_info.get("methods", {}).get("__new__")
                     if new_method is None:
