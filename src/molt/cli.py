@@ -566,6 +566,178 @@ def _build_args_has_json_flag(args: Sequence[str]) -> bool:
     return any(arg == "--json" for arg in args)
 
 
+_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 1
+_WRAPPER_BUILD_CACHE_ENV_KEYS = (
+    "MOLT_CAPABILITIES",
+    "MOLT_CAPABILITY_TIER",
+    "MOLT_HASH_SEED",
+    "MOLT_HERMETIC_MODULE_ROOTS",
+    "MOLT_MODULE_ROOTS",
+    "MOLT_TRUSTED",
+    "PYTHONHASHSEED",
+    "PYTHONPATH",
+)
+
+
+def _wrapper_build_cache_manifest_path(binary_path: Path) -> Path:
+    return binary_path.with_name(f"{binary_path.name}.molt-run-cache.json")
+
+
+def _wrapper_build_default_binary_path(
+    resolved_build_entry: _ResolvedBuildEntry,
+) -> Path:
+    output_base = _output_base_for_entry(
+        resolved_build_entry.entry_module,
+        resolved_build_entry.source_path,
+    )
+    return _default_molt_bin() / f"{output_base}_molt"
+
+
+def _wrapper_build_cache_semantic_env(env: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: env[key]
+        for key in _WRAPPER_BUILD_CACHE_ENV_KEYS
+        if key in env and env[key] != ""
+    }
+
+
+def _wrapper_build_cache_input(
+    *,
+    resolved_build_entry: _ResolvedBuildEntry,
+    build_args: Sequence[str],
+    env: Mapping[str, str],
+    project_root: Path,
+) -> tuple[dict[str, Any], str] | None:
+    source_path = resolved_build_entry.source_path
+    try:
+        resolved_source_path = source_path.resolve()
+    except OSError:
+        resolved_source_path = source_path
+    source_hash = _source_content_sha256(resolved_source_path)
+    if source_hash is None:
+        return None
+    payload: dict[str, Any] = {
+        "version": _WRAPPER_BUILD_CACHE_SCHEMA_VERSION,
+        "source_path": os.fspath(resolved_source_path),
+        "source_sha256": source_hash,
+        "entry_module": resolved_build_entry.entry_module,
+        "project_root": os.fspath(project_root.resolve()),
+        "build_args": list(build_args),
+        "semantic_env": _wrapper_build_cache_semantic_env(env),
+        "runtime_backend_fingerprint": _cache_fingerprint(),
+        "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
+        "python_cache_tag": sys.implementation.cache_tag,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return payload, hashlib.sha256(encoded).hexdigest()
+
+
+def _read_wrapper_build_cache_contract(
+    *,
+    resolved_build_entry: _ResolvedBuildEntry | None,
+    build_args: Sequence[str],
+    env: Mapping[str, str],
+    project_root: Path,
+) -> _WrapperBuildContract | None:
+    if resolved_build_entry is None:
+        return None
+    cache_input = _wrapper_build_cache_input(
+        resolved_build_entry=resolved_build_entry,
+        build_args=build_args,
+        env=env,
+        project_root=project_root,
+    )
+    if cache_input is None:
+        return None
+    _payload, cache_key = cache_input
+    cached_bin = _wrapper_build_default_binary_path(resolved_build_entry)
+    manifest_path = _wrapper_build_cache_manifest_path(cached_bin)
+    manifest = _read_cached_json_object(manifest_path)
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("version") != _WRAPPER_BUILD_CACHE_SCHEMA_VERSION
+        or manifest.get("cache_key") != cache_key
+        or manifest.get("consumer_output") != os.fspath(cached_bin)
+    ):
+        return None
+    if not cached_bin.exists():
+        return None
+    expected_binary_hash = manifest.get("binary_sha256")
+    if not isinstance(expected_binary_hash, str):
+        return None
+    try:
+        actual_binary_hash = _sha256_file(cached_bin)
+    except OSError:
+        return None
+    if actual_binary_hash != expected_binary_hash:
+        return None
+    raw_output = manifest.get("output")
+    if not isinstance(raw_output, str):
+        return None
+    artifacts: dict[str, Path] = {}
+    raw_artifacts = manifest.get("artifacts")
+    if isinstance(raw_artifacts, dict):
+        for key, value in raw_artifacts.items():
+            if isinstance(key, str) and isinstance(value, str):
+                artifacts[key] = Path(value)
+    bundle_root = manifest.get("bundle_root")
+    return _WrapperBuildContract(
+        output=Path(raw_output),
+        consumer_output=cached_bin,
+        bundle_root=Path(bundle_root) if isinstance(bundle_root, str) else None,
+        artifacts=artifacts,
+    )
+
+
+def _write_wrapper_build_cache_manifest(
+    *,
+    resolved_build_entry: _ResolvedBuildEntry | None,
+    build_args: Sequence[str],
+    env: Mapping[str, str],
+    project_root: Path,
+    contract: _WrapperBuildContract,
+) -> None:
+    if resolved_build_entry is None:
+        return
+    cached_bin = _wrapper_build_default_binary_path(resolved_build_entry)
+    try:
+        if contract.consumer_output.resolve() != cached_bin.resolve():
+            return
+    except OSError:
+        return
+    cache_input = _wrapper_build_cache_input(
+        resolved_build_entry=resolved_build_entry,
+        build_args=build_args,
+        env=env,
+        project_root=project_root,
+    )
+    if cache_input is None:
+        return
+    input_payload, cache_key = cache_input
+    try:
+        binary_hash = _sha256_file(cached_bin)
+    except OSError:
+        return
+    manifest: dict[str, Any] = {
+        "version": _WRAPPER_BUILD_CACHE_SCHEMA_VERSION,
+        "cache_key": cache_key,
+        "input": input_payload,
+        "binary_sha256": binary_hash,
+        "output": os.fspath(contract.output),
+        "consumer_output": os.fspath(contract.consumer_output),
+        "bundle_root": os.fspath(contract.bundle_root)
+        if contract.bundle_root is not None
+        else None,
+        "artifacts": {
+            key: os.fspath(value) for key, value in sorted(contract.artifacts.items())
+        },
+    }
+    _write_cached_json_object(
+        _wrapper_build_cache_manifest_path(cached_bin),
+        manifest,
+    )
+
+
 def _run_wrapper_build(
     *,
     file_path: str | None,
@@ -576,50 +748,17 @@ def _run_wrapper_build(
     json_output: bool,
     command: str,
     verbose: bool,
+    resolved_build_entry: _ResolvedBuildEntry | None = None,
 ) -> tuple[_WrapperBuildContract | None, float, int | None]:
-    # Fast-path: if the cached binary exists and is newer than the source,
-    # skip the build subprocess entirely. This brings `molt run` for
-    # unchanged files from ~20s to <1s (matching `go run` behaviour).
-    #
-    # The cache is keyed on a SHA-256 hash of the source file's absolute
-    # path to avoid cross-file poisoning when multiple source files share
-    # the same basename (e.g. pytest tempdirs all create `test_input.py`).
-    # Without this, two unrelated sources both named `test_input.py`
-    # would race for the same cache slot — the second compilation would
-    # overwrite the first's cached binary, then a third with stale-on-
-    # disk mtime semantics could pick up the wrong binary.  Using the
-    # absolute path as cache key is sufficient because the path is
-    # unique per source location, and the mtime check (below) handles
-    # in-place modification of the same file.
     if file_path and "--no-cache" not in build_args and "--rebuild" not in build_args:
-        _xdg = os.environ.get("XDG_CACHE_HOME")
-        _cache_root = (
-            Path(_xdg) / "molt" if _xdg else Path.home() / "Library" / "Caches" / "molt"
+        cached_contract = _read_wrapper_build_cache_contract(
+            resolved_build_entry=resolved_build_entry,
+            build_args=build_args,
+            env=env,
+            project_root=project_root,
         )
-        if _cache_root is not None:
-            import hashlib as _hashlib
-
-            try:
-                _abs_path = str(Path(file_path).resolve())
-            except OSError:
-                _abs_path = file_path
-            _path_digest = _hashlib.sha256(_abs_path.encode("utf-8")).hexdigest()[:16]
-            stem = Path(file_path).stem
-            cached_bin = _cache_root / "home" / "bin" / f"{stem}_{_path_digest}_molt"
-            if cached_bin.exists():
-                try:
-                    src_mtime = Path(file_path).stat().st_mtime
-                    bin_mtime = cached_bin.stat().st_mtime
-                    if bin_mtime > src_mtime:
-                        contract = _WrapperBuildContract(
-                            output=cached_bin,
-                            consumer_output=cached_bin,
-                            bundle_root=None,
-                            artifacts={},
-                        )
-                        return contract, 0.0, None
-                except OSError:
-                    pass
+        if cached_contract is not None:
+            return cached_contract, 0.0, None
 
     # Show progress when building (no silent hangs).
     if not json_output and not verbose:
@@ -680,6 +819,15 @@ def _run_wrapper_build(
     if contract_error is not None:
         return None, duration, contract_error
     assert contract is not None
+    if file_path and "--no-cache" not in build_args and "--rebuild" not in build_args:
+        with contextlib.suppress(OSError):
+            _write_wrapper_build_cache_manifest(
+                resolved_build_entry=resolved_build_entry,
+                build_args=build_args,
+                env=env,
+                project_root=project_root,
+                contract=contract,
+            )
     if not json_output:
         _emit_wrapper_build_success_signals(payload)
         # Forward compilation warnings (SyntaxWarning, DeprecationWarning)
@@ -1614,6 +1762,66 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _stat_ctime_ns(stat: os.stat_result) -> int:
+    ctime_ns = getattr(stat, "st_ctime_ns", None)
+    if isinstance(ctime_ns, int):
+        return ctime_ns
+    return int(stat.st_ctime * 1_000_000_000)
+
+
+@functools.lru_cache(maxsize=16384)
+def _source_content_sha256_cached(
+    path_str: str,
+    size: int,
+    mtime_ns: int,
+    ctime_ns: int,
+    inode: int,
+) -> str | None:
+    del size, mtime_ns, ctime_ns, inode
+    try:
+        return _sha256_file(Path(path_str))
+    except OSError:
+        return None
+
+
+def _source_content_sha256(
+    path: Path,
+    path_stat: os.stat_result | None = None,
+) -> str | None:
+    if path_stat is None:
+        try:
+            path_stat = path.stat()
+        except OSError:
+            return None
+    try:
+        path_str = os.fspath(path.resolve())
+    except OSError:
+        path_str = os.fspath(path)
+    return _source_content_sha256_cached(
+        path_str,
+        path_stat.st_size,
+        path_stat.st_mtime_ns,
+        _stat_ctime_ns(path_stat),
+        int(getattr(path_stat, "st_ino", 0) or 0),
+    )
+
+
+def _payload_source_matches(
+    payload: Mapping[str, Any],
+    path: Path,
+    path_stat: os.stat_result,
+) -> bool:
+    expected_hash = payload.get("source_sha256")
+    if not isinstance(expected_hash, str) or not expected_hash:
+        return False
+    if (
+        payload.get("size") != path_stat.st_size
+        or payload.get("mtime_ns") != path_stat.st_mtime_ns
+    ):
+        return False
+    return _source_content_sha256(path, path_stat) == expected_hash
 
 
 def _runtime_wasm_integrity_sidecar_path(path: Path) -> Path:
@@ -7265,8 +7473,10 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 2
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 2
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 3
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 3
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 3
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
 
 
 @functools.lru_cache(maxsize=1024)
@@ -13333,6 +13543,7 @@ def _module_analysis_cache_path(
         module_name,
         package_kind,
         kind,
+        _cache_tooling_fingerprint(),
     )
     return root / f"{path.stem}.{cache_key}.json"
 
@@ -13427,11 +13638,13 @@ def _read_persisted_module_graph(
         path_text = item.get("path")
         size = item.get("size")
         mtime_ns = item.get("mtime_ns")
+        source_sha256 = item.get("source_sha256")
         if (
             not isinstance(module_name, str)
             or not isinstance(path_text, str)
             or not isinstance(size, int)
             or not isinstance(mtime_ns, int)
+            or not isinstance(source_sha256, str)
         ):
             return None
         path = Path(path_text)
@@ -13445,7 +13658,11 @@ def _read_persisted_module_graph(
             dirty_modules.add(module_name)
             graph[module_name] = path
             continue
-        if stat.st_size != size or stat.st_mtime_ns != mtime_ns:
+        if (
+            stat.st_size != size
+            or stat.st_mtime_ns != mtime_ns
+            or _source_content_sha256(path, stat) != source_sha256
+        ):
             dirty_modules.add(module_name)
         graph[module_name] = path
     raw_explicit_imports = payload.get("explicit_imports", [])
@@ -13476,12 +13693,16 @@ def _write_persisted_module_graph(
     modules: list[dict[str, Any]] = []
     for module_name, path in sorted(graph.items()):
         stat = path.stat()
+        source_sha256 = _source_content_sha256(path, stat)
+        if source_sha256 is None:
+            return
         modules.append(
             {
                 "module": module_name,
                 "path": str(path),
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
+                "source_sha256": source_sha256,
             }
         )
     payload = {
@@ -13538,10 +13759,7 @@ def _read_persisted_import_scan(
         isinstance(item, str) for item in imports
     ):
         return None
-    if (
-        payload.get("size") != path_stat.st_size
-        or payload.get("mtime_ns") != path_stat.st_mtime_ns
-    ):
+    if not _payload_source_matches(payload, path, path_stat):
         return None
     return tuple(imports)
 
@@ -13563,6 +13781,9 @@ def _write_persisted_import_scan(
         include_nested=include_nested,
     )
     stat = path.stat()
+    source_sha256 = _source_content_sha256(path, stat)
+    if source_sha256 is None:
+        return
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": _cache_tooling_fingerprint(),
@@ -13571,6 +13792,7 @@ def _write_persisted_import_scan(
         "include_nested": include_nested,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
+        "source_sha256": source_sha256,
         "imports": list(imports),
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -13595,6 +13817,11 @@ def _read_persisted_module_analysis(
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
         return None
+    if (
+        payload.get("version") != _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION
+        or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+    ):
+        return None
     raw_defaults = payload.get("func_defaults")
     if not isinstance(raw_defaults, dict):
         return None
@@ -13604,10 +13831,7 @@ def _read_persisted_module_analysis(
                 path_stat = path.stat()
             except OSError:
                 return None
-        if (
-            payload.get("size") != path_stat.st_size
-            or payload.get("mtime_ns") != path_stat.st_mtime_ns
-        ):
+        if not _payload_source_matches(payload, path, path_stat):
             return None
     cached_imports: tuple[str, ...] | None = None
     raw_imports = payload.get("imports")
@@ -13644,12 +13868,17 @@ def _write_persisted_module_analysis(
         is_package=is_package,
     )
     stat = path.stat()
+    source_sha256 = _source_content_sha256(path, stat)
+    if source_sha256 is None:
+        return
     payload: dict[str, Any] = {
-        "version": 1,
+        "version": _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
+        "compiler_fingerprint": _cache_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
+        "source_sha256": source_sha256,
         "func_defaults": func_defaults,
     }
     if imports is not None:
@@ -22250,7 +22479,10 @@ def _read_persisted_module_lowering(
     payload = _read_cached_json_object(cache_path)
     if payload is None:
         return None
-    if not isinstance(payload, dict) or payload.get("version") != 1:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != _MODULE_LOWERING_CACHE_SCHEMA_VERSION
+    ):
         return None
     if payload.get("context_digest") != context_digest:
         return None
@@ -22259,10 +22491,7 @@ def _read_persisted_module_lowering(
             path_stat = path.stat()
         except OSError:
             return None
-    if (
-        payload.get("size") != path_stat.st_size
-        or payload.get("mtime_ns") != path_stat.st_mtime_ns
-    ):
+    if not _payload_source_matches(payload, path, path_stat):
         return None
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
@@ -22292,11 +22521,15 @@ def _write_persisted_module_lowering(
         is_package=is_package,
     )
     stat = path.stat()
+    source_sha256 = _source_content_sha256(path, stat)
+    if source_sha256 is None:
+        return
     payload = {
-        "version": 1,
+        "version": _MODULE_LOWERING_CACHE_SCHEMA_VERSION,
         "context_digest": context_digest,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
+        "source_sha256": source_sha256,
         "result": result,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -26473,6 +26706,7 @@ def _run_script_cross(
             json_output=json_output,
             command="run",
             verbose=verbose,
+            resolved_build_entry=resolved_build_entry,
         )
     finally:
         if capabilities_tmp is not None:
@@ -26647,6 +26881,7 @@ def _deploy(
         json_output=json_output,
         command="deploy",
         verbose=verbose,
+        resolved_build_entry=resolved_build_entry,
     )
     if build_error is not None:
         return build_error
@@ -26851,6 +27086,7 @@ def run_script(
             json_output=json_output,
             command="run",
             verbose=verbose,
+            resolved_build_entry=resolved_build_entry,
         )
     finally:
         if capabilities_tmp is not None:
