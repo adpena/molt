@@ -101,17 +101,46 @@ fn typed_slot_store(op: &TirOp) -> Option<(ValueId, i64)> {
     Some((op.operands[0], store_offset(op)?))
 }
 
-fn transparent_alias_source(op: &TirOp) -> Option<ValueId> {
-    if !matches!(op.opcode, OpCode::Copy | OpCode::TypeGuard) {
+fn copy_is_known_local_alias(op: &TirOp) -> bool {
+    match op.attrs.get("_original_kind") {
+        None => true,
+        Some(AttrValue::Str(kind)) => matches!(
+            kind.as_str(),
+            "copy" | "copy_var" | "store_var" | "load_var" | "identity_alias"
+        ),
+        Some(_) => false,
+    }
+}
+
+fn transparent_alias_root(op: &TirOp, aliases: &AliasState) -> Option<ValueId> {
+    if op.results.is_empty() {
         return None;
     }
-    if op.attrs.contains_key("_original_kind") {
-        return None;
+
+    match op.opcode {
+        OpCode::TypeGuard => {
+            if op.attrs.contains_key("_original_kind") || op.operands.len() != 1 {
+                return None;
+            }
+            Some(aliases.root(op.operands[0]))
+        }
+        OpCode::Copy => {
+            if !copy_is_known_local_alias(op) || op.operands.is_empty() {
+                return None;
+            }
+            let root = aliases.root(op.operands[0]);
+            if op
+                .operands
+                .iter()
+                .all(|operand| aliases.root(*operand) == root)
+            {
+                Some(root)
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
-    if op.operands.len() != 1 || op.results.is_empty() {
-        return None;
-    }
-    Some(op.operands[0])
 }
 
 fn stack_object_alloc_result(op: &TirOp) -> Option<ValueId> {
@@ -151,10 +180,9 @@ impl AliasState {
     }
 
     fn record_transparent_aliases(&mut self, op: &TirOp) {
-        let Some(source) = transparent_alias_source(op) else {
+        let Some(root) = transparent_alias_root(op, self) else {
             return;
         };
-        let root = self.root(source);
         for result in &op.results {
             self.parent.insert(*result, root);
         }
@@ -200,7 +228,7 @@ fn may_observe_slot(op: &TirOp, root: ValueId, aliases: &AliasState) -> bool {
         | OpCode::BuildSlice
         | OpCode::AllocTask => true,
         // Transparent aliases and ref ops do not read slot values.
-        OpCode::Copy | OpCode::TypeGuard if transparent_alias_source(op).is_some() => false,
+        OpCode::Copy | OpCode::TypeGuard if transparent_alias_root(op, aliases).is_some() => false,
         OpCode::IncRef | OpCode::DecRef | OpCode::CheckException => false,
         // Default: conservative - treat any other use as observation.
         _ => true,
@@ -742,6 +770,54 @@ mod tests {
                 .iter()
                 .all(|op| op.opcode != OpCode::StoreAttr),
             "all typed-slot stores should be removed"
+        );
+    }
+
+    /// Real lowered bench_struct shape after copy propagation: local
+    /// store/load transport can arrive as a Copy with duplicate operands
+    /// before the aliased object result. That copy is still transparent;
+    /// treating it as an observer keeps every slot store live and prevents
+    /// cleanup DCE from removing the now-unused stack allocation.
+    #[test]
+    fn duplicate_operand_copy_alias_does_not_block_stack_store_elim() {
+        let mut func = entry_only_func();
+        let cls = ValueId(0);
+        let zero = ValueId(1);
+        let i = ValueId(2);
+        let i_plus_1 = ValueId(3);
+        let inst = ValueId(4);
+        let alias = ValueId(5);
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_object_alloc(OpCode::ObjectNewBoundStack, cls, inst));
+        entry
+            .ops
+            .push(make_store(vec![inst, zero], 0, "store_init"));
+        entry
+            .ops
+            .push(make_store(vec![inst, zero], 8, "store_init"));
+        entry
+            .ops
+            .push(make_op(OpCode::Copy, vec![inst, inst], vec![alias]));
+        entry.ops.push(make_store(vec![alias, i], 0, "store"));
+        entry
+            .ops
+            .push(make_store(vec![alias, i_plus_1], 8, "store"));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+        assert_eq!(
+            stats.ops_removed, 4,
+            "duplicate-operand local copy must remain a transparent alias so all stack-local stores die"
+        );
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .all(|op| op.opcode != OpCode::StoreAttr),
+            "all typed-slot stores should be removed through the copy alias"
         );
     }
 
