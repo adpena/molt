@@ -23,9 +23,12 @@ This file is forward-looking only.
    gate instead of relying on backend-internal proof alone.
 5. Finish consolidating setup, doctor, validate, and thin-wrapper behavior into
    one coherent CLI-first DX surface.
-6. Make performance reporting and compatibility reporting generator-owned
+6. Keep Python `3.12`/`3.13`/`3.14` target-version gates explicit across CLI,
+   pyproject/UV-oriented workflows, frontend caches, backend caches, and runtime
+   bootstrap evidence.
+7. Make performance reporting and compatibility reporting generator-owned
    instead of manually synchronized across multiple docs.
-7. Drive the Luau target from checked source emission to full current/future
+8. Drive the Luau target from checked source emission to full current/future
    Luau parity coverage, with generated OpIR support evidence and no silent
    semantic stubs.
 
