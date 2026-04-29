@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from collections.abc import Callable, Mapping, Sequence
+import contextlib
+from dataclasses import dataclass
+import os
+import signal
+import subprocess
+import sys
+import time
+
+
+DEFAULT_MAX_RSS_GB = 25.0
+DEFAULT_POLL_INTERVAL_SEC = 1.0
+GUARD_RETURN_CODE = 137
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessSample:
+    pid: int
+    ppid: int
+    rss_kb: int
+    command: str
+
+
+@dataclass(frozen=True, slots=True)
+class RssViolation:
+    pid: int
+    rss_kb: int
+    command: str
+
+    @property
+    def rss_gb(self) -> float:
+        return self.rss_kb / (1024 * 1024)
+
+
+@dataclass(frozen=True, slots=True)
+class GuardResult:
+    returncode: int
+    violation: RssViolation | None
+    stdout: str
+    stderr: str
+
+
+def parse_process_table(text: str) -> dict[int, ProcessSample]:
+    samples: dict[int, ProcessSample] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid_text, ppid_text, rss_text, command = parts
+        try:
+            pid = int(pid_text)
+            ppid = int(ppid_text)
+            rss_kb = int(rss_text)
+        except ValueError:
+            continue
+        samples[pid] = ProcessSample(
+            pid=pid,
+            ppid=ppid,
+            rss_kb=rss_kb,
+            command=command,
+        )
+    return samples
+
+
+def sample_processes() -> dict[int, ProcessSample]:
+    result = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,rss=,command="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    return parse_process_table(result.stdout)
+
+
+def descendant_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[int]:
+    descendants = {root_pid}
+    changed = True
+    while changed:
+        changed = False
+        for sample in samples.values():
+            if sample.pid in descendants:
+                continue
+            if sample.ppid in descendants:
+                descendants.add(sample.pid)
+                changed = True
+    return descendants
+
+
+def find_rss_violation(
+    samples: Mapping[int, ProcessSample],
+    *,
+    root_pid: int,
+    max_rss_kb: int,
+) -> RssViolation | None:
+    descendants = descendant_pids(samples, root_pid)
+    candidates = [
+        sample
+        for pid, sample in samples.items()
+        if pid in descendants and sample.rss_kb > max_rss_kb
+    ]
+    if not candidates:
+        return None
+    worst = max(candidates, key=lambda sample: sample.rss_kb)
+    return RssViolation(
+        pid=worst.pid,
+        rss_kb=worst.rss_kb,
+        command=worst.command,
+    )
+
+
+def max_rss_kb_from_gb(value: float) -> int:
+    if value <= 0:
+        raise ValueError("max RSS must be greater than 0 GB")
+    if value >= 30:
+        raise ValueError("max RSS must stay below 30 GB")
+    return int(value * 1024 * 1024)
+
+
+def _terminate_process_group(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGTERM)
+        return
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return
+        except OSError:
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def run_guarded(
+    command: Sequence[str],
+    *,
+    max_rss_kb: int,
+    poll_interval: float,
+    sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
+    capture_output: bool = True,
+) -> GuardResult:
+    if not command:
+        raise ValueError("command is required")
+    if poll_interval <= 0:
+        raise ValueError("poll interval must be greater than 0")
+    proc = subprocess.Popen(
+        list(command),
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+        text=True,
+        start_new_session=True,
+    )
+    violation: RssViolation | None = None
+    while proc.poll() is None:
+        violation = find_rss_violation(
+            sampler(),
+            root_pid=proc.pid,
+            max_rss_kb=max_rss_kb,
+        )
+        if violation is not None:
+            _terminate_process_group(proc.pid)
+            break
+        time.sleep(poll_interval)
+    stdout, stderr = proc.communicate()
+    returncode = proc.returncode
+    if violation is not None:
+        returncode = GUARD_RETURN_CODE
+    return GuardResult(
+        returncode=returncode,
+        violation=violation,
+        stdout=stdout or "",
+        stderr=stderr or "",
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run a command with a process-tree RSS ceiling."
+    )
+    parser.add_argument(
+        "--max-rss-gb",
+        type=float,
+        default=DEFAULT_MAX_RSS_GB,
+        help=(
+            "Abort if any child process exceeds this RSS; must be <30 "
+            f"(default: {DEFAULT_MAX_RSS_GB})."
+        ),
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=DEFAULT_POLL_INTERVAL_SEC,
+        help=(
+            "Process sampling interval in seconds "
+            f"(default: {DEFAULT_POLL_INTERVAL_SEC})."
+        ),
+    )
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print("memory_guard: command is required", file=sys.stderr)
+        return 2
+    try:
+        max_rss_kb = max_rss_kb_from_gb(args.max_rss_gb)
+        poll_interval = float(args.poll_interval)
+        if poll_interval <= 0:
+            raise ValueError("poll interval must be greater than 0")
+    except ValueError as exc:
+        print(f"memory_guard: {exc}", file=sys.stderr)
+        return 2
+    result = run_guarded(
+        command,
+        max_rss_kb=max_rss_kb,
+        poll_interval=poll_interval,
+        capture_output=False,
+    )
+    if result.violation is not None:
+        print(
+            "memory_guard: RSS limit exceeded: "
+            f"pid={result.violation.pid} "
+            f"rss={result.violation.rss_gb:.2f}GB "
+            f"limit={args.max_rss_gb:.2f}GB "
+            f"command={result.violation.command}",
+            file=sys.stderr,
+        )
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
