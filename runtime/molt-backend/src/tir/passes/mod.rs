@@ -38,25 +38,35 @@ pub struct PassStats {
     pub ops_added: usize,
 }
 
+/// Generous upper bound on the number of pass stats produced per pipeline
+/// run. Used purely as a `Vec::with_capacity` hint to avoid reallocations
+/// in the hot pipeline path. The pipeline body (the `run_pass!` invocations
+/// in [`run_pipeline`]) is the source of truth for the actual pass count;
+/// this hint only needs to be safely-too-large, never exact.
+pub const PIPELINE_PASS_CAPACITY_HINT: usize = 32;
+
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// 25 passes organized in 6 phases (all unconditional unless skipped via
-/// `MOLT_TIR_SKIP=name1,name2,…`):
+/// Passes are unconditional unless individually skipped via
+/// `MOLT_TIR_SKIP=name1,name2,…`. The body of this function is the
+/// canonical source of truth for pass identity and ordering — refer to
+/// the inline phase headers below rather than any hand-counted summary.
 ///
-/// **Lowering** (5): range_devirt → iter_devirt → tuple_scalarize →
-///   loop_narrow → loop_unroll
-/// **Canonicalization** (4): canonicalize (pre-type) → unboxing →
-///   block_versioning → canonicalize_post
-/// **Redundancy** (2): gvn → licm
-/// **Memory** (3): escape_analysis → refcount_elim → reuse_analysis
-/// **Value** (8): type_guard_hoist → sccp → strength_reduction → fast_math →
-///   branchless_count → bce → vectorize → polyhedral
-/// **Cleanup** (3): check_exception_elim → copy_prop → dce
+/// Phase ordering rationale:
 ///
-/// Dual canonicalization follows LLVM instcombine: unboxing reveals type
-/// information that creates new normalization opportunities. GVN runs
-/// after canonicalization ensures a single representation per pattern.
-/// LICM runs after GVN so hoisted values are already deduplicated.
+/// * **Lowering** devirtualizes iterators/ranges and unrolls fixed-trip
+///   loops, exposing concrete control flow to later phases.
+/// * **Canonicalization** runs twice (LLVM instcombine pattern): once
+///   pre-type, once post-unboxing, so unboxed identity/absorbing patterns
+///   are normalized.
+/// * **Redundancy** (GVN, LICM) runs after canonicalization so equivalent
+///   ops share a single representation, and after type info is settled so
+///   hoisted/deduplicated values reflect their final type.
+/// * **Memory** (escape, refcount, reuse, dead-store) runs after
+///   redundancy so eliminated stores/allocs are already deduplicated.
+/// * **Value** specialization runs late so it sees the final type lattice.
+/// * **Cleanup** (check-exception elim, copy-prop, DCE) runs last so it
+///   sweeps everything earlier phases left dead.
 ///
 /// If the optimized function violates TIR invariants, this is a compiler bug
 /// and the pipeline panics immediately. Zero-delta pipelines still return
@@ -66,7 +76,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     // lower the original IR structurally without pass-induced metadata drift.
     let snapshot = func.clone();
 
-    let mut stats = Vec::with_capacity(24);
+    let mut stats = Vec::with_capacity(PIPELINE_PASS_CAPACITY_HINT);
 
     // Each pass can be individually disabled for debugging:
     //   MOLT_TIR_SKIP=unboxing,sccp,dce (comma-separated pass names)

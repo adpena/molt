@@ -1872,10 +1872,13 @@ fn main() -> io::Result<()> {
         ir.tree_shake_luau();
     }
 
-    // Run the full TIR optimization pipeline for Luau — same 14 passes that
+    // Run the full TIR optimization pipeline for Luau — same passes the
     // native and WASM backends get (refine_types → run_pipeline → refine_types).
-    // Without this, the Luau backend was operating on unoptimized SimpleIR,
-    // missing unboxing, escape analysis, SCCP, strength reduction, BCE, DCE etc.
+    // Without this, the Luau backend would be operating on unoptimized
+    // SimpleIR, missing unboxing, escape analysis, SCCP, strength reduction,
+    // BCE, DCE etc. Pipeline contents are documented in
+    // `tir::passes::run_pipeline`; do not enumerate the count here so this
+    // comment can't go stale when passes are added.
     if is_luau {
         let tir_start = Instant::now();
         let mut tir_count = 0usize;
