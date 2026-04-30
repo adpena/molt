@@ -42,8 +42,6 @@ macro_rules! with_gil_entry {
         // GilGuard::new() is cfg-dispatched: a real lock on non-wasm32,
         // a zero-cost no-op struct on wasm32.
         let _gil_guard = $crate::concurrency::GilGuard::new();
-        #[cfg(miri)]
-        let _miri_nursery_guard = $crate::object::NurserySuspendGuard::new();
         let $py = _gil_guard.token();
         let $py = &$py;
 
@@ -104,8 +102,6 @@ macro_rules! with_gil_entry {
 macro_rules! with_gil_entry_nopanic {
     ($py:ident, $body:block) => {{
         let _gil_guard = $crate::concurrency::GilGuard::new();
-        #[cfg(miri)]
-        let _miri_nursery_guard = $crate::object::NurserySuspendGuard::new();
         let $py = _gil_guard.token();
         let $py = &$py;
         $body

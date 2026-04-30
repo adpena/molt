@@ -140,7 +140,6 @@ pub extern "C" fn molt_type_new(
     kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "type.__new__ expects type");
@@ -385,9 +384,6 @@ pub extern "C" fn molt_type_new(
         if bases_owned {
             dec_ref_bits(_py, bases_tuple_bits);
         }
-        if !kwargs_obj.is_none() {
-            dec_ref_bits(_py, kwargs_bits);
-        }
         class_bits
     })
 }
@@ -401,9 +397,7 @@ pub extern "C" fn molt_type_init(
     kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if !obj_from_bits(kwargs_bits).is_none() {
-            dec_ref_bits(_py, kwargs_bits);
-        }
+        let _ = kwargs_bits;
         MoltObject::none().bits()
     })
 }
@@ -550,10 +544,7 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
 /// All other guards (cls_bits validity, type_id check, builtin
 /// safety check) match the unsized entry point exactly.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_object_new_bound_sized(
-    cls_bits: u64,
-    payload_size_bytes: u64,
-) -> u64 {
+pub extern "C" fn molt_object_new_bound_sized(cls_bits: u64, payload_size_bytes: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
@@ -707,7 +698,6 @@ fn compute_mro(class_bits: u64, bases: &[u64]) -> Option<Vec<u64>> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -6131,4 +6121,109 @@ pub(crate) fn types_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MoltHeader, maybe_ptr_from_bits};
+    use std::sync::Once;
+    use std::sync::atomic::Ordering;
+
+    static INIT: Once = Once::new();
+
+    fn init_runtime() {
+        INIT.call_once(|| {
+            assert_ne!(crate::lifecycle::init(), 0);
+        });
+        let _ = crate::molt_exception_clear();
+    }
+
+    unsafe fn ref_count(bits: u64) -> u32 {
+        let ptr = maybe_ptr_from_bits(bits).expect("expected heap object");
+        let header = unsafe { ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader };
+        unsafe { (*header).ref_count.load(Ordering::Acquire) }
+    }
+
+    #[test]
+    fn type_new_borrows_kwargs_dict() {
+        init_runtime();
+
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let builtins = builtin_classes(_py);
+                let name_ptr = alloc_string(_py, b"KwargsBorrowedTypeNew");
+                assert!(!name_ptr.is_null());
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                let bases_ptr = alloc_tuple(_py, &[builtins.object]);
+                assert!(!bases_ptr.is_null());
+                let bases_bits = MoltObject::from_ptr(bases_ptr).bits();
+                let ns_ptr = alloc_dict_with_pairs(_py, &[]);
+                assert!(!ns_ptr.is_null());
+                let ns_bits = MoltObject::from_ptr(ns_ptr).bits();
+                let kwargs_ptr = alloc_dict_with_pairs(_py, &[]);
+                assert!(!kwargs_ptr.is_null());
+                let kwargs_bits = MoltObject::from_ptr(kwargs_ptr).bits();
+                inc_ref_bits(_py, kwargs_bits);
+                let before = ref_count(kwargs_bits);
+
+                let cls_bits = molt_type_new(
+                    builtins.type_obj,
+                    name_bits,
+                    bases_bits,
+                    ns_bits,
+                    kwargs_bits,
+                );
+
+                assert!(
+                    !exception_pending(_py),
+                    "type.__new__ with empty kwargs left an exception pending"
+                );
+                assert_eq!(
+                    ref_count(kwargs_bits),
+                    before,
+                    "type.__new__ must borrow kwargs; caller owns argument cleanup"
+                );
+
+                dec_ref_bits(_py, cls_bits);
+                dec_ref_bits(_py, kwargs_bits);
+                dec_ref_bits(_py, kwargs_bits);
+                dec_ref_bits(_py, ns_bits);
+                dec_ref_bits(_py, bases_bits);
+                dec_ref_bits(_py, name_bits);
+            }
+        });
+    }
+
+    #[test]
+    fn type_init_borrows_kwargs_dict() {
+        init_runtime();
+
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let kwargs_ptr = alloc_dict_with_pairs(_py, &[]);
+                assert!(!kwargs_ptr.is_null());
+                let kwargs_bits = MoltObject::from_ptr(kwargs_ptr).bits();
+                inc_ref_bits(_py, kwargs_bits);
+                let before = ref_count(kwargs_bits);
+
+                let result = molt_type_init(
+                    MoltObject::none().bits(),
+                    MoltObject::none().bits(),
+                    MoltObject::none().bits(),
+                    MoltObject::none().bits(),
+                    kwargs_bits,
+                );
+
+                assert!(obj_from_bits(result).is_none());
+                assert_eq!(
+                    ref_count(kwargs_bits),
+                    before,
+                    "type.__init__ must borrow kwargs; caller owns argument cleanup"
+                );
+                dec_ref_bits(_py, kwargs_bits);
+                dec_ref_bits(_py, kwargs_bits);
+            }
+        });
+    }
 }

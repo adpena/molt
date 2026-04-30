@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
-use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
+use super::{
+    runtime_reset_for_init, runtime_teardown, runtime_teardown_for_process_exit, touch_tls_guard,
+};
 
 use crate::IoPoller;
 use crate::ProcessTaskState;
@@ -13,8 +15,7 @@ use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::{
     AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, InternedNames,
-    MethodCache, MoltObject, MoltScheduler, OBJECT_POOL_BUCKETS, PtrSlot, PyToken, SleepQueue,
-    default_cancel_tokens,
+    MethodCache, MoltObject, MoltScheduler, PtrSlot, PyToken, SleepQueue, default_cancel_tokens,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ThreadPool, ThreadTaskState, sleep_worker};
@@ -194,7 +195,6 @@ pub(crate) struct RuntimeState {
     pub(crate) argv: Mutex<Vec<Vec<u8>>>,
     pub(crate) sys_version_info: Mutex<Option<PythonVersionInfo>>,
     pub(crate) sys_version: Mutex<Option<String>>,
-    pub(crate) object_pool: Mutex<Vec<Vec<PtrSlot>>>,
     pub(crate) hash_secret: OnceLock<HashSecret>,
     pub(crate) profile_enabled: OnceLock<bool>,
     pub(crate) utf8_index_cache: Mutex<Utf8CacheStore>,
@@ -270,7 +270,6 @@ impl RuntimeState {
             argv: Mutex::new(Vec::new()),
             sys_version_info: Mutex::new(None),
             sys_version: Mutex::new(None),
-            object_pool: Mutex::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]),
             hash_secret: OnceLock::new(),
             profile_enabled: OnceLock::new(),
             utf8_index_cache: Mutex::new(Utf8CacheStore::new()),
@@ -474,18 +473,32 @@ fn trace_runtime_init(stage: &str) {
     }
 }
 
-/// Clean process exit — flushes IO and calls `_exit(0)`.
+/// Clean executable process exit.
 ///
-/// Skips C-level global destructors and TLS teardown that cause
-/// intermittent SIGSEGV during process exit. Same approach as CPython.
-///
-/// `_code_bits` is the NaN-boxed exit code (ignored — always exits 0).
+/// Runs Python-level process-exit finalization once, then calls `_exit` so C
+/// global destructors and Rust/TLS destructors cannot race runtime allocator
+/// state. Explicit embedding teardown remains `molt_runtime_shutdown()`.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_runtime_exit(_code_bits: u64) -> u64 {
-    // Flush all C stdio buffers (stdout, stderr).
+pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
+    let code = match code_bits {
+        0 => 0,
+        1 => 1,
+        other if other <= i32::MAX as u64 => other as i32,
+        _ => 1,
+    };
+    if !PROCESS_EXIT_FINALIZED.swap(true, AtomicOrdering::SeqCst) {
+        let _guard = runtime_state_lock().lock().unwrap();
+        let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
+        if !ptr.is_null() {
+            let state = unsafe { &*ptr };
+            let gil = GilGuard::new();
+            let py = gil.token();
+            runtime_teardown_for_process_exit(&py, state);
+            drop(gil);
+        }
+    }
     unsafe { libc::fflush(std::ptr::null_mut()) };
-    // Hard exit — no destructors, no TLS teardown.
-    unsafe { libc::_exit(0) }
+    unsafe { libc::_exit(code) }
 }
 
 #[unsafe(no_mangle)]
@@ -616,6 +629,7 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
 
 static RUNTIME_STATE_PTR: AtomicPtr<RuntimeState> = AtomicPtr::new(std::ptr::null_mut());
 static RUNTIME_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static PROCESS_EXIT_FINALIZED: AtomicBool = AtomicBool::new(false);
 /// Set to `true` after `molt_runtime_shutdown` completes.  Prevents
 /// `molt_runtime_init` from re-allocating state during process exit.
 static RUNTIME_SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);

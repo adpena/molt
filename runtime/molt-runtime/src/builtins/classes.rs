@@ -799,7 +799,6 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     let gil = GilGuard::new();
     let py = gil.token();
     let _guard = runtime_state_lock().lock().unwrap();
-    let _nursery_guard = crate::object::NurserySuspendGuard::new();
     let state = runtime_state(&py);
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if !ptr.is_null() {

@@ -88,10 +88,7 @@ unsafe fn max_slot_end_from_mro_offsets(
 /// `class_ptr`.  This involves MRO walks, dict probes and name interning so
 /// it is expensive.  Callers in hot loops should cache the result (e.g. via
 /// the call-bind IC `cached_alloc_size` field).
-pub(crate) unsafe fn class_layout_size_cached(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-) -> usize {
+pub(crate) unsafe fn class_layout_size_cached(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
     unsafe { class_layout_size(_py, class_ptr) }
 }
 
@@ -210,7 +207,7 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let size = class_layout_size(_py, class_ptr);
         let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -253,7 +250,7 @@ pub(crate) unsafe fn alloc_instance_for_class_sized(
         );
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let total_size = payload_size_bytes + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }

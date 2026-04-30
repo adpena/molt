@@ -24,9 +24,7 @@ pub extern "C" fn molt_handle_resolve(bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::molt_handle_resolve;
-    use crate::{
-        MoltHeader, MoltObject, TYPE_ID_OBJECT, alloc_object_zeroed_with_pool, object::dec_ref_ptr,
-    };
+    use crate::{MoltHeader, MoltObject, TYPE_ID_OBJECT, alloc_object_zeroed, object::dec_ref_ptr};
 
     #[test]
     fn handle_resolve_is_gil_free_for_pointer_bits() {
@@ -35,7 +33,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let total_size = std::mem::size_of::<MoltHeader>() + 8;
         let (ptr, bits) = crate::with_gil_entry_nopanic!(_py, {
-            let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+            let ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
             assert!(!ptr.is_null());
             let bits = MoltObject::from_ptr(ptr).bits();
             (ptr, bits)
