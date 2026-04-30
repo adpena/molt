@@ -17121,6 +17121,7 @@ def _render_native_main_stub(
 extern unsigned long long molt_runtime_init();
 extern void molt_runtime_ensure_gil();
 extern unsigned long long molt_runtime_shutdown();
+extern unsigned long long molt_runtime_exit(unsigned long long code);
 extern void molt_set_argv(int argc, const char** argv);
 #ifdef _WIN32
 extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
@@ -17163,18 +17164,14 @@ static int molt_finish() {
         molt_raise(exc);
         molt_frame_pop();  /* pop frame after traceback formatting */
         molt_dec_ref_obj(exc);
-        molt_runtime_shutdown();
-        /* Bypass TLS/atexit destructor cleanup — runtime teardown already
-           released all resources.  Returning normally would let Rust's
-           thread-local destructors and mimalloc's atexit handler run,
-           which can deadlock or crash on macOS/Linux. */
+        molt_runtime_exit(1);
         _Exit(1);
     }
     const char* profile = getenv("MOLT_PROFILE");
     if (profile != NULL && profile[0] != '\\0' && strcmp(profile, "0") != 0) {
         molt_profile_dump();
     }
-    molt_runtime_shutdown();
+    molt_runtime_exit(0);
     _Exit(0);
 }
 

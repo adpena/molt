@@ -567,13 +567,7 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
-    // Suspend nursery during import — objects created during module init
-    // (type objects, class dicts, etc.) may be stored in persistent containers
-    // (sys.modules, module.__dict__) that outlive the nursery reset.
-    crate::object::nursery_suspend();
-    let result = molt_module_import_inner(name_bits);
-    crate::object::nursery_resume();
-    result
+    molt_module_import_inner(name_bits)
 }
 
 fn molt_module_import_inner(name_bits: u64) -> u64 {
@@ -4889,6 +4883,47 @@ pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
 mod tests {
     use super::*;
 
+    struct ModuleCacheRestore {
+        name_bits: u64,
+        previous_bits: u64,
+    }
+
+    impl ModuleCacheRestore {
+        fn new(_py: &PyToken<'_>, name_bits: u64) -> Self {
+            let previous_bits = molt_module_cache_get(name_bits);
+            let _ = crate::molt_exception_clear();
+            let _ = molt_module_cache_del(name_bits);
+            let _ = crate::molt_exception_clear();
+            Self {
+                name_bits,
+                previous_bits,
+            }
+        }
+
+        fn name_bits(&self) -> u64 {
+            self.name_bits
+        }
+    }
+
+    impl Drop for ModuleCacheRestore {
+        fn drop(&mut self) {
+            crate::with_gil_entry_nopanic!(_py, {
+                let _ = crate::molt_exception_clear();
+                let _ = molt_module_cache_del(self.name_bits);
+                let _ = crate::molt_exception_clear();
+                if !obj_from_bits(self.previous_bits).is_none() {
+                    let restore_bits = molt_module_cache_set(self.name_bits, self.previous_bits);
+                    if !obj_from_bits(restore_bits).is_none() {
+                        dec_ref_bits(_py, restore_bits);
+                    }
+                    let _ = crate::molt_exception_clear();
+                    dec_ref_bits(_py, self.previous_bits);
+                }
+                dec_ref_bits(_py, self.name_bits);
+            });
+        }
+    }
+
     #[test]
     fn restricted_literal_parser_supports_core_values() {
         assert_eq!(
@@ -5075,11 +5110,12 @@ mod tests {
             let name_ptr = alloc_string(_py, b"sys");
             assert!(!name_ptr.is_null());
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let module_ptr = alloc_module_obj(_py, name_bits);
+            let cache_restore = ModuleCacheRestore::new(_py, name_bits);
+            let module_ptr = alloc_module_obj(_py, cache_restore.name_bits());
             assert!(!module_ptr.is_null());
             let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
-            let result_bits = molt_module_cache_set(name_bits, module_bits);
+            let result_bits = molt_module_cache_set(cache_restore.name_bits(), module_bits);
             // Contract: a successful registration leaves no pending exception.
             // The return value is either:
             //   - None (fresh insert succeeded), or
@@ -5096,7 +5132,6 @@ mod tests {
 
             dec_ref_bits(_py, result_bits);
             dec_ref_bits(_py, module_bits);
-            dec_ref_bits(_py, name_bits);
         });
     }
 }

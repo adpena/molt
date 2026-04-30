@@ -2005,10 +2005,6 @@ pub unsafe extern "C" fn molt_string_from_bytes(
 ) -> i32 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            // Host-fed string objects can cross arbitrary compiled call boundaries
-            // and may be stored in persistent module/class/function structures.
-            // They must not be tied to a nursery frame.
-            let _nursery_guard = crate::object::NurserySuspendGuard::new();
             let len = usize_from_bits(len_bits);
             if trace_string_from_bytes() {
                 eprintln!(
@@ -2104,9 +2100,6 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
 ) -> i32 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            // Host-fed bytes objects are entry-boundary values: they can be passed
-            // through nested compiled calls and must not depend on nursery lifetime.
-            let _nursery_guard = crate::object::NurserySuspendGuard::new();
             let trace = matches!(
                 std::env::var("MOLT_TRACE_BYTES_FROM_BYTES").ok().as_deref(),
                 Some("1")

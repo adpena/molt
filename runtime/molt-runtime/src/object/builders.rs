@@ -12,7 +12,7 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let size = usize_from_bits(size_bits);
         let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -28,7 +28,7 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
 /// reference (refcount == 1). If so, return the raw data pointer as a
 /// reuse token; the caller can reuse the underlying allocation instead of
 /// freeing and reallocating. Returns 0 if the object cannot be reused
-/// (shared reference, inline value, null, immortal, or nursery-allocated).
+/// (shared reference, inline value, null, immortal, or arena-allocated).
 ///
 /// # Safety
 /// Called from compiler-generated code. `bits` must be a valid NaN-boxed
@@ -52,13 +52,9 @@ pub extern "C" fn molt_reuse_token(bits: u64) -> u64 {
             if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) != 0 {
                 return 0;
             }
-            // Nursery- or arena-allocated objects are bulk-reclaimed; individual
-            // reuse is unsafe because the bump region reset / arena free would
-            // invalidate the pointer.
-            if ((*header).flags
-                & (crate::object::HEADER_FLAG_NURSERY | crate::object::HEADER_FLAG_ARENA))
-                != 0
-            {
+            // Arena-allocated objects are bulk-reclaimed; individual reuse is
+            // unsafe because arena free would invalidate the pointer.
+            if ((*header).flags & crate::object::HEADER_FLAG_ARENA) != 0 {
                 return 0;
             }
             // Unique reference: refcount == 1 means the caller is the sole owner.
@@ -93,11 +89,9 @@ pub extern "C" fn molt_reuse_alloc(token: u64, size_bits: u64) -> u64 {
             let ptr = token as *mut u8;
             unsafe {
                 let header = crate::object::header_from_obj_ptr(ptr);
-                let existing_total =
-                    crate::object::total_size_from_header(&*header, ptr);
+                let existing_total = crate::object::total_size_from_header(&*header, ptr);
                 let requested_payload = usize_from_bits(size_bits);
-                let requested_total =
-                    requested_payload + std::mem::size_of::<MoltHeader>();
+                let requested_total = requested_payload + std::mem::size_of::<MoltHeader>();
                 // Only reuse if the existing allocation is large enough for the
                 // requested payload. If the new allocation is larger, we must
                 // fall through to molt_alloc to get a correctly-sized block.
@@ -109,7 +103,7 @@ pub extern "C" fn molt_reuse_alloc(token: u64, size_bits: u64) -> u64 {
                     (*header).ref_count.store(1, AtomicOrdering::Relaxed);
                     (*header).flags = crate::object::HEADER_FLAG_RAW_ALLOC;
                     // Zero the payload region for safety (same guarantee as
-                    // alloc_object_zeroed_with_pool).
+                    // alloc_object_zeroed).
                     std::ptr::write_bytes(ptr, 0, requested_payload);
                     return MoltObject::from_ptr(ptr).bits();
                 }
@@ -206,7 +200,7 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
         }
         let size = usize_from_bits(size_bits);
         let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -239,7 +233,7 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
         }
         let size = usize_from_bits(size_bits);
         let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -272,7 +266,7 @@ pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u6
         }
         let size = usize_from_bits(size_bits);
         let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -1042,7 +1036,6 @@ pub(crate) fn alloc_bound_method_obj(_py: &PyToken<'_>, func_bits: u64, self_bit
 }
 
 pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
-    let _nursery_guard = crate::object::NurserySuspendGuard::new();
     let dict_ptr = alloc_dict_with_pairs(_py, &[]);
     if dict_ptr.is_null() {
         return std::ptr::null_mut();
@@ -1076,7 +1069,6 @@ pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
 }
 
 pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
-    let _nursery_guard = crate::object::NurserySuspendGuard::new();
     let dict_ptr = alloc_dict_with_pairs(_py, &[]);
     if dict_ptr.is_null() {
         return std::ptr::null_mut();
@@ -1208,7 +1200,6 @@ fn init_ascii_chars(_py: &PyToken<'_>) {
         if !slot.load(std::sync::atomic::Ordering::Relaxed).is_null() {
             continue;
         }
-        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let ptr = alloc_bytes_like_with_len(_py, 1, TYPE_ID_STRING);
         if ptr.is_null() {
             continue;
@@ -1285,7 +1276,6 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         let ptr = if !cached.is_null() {
             cached
         } else {
-            let _nursery_guard = crate::object::NurserySuspendGuard::new();
             let ptr = alloc_bytes_like_with_len(_py, 0, TYPE_ID_STRING);
             if !ptr.is_null() {
                 unsafe {
@@ -1336,7 +1326,6 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         }
         // Pool miss: allocate a new string object, mark it immortal+interned, and
         // insert it into the pool so future allocations reuse this object.
-        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
         if ptr.is_null() {
             return ptr;

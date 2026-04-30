@@ -2361,13 +2361,13 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
             "call_method" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
-                // args: [obj, method_name, arg0, arg1, ...]
+                // args: [obj, arg0, arg1, ...]; s_value carries the method name.
                 let obj = args
                     .first()
                     .map(|s| rust_ident(s))
                     .unwrap_or_else(|| "_".to_string());
-                let method = args.get(1).map(|s| s.as_str()).unwrap_or("");
-                let call_args: Vec<String> = args[2..].iter().map(|a| rust_clone(a)).collect();
+                let method = op.s_value.as_deref().unwrap_or("");
+                let call_args: Vec<String> = args[1..].iter().map(|a| rust_clone(a)).collect();
                 if method == "append" {
                     let arg = call_args
                         .first()
@@ -3727,6 +3727,39 @@ mod tests {
         assert!(source.contains("let mut __alias_key_v2: MoltValue = v1.clone();"));
         assert!(source.contains("molt_list_append(&mut v2, v3.clone());"));
         assert!(source.contains("molt_set_item(&mut v0, __alias_key_v2.clone(), v2.clone());"));
+    }
+
+    #[test]
+    fn compile_call_method_uses_s_value_method_name() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec!["items".to_string(), "value".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "call_method".to_string(),
+                        s_value: Some("append".to_string()),
+                        args: Some(vec!["items".to_string(), "value".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "return_none".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend
+            .compile_checked(&ir)
+            .expect("call_method should lower from s_value without stub markers");
+        assert!(source.contains("molt_list_append(&mut items, value.clone());"));
+        assert!(!source.contains("MOLT_STUB: method"));
     }
 
     #[test]

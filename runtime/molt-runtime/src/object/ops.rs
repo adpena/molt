@@ -6894,29 +6894,40 @@ pub(crate) unsafe fn frozenset_from_iter_bits(_py: &PyToken<'_>, other_bits: u64
             return raise_not_iterable(_py, other_bits);
         }
         let set_bits = molt_frozenset_new(0);
-        let set_ptr = obj_from_bits(set_bits).as_ptr()?;
+        let Some(set_ptr) = obj_from_bits(set_bits).as_ptr() else {
+            dec_ref_bits(_py, iter_bits);
+            return None;
+        };
+        let done_true = MoltObject::from_bool(true).bits();
+        let done_false = MoltObject::from_bool(false).bits();
         loop {
-            let pair_bits = molt_iter_next(iter_bits);
-            let pair_obj = obj_from_bits(pair_bits);
-            let pair_ptr = pair_obj.as_ptr()?;
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+            let mut val_bits = 0;
+            let done_bits = crate::object::ops_iter::molt_iter_next_unboxed(
+                iter_bits,
+                &mut val_bits as *mut u64,
+            );
+            if done_bits == MoltObject::none().bits() || exception_pending(_py) {
+                dec_ref_bits(_py, iter_bits);
+                dec_ref_bits(_py, set_bits);
                 return None;
             }
-            let pair_elems = seq_vec_ref(pair_ptr);
-            if pair_elems.len() < 2 {
-                return None;
-            }
-            let done_bits = pair_elems[1];
-            if is_truthy(_py, obj_from_bits(done_bits)) {
+            if done_bits == done_true {
                 break;
             }
-            let val_bits = pair_elems[0];
+            if done_bits != done_false {
+                dec_ref_bits(_py, iter_bits);
+                dec_ref_bits(_py, set_bits);
+                return None;
+            }
             set_add_in_place(_py, set_ptr, val_bits);
+            dec_ref_bits(_py, val_bits);
             if exception_pending(_py) {
+                dec_ref_bits(_py, iter_bits);
                 dec_ref_bits(_py, set_bits);
                 return None;
             }
         }
+        dec_ref_bits(_py, iter_bits);
         Some(set_bits)
     }
 }

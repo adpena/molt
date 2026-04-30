@@ -260,7 +260,7 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
             return MoltObject::none().bits();
         }
         // Zero header + payload so subsequent stores see a clean slate, just
-        // like `alloc_object_zeroed_with_pool` does for pool-eligible types.
+        // like `alloc_object_zeroed` does for allocator-backed objects.
         // SAFETY: `arena.alloc` returned a chunk of `total` bytes belonging
         // to a live `Vec<u8>` inside the arena.
         unsafe {
@@ -268,9 +268,8 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
             let header = header_ptr as *mut MoltHeader;
             (*header).type_id = TYPE_ID_OBJECT;
             (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-            // size_class = 0 (oversized path) keeps drop logic generic — we
-            // never feed arena allocations to the object pool, and the arena
-            // free path bypasses `std::alloc::dealloc` entirely.
+            // size_class = 0 (oversized path) keeps drop logic generic; the
+            // arena free path bypasses `std::alloc::dealloc` entirely.
             (*header).size_class = 0;
             (*header).flags = HEADER_FLAG_ARENA | HEADER_FLAG_RAW_ALLOC;
             // cold_idx remains 0; arena objects are short-lived and never

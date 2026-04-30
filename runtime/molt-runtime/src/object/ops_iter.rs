@@ -463,7 +463,10 @@ pub(crate) unsafe fn reversed_new_impl(_py: &PyToken<'_>, seq_bits: u64) -> u64 
                     || type_id == TYPE_ID_DICT_ITEMS_VIEW
                 {
                     dict_view_len(ptr)
-                } else if type_id == TYPE_ID_LIST || type_id == TYPE_ID_LIST_INT || type_id == TYPE_ID_LIST_BOOL {
+                } else if type_id == TYPE_ID_LIST
+                    || type_id == TYPE_ID_LIST_INT
+                    || type_id == TYPE_ID_LIST_BOOL
+                {
                     list_len(ptr)
                 } else {
                     tuple_len(ptr)
@@ -860,11 +863,17 @@ unsafe fn cached_pair_return(
                 .load(std::sync::atomic::Ordering::Relaxed);
             if rc == 1 {
                 // Exclusively owned — reuse by mutating elements in place.
+                let header = header_ptr as *mut MoltHeader;
                 let vec = seq_vec(cached);
                 let old0 = vec[0];
                 let old1 = vec[1];
                 vec[0] = elem0;
                 vec[1] = elem1;
+                if crate::object::refcount_opt::slice_contains_heap_refs(&[elem0, elem1]) {
+                    (*header).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+                } else {
+                    (*header).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+                }
                 inc_ref_bits(_py, elem0);
                 inc_ref_bits(_py, elem1);
                 dec_ref_bits(_py, old0);
@@ -931,8 +940,8 @@ unsafe fn iter_return_cached(
 ) -> u64 {
     unsafe {
         let done_bits = MoltObject::from_bool(done).bits();
-        let slot_ptr = iter_ptr.add(std::mem::size_of::<u64>() + std::mem::size_of::<usize>())
-            as *mut *mut u8;
+        let slot_ptr =
+            iter_ptr.add(std::mem::size_of::<u64>() + std::mem::size_of::<usize>()) as *mut *mut u8;
         cached_pair_return(_py, slot_ptr, val_bits, done_bits, owns_val, false)
     }
 }
@@ -2101,4 +2110,66 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
             res
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cached_pair_return;
+    use crate::object::HEADER_FLAG_CONTAINS_REFS;
+    use crate::{MoltObject, alloc_string, dec_ref_bits, header_from_obj_ptr, seq_vec_ref};
+
+    #[test]
+    fn cached_pair_reuse_updates_contains_refs_flag() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let mut cached = std::ptr::null_mut();
+                let slot = &mut cached as *mut *mut u8;
+
+                let first = cached_pair_return(
+                    _py,
+                    slot,
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_bool(false).bits(),
+                    false,
+                    false,
+                );
+                let first_ptr = MoltObject::from_bits(first).as_ptr().expect("tuple pair");
+                assert_eq!(first_ptr, cached);
+                let first_header = header_from_obj_ptr(first_ptr);
+                assert_eq!(
+                    (*first_header).flags & HEADER_FLAG_CONTAINS_REFS,
+                    0,
+                    "primitive cached pair should not be marked as ref-containing",
+                );
+                dec_ref_bits(_py, first);
+
+                let text_ptr = alloc_string(_py, b"owned");
+                assert!(!text_ptr.is_null());
+                let text_bits = MoltObject::from_ptr(text_ptr).bits();
+                let second = cached_pair_return(
+                    _py,
+                    slot,
+                    text_bits,
+                    MoltObject::from_bool(false).bits(),
+                    false,
+                    false,
+                );
+                let second_ptr = MoltObject::from_bits(second).as_ptr().expect("tuple pair");
+                assert_eq!(second_ptr, cached, "cached tuple should be reused in place");
+                let second_header = header_from_obj_ptr(second_ptr);
+                assert_ne!(
+                    (*second_header).flags & HEADER_FLAG_CONTAINS_REFS,
+                    0,
+                    "cached pair mutated to hold heap refs must mark the tuple for element decref",
+                );
+                assert_eq!(seq_vec_ref(second_ptr)[0], text_bits);
+                dec_ref_bits(_py, second);
+                dec_ref_bits(_py, MoltObject::from_ptr(cached).bits());
+                dec_ref_bits(_py, text_bits);
+            }
+        });
+    }
 }

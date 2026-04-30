@@ -1,4 +1,3 @@
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -39,8 +38,6 @@ pub mod gil;
 pub mod inline_cache;
 pub(crate) mod layout;
 pub(crate) mod memoryview;
-#[allow(dead_code)]
-pub mod nursery;
 pub(crate) mod ops;
 pub(crate) mod ops_arith;
 pub(crate) mod ops_builtins;
@@ -117,24 +114,23 @@ use crate::{
     asyncio_wait_for_poll_fn_addr, asyncio_wait_for_task_drop, asyncio_wait_poll_fn_addr,
     asyncio_wait_task_drop, bound_method_func_bits, bound_method_self_bits,
     builtin_classes_if_initialized, bytearray_data, bytearray_len, bytearray_vec_ptr,
-    call_iter_callable_bits, call_iter_sentinel_bits, callargs_dec_ref_all, callargs_ptr,
-    classmethod_func_bits, code_filename_bits, code_linetable_bits, code_name_bits,
+    call_iter_cached_tuple, call_iter_callable_bits, call_iter_sentinel_bits, callargs_dec_ref_all,
+    callargs_ptr, classmethod_func_bits, code_filename_bits, code_linetable_bits, code_name_bits,
     code_varnames_bits, context_payload_bits,
     contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_enter_context_task_drop,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_async_exitstack_exit_task_drop,
     contextlib_asyncgen_enter_poll_fn_addr, contextlib_asyncgen_enter_task_drop,
-    contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop,
-    call_iter_cached_tuple, dict_order_ptr,
+    contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop, dict_order_ptr,
     dict_table_ptr, dict_view_dict_bits, enumerate_cached_inner, enumerate_cached_outer,
-    enumerate_index_bits, enumerate_target_bits,
-    exception_args_bits, exception_cause_bits, exception_class_bits, exception_context_bits,
-    exception_kind_bits, exception_msg_bits, exception_suppress_bits, exception_trace_bits,
-    exception_value_bits, filter_func_bits, filter_iter_bits, function_annotate_bits,
-    function_annotations_bits, function_closure_bits, function_code_bits, function_dict_bits,
-    generator_context_stack_drop, generator_exception_stack_drop, generic_alias_args_bits,
-    generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits,
-    iter_cached_tuple, iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr, module_dict_bits,
+    enumerate_index_bits, enumerate_target_bits, exception_args_bits, exception_cause_bits,
+    exception_class_bits, exception_context_bits, exception_kind_bits, exception_msg_bits,
+    exception_suppress_bits, exception_trace_bits, exception_value_bits, filter_func_bits,
+    filter_iter_bits, function_annotate_bits, function_annotations_bits, function_closure_bits,
+    function_code_bits, function_dict_bits, generator_context_stack_drop,
+    generator_exception_stack_drop, generic_alias_args_bits, generic_alias_origin_bits,
+    io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits, iter_cached_tuple,
+    iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr, module_dict_bits,
     module_name_bits, process_poll_fn_addr, profile_hit, profile_hit_bytes, property_del_bits,
     property_get_bits, property_set_bits, range_start_bits, range_step_bits, range_stop_bits,
     reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr, set_table_ptr,
@@ -416,10 +412,6 @@ pub(crate) const NEWLINE_KIND_LF: u8 = 1;
 pub(crate) const NEWLINE_KIND_CR: u8 = 1 << 1;
 pub(crate) const NEWLINE_KIND_CRLF: u8 = 1 << 2;
 
-const OBJECT_POOL_MAX_BYTES: usize = 1024;
-const OBJECT_POOL_BUCKET_LIMIT: usize = 4096;
-const OBJECT_POOL_TLS_BUCKET_LIMIT: usize = 1024;
-pub(crate) const OBJECT_POOL_BUCKETS: usize = OBJECT_POOL_MAX_BYTES / 8 + 1;
 pub(crate) const HEADER_FLAG_HAS_PTRS: u32 = 1;
 pub(crate) const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = 1 << 1;
 pub(crate) const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
@@ -443,9 +435,6 @@ pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
 // String content is an ASCII identifier stored in the global intern pool.
 // Objects with this flag are also immortal (never freed).
 pub(crate) const HEADER_FLAG_INTERNED: u32 = 1 << 17;
-// Object was bump-allocated in the thread-local nursery.
-// Deallocation skips `std::alloc::dealloc` — the nursery reclaims memory in bulk via `reset()`.
-pub(crate) const HEADER_FLAG_NURSERY: u32 = 1 << 18;
 /// Container (list, tuple, dict, set) has at least one element that is a heap
 /// pointer (TAG_PTR).  When this flag is clear, `dec_ref` cleanup can skip
 /// iterating over elements because they are all primitives (int/float/bool/None).
@@ -455,15 +444,11 @@ pub(crate) const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 /// use the raw-alloc path rather than type-specific destructors.
 pub(crate) const HEADER_FLAG_RAW_ALLOC: u32 = 1 << 20;
 
-/// Object was bump-allocated inside a `ScopeArena`. Like
-/// [`HEADER_FLAG_NURSERY`], deallocation must NOT call `std::alloc::dealloc`:
+/// Object was bump-allocated inside a `ScopeArena`. Deallocation must NOT call
+/// `std::alloc::dealloc`:
 /// the arena reclaims memory in bulk when `molt_arena_free` runs at scope
 /// exit. Set by `molt_arena_alloc_object`.
 pub(crate) const HEADER_FLAG_ARENA: u32 = 1 << 21;
-
-/// Maximum total_size (header + payload) eligible for nursery allocation.
-/// Objects larger than this always go through the global allocator.
-const NURSERY_ALLOC_MAX: usize = 256;
 
 // ---------------------------------------------------------------------------
 // Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
@@ -560,8 +545,8 @@ impl ColdHeaderSlab {
         }
         // Zero out the entry to avoid stale data, then recycle.
         // Only push to free_list when the index is actually in bounds —
-        // a corrupted cold_idx (e.g. from use-after-free or nursery
-        // memory reuse) must not poison the free list.
+        // a corrupted cold_idx (e.g. from use-after-free or stale pointer
+        // reuse) must not poison the free list.
         if let Some(entry) = self.entries.get_mut(idx as usize) {
             *entry = MoltColdHeader::default();
             self.free_list.push(idx);
@@ -981,92 +966,6 @@ pub extern "C" fn molt_ensure_shared_cold_idx(cls_bits: u64) -> u32 {
     }
 }
 
-thread_local! {
-    pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
-        RefCell::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]);
-
-    /// Per-thread nursery for short-lived small objects.  Bump-allocates in ~2
-    /// instructions; the nursery is reset in bulk at safe points (e.g. function
-    /// exit) rather than freeing objects individually.
-    pub(crate) static NURSERY_TLS: RefCell<nursery::Nursery> =
-        RefCell::new(nursery::Nursery::new());
-
-    /// When true, nursery allocation is bypassed — all objects go to the
-    /// global allocator.  Set during module import to prevent type objects
-    /// from being nursery-allocated and then stored into persistent dicts
-    /// that outlive the nursery reset.
-    pub(crate) static NURSERY_SUSPENDED: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Suspend nursery allocation — all objects go to global allocator.
-#[inline(always)]
-pub(crate) fn nursery_suspend() {
-    NURSERY_SUSPENDED.with(|s| s.set(true));
-}
-
-/// Resume nursery allocation.
-#[inline(always)]
-pub(crate) fn nursery_resume() {
-    NURSERY_SUSPENDED.with(|s| s.set(false));
-}
-
-pub(crate) struct NurserySuspendGuard {
-    previously_suspended: bool,
-}
-
-impl NurserySuspendGuard {
-    #[inline(always)]
-    pub(crate) fn new() -> Self {
-        let previously_suspended = NURSERY_SUSPENDED.with(|s| {
-            let previous = s.get();
-            s.set(true);
-            previous
-        });
-        Self {
-            previously_suspended,
-        }
-    }
-}
-
-impl Drop for NurserySuspendGuard {
-    #[inline(always)]
-    fn drop(&mut self) {
-        NURSERY_SUSPENDED.with(|s| s.set(self.previously_suspended));
-    }
-}
-
-#[inline(always)]
-fn nursery_is_suspended() -> bool {
-    NURSERY_SUSPENDED.with(|s| s.get())
-}
-
-/// Reset the thread-local nursery, reclaiming all bump-allocated memory.
-/// Call at function exit once all nursery-allocated objects in the frame are dead.
-#[inline(always)]
-#[allow(dead_code)]
-pub(crate) fn nursery_reset() {
-    NURSERY_TLS.with(|cell| cell.borrow_mut().reset());
-}
-
-/// Release the nursery's heap-backed buffer entirely.  After this call the
-/// nursery's backing `Vec` has zero capacity, so dropping the TLS variable
-/// will not invoke the allocator.  Used during shutdown to prevent a
-/// use-after-free when mimalloc's thread-local state is torn down before
-/// Rust's TLS destructors run.
-#[allow(dead_code)]
-pub(crate) fn nursery_drain() {
-    let _ = NURSERY_TLS.try_with(|cell| {
-        *cell.borrow_mut() = nursery::Nursery::empty();
-    });
-}
-
-/// Return current nursery usage in bytes (useful for diagnostics).
-#[inline(always)]
-#[allow(dead_code)]
-pub(crate) fn nursery_used() -> usize {
-    NURSERY_TLS.with(|cell| cell.borrow().used())
-}
-
 #[inline(always)]
 pub(crate) fn obj_from_bits(bits: u64) -> MoltObject {
     MoltObject::from_bits(bits)
@@ -1126,7 +1025,6 @@ pub(crate) fn init_atomic_bits(
     if existing != 0 {
         return existing;
     }
-    let _nursery_guard = NurserySuspendGuard::new();
     let new_bits = init();
     if new_bits == 0 {
         return 0;
@@ -1142,156 +1040,6 @@ pub(crate) fn init_atomic_bits(
 
 pub(crate) fn pending_bits_i64() -> i64 {
     MoltObject::pending().bits() as i64
-}
-
-fn object_pool(_py: &PyToken<'_>) -> &'static Mutex<Vec<Vec<PtrSlot>>> {
-    &runtime_state(_py).object_pool
-}
-
-fn object_pool_index(total_size: usize) -> Option<usize> {
-    if total_size == 0 || total_size > OBJECT_POOL_MAX_BYTES || !total_size.is_multiple_of(8) {
-        return None;
-    }
-    Some(total_size / 8)
-}
-
-/// Type-IDs whose freed allocations are recycled through the size-classed
-/// object pool.  Membership here means:
-///   - on `alloc`: try the pool first (pool > nursery > global).
-///   - on `dec_ref` to zero: zero the payload and push back into the pool.
-///
-/// Limited to fixed-shape, high-churn types whose destructors release any
-/// owned heap state (Box/Vec) BEFORE the pool insert, so the pooled memory
-/// holds nothing but the zeroed header + payload region.
-#[inline]
-pub(crate) fn type_id_is_pool_eligible(type_id: u32) -> bool {
-    matches!(
-        type_id,
-        TYPE_ID_OBJECT
-            | TYPE_ID_BOUND_METHOD
-            | TYPE_ID_ITER
-            | TYPE_ID_TUPLE
-            | TYPE_ID_STRING
-            | TYPE_ID_DICT
-    )
-}
-
-fn object_pool_take(_py: &PyToken<'_>, total_size: usize) -> Option<*mut u8> {
-    crate::gil_assert();
-    if cfg!(miri) {
-        return None;
-    }
-    let idx = object_pool_index(total_size)?;
-    let from_tls = OBJECT_POOL_TLS.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        pool.get_mut(idx).and_then(|bucket| bucket.pop())
-    });
-    if let Some(slot) = from_tls {
-        return Some(slot.0);
-    }
-    let mut guard = object_pool(_py).lock().unwrap();
-    guard
-        .get_mut(idx)
-        .and_then(|bucket| bucket.pop())
-        .map(|slot| slot.0)
-}
-
-fn object_pool_put(_py: &PyToken<'_>, total_size: usize, header_ptr: *mut u8) -> bool {
-    crate::gil_assert();
-    if cfg!(miri) {
-        return false;
-    }
-    if header_ptr.is_null() {
-        return false;
-    }
-    let Some(idx) = object_pool_index(total_size) else {
-        return false;
-    };
-    unsafe {
-        std::ptr::write_bytes(header_ptr, 0, total_size);
-    }
-    let stored_tls = OBJECT_POOL_TLS.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        let bucket = &mut pool[idx];
-        if bucket.len() >= OBJECT_POOL_TLS_BUCKET_LIMIT {
-            return false;
-        }
-        bucket.push(PtrSlot(header_ptr));
-        true
-    });
-    if stored_tls {
-        return true;
-    }
-    let mut guard = object_pool(_py).lock().unwrap();
-    let bucket = &mut guard[idx];
-    if bucket.len() >= OBJECT_POOL_BUCKET_LIMIT {
-        return false;
-    }
-    bucket.push(PtrSlot(header_ptr));
-    true
-}
-
-pub(crate) fn alloc_object_zeroed_with_pool(
-    _py: &PyToken<'_>,
-    total_size: usize,
-    type_id: u32,
-) -> *mut u8 {
-    crate::gil_assert();
-    let alloc_size = allocated_size_for(total_size);
-    let pool_eligible = type_id_is_pool_eligible(type_id) && !cfg!(miri);
-    let header_ptr = if pool_eligible {
-        object_pool_take(_py, alloc_size)
-    } else {
-        None
-    };
-    let header_ptr = header_ptr.unwrap_or_else(|| {
-        let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
-        unsafe { std::alloc::alloc_zeroed(layout) }
-    });
-    if header_ptr.is_null() {
-        if debug_oom() {
-            eprintln!(
-                "molt OOM alloc_object_zeroed_with_pool type_id={} total_size={}",
-                type_id, total_size
-            );
-        }
-        return std::ptr::null_mut();
-    }
-    // Enforce resource budget before committing the allocation.
-    if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(alloc_size)) {
-        // Budget exceeded — return the memory and signal failure.
-        if pool_eligible {
-            // Came from pool; put it back.
-            let _ = object_pool_put(_py, alloc_size, header_ptr);
-        } else {
-            let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
-            unsafe { std::alloc::dealloc(header_ptr, layout) };
-        }
-        return std::ptr::null_mut();
-    }
-    profile_hit(_py, &ALLOC_COUNT);
-    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, alloc_size as u64);
-    profile_alloc_type(_py, type_id);
-    profile_alloc_type_bytes(_py, type_id, alloc_size);
-    unsafe {
-        let header = header_ptr as *mut MoltHeader;
-        let sc = size_class_for(total_size);
-        (*header).type_id = type_id;
-        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        (*header).flags = 0;
-        (*header).size_class = sc;
-        (*header).cold_idx = if sc == 0 {
-            // Oversized: store exact size in cold header
-            alloc_cold_header(MoltColdHeader {
-                poll_fn: 0,
-                state: 0,
-                extended_size: total_size,
-            })
-        } else {
-            0
-        };
-        header_ptr.add(std::mem::size_of::<MoltHeader>())
-    }
 }
 
 pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id: u32) -> *mut u8 {
@@ -1359,45 +1107,8 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
             total_size, expected
         );
     }
-    // Try the object pool for fixed-size high-churn types (bound methods,
-    // iterators, tuples, strings, dicts).  These are allocated/freed once per
-    // call or loop iteration.  See `type_id_is_pool_eligible` for the canonical
-    // membership predicate; both alloc and dec_ref-zero paths share it.
-    let pool_eligible = type_id_is_pool_eligible(type_id);
-    let mut from_nursery = false;
-    let header_ptr = if pool_eligible {
-        object_pool_take(_py, alloc_size)
-    } else {
-        None
-    };
-    // For small, non-pool objects try the thread-local nursery (bump alloc:
-    // ~2 instructions) before falling back to the global allocator.
-    //
-    // Bigints are excluded from nursery allocation: they can be stored
-    // into cell lists (local variable storage) that outlive the nursery
-    // reset point, causing use-after-free when the cell list reads stale
-    // nursery memory on subsequent loop iterations.
-    let nursery_eligible = !matches!(type_id, TYPE_ID_BIGINT);
-    let header_ptr = header_ptr
-        .or_else(|| {
-            if nursery_eligible
-                && alloc_size <= NURSERY_ALLOC_MAX
-                && !pool_eligible
-                && !nursery_is_suspended()
-            {
-                NURSERY_TLS.with(|cell| {
-                    cell.borrow_mut().alloc(alloc_size, 8).inspect(|_ptr| {
-                        from_nursery = true;
-                    })
-                })
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| {
-            let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
-            unsafe { std::alloc::alloc(layout) }
-        });
+    let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
+    let header_ptr = unsafe { std::alloc::alloc(layout) };
     if header_ptr.is_null() {
         if debug_oom() {
             eprintln!(
@@ -1409,17 +1120,8 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     }
     // Enforce resource budget before committing the allocation.
     if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(alloc_size)) {
-        // Budget exceeded — return the memory to its source.
-        if from_nursery {
-            // Nursery memory is bump-allocated; we cannot return individual
-            // chunks, so we just let it be reclaimed on the next nursery reset.
-            // The tracker denied the allocation so the caller sees null.
-        } else if pool_eligible {
-            let _ = object_pool_put(_py, alloc_size, header_ptr);
-        } else {
-            let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
-            unsafe { std::alloc::dealloc(header_ptr, layout) };
-        }
+        // Budget exceeded — return the memory to the allocator.
+        unsafe { std::alloc::dealloc(header_ptr, layout) };
         return std::ptr::null_mut();
     }
     profile_hit(_py, &ALLOC_COUNT);
@@ -1439,9 +1141,6 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         // flags, size_class, cold_idx are already 0 from write_bytes
         (*header).size_class = sc;
-        if from_nursery {
-            (*header).flags |= HEADER_FLAG_NURSERY;
-        }
         if sc == 0 {
             (*header).cold_idx = alloc_cold_header(MoltColdHeader {
                 poll_fn: 0,
@@ -2724,20 +2423,13 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             if !cold_idx_is_shared(header_cold_idx) {
                 free_cold_header(header_cold_idx);
             }
-            let should_pool = type_id_is_pool_eligible(type_id)
-                && !cfg!(miri)
-                && object_pool_put(py, total_size, header_ptr as *mut u8);
-            if should_pool {
-                return;
-            }
             if total_size == 0 {
                 return;
             }
-            // Nursery- or arena-allocated objects live inside a bump region
-            // and must NOT be passed to the global allocator.  The nursery
-            // reclaims its memory in one shot via `reset()`; the scope
-            // arena reclaims via `molt_arena_free` at scope exit.
-            if (header_flags & (HEADER_FLAG_NURSERY | HEADER_FLAG_ARENA)) != 0 {
+            // Arena-allocated objects live inside a bump region and must NOT
+            // be passed to the global allocator. The scope arena reclaims via
+            // `molt_arena_free` at scope exit.
+            if (header_flags & HEADER_FLAG_ARENA) != 0 {
                 return;
             }
             let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
@@ -2748,64 +2440,11 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MoltHeader, OBJECT_POOL_TLS, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_TUPLE,
-        alloc_object_zeroed_with_pool, dec_ref_ptr, object_pool, object_pool_index,
-        object_pool_take,
-    };
-    use crate::PyToken;
-    use std::alloc::Layout;
-
-    fn drain_pool(_py: &PyToken<'_>, total_size: usize) {
-        let Some(idx) = object_pool_index(total_size) else {
-            return;
-        };
-        let layout = Layout::from_size_align(total_size, 8).unwrap();
-        while let Some(ptr) = object_pool_take(_py, total_size) {
-            unsafe { std::alloc::dealloc(ptr, layout) };
-        }
-        OBJECT_POOL_TLS.with(|pool| {
-            if let Some(bucket) = pool.borrow_mut().get_mut(idx) {
-                bucket.clear();
-            }
-        });
-        let mut guard = object_pool(_py).lock().unwrap();
-        if let Some(bucket) = guard.get_mut(idx) {
-            bucket.clear();
-        }
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "object pooling is disabled under Miri to avoid intentional retained pool allocations being reported as leaks"
-    )]
-    fn object_pool_reuses_object_allocations() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let total_size = std::mem::size_of::<MoltHeader>() + 16;
-            drain_pool(_py, total_size);
-            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
-            assert!(!ptr1.is_null());
-            unsafe { dec_ref_ptr(_py, ptr1) };
-            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
-            assert_eq!(ptr1, ptr2);
-            unsafe { dec_ref_ptr(_py, ptr2) };
-            drain_pool(_py, total_size);
-        });
-    }
-
     #[test]
     fn cold_header_slab_rejects_out_of_bounds_free() {
-        // Regression test: free() must not push out-of-bounds indices to
-        // the free list. A corrupted cold_idx previously poisoned the
-        // free list, causing alloc() to panic on the next reuse.
         use super::{ColdHeaderSlab, MoltColdHeader};
 
         let mut slab = ColdHeaderSlab::new();
-        // Allocate a few entries so slab.entries has a small len.
         let idx1 = slab.alloc(MoltColdHeader::default());
         assert!(idx1 >= 1);
         let idx2 = slab.alloc(MoltColdHeader::default());
@@ -2813,23 +2452,18 @@ mod tests {
         let len_before_free = slab.entries.len();
         let free_list_len_before = slab.free_list.len();
 
-        // Free with a corrupted index far beyond the slab size.
         slab.free(24427);
 
-        // The free list must NOT grow — corrupted index was rejected.
         assert_eq!(slab.free_list.len(), free_list_len_before);
-        // Slab entries unchanged.
         assert_eq!(slab.entries.len(), len_before_free);
 
-        // Now allocate again — must succeed without panic.
         let idx3 = slab.alloc(MoltColdHeader::default());
         assert!(idx3 >= 1);
 
-        // Free a valid index and verify it IS recycled.
         slab.free(idx1);
         assert_eq!(slab.free_list.len(), free_list_len_before + 1);
         let idx4 = slab.alloc(MoltColdHeader::default());
-        assert_eq!(idx4, idx1); // Recycled the freed slot.
+        assert_eq!(idx4, idx1);
     }
 
     #[test]
@@ -2851,230 +2485,5 @@ mod tests {
             ),
             Err(_) => panic!("cold header slab should scale beyond 65,535 live entries"),
         }
-    }
-
-    #[test]
-    fn ineligible_type_allocations_do_not_fill_pool() {
-        // Roadmap step #11 added TUPLE/STRING/DICT to the pool; pick a type
-        // that remains ineligible (e.g. TYPE_ID_LIST) to verify the gating
-        // predicate still rejects the long tail.
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let total_size = std::mem::size_of::<MoltHeader>() + 16;
-            drain_pool(_py, total_size);
-            let idx = object_pool_index(total_size).expect("pool index should be valid");
-            let tls_before = OBJECT_POOL_TLS.with(|pool| pool.borrow()[idx].len());
-            let global_before = object_pool(_py).lock().unwrap()[idx].len();
-            let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_LIST);
-            assert!(!ptr.is_null());
-            unsafe { dec_ref_ptr(_py, ptr) };
-            let tls_after = OBJECT_POOL_TLS.with(|pool| pool.borrow()[idx].len());
-            let global_after = object_pool(_py).lock().unwrap()[idx].len();
-            assert_eq!(tls_after, tls_before);
-            assert_eq!(global_after, global_before);
-        });
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
-    fn tuple_allocations_recycle_through_pool() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            // alloc_object_zeroed_with_pool only initialises the header — the
-            // tuple destructor reads the (zero-initialised) `seq_vec_ptr` slot
-            // and treats null as "no Vec to drop".  That keeps this test off
-            // the real `alloc_tuple` path while still exercising pool recycling.
-            let total_size = std::mem::size_of::<MoltHeader>()
-                + std::mem::size_of::<*mut Vec<u64>>()
-                + std::mem::size_of::<u64>();
-            drain_pool(_py, total_size);
-            let idx = object_pool_index(total_size).expect("pool index should be valid");
-
-            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
-            assert!(!ptr1.is_null());
-            unsafe { dec_ref_ptr(_py, ptr1) };
-
-            let pooled = OBJECT_POOL_TLS
-                .with(|pool| pool.borrow()[idx].len())
-                + object_pool(_py).lock().unwrap()[idx].len();
-            assert!(
-                pooled >= 1,
-                "tuple dealloc should push at least one slot back to the pool"
-            );
-
-            // Next allocation of the same size class must come from the pool.
-            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
-            assert!(!ptr2.is_null());
-            assert_eq!(
-                ptr1, ptr2,
-                "second tuple alloc should reuse the slot freed by the first dealloc"
-            );
-            unsafe { dec_ref_ptr(_py, ptr2) };
-            drain_pool(_py, total_size);
-        });
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
-    fn string_allocations_recycle_through_pool() {
-        // Roadmap step #11 — verify TYPE_ID_STRING participates in pool reuse.
-        // String content lives inline in the payload, so pool recycling is
-        // safe as long as the next allocator overwrites the bytes (which the
-        // real `alloc_string` path does after the pool returns the slot).
-        use super::TYPE_ID_STRING;
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let total_size = std::mem::size_of::<MoltHeader>() + 32;
-            drain_pool(_py, total_size);
-            let idx = object_pool_index(total_size).expect("pool index should be valid");
-
-            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_STRING);
-            assert!(!ptr1.is_null());
-            unsafe { dec_ref_ptr(_py, ptr1) };
-
-            let pooled = OBJECT_POOL_TLS
-                .with(|pool| pool.borrow()[idx].len())
-                + object_pool(_py).lock().unwrap()[idx].len();
-            assert!(
-                pooled >= 1,
-                "string dealloc should push at least one slot back to the pool"
-            );
-
-            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_STRING);
-            assert!(!ptr2.is_null());
-            assert_eq!(
-                ptr1, ptr2,
-                "second string alloc should reuse the slot freed by the first dealloc"
-            );
-            unsafe { dec_ref_ptr(_py, ptr2) };
-            drain_pool(_py, total_size);
-        });
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
-    fn dict_allocations_recycle_through_pool() {
-        // Roadmap step #11 — verify TYPE_ID_DICT participates in pool reuse.
-        // The dict destructor reads (zero-initialised) order/table pointer
-        // slots and treats null as "no Box to drop", so this test exercises
-        // the pool path without going through `alloc_dict` directly.
-        use super::TYPE_ID_DICT;
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let total_size = std::mem::size_of::<MoltHeader>() + 64;
-            drain_pool(_py, total_size);
-            let idx = object_pool_index(total_size).expect("pool index should be valid");
-
-            let ptr1 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_DICT);
-            assert!(!ptr1.is_null());
-            unsafe { dec_ref_ptr(_py, ptr1) };
-
-            let pooled = OBJECT_POOL_TLS
-                .with(|pool| pool.borrow()[idx].len())
-                + object_pool(_py).lock().unwrap()[idx].len();
-            assert!(
-                pooled >= 1,
-                "dict dealloc should push at least one slot back to the pool"
-            );
-
-            let ptr2 = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_DICT);
-            assert!(!ptr2.is_null());
-            assert_eq!(
-                ptr1, ptr2,
-                "second dict alloc should reuse the slot freed by the first dealloc"
-            );
-            unsafe { dec_ref_ptr(_py, ptr2) };
-            drain_pool(_py, total_size);
-        });
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
-    fn pool_recycles_zero_payload_for_reuse() {
-        // Roadmap step #11 invariant — when an allocation returns to the
-        // pool, the entire slot (header + payload) must be zeroed before
-        // reuse so the next consumer sees null inner pointers.  We can
-        // verify the zeroing contract directly via `object_pool_take`
-        // without going through a destructor that would interpret stale
-        // payload bytes as live pointers.
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            use super::{object_pool_put, object_pool_take};
-            let total_size = std::mem::size_of::<MoltHeader>() + 24;
-            drain_pool(_py, total_size);
-
-            // Allocate a raw slot, stamp a non-zero pattern, then push it
-            // back through the pool API.  `object_pool_put` MUST zero the
-            // entire slot before storing it.
-            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
-            let raw = unsafe { std::alloc::alloc(layout) };
-            assert!(!raw.is_null());
-            unsafe { std::ptr::write_bytes(raw, 0xAB, total_size) };
-            assert!(object_pool_put(_py, total_size, raw));
-
-            // Take it back out — every byte must be zero.
-            let recycled = object_pool_take(_py, total_size).expect("pool should hold the slot");
-            assert_eq!(recycled, raw, "pool must hand back the same slot we put in");
-            unsafe {
-                let bytes = std::slice::from_raw_parts(recycled, total_size);
-                assert!(
-                    bytes.iter().all(|&b| b == 0),
-                    "pool must zero the slot before returning it for reuse"
-                );
-                std::alloc::dealloc(recycled, layout);
-            }
-            drain_pool(_py, total_size);
-        });
-    }
-
-    /// Microbenchmark proxy for `for i in range(10000): t = (i, i*2)` —
-    /// after the first allocation, every subsequent alloc/dec_ref cycle
-    /// must reuse the same heap slot, proving the pool is collapsing the
-    /// 10_000 tuple allocations down to a single fresh global allocation.
-    #[test]
-    #[cfg_attr(miri, ignore = "object pool is gated off under miri (see object_pool_put)")]
-    fn tuple_loop_10k_collapses_to_single_allocation() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let total_size = std::mem::size_of::<MoltHeader>()
-                + std::mem::size_of::<*mut Vec<u64>>()
-                + std::mem::size_of::<u64>();
-            drain_pool(_py, total_size);
-
-            let iterations = 10_000usize;
-            let first = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
-            assert!(!first.is_null());
-            unsafe { dec_ref_ptr(_py, first) };
-
-            let mut reused = 0usize;
-            for _ in 1..iterations {
-                let ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_TUPLE);
-                assert!(!ptr.is_null());
-                if ptr == first {
-                    reused += 1;
-                }
-                unsafe { dec_ref_ptr(_py, ptr) };
-            }
-            assert_eq!(
-                reused,
-                iterations - 1,
-                "tuple pool should reuse the same slot for {} of {} iterations",
-                iterations - 1,
-                iterations,
-            );
-            drain_pool(_py, total_size);
-        });
     }
 }

@@ -26,6 +26,50 @@ impl Drop for CApiTestGuard {
     fn drop(&mut self) {}
 }
 
+struct CApiModuleCacheRestore {
+    name_bits: u64,
+    previous_bits: u64,
+}
+
+impl CApiModuleCacheRestore {
+    fn new(name_bits: u64) -> Self {
+        let previous_bits = crate::builtins::modules::molt_module_cache_get(name_bits);
+        let _ = molt_err_clear();
+        let _ = crate::builtins::modules::molt_module_cache_del(name_bits);
+        let _ = molt_err_clear();
+        Self {
+            name_bits,
+            previous_bits,
+        }
+    }
+
+    fn name_bits(&self) -> u64 {
+        self.name_bits
+    }
+}
+
+impl Drop for CApiModuleCacheRestore {
+    fn drop(&mut self) {
+        crate::with_gil_entry_nopanic!(_py, {
+            let _ = molt_err_clear();
+            let _ = crate::builtins::modules::molt_module_cache_del(self.name_bits);
+            let _ = molt_err_clear();
+            if !obj_from_bits(self.previous_bits).is_none() {
+                let restore_bits = crate::builtins::modules::molt_module_cache_set(
+                    self.name_bits,
+                    self.previous_bits,
+                );
+                if !obj_from_bits(restore_bits).is_none() {
+                    dec_ref_bits(_py, restore_bits);
+                }
+                let _ = molt_err_clear();
+                dec_ref_bits(_py, self.previous_bits);
+            }
+            dec_ref_bits(_py, self.name_bits);
+        });
+    }
+}
+
 extern "C" fn c_api_test_meth_varargs(self_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
@@ -898,8 +942,19 @@ fn runtime_intrinsic_module_import_fast_call_returns_module() {
         let name_ptr = alloc_string(_py, b"sys");
         assert!(!name_ptr.is_null());
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let cache_restore = CApiModuleCacheRestore::new(name_bits);
 
-        let out_bits = crate::molt_call_func_fast1(func_bits, name_bits);
+        let sys_bits = crate::builtins::modules::molt_module_new(cache_restore.name_bits());
+        let sys_ptr = obj_from_bits(sys_bits)
+            .as_ptr()
+            .expect("test sys module allocation should return module");
+        assert_eq!(unsafe { object_type_id(sys_ptr) }, TYPE_ID_MODULE);
+        let cache_set_bits =
+            crate::builtins::modules::molt_module_cache_set(cache_restore.name_bits(), sys_bits);
+        assert!(obj_from_bits(cache_set_bits).is_none());
+        assert!(!exception_pending(_py));
+
+        let out_bits = crate::molt_call_func_fast1(func_bits, cache_restore.name_bits());
         let out_ptr = obj_from_bits(out_bits)
             .as_ptr()
             .expect("expected module import result");
@@ -911,7 +966,7 @@ fn runtime_intrinsic_module_import_fast_call_returns_module() {
         assert!(!exception_pending(_py));
 
         dec_ref_bits(_py, out_bits);
-        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, sys_bits);
         dec_ref_bits(_py, func_bits);
     });
 }
