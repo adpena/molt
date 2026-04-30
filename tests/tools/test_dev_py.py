@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -74,6 +77,73 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
         "tools/check_stdlib_intrinsics.py",
         "--critical-allowlist",
     ] in stdlib_calls
+
+
+def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_canonical_env",
+        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_require_project_python",
+        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_repo_cmd",
+        lambda cmd, _env, *, tty: calls.append(list(cmd)),
+        raising=True,
+    )
+
+    def fake_status_run(cmd, **_kwargs):
+        assert cmd == ["git", "status", "--short"]
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_status_run, raising=True)
+
+    module._run_dx_gates(["--allow-dirty"], tty=False)
+
+    assert calls[:2] == [
+        [
+            "cargo",
+            "clippy",
+            "-p",
+            "molt-backend",
+            "--features",
+            "native-backend",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        ["cargo", "deny", "check"],
+    ]
+    assert calls[2][0:4] == ["cargo", "build", "--profile", "release-fast"]
+    assert calls[3][0:6] == [
+        "cargo",
+        "test",
+        "--profile",
+        "release-fast",
+        "-p",
+        "molt-backend",
+    ]
+    assert calls[4][1:4] == ["-m", "pytest", "tests/compliance/"]
+
+
+def test_dev_py_command_refs_fail_loudly_on_bad_config() -> None:
+    module = _load_dev_py()
+
+    with pytest.raises(RuntimeError, match="Missing .*missing"):
+        module._split_command_sequence("@missing", "root", commands={})
+
+    with pytest.raises(RuntimeError, match="Cyclic"):
+        module._split_command_sequence("@a", "root", commands={"a": "@a"})
 
 
 def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
