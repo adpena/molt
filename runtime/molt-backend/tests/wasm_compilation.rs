@@ -185,6 +185,7 @@ fn wasm_contains_name_fragment(wasm: &[u8], needle: &str) -> bool {
 
 fn ret_value(name: &str) -> OpIR {
     let mut ret = op("ret");
+    ret.var = Some(name.to_string());
     ret.args = Some(vec![name.to_string()]);
     ret
 }
@@ -368,6 +369,93 @@ fn add_op_calls_add_import() {
     assert!(
         count_import(&calls, "add") > 0,
         "add op should call add import"
+    );
+}
+
+#[test]
+fn scalar_type_hint_alone_does_not_select_wasm_str_concat() {
+    let mut add = op("add");
+    add.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+    add.out = Some("v0".to_string());
+    add.type_hint = Some("str".to_string());
+
+    let mut inplace_add = op("inplace_add");
+    inplace_add.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+    inplace_add.out = Some("v1".to_string());
+    inplace_add.type_hint = Some("str".to_string());
+
+    let wasm =
+        compile_single_function_without_tir(vec![add, inplace_add, ret_value("v1")], &["p0", "p1"]);
+    let calls = import_call_counts(&wasm);
+    assert_eq!(
+        count_import(&calls, "str_concat"),
+        0,
+        "result-side type_hint=str must not select WASM str_concat"
+    );
+}
+
+#[test]
+fn scalar_type_hint_alone_does_not_select_wasm_truthiness_fast_imports() {
+    let mut bool_hint = op("bool");
+    bool_hint.args = Some(vec!["p0".to_string()]);
+    bool_hint.out = Some("v0".to_string());
+    bool_hint.type_hint = Some("bool".to_string());
+
+    let mut int_hint = op("cast_bool");
+    int_hint.args = Some(vec!["p1".to_string()]);
+    int_hint.out = Some("v1".to_string());
+    int_hint.type_hint = Some("int".to_string());
+
+    let wasm = compile_single_function_without_tir(
+        vec![bool_hint, int_hint, ret_value("v1")],
+        &["p0", "p1"],
+    );
+    let calls = import_call_counts(&wasm);
+    assert_eq!(
+        count_import(&calls, "is_truthy_bool"),
+        0,
+        "result-side type_hint=bool must not select WASM bool truthiness"
+    );
+    assert_eq!(
+        count_import(&calls, "is_truthy_int"),
+        0,
+        "result-side type_hint=int must not select WASM int truthiness"
+    );
+    assert!(
+        count_import(&calls, "is_truthy") > 0,
+        "unknown truthiness must use the generic truthiness import"
+    );
+}
+
+#[test]
+fn scalar_type_hint_alone_does_not_select_wasm_len_specialization() {
+    let mut hinted_len = op("len");
+    hinted_len.args = Some(vec!["p0".to_string()]);
+    hinted_len.out = Some("v0".to_string());
+    hinted_len.type_hint = Some("str".to_string());
+
+    let wasm = compile_single_function_without_tir(vec![hinted_len, ret_value("v0")], &["p0"]);
+    let calls = import_call_counts(&wasm);
+    assert_eq!(
+        count_import(&calls, "len_str"),
+        0,
+        "result-side type_hint=str must not select WASM len_str"
+    );
+    assert!(
+        count_import(&calls, "len") > 0,
+        "unknown len operands should use generic len"
+    );
+
+    let mut container_len = op("len");
+    container_len.args = Some(vec!["p0".to_string()]);
+    container_len.out = Some("v0".to_string());
+    container_len.container_type = Some("str".to_string());
+
+    let wasm = compile_single_function_without_tir(vec![container_len, ret_value("v0")], &["p0"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "len_str") > 0,
+        "explicit container_type=str should still select WASM len_str"
     );
 }
 
@@ -768,7 +856,7 @@ fn build_list_compiles_using_builder_imports() {
     list.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     list.out = Some("v0".to_string());
 
-    let wasm = compile_single_function_without_tir(vec![list, op("ret_void")], &["p0", "p1"]);
+    let wasm = compile_single_function_without_tir(vec![list, ret_value("v0")], &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "list_builder_new") > 0,

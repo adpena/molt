@@ -122,3 +122,28 @@ pub(crate) const TYPE_ID_LIST_BOOL: u32 = 250;
 /// Non-NaN floats remain inline in the NaN-box; only NaN requires heap allocation
 /// so that each `float('nan')` call produces a unique pointer address.
 pub(crate) const TYPE_ID_FLOAT: u32 = 249;
+
+pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
+pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_LIST_BOOL;
+
+#[inline]
+pub(crate) fn is_valid_heap_type_id(type_id: u32) -> bool {
+    type_id == TYPE_ID_OBJECT || (MIN_HEAP_TYPE_ID..=MAX_HEAP_TYPE_ID).contains(&type_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heap_type_id_validator_covers_runtime_object_ids() {
+        assert!(is_valid_heap_type_id(TYPE_ID_OBJECT));
+        assert!(is_valid_heap_type_id(TYPE_ID_STRING));
+        assert!(is_valid_heap_type_id(TYPE_ID_FLOAT));
+        assert!(is_valid_heap_type_id(TYPE_ID_LIST_BOOL));
+
+        assert!(!is_valid_heap_type_id(0));
+        assert!(!is_valid_heap_type_id(TYPE_ID_OBJECT - 1));
+        assert!(!is_valid_heap_type_id(MAX_HEAP_TYPE_ID + 1));
+    }
+}

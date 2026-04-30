@@ -1720,9 +1720,9 @@ impl WasmBackend {
                 }
 
                 // Some ops lower to specialized runtime imports selected from
-                // container_type/type_hint at codegen time. Mirror that logic
-                // here so Auto mode keeps the same import lane that compile_func
-                // will actually emit.
+                // explicit container metadata at codegen time. Mirror that
+                // logic here so Auto mode keeps the same import lane that
+                // compile_func will actually emit.
                 let specialized_import = match kind {
                     "contains" => match op.container_type.as_deref() {
                         Some("set") | Some("frozenset") => Some("set_contains"),
@@ -1737,12 +1737,7 @@ impl WasmBackend {
                         Some("dict") => Some("len_dict"),
                         Some("tuple") => Some("len_tuple"),
                         Some("set") | Some("frozenset") => Some("len_set"),
-                        _ => match op.type_hint.as_deref() {
-                            Some("str") => Some("len_str"),
-                            Some("dict") => Some("len_dict"),
-                            Some("set") | Some("frozenset") => Some("len_set"),
-                            _ => None,
-                        },
+                        _ => None,
                     },
                     "index" => match op.container_type.as_deref() {
                         Some("list_int") => Some("list_int_getitem"),
@@ -5060,10 +5055,7 @@ impl WasmBackend {
         // a per-function ScopeArena lifecycle (arena_new at entry,
         // arena_alloc_object at every eligible alloc site, arena_free before
         // every return). Mirrors the native backend integration.
-        let has_arena_eligible = func_ir
-            .ops
-            .iter()
-            .any(|op| op.arena_eligible == Some(true));
+        let has_arena_eligible = func_ir.ops.iter().any(|op| op.arena_eligible == Some(true));
         let mut stateful = false;
         let mut saw_jump_or_label = false;
         let mut fast_int_count: usize = 0;
@@ -5833,13 +5825,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.type_hint.as_deref() == Some("str") {
-                            // Both operands known to be strings — direct concat,
-                            // skips the 8-branch dispatch in add.
-                            func.instruction(&Instruction::LocalGet(lhs));
-                            func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["str_concat"]);
-                        } else if op.fast_int.unwrap_or(false) {
+                        if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -5910,12 +5896,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.type_hint.as_deref() == Some("str") {
-                            // Both operands known to be strings — direct concat.
-                            func.instruction(&Instruction::LocalGet(lhs));
-                            func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["str_concat"]);
-                        } else if op.fast_int.unwrap_or(false) {
+                        if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -7325,11 +7306,7 @@ impl WasmBackend {
                     "bool" | "cast_bool" | "builtin_bool" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
-                        let truthy_import = if op.type_hint.as_deref() == Some("bool") {
-                            "is_truthy_bool"
-                        } else if op.fast_int.unwrap_or(false)
-                            || op.type_hint.as_deref() == Some("int")
-                        {
+                        let truthy_import = if op.fast_int.unwrap_or(false) {
                             "is_truthy_int"
                         } else {
                             "is_truthy"
@@ -7477,11 +7454,7 @@ impl WasmBackend {
                         {
                             func.instruction(&Instruction::LocalGet(arena_idx));
                             func.instruction(&Instruction::I64Const(op.value.unwrap()));
-                            emit_call(
-                                func,
-                                reloc_enabled,
-                                import_ids["arena_alloc_object"],
-                            );
+                            emit_call(func, reloc_enabled, import_ids["arena_alloc_object"]);
                         } else {
                             func.instruction(&Instruction::I64Const(op.value.unwrap()));
                             emit_call(func, reloc_enabled, import_ids["alloc"]);
@@ -7681,12 +7654,7 @@ impl WasmBackend {
                             Some("dict") => "len_dict",
                             Some("tuple") => "len_tuple",
                             Some("set") | Some("frozenset") => "len_set",
-                            _ => match op.type_hint.as_deref() {
-                                Some("str") => "len_str",
-                                Some("dict") => "len_dict",
-                                Some("set") | Some("frozenset") => "len_set",
-                                _ => "len",
-                            },
+                            _ => "len",
                         };
                         let import_id = selected_import_id(
                             import_ids,
@@ -12000,7 +11968,11 @@ impl WasmBackend {
                                     let arg = locals[&args_names[1]];
                                     func.instruction(&Instruction::LocalGet(method_bits));
                                     func.instruction(&Instruction::LocalGet(arg));
-                                    emit_call(func, reloc_enabled, import_ids["fast_str_startswith"]);
+                                    emit_call(
+                                        func,
+                                        reloc_enabled,
+                                        import_ids["fast_str_startswith"],
+                                    );
                                     true
                                 }
                                 "BoundMethod:str:upper" if arity == 0 => {
@@ -12979,11 +12951,7 @@ impl WasmBackend {
                     "if" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
-                        let truthy_import = if op.type_hint.as_deref() == Some("bool") {
-                            "is_truthy_bool"
-                        } else if op.fast_int.unwrap_or(false)
-                            || op.type_hint.as_deref() == Some("int")
-                        {
+                        let truthy_import = if op.fast_int.unwrap_or(false) {
                             "is_truthy_int"
                         } else {
                             "is_truthy"
@@ -13685,11 +13653,7 @@ impl WasmBackend {
                             };
                             let true_block = idx + 1;
                             let false_block = false_target;
-                            let truthy_import = if op.type_hint.as_deref() == Some("bool") {
-                                "is_truthy_bool"
-                            } else if op.fast_int.unwrap_or(false)
-                                || op.type_hint.as_deref() == Some("int")
-                            {
+                            let truthy_import = if op.fast_int.unwrap_or(false) {
                                 "is_truthy_int"
                             } else {
                                 "is_truthy"
@@ -14194,11 +14158,7 @@ impl WasmBackend {
                             };
                             let true_block = idx + 1;
                             let false_block = false_target;
-                            let truthy_import = if op.type_hint.as_deref() == Some("bool") {
-                                "is_truthy_bool"
-                            } else if op.fast_int.unwrap_or(false)
-                                || op.type_hint.as_deref() == Some("int")
-                            {
+                            let truthy_import = if op.fast_int.unwrap_or(false) {
                                 "is_truthy_int"
                             } else {
                                 "is_truthy"
