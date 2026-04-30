@@ -305,11 +305,26 @@ def _project_requires_python(project_root: Path) -> str | None:
     if not pyproject.exists():
         return None
     try:
-        data = tomllib.loads(pyproject.read_text())
-    except (OSError, tomllib.TOMLDecodeError):
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(
+            f"failed to read pyproject.toml at {pyproject}: {exc}"
+        ) from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"invalid pyproject.toml at {pyproject}: {exc}") from exc
+    project_cfg = data.get("project")
+    if project_cfg is None:
         return None
-    raw = data.get("project", {}).get("requires-python")
-    return raw if isinstance(raw, str) and raw.strip() else None
+    if not isinstance(project_cfg, dict):
+        raise ValueError(f"project table in {pyproject} must be a TOML table")
+    if "requires-python" not in project_cfg:
+        return None
+    raw = project_cfg["requires-python"]
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(
+            f"project.requires-python in {pyproject} must be a non-empty string"
+        )
+    return raw
 
 
 def _target_python_from_requires_python(
@@ -350,9 +365,12 @@ def _resolve_target_python_version(
             "target_python",
             "target-python",
         ):
-            raw_config = build_config.get(key)
-            if isinstance(raw_config, str) and raw_config.strip():
-                return _parse_target_python_version(raw_config)
+            if key not in build_config:
+                continue
+            raw_config = build_config[key]
+            if not isinstance(raw_config, str) or not raw_config.strip():
+                raise ValueError(f"[tool.molt.build] {key} must be a non-empty string")
+            return _parse_target_python_version(raw_config)
     return _target_python_from_requires_python(_project_requires_python(project_root))
 
 
