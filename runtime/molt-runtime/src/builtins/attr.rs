@@ -576,7 +576,7 @@ pub(crate) unsafe fn module_attr_lookup(
                 inc_ref_bits(_py, val_bits);
                 return Some(val_bits);
             }
-            let res_bits = if pep649_enabled() {
+            let res_bits = if pep649_enabled(_py) {
                 let annotate_name_bits = intern_static_name(
                     _py,
                     &runtime_state(_py).interned.annotate_name,

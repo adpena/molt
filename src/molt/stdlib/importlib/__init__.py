@@ -77,9 +77,6 @@ def import_module(name: str, package: str | None = None):
         raise TypeError("__package__ not set to a string")
 
     resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)
-    # CPython removed tkinter.tix in 3.13 (deprecated since 3.6).
-    if resolved == "tkinter.tix" and _sys.version_info >= (3, 13):
-        raise ModuleNotFoundError("No module named 'tkinter.tix'")
     # `encodings.oem` is intentionally unavailable on non-Windows when codecs
     # does not expose OEM helpers; raise at the importlib boundary so callers
     # see CPython-shaped ImportError semantics.

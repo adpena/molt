@@ -688,7 +688,7 @@ unsafe fn type_attr_lookup_ptr_inner(
                 inc_ref_bits(_py, dict_bits);
                 return Some(dict_bits);
             }
-            if name == "__annotate__" && pep649_enabled() {
+            if name == "__annotate__" && pep649_enabled(_py) {
                 let mut annotate_bits = class_annotate_bits(obj_ptr);
                 if annotate_bits == 0 {
                     let annotate_name_bits = intern_static_name(
@@ -732,7 +732,7 @@ unsafe fn type_attr_lookup_ptr_inner(
                     return Some(cached);
                 }
                 let annotate_bits = class_annotate_bits(obj_ptr);
-                let res_bits = if pep649_enabled()
+                let res_bits = if pep649_enabled(_py)
                     && annotate_bits != 0
                     && !obj_from_bits(annotate_bits).is_none()
                 {
@@ -2090,7 +2090,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 _py,
                 obj_from_bits(attr_bits),
                 obj_from_bits(annotate_name_bits),
-            ) && pep649_enabled()
+            ) && pep649_enabled(_py)
             {
                 let mut annotate_bits = function_annotate_bits(obj_ptr);
                 if annotate_bits == 0 {
@@ -2115,7 +2115,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     return Some(cached);
                 }
                 let annotate_bits = function_annotate_bits(obj_ptr);
-                let res_bits = if pep649_enabled()
+                let res_bits = if pep649_enabled(_py)
                     && annotate_bits != 0
                     && !obj_from_bits(annotate_bits).is_none()
                 {
@@ -3096,7 +3096,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     class_bump_layout_version(obj_ptr);
                     return MoltObject::none().bits() as i64;
                 }
-                if attr_name == "__annotate__" && pep649_enabled() {
+                if attr_name == "__annotate__" && pep649_enabled(_py) {
                     let val_obj = obj_from_bits(val_bits);
                     if !val_obj.is_none() {
                         let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(val_bits)));
@@ -3149,12 +3149,12 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                             b"__annotate__",
                         );
                         let none_bits = MoltObject::none().bits();
-                        if pep649_enabled() {
+                        if pep649_enabled(_py) {
                             dict_set_in_place(_py, dict_ptr, annotate_bits, none_bits);
                         }
                     }
                     class_set_annotations_bits(_py, obj_ptr, val_bits);
-                    if pep649_enabled() {
+                    if pep649_enabled(_py) {
                         class_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
                     }
                     class_bump_layout_version(obj_ptr);
@@ -3414,7 +3414,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 if attr_name == "__closure__" {
                     return raise_exception::<_>(_py, "AttributeError", "readonly attribute");
                 }
-                if attr_name == "__annotate__" && pep649_enabled() {
+                if attr_name == "__annotate__" && pep649_enabled(_py) {
                     let val_obj = obj_from_bits(val_bits);
                     if !val_obj.is_none() {
                         let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(val_bits)));
@@ -3456,7 +3456,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         val_bits
                     };
                     function_set_annotations_bits(_py, obj_ptr, ann_bits);
-                    if pep649_enabled() {
+                    if pep649_enabled(_py) {
                         function_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
                     }
                     return MoltObject::none().bits() as i64;
@@ -3831,7 +3831,7 @@ pub(crate) unsafe fn del_attr_ptr(
                     obj_from_bits(annotations_bits),
                 ) {
                     if dict_del_in_place(_py, dict_ptr, annotations_bits) {
-                        if pep649_enabled() {
+                        if pep649_enabled(_py) {
                             let annotate_bits = intern_static_name(
                                 _py,
                                 &runtime_state(_py).interned.annotate_name,
@@ -3853,7 +3853,7 @@ pub(crate) unsafe fn del_attr_ptr(
                     b"__annotate__",
                 );
                 if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(annotate_bits))
-                    && pep649_enabled()
+                    && pep649_enabled(_py)
                 {
                     return raise_exception::<_>(
                         _py,
@@ -3879,7 +3879,7 @@ pub(crate) unsafe fn del_attr_ptr(
                     "cannot delete attributes on builtin type",
                 );
             }
-            if attr_name == "__annotate__" && pep649_enabled() {
+            if attr_name == "__annotate__" && pep649_enabled(_py) {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -3900,7 +3900,7 @@ pub(crate) unsafe fn del_attr_ptr(
                     if dict_del_in_place(_py, dict_ptr, annotations_bits) {
                         removed = true;
                     }
-                    if removed && pep649_enabled() {
+                    if removed && pep649_enabled(_py) {
                         let annotate_bits = intern_static_name(
                             _py,
                             &runtime_state(_py).interned.annotate_name,
@@ -3915,7 +3915,7 @@ pub(crate) unsafe fn del_attr_ptr(
                 }
                 if removed {
                     class_set_annotations_bits(_py, obj_ptr, 0u64);
-                    if pep649_enabled() {
+                    if pep649_enabled(_py) {
                         class_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
                     }
                     class_bump_layout_version(obj_ptr);
@@ -3988,7 +3988,7 @@ pub(crate) unsafe fn del_attr_ptr(
             return attr_error(_py, "exception", attr_name);
         }
         if type_id == TYPE_ID_FUNCTION {
-            if attr_name == "__annotate__" && pep649_enabled() {
+            if attr_name == "__annotate__" && pep649_enabled(_py) {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -3997,7 +3997,7 @@ pub(crate) unsafe fn del_attr_ptr(
             }
             if attr_name == "__annotations__" {
                 function_set_annotations_bits(_py, obj_ptr, 0);
-                if pep649_enabled() {
+                if pep649_enabled(_py) {
                     function_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
                 }
                 return MoltObject::none().bits() as i64;

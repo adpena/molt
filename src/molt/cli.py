@@ -16341,16 +16341,9 @@ def _prepare_backend_ir(
 
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
-    needs_sys_version_bootstrap = any(
-        name == "sys" or name.startswith("sys.") for name in explicit_imports
-    )
-    version_ops = (
-        _build_version_info_ops(
-            register_global_code_id=register_global_code_id,
-            target_python=target_python,
-        )
-        if needs_sys_version_bootstrap
-        else []
+    version_ops = _build_version_info_ops(
+        register_global_code_id=register_global_code_id,
+        target_python=target_python,
     )
     entry_ops = _build_entry_main_ops(
         entry_init=entry_init,

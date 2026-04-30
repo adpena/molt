@@ -1,37 +1,12 @@
 use molt_obj_model::MoltObject;
 
+use crate::object::ops_sys::runtime_target_minor;
 use crate::{alloc_string, alloc_tuple, obj_from_bits, raise_exception, to_i64};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stat_constants() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        fn stat_target_minor() -> i64 {
-            // Check explicit env-var overrides first.  Do NOT read from
-            // state.sys_version_info — that field is set by
-            // molt_sys_set_version_info which bakes in the *host* Python
-            // version (e.g. 3.13) used to run the compiler.  The stat
-            // intrinsic must use molt's *target* version (3.12) unless the
-            // user explicitly overrides via an env var.
-            if let Ok(raw) = std::env::var("MOLT_PYTHON_VERSION")
-                && let Some((major_raw, minor_raw)) = raw.split_once('.')
-                && major_raw.trim() == "3"
-                && let Ok(minor) = minor_raw.trim().parse::<i64>()
-            {
-                return minor;
-            }
-            if let Ok(raw) = std::env::var("MOLT_SYS_VERSION_INFO") {
-                let mut parts = raw.split(',');
-                if let (Some(major_raw), Some(minor_raw)) = (parts.next(), parts.next())
-                    && major_raw.trim() == "3"
-                    && let Ok(minor) = minor_raw.trim().parse::<i64>()
-                {
-                    return minor;
-                }
-            }
-            12
-        }
-
-        let has_313_constants = stat_target_minor() >= 13;
+        let has_313_constants = runtime_target_minor(_py) >= 13;
         const S_IFMT_MASK: i64 = 0o170000;
         const S_IFSOCK: i64 = 0o140000;
         const S_IFLNK: i64 = 0o120000;
