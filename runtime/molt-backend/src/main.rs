@@ -161,6 +161,17 @@ fn resolve_backend_output_path(output_path: Option<&str>, kind: BackendOutputKin
     output_path.unwrap_or(default_backend_output_path(kind))
 }
 
+#[cfg(feature = "rust-backend")]
+fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
+    let mut backend = RustBackend::new();
+    backend.compile_checked(ir).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Rust validation failed: {err}"),
+        )
+    })
+}
+
 fn partition_functions_for_batches(
     functions: Vec<molt_backend::FunctionIR>,
     max_functions_per_batch: usize,
@@ -1973,8 +1984,7 @@ fn main() -> io::Result<()> {
                     format!("failed to create backend output '{}': {}", output_file, err),
                 )
             })?;
-            let mut backend = RustBackend::new();
-            let source = backend.compile(&ir);
+            let source = rust_source_for_ir(&ir)?;
             file.write_all(source.as_bytes())?;
             println!("Successfully transpiled to {output_file}");
         }
@@ -2254,6 +2264,8 @@ mod tests {
         resolved_batch_size_limit, shared_stdlib_cache_matches, write_cached_output,
         write_shared_stdlib_cache_sidecars,
     };
+    #[cfg(feature = "rust-backend")]
+    use super::rust_source_for_ir;
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
     use std::io::Cursor;
     use std::io::Write;
@@ -2461,6 +2473,33 @@ mod tests {
         assert_eq!(
             resolve_backend_output_path(None, BackendOutputKind::Wasm),
             "dist/output.wasm"
+        );
+    }
+
+    #[cfg(feature = "rust-backend")]
+    #[test]
+    fn rust_source_for_ir_rejects_stub_markers() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "unsupported_for_rust_target_test".to_string(),
+                    out: Some("v0".to_string()),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let err = rust_source_for_ir(&ir).expect_err("Rust target must reject stub markers");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("unimplemented op stubs"),
+            "unexpected error: {err}"
         );
     }
 
