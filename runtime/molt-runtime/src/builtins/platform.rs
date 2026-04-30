@@ -410,69 +410,6 @@ fn resolve_bootstrap_pwd(raw_pwd: &str) -> String {
     String::new()
 }
 
-fn path_is_dir(path: &str) -> bool {
-    std::fs::metadata(path)
-        .map(|metadata| metadata.is_dir())
-        .unwrap_or(false)
-}
-
-fn collect_virtual_env_site_packages(virtual_env: &str, windows_paths: bool) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    if virtual_env.trim().is_empty() {
-        return out;
-    }
-    let sep = if windows_paths { '\\' } else { '/' };
-    let virtual_env = virtual_env.trim();
-    if windows_paths {
-        let lib = path_join_text(virtual_env.to_string(), "Lib", sep);
-        let site_packages = path_join_text(lib, "site-packages", sep);
-        if path_is_dir(&site_packages) {
-            append_unique_path_hashed(&mut out, &mut seen, &site_packages);
-        }
-        let lib_lower = path_join_text(virtual_env.to_string(), "lib", sep);
-        let site_packages_lower = path_join_text(lib_lower, "site-packages", sep);
-        if path_is_dir(&site_packages_lower) {
-            append_unique_path_hashed(&mut out, &mut seen, &site_packages_lower);
-        }
-        return out;
-    }
-    let lib = path_join_text(virtual_env.to_string(), "lib", sep);
-    if !path_is_dir(&lib) {
-        return out;
-    }
-    let mut discovered: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&lib) {
-        for entry in entries.flatten() {
-            let file_type = match entry.file_type() {
-                Ok(kind) => kind,
-                Err(_) => continue,
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-            let dir_name = entry.file_name().to_string_lossy().into_owned();
-            if !dir_name.starts_with("python") {
-                continue;
-            }
-            let version_root = entry.path().to_string_lossy().into_owned();
-            let candidate = path_join_text(version_root, "site-packages", sep);
-            if path_is_dir(&candidate) {
-                discovered.push(candidate);
-            }
-        }
-    }
-    discovered.sort();
-    for candidate in discovered {
-        append_unique_path_hashed(&mut out, &mut seen, &candidate);
-    }
-    let fallback = path_join_text(lib, "site-packages", sep);
-    if path_is_dir(&fallback) {
-        append_unique_path_hashed(&mut out, &mut seen, &fallback);
-    }
-    out
-}
-
 struct SysBootstrapState {
     path: Vec<String>,
     stdlib_root: Option<String>,
@@ -488,14 +425,12 @@ struct SysBootstrapState {
 }
 
 fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBootstrapState {
-    let (py_path_raw, module_roots_raw, virtual_env_raw, dev_trusted_raw, pwd_raw, windows_paths) = {
+    let (module_roots_raw, dev_trusted_raw, pwd_raw, windows_paths) = {
         let guard = env_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         (
-            guard.get("PYTHONPATH").cloned().unwrap_or_default(),
             guard.get("MOLT_MODULE_ROOTS").cloned().unwrap_or_default(),
-            guard.get("VIRTUAL_ENV").cloned().unwrap_or_default(),
             guard.get("MOLT_DEV_TRUSTED").cloned().unwrap_or_default(),
             guard.get("PWD").cloned().unwrap_or_default(),
             sys_platform_str().starts_with("win"),
@@ -505,12 +440,8 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
     let sep = if windows_paths { ';' } else { ':' };
     let path_sep = if windows_paths { '\\' } else { '/' };
     let pwd = resolve_bootstrap_pwd(&pwd_raw);
-    let mut pythonpath_entries: Vec<String> = Vec::new();
-    let mut pythonpath_seen: HashSet<String> = HashSet::new();
-    for entry in split_nonempty_paths(&py_path_raw, sep) {
-        let resolved = bootstrap_resolve_path_entry(&entry, &pwd, path_sep);
-        append_unique_path_hashed(&mut pythonpath_entries, &mut pythonpath_seen, &resolved);
-    }
+    let pythonpath_entries: Vec<String> = Vec::new();
+    let py_path_raw = String::new();
     let mut paths: Vec<String> = pythonpath_entries.clone();
     let mut paths_seen: HashSet<String> = pythonpath_entries.iter().cloned().collect();
 
@@ -530,11 +461,8 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
         append_unique_path_hashed(&mut paths, &mut paths_seen, &resolved);
     }
 
-    let venv_site_packages_entries =
-        collect_virtual_env_site_packages(&virtual_env_raw, windows_paths);
-    for entry in &venv_site_packages_entries {
-        append_unique_path_hashed(&mut paths, &mut paths_seen, entry);
-    }
+    let venv_site_packages_entries: Vec<String> = Vec::new();
+    let virtual_env_raw = String::new();
 
     let dev_trusted = dev_trusted_raw.trim().to_ascii_lowercase();
     let include_cwd = !matches!(dev_trusted.as_str(), "0" | "false" | "no");
@@ -1481,9 +1409,6 @@ fn importlib_search_paths(search_paths: &[String], module_file: Option<String>) 
         append_unique_path_hashed(&mut out, &mut seen, stdlib_root);
     }
     for root in &state.module_roots_entries {
-        append_unique_path_hashed(&mut out, &mut seen, root);
-    }
-    for root in &state.venv_site_packages_entries {
         append_unique_path_hashed(&mut out, &mut seen, root);
     }
     for base in search_paths {
