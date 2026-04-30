@@ -30790,11 +30790,12 @@ impl SimpleBackend {
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
+                            ) && mark_cleanup_root_once(
+                                &alias_roots,
+                                &mut already_decrefed,
+                                name,
                             ) {
-                                if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
-                                {
-                                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                                }
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
                         for name in &tracked_obj_vars {
@@ -30815,11 +30816,12 @@ impl SimpleBackend {
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
+                            ) && mark_cleanup_root_once(
+                                &alias_roots,
+                                &mut already_decrefed,
+                                name,
                             ) {
-                                if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
-                                {
-                                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                                }
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
                         reachable_blocks.insert(master_return_block);
@@ -30960,10 +30962,10 @@ impl SimpleBackend {
                             )
                             .map(|v| *v)
                         });
-                        if let Some(val) = val {
-                            if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
-                                builder.ins().call(local_dec_ref_obj, &[val]);
-                            }
+                        if let Some(val) = val
+                            && mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
+                        {
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     for name in &tracked_obj_vars {
@@ -30988,10 +30990,10 @@ impl SimpleBackend {
                             )
                             .map(|v| *v)
                         });
-                        if let Some(val) = val {
-                            if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
-                                builder.ins().call(local_dec_ref_obj, &[val]);
-                            }
+                        if let Some(val) = val
+                            && mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
+                        {
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     reachable_blocks.insert(master_return_block);
@@ -31068,10 +31070,10 @@ impl SimpleBackend {
                         ) {
                             continue;
                         }
-                        if let Some(val) = entry_vars.get(name) {
-                            if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
-                            }
+                        if let Some(val) = entry_vars.get(name)
+                            && mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
+                        {
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
                     for name in &tracked_obj_vars {
@@ -31084,10 +31086,10 @@ impl SimpleBackend {
                         ) {
                             continue;
                         }
-                        if let Some(val) = entry_vars.get(name) {
-                            if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
-                            }
+                        if let Some(val) = entry_vars.get(name)
+                            && mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
+                        {
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
                     reachable_blocks.insert(master_return_block);
@@ -32388,10 +32390,10 @@ impl SimpleBackend {
                 ) {
                     continue;
                 }
-                if let Some(val) = entry_vars.get(name) {
-                    if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
+                if let Some(val) = entry_vars.get(name)
+                    && mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
+                {
+                    builder.ins().call(local_dec_ref_obj, &[*val]);
                 }
             }
             for name in &tracked_obj_vars {
@@ -32404,10 +32406,10 @@ impl SimpleBackend {
                 ) {
                     continue;
                 }
-                if let Some(val) = entry_vars.get(name) {
-                    if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
+                if let Some(val) = entry_vars.get(name)
+                    && mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
+                {
+                    builder.ins().call(local_dec_ref_obj, &[*val]);
                 }
             }
             if has_ret {
