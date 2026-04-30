@@ -6955,14 +6955,14 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
-                // Validate type_id before dec_ref to prevent use-after-free
-                // from codegen double-free bugs. A freed object's header is
-                // overwritten by the allocator's freelist metadata, producing
-                // invalid type_ids (>300 or 0). Skip dec_ref for these.
                 let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
                 let type_id = (*header_ptr).type_id;
-                if type_id == 0 || type_id > 300 {
-                    return;
+                if !crate::object::is_valid_heap_type_id(type_id) {
+                    eprintln!(
+                        "molt fatal: invalid object header before dec_ref ptr=0x{:x} bits=0x{:x} type_id={}",
+                        ptr as usize, bits, type_id
+                    );
+                    std::process::abort();
                 }
                 molt_dec_ref(ptr);
             };

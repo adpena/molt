@@ -90,10 +90,10 @@ use crate::{
     TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
     TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
     TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER,
-    TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT,
-    TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD,
-    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP, asyncgen_call_finalizer,
-    asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove, asyncgen_running_bits,
+    TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY,
+    TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING,
+    TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP, asyncgen_call_finalizer, asyncgen_gen_bits,
+    asyncgen_pending_bits, asyncgen_registry_remove, asyncgen_running_bits,
     asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop, asyncio_gather_poll_fn_addr,
     asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr, asyncio_ready_runner_task_drop,
     asyncio_server_accept_loop_poll_fn_addr, asyncio_server_accept_loop_task_drop,
@@ -1649,20 +1649,20 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         let header_flags = (*header_ptr).flags;
         let header_size_class = (*header_ptr).size_class;
         let header_cold_idx = (*header_ptr).cold_idx;
-        if type_id == TYPE_ID_NOT_IMPLEMENTED {
-            return;
-        }
         if (header_flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
-        // Check-before-decrement: prevent double-free by verifying refcount > 0
-        // BEFORE the atomic decrement. Under the GIL, only one thread runs at a
-        // time, so this load → check → fetch_sub sequence is safe.
-        // The codegen's drain_cleanup_tracked can emit duplicate dec_ref calls
-        // from different tracking lists; this guard makes dec_ref idempotent.
+        // A zero refcount at dec_ref entry is an ownership invariant violation.
+        // Do not make dec_ref idempotent: a stale post-free pointer may already
+        // alias allocator metadata or a different object, so continuing would
+        // corrupt unrelated runtime state.
         let current = (*header_ptr).ref_count.load(AtomicOrdering::Acquire);
         if current == 0 {
-            return; // Already freed — no-op
+            eprintln!(
+                "molt fatal: refcount underflow before dec_ref ptr=0x{:x} type_id={}",
+                ptr as usize, type_id
+            );
+            std::process::abort();
         }
         let prev = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
         if type_id == TYPE_ID_OBJECT && debug_object_rc() {
