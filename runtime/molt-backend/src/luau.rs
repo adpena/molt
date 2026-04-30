@@ -1395,7 +1395,8 @@ impl LuauBackend {
             // ================================================================
             "add" | "inplace_add" => {
                 // Python + is overloaded: numeric add for numbers, concat for strings.
-                // When fast_int or type_hint indicates numeric, skip the type check.
+                // Only producer-derived operand facts may skip the type check:
+                // the current op's result-side type_hint is passive metadata.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -1405,7 +1406,6 @@ impl LuauBackend {
                     let rhs_num = self.numeric_operand_expr(&args[1]);
                     let is_numeric = op.fast_int == Some(true)
                         || op.fast_float == Some(true)
-                        || matches!(op.type_hint.as_deref(), Some("int") | Some("float"))
                         || self
                             .var_type_hints
                             .get(&args[0])
@@ -1545,8 +1545,7 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     let v = sanitize_ident(val);
-                    let is_bool = matches!(op.type_hint.as_deref(), Some("bool"))
-                        || self.var_type_hints.get(val).is_some_and(|t| t == "bool");
+                    let is_bool = self.is_known_bool_value(val);
                     if is_bool {
                         self.emit_line(&format!("local {out}: boolean = not {v}"));
                     } else {
@@ -1627,7 +1626,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let a = sanitize_ident(&args[0]);
                     let b = sanitize_ident(&args[1]);
-                    if op.type_hint.as_deref() == Some("bool") {
+                    if self.is_known_bool_value(&args[0]) && self.is_known_bool_value(&args[1]) {
                         self.emit_line(&format!("local {out} = {a} and {b}"));
                     } else {
                         // Python `a and b`: if a is falsy return a, else return b
@@ -1643,7 +1642,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let a = sanitize_ident(&args[0]);
                     let b = sanitize_ident(&args[1]);
-                    if op.type_hint.as_deref() == Some("bool") {
+                    if self.is_known_bool_value(&args[0]) && self.is_known_bool_value(&args[1]) {
                         self.emit_line(&format!("local {out} = {a} or {b}"));
                     } else {
                         // Python `a or b`: if a is truthy return a, else return b
@@ -1732,7 +1731,7 @@ impl LuauBackend {
                 // Emit real conditional goto with Python truthiness guard.
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond_raw) = args.first() {
-                    let cond = self.guard_truthiness(cond_raw, op);
+                    let cond = self.guard_truthiness(cond_raw);
                     if let Some(id) = op.value {
                         self.emit_line(&format!("if {cond} then goto label_{id} end"));
                     } else if let Some(ref target) = op.s_value {
@@ -1750,7 +1749,7 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let cond_raw = args.first().map(|s| s.as_str()).or(op.var.as_deref());
                 let cond = if let Some(raw) = cond_raw {
-                    self.guard_truthiness(raw, op)
+                    self.guard_truthiness(raw)
                 } else {
                     "true".to_string()
                 };
@@ -1769,7 +1768,7 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let cond_raw = args.first().map(|s| s.as_str()).or(op.var.as_deref());
                 let cond = if let Some(raw) = cond_raw {
-                    self.guard_truthiness(raw, op)
+                    self.guard_truthiness(raw)
                 } else {
                     "false".to_string()
                 };
@@ -1798,13 +1797,10 @@ impl LuauBackend {
                 if let Some(cond) = args.first() {
                     let cond_ident = sanitize_ident(cond);
                     // Python truthiness: 0, "", [], {} are falsy but Luau
-                    // treats them as truthy.  When the condition comes from a
-                    // comparison op (type_hint="bool") or is a literal bool,
-                    // use it directly.  Otherwise wrap in molt_bool().
-                    let is_bool = op.type_hint.as_deref() == Some("bool")
-                        || self.var_type_hints.get(cond).is_some_and(|t| t == "bool")
-                        || cond_ident == "true"
-                        || cond_ident == "false";
+                    // treats them as truthy. Known boolean producers and
+                    // literal booleans can be used directly. Otherwise wrap in
+                    // molt_bool().
+                    let is_bool = self.is_known_bool_value(cond);
                     if is_bool {
                         self.emit_line(&format!("if {cond_ident} then"));
                     } else {
@@ -1848,14 +1844,14 @@ impl LuauBackend {
             "loop_break_if_true" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond_raw) = args.first() {
-                    let cond = self.guard_truthiness(cond_raw, op);
+                    let cond = self.guard_truthiness(cond_raw);
                     self.emit_line(&format!("if {cond} then break end"));
                 }
             }
             "loop_break_if_false" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond_raw) = args.first() {
-                    let cond = self.guard_truthiness(cond_raw, op);
+                    let cond = self.guard_truthiness(cond_raw);
                     // Use parens only when cond is a molt_bool() call (compound expr).
                     // Plain idents don't need parens and must not have them
                     // (optimization passes pattern-match `if not vN then`).
@@ -4589,12 +4585,9 @@ impl LuauBackend {
 
     /// Wrap a condition identifier in `molt_bool()` if it's not a known boolean.
     /// Returns the identifier as-is for booleans, or `molt_bool(ident)` otherwise.
-    fn guard_truthiness(&self, raw_name: &str, op: &OpIR) -> String {
+    fn guard_truthiness(&self, raw_name: &str) -> String {
         let ident = sanitize_ident(raw_name);
-        let hint = op
-            .type_hint
-            .as_deref()
-            .or_else(|| self.var_type_hints.get(raw_name).map(|s| s.as_str()));
+        let hint = self.var_type_hints.get(raw_name).map(|s| s.as_str());
         match hint {
             Some("bool") => ident,
             // Strength-reduce: type-specific truthiness checks avoid
@@ -4607,6 +4600,14 @@ impl LuauBackend {
             _ if ident == "true" || ident == "false" => ident,
             _ => format!("molt_bool({ident})"),
         }
+    }
+
+    fn is_known_bool_value(&self, raw_name: &str) -> bool {
+        matches!(raw_name, "true" | "false")
+            || self
+                .var_type_hints
+                .get(raw_name)
+                .is_some_and(|hint| hint == "bool")
     }
 
     fn emit_line(&mut self, line: &str) {
@@ -9948,6 +9949,131 @@ mod tests {
         assert!(
             !output.contains("true + false"),
             "bool addition must not emit raw Luau boolean arithmetic, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_result_type_hint_does_not_prove_luau_not_operand_bool() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "truthy_not".to_string(),
+                params: vec!["x".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "not".to_string(),
+                        args: Some(vec!["x".to_string()]),
+                        out: Some("v0".to_string()),
+                        type_hint: Some("bool".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("not molt_bool(x)"),
+            "result-side type_hint=bool must not bypass Python truthiness for not, got:\n{output}"
+        );
+        assert!(
+            !output.contains("not x"),
+            "unknown operands must not use raw Luau boolean not, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_result_type_hint_does_not_prove_luau_and_or_operands_bool() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "truthy_and_or".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "and".to_string(),
+                        args: Some(vec!["a".to_string(), "b".to_string()]),
+                        out: Some("v0".to_string()),
+                        type_hint: Some("bool".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "or".to_string(),
+                        args: Some(vec!["a".to_string(), "b".to_string()]),
+                        out: Some("v1".to_string()),
+                        type_hint: Some("bool".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v1".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("if molt_bool(a) then b else a"),
+            "and must preserve Python value-returning truthiness for unknown operands, got:\n{output}"
+        );
+        assert!(
+            output.contains("if molt_bool(a) then a else b"),
+            "or must preserve Python value-returning truthiness for unknown operands, got:\n{output}"
+        );
+        assert!(
+            !output.contains("local v0 = a and b") && !output.contains("local v1 = a or b"),
+            "result-side type_hint=bool must not select native Luau and/or, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_result_type_hint_does_not_force_luau_numeric_add() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "hinted_add".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "add".to_string(),
+                        args: Some(vec!["a".to_string(), "b".to_string()]),
+                        out: Some("v0".to_string()),
+                        type_hint: Some("int".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("if type(a) == \"string\" or type(b) == \"string\""),
+            "unknown add operands must keep Python string-concat guard, got:\n{output}"
+        );
+        assert!(
+            !output.contains("local v0: number ="),
+            "result-side type_hint=int must not force numeric add lowering, got:\n{output}"
         );
     }
 
