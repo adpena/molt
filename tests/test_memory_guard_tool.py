@@ -248,6 +248,81 @@ def test_main_rejects_unsafe_total_threshold(
     assert "below 30" in capsys.readouterr().err
 
 
+def test_main_reexec_hides_guarded_command_from_guard_argv() -> None:
+    marker = "molt-backend-marker"
+    captured: dict[str, object] = {}
+
+    def fake_execve(path, argv, env):
+        captured["path"] = path
+        captured["argv"] = list(argv)
+        captured["env"] = dict(env)
+        raise SystemExit(73)
+
+    with pytest.raises(SystemExit) as exc:
+        memory_guard.main(
+            [
+                "--max-rss-gb",
+                "1",
+                "--poll-interval",
+                "0.01",
+                "--",
+                sys.executable,
+                "-c",
+                f"print({marker!r})",
+            ],
+            hide_command_argv=True,
+            execve=fake_execve,
+        )
+
+    assert exc.value.code == 73
+    worker_argv = captured["argv"]
+    assert isinstance(worker_argv, list)
+    assert all(marker not in arg for arg in worker_argv)
+    env = captured["env"]
+    assert isinstance(env, dict)
+    encoded = env[memory_guard.INTERNAL_COMMAND_ENV]
+    assert json.loads(encoded) == [sys.executable, "-c", f"print({marker!r})"]
+    assert env[memory_guard.INTERNAL_WORKER_ENV] == "1"
+
+
+def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> None:
+    command = [sys.executable, "-c", "print('worker')"]
+    observed: dict[str, object] = {}
+
+    def fake_run_guarded(seen_command, **kwargs):
+        observed["command"] = list(seen_command)
+        observed["env"] = dict(kwargs["env"])
+        return memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setenv(memory_guard.INTERNAL_WORKER_ENV, "1")
+    monkeypatch.setenv(memory_guard.INTERNAL_COMMAND_ENV, json.dumps(command))
+    monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--poll-interval",
+            "0.01",
+        ],
+        hide_command_argv=True,
+    )
+
+    assert rc == 0
+    assert observed["command"] == command
+    child_env = observed["env"]
+    assert isinstance(child_env, dict)
+    assert memory_guard.INTERNAL_COMMAND_ENV not in child_env
+    assert memory_guard.INTERNAL_WORKER_ENV not in child_env
+
+
 def test_main_writes_summary_json(tmp_path) -> None:
     summary_path = tmp_path / "summary.json"
     rc = memory_guard.main(
