@@ -306,10 +306,84 @@ impl LuauBackend {
             .push_str("local molt_func_attrs: {[any]: {[string]: any}} = {}\n");
         self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n\ttime = nil,\n\tos = nil,\n}\n\n");
 
+        let needs_luau_module_import = func_body.contains("molt_luau_import_module(");
+        let needs_sys_bootstrap = func_body.contains("molt_sys_set_version_info(")
+            || func_body.contains("molt_sys_ensure_module(")
+            || needs_luau_module_import;
+        if needs_sys_bootstrap {
+            self.output.push_str(concat!(
+                "local molt_sys_version_info = {3, 12, 0, \"final\", 0}\n",
+                "local molt_sys_version = \"3.12.0 (molt)\"\n",
+                "local molt_sys_hexversion = 0x030c00f0\n\n",
+                "local function molt_sys_release_nibble(releaselevel)\n",
+                "\tif releaselevel == \"alpha\" then return 0xA end\n",
+                "\tif releaselevel == \"beta\" then return 0xB end\n",
+                "\tif releaselevel == \"candidate\" then return 0xC end\n",
+                "\treturn 0xF\n",
+                "end\n\n",
+                "local function molt_sys_format_version(major, minor, micro, releaselevel, serial)\n",
+                "\tlocal suffix = \"\"\n",
+                "\tif releaselevel == \"alpha\" then suffix = \"a\" .. tostring(serial) end\n",
+                "\tif releaselevel == \"beta\" then suffix = \"b\" .. tostring(serial) end\n",
+                "\tif releaselevel == \"candidate\" then suffix = \"rc\" .. tostring(serial) end\n",
+                "\tif releaselevel ~= \"final\" and releaselevel ~= \"\" and suffix == \"\" then suffix = tostring(releaselevel) .. tostring(serial) end\n",
+                "\treturn tostring(major) .. \".\" .. tostring(minor) .. \".\" .. tostring(micro) .. suffix .. \" (molt)\"\n",
+                "end\n\n",
+                "local function molt_sys_compute_hexversion(major, minor, micro, releaselevel, serial)\n",
+                "\treturn major * 0x1000000 + minor * 0x10000 + micro * 0x100 + molt_sys_release_nibble(releaselevel) * 0x10 + serial\n",
+                "end\n\n",
+                "local function molt_sys_seed_module()\n",
+                "\tlocal sys_module = {\n",
+                "\t\tversion_info = molt_sys_version_info,\n",
+                "\t\tversion = molt_sys_version,\n",
+                "\t\thexversion = molt_sys_hexversion,\n",
+                "\t}\n",
+                "\tmolt_module_cache[\"sys\"] = sys_module\n",
+                "\treturn sys_module\n",
+                "end\n\n",
+                "local function molt_sys_ensure_module()\n",
+                "\tlocal sys_module = molt_module_cache[\"sys\"]\n",
+                "\tif sys_module == nil then\n",
+                "\t\treturn molt_sys_seed_module()\n",
+                "\tend\n",
+                "\treturn sys_module\n",
+                "end\n\n",
+                "local function molt_sys_set_version_info(major, minor, micro, releaselevel, serial, version)\n",
+                "\tmajor = major or 3\n",
+                "\tminor = minor or 12\n",
+                "\tmicro = micro or 0\n",
+                "\treleaselevel = releaselevel or \"final\"\n",
+                "\tserial = serial or 0\n",
+                "\tif version == nil or version == \"\" then\n",
+                "\t\tversion = molt_sys_format_version(major, minor, micro, releaselevel, serial)\n",
+                "\tend\n",
+                "\tmolt_sys_version_info = {major, minor, micro, releaselevel, serial}\n",
+                "\tmolt_sys_version = version\n",
+                "\tmolt_sys_hexversion = molt_sys_compute_hexversion(major, minor, micro, releaselevel, serial)\n",
+                "\tmolt_sys_seed_module()\n",
+                "\treturn nil\n",
+                "end\n\n",
+            ));
+        }
+
+        if needs_luau_module_import {
+            self.output.push_str(concat!(
+                "local function molt_luau_import_module(name)\n",
+                "\tif name == \"sys\" then\n",
+                "\t\treturn molt_sys_ensure_module()\n",
+                "\tend\n",
+                "\tlocal module = molt_module_cache[name]\n",
+                "\tif module ~= nil then\n",
+                "\t\treturn module\n",
+                "\tend\n",
+                "\terror(\"unsupported module import in Luau backend: \" .. tostring(name))\n",
+                "end\n\n",
+            ));
+        }
+
         // Runtime intrinsic stubs — bootstrap functions from the native
         // runtime that are no-ops in Luau transpiled output.
         for stub in &[
-            "molt_sys_set_version_info",
             "molt_init_sys",
             "molt_runtime_shutdown",
             "molt_runtime_init",
@@ -3253,11 +3327,9 @@ impl LuauBackend {
             | "class_merge_layout" => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
             }
-            "module_import" | "module_cache_get" | "module_cache_set" | "module_cache_del"
-            | "module_import_star" => {
+            "module_import" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
-                    // Try to statically map known module names.
                     let args = op.args.as_deref().unwrap_or(&[]);
                     let module_name = op.s_value.as_deref().unwrap_or("");
                     let mapped = match module_name {
@@ -3265,26 +3337,58 @@ impl LuauBackend {
                         "json" => "json",
                         "time" => "molt_time",
                         "os" => "molt_os",
+                        "sys" => "molt_sys_ensure_module()",
                         _ => "",
                     };
                     if !mapped.is_empty() {
                         self.emit_line(&format!("local {out} = {mapped}"));
-                    } else if matches!(op.kind.as_str(), "module_cache_get" | "module_import") {
-                        // Dynamic lookup via the runtime module cache.
-                        // The args[0] variable holds the module name string.
-                        if let Some(name_var) = args.first() {
-                            let nv = sanitize_ident(name_var);
-                            self.emit_line(&format!(
-                                "local {out} = (molt_module_cache[{nv}] or {{}})"
-                            ));
-                        } else {
-                            self.emit_line(&format!("local {out} = {{}}"));
-                        }
+                    } else if let Some(name_var) = args.first() {
+                        let nv = sanitize_ident(name_var);
+                        self.emit_line(&format!("local {out} = molt_luau_import_module({nv})"));
                     } else {
                         self.emit_line(&format!("local {out} = nil"));
                     }
-                } else {
-                    // module_cache_set / module_cache_del — no output needed.
+                }
+            }
+            "module_cache_get" => {
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    let args = op.args.as_deref().unwrap_or(&[]);
+                    if let Some(name_var) = args.first() {
+                        let nv = sanitize_ident(name_var);
+                        self.emit_line(&format!("local {out} = molt_module_cache[{nv}]"));
+                    } else {
+                        self.emit_line(&format!("local {out} = nil"));
+                    }
+                }
+            }
+            "module_cache_set" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let name = sanitize_ident(&args[0]);
+                    let module = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("molt_module_cache[{name}] = {module}"));
+                }
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
+                }
+            }
+            "module_cache_del" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(name_var) = args.first() {
+                    let name = sanitize_ident(name_var);
+                    self.emit_line(&format!("molt_module_cache[{name}] = nil"));
+                }
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
+                }
+            }
+            "module_import_star" => {
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
             "module_get_attr" | "module_get_global" | "module_get_name" => {
@@ -9250,6 +9354,109 @@ mod tests {
         .expect_err("unsupported op marker should be rejected");
         assert!(err.contains("unsupported marker"));
         assert!(err.contains("[unsupported op: foo]"));
+    }
+
+    #[test]
+    fn test_compile_checked_materializes_sys_target_version_module() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        value: Some(3),
+                        out: Some("major".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        value: Some(14),
+                        out: Some("minor".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        value: Some(0),
+                        out: Some("micro".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("final".to_string()),
+                        out: Some("releaselevel".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        value: Some(0),
+                        out: Some("serial".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("3.14.0 (molt)".to_string()),
+                        out: Some("version".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_internal".to_string(),
+                        s_value: Some("molt_sys_set_version_info".to_string()),
+                        args: Some(vec![
+                            "major".to_string(),
+                            "minor".to_string(),
+                            "micro".to_string(),
+                            "releaselevel".to_string(),
+                            "serial".to_string(),
+                            "version".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("sys".to_string()),
+                        out: Some("sys_name".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_import".to_string(),
+                        args: Some(vec!["sys_name".to_string()]),
+                        out: Some("sys_module".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_get_attr".to_string(),
+                        args: Some(vec!["sys_module".to_string()]),
+                        s_value: Some("version_info".to_string()),
+                        out: Some("version_info".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_get_attr".to_string(),
+                        args: Some(vec!["sys_module".to_string()]),
+                        s_value: Some("hexversion".to_string()),
+                        out: Some("hexversion".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+
+        let source = LuauBackend::new()
+            .compile_checked(&ir)
+            .expect("sys target-version bootstrap must be supported");
+        assert!(!source.contains("local function molt_sys_set_version_info(...) end"));
+        assert!(source.contains("local function molt_sys_set_version_info("));
+        assert!(source.contains("molt_module_cache[\"sys\"] ="));
+        assert!(source.contains("version_info = molt_sys_version_info"));
+        assert!(source.contains("version = molt_sys_version"));
+        assert!(source.contains("hexversion = molt_sys_hexversion"));
+        assert!(!source.contains("(molt_module_cache[sys_name] or {})"));
+        assert!(source.contains("local sys_module = molt_luau_import_module(sys_name)"));
     }
 
     #[test]
