@@ -23307,9 +23307,26 @@ impl SimpleBackend {
                                 let var = *vars.get(&args[0]).expect("store_var: raw src var not found");
                                 builder.use_var(var)
                             });
-                            // Store raw i64 directly into destination Variable.
-                            def_var_named(&mut builder, &vars, name, raw_val);
-                            raw_primary_int.insert(name.to_string());
+                            // Loop-carried block-arg main Variables (`_bb*_arg*`)
+                            // must hold NaN-boxed values consistently: the
+                            // loop header phi merges the entry edge (boxed by
+                            // `loop_start` demote) with the back edge, and
+                            // Cranelift cannot express raw-vs-boxed phi
+                            // disagreement. The raw value still flows through
+                            // the shadow Variable, which is phi-correct in its
+                            // own lane.
+                            if is_join_slot_name(name) {
+                                let boxed = box_int_value_hoisted(
+                                    &mut builder,
+                                    raw_val,
+                                    box_int_mask_var,
+                                    box_int_tag_var,
+                                );
+                                def_var_named(&mut builder, &vars, name, boxed);
+                            } else {
+                                def_var_named(&mut builder, &vars, name, raw_val);
+                                raw_primary_int.insert(name.to_string());
+                            }
                             // Propagate shadow to destination (both tiers).
                             if let Some(&dst_var) = raw_int_shadow.get(name) {
                                 builder.def_var(dst_var, raw_val);
