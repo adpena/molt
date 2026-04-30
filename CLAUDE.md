@@ -1,5 +1,28 @@
 # Claude Code Instructions
 
+## ABSOLUTE TOP PRIORITY (read this first, every turn)
+
+**Engineer like Chris Lattner / Mojo / NASA. Never take a shortcut, workaround, or "simpler" implementation when the structurally correct fix is harder.** This rule overrides every comfort instinct.
+
+The temptation chain you must reject:
+- "I'll just promote Value-tier shadows at loop_start to fix this faster" → NO. That is a localized hack on top of an architecturally broken design. Do the structural redesign (typed IR, eliminate the shadow system) instead.
+- "I'll add a small guard to handle this edge case" → NO. The edge case exists because the abstraction is wrong. Fix the abstraction.
+- "I'll commit the partial fix and follow up later" → NO. There is no later. Either land the complete fix or do not start.
+- "The full fix is too risky, let me ship something safer" → NO. The "safer" thing accumulates compound interest of bugs. Take the time. Do it right.
+- "I'll skip the perf step and come back to it" → NO. Perf-correctness gaps create distrust. Land the fast version with the correct version.
+
+When you identify a structurally correct fix and feel pulled toward an "immediate win" or "incremental approach", **STOP**. That pull IS the signal you are about to ship a workaround. Land the structural fix even if it is multi-day work.
+
+If you cannot complete the structural fix in this session, **do not commit the localized hack as a placeholder**. Leave a clean baton-pass note describing the structural fix needed; the next session picks it up. Half-measures committed to main are worse than nothing committed.
+
+This rule applies equally to:
+- **Correctness**: bug class fixes, not bug instance fixes (e.g., fix the phi-representation invariant, not just the one site that exposed it)
+- **Optimization**: structural codegen changes, not localized peephole tweaks
+- **Performance**: redesign the hot path, do not add bypass cases
+- **Architecture**: rework the abstraction, do not stack patches on a wrong foundation
+
+Performance contract: molt MUST be faster than CPython on every benchmark, across every target (native, WASM, LLVM, Luau) and every profile (release-fast, dev-fast, debug-with-asserts). Do not declare a perf task complete until measurements confirm it on all targets.
+
 ## Top Priority: Tinygrad + DFlash Fidelity
 
 This is a turn-blocking policy.
