@@ -18,6 +18,7 @@ This document defines the path from the current **correct-first dynamic** backen
 - Phi hoisting, alias tracking, closure slot pre-declaration
 - Op coverage: constants, arithmetic, comparisons, control flow (if/else/loop/for), calls, list/dict/tuple ops, string methods, closures, classes (dict-based), target-version `sys` bootstrap, and module-cache get/set/delete for emitted import bootstrap IR
 - Wired into the CLI `--target rust` source-emission path and `molt-backend` behind the `rust-backend` feature
+- CLI source emission is checked: any generated `MOLT_STUB` marker is a backend validation error rather than an accepted Rust artifact
 - Exceptions remain fail-fast/structural where full Python exception propagation is outside the current source-backend surface
 - No type specialization -- all variables are `MoltValue`, all uses clone
 
