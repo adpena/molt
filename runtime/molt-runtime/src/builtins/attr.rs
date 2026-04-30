@@ -32,8 +32,62 @@ use crate::{
     type_of_bits,
 };
 
+const ATTR_NAME_INLINE_CAP: usize = 32;
+
+enum AttrNameCacheKey {
+    Inline {
+        len: u8,
+        bytes: [u8; ATTR_NAME_INLINE_CAP],
+    },
+    Heap(Vec<u8>),
+}
+
+impl AttrNameCacheKey {
+    fn new(bytes: &[u8]) -> Self {
+        if bytes.len() <= ATTR_NAME_INLINE_CAP {
+            let mut inline = [0u8; ATTR_NAME_INLINE_CAP];
+            inline[..bytes.len()].copy_from_slice(bytes);
+            Self::Inline {
+                len: bytes.len() as u8,
+                bytes: inline,
+            }
+        } else {
+            Self::Heap(bytes.to_vec())
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Inline { len, bytes } => &bytes[..usize::from(*len)],
+            Self::Heap(bytes) => bytes.as_slice(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ATTR_NAME_INLINE_CAP, AttrNameCacheKey};
+
+    #[test]
+    fn attr_name_cache_key_inlines_common_attr_names() {
+        let key = AttrNameCacheKey::new(b"__molt_arg_names__");
+
+        assert!(matches!(key, AttrNameCacheKey::Inline { .. }));
+        assert_eq!(key.as_slice(), b"__molt_arg_names__");
+    }
+
+    #[test]
+    fn attr_name_cache_key_preserves_long_names() {
+        let bytes = vec![b'x'; ATTR_NAME_INLINE_CAP + 1];
+        let key = AttrNameCacheKey::new(&bytes);
+
+        assert!(matches!(key, AttrNameCacheKey::Heap(_)));
+        assert_eq!(key.as_slice(), bytes.as_slice());
+    }
+}
+
 struct AttrNameCacheEntry {
-    bytes: Vec<u8>,
+    key: AttrNameCacheKey,
     bits: u64,
 }
 
@@ -73,7 +127,7 @@ impl AttrNameCache {
         let idx = Self::slot_index(bytes);
         self.slots[idx]
             .as_ref()
-            .filter(|e| e.bytes == bytes)
+            .filter(|e| e.key.as_slice() == bytes)
             .map(|e| e.bits)
     }
 
@@ -84,7 +138,7 @@ impl AttrNameCache {
         }
         inc_ref_bits(_py, bits);
         self.slots[idx] = Some(AttrNameCacheEntry {
-            bytes: bytes.to_vec(),
+            key: AttrNameCacheKey::new(bytes),
             bits,
         });
     }
@@ -300,7 +354,7 @@ pub(crate) fn debug_last_attr_name() -> Option<String> {
         .try_with(|cell| {
             let cache = cell.borrow();
             if let Some(entry) = cache.slots.iter().flatten().next() {
-                return Some(String::from_utf8_lossy(&entry.bytes).into_owned());
+                return Some(String::from_utf8_lossy(entry.key.as_slice()).into_owned());
             }
             None
         })

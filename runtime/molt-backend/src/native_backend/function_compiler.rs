@@ -2142,10 +2142,35 @@ fn cleanup_roots_for_names(
 }
 
 #[cfg(feature = "native-backend")]
+fn mark_cleanup_root_once(
+    alias_roots: &BTreeMap<String, String>,
+    already_decrefed: &mut BTreeSet<String>,
+    name: &str,
+) -> bool {
+    already_decrefed.insert(alias_root_name(alias_roots, name).to_string())
+}
+
+#[cfg(feature = "native-backend")]
+fn cleanup_name_excluded(
+    name: &str,
+    protected_names: Option<&BTreeSet<String>>,
+    param_name_set: &BTreeSet<&str>,
+    raw_primary_int: &BTreeSet<String>,
+    raw_primary_float: &BTreeSet<String>,
+) -> bool {
+    protected_names.is_some_and(|protected| protected.contains(name))
+        || param_name_set.contains(name)
+        || raw_primary_int.contains(name)
+        || raw_primary_float.contains(name)
+}
+
+#[cfg(feature = "native-backend")]
 fn protect_cleanup_names(
     carry: &mut Vec<String>,
     cleanup: Vec<String>,
     protected: &BTreeSet<&str>,
+    alias_roots: &BTreeMap<String, String>,
+    already_decrefed: &mut BTreeSet<String>,
 ) -> Vec<String> {
     if protected.is_empty() {
         return cleanup;
@@ -2154,6 +2179,7 @@ fn protect_cleanup_names(
     let mut actual = Vec::new();
     for name in cleanup {
         if protected.contains(name.as_str()) {
+            already_decrefed.remove(alias_root_name(alias_roots, &name));
             preserved.push(name);
         } else {
             actual.push(name);
@@ -21676,18 +21702,21 @@ impl SimpleBackend {
                     // released at the call site.
                     let mut arg_cleanup = Vec::new();
                     let mut arg_cleanup_names = BTreeSet::new();
+                    let mut arg_cleanup_roots = BTreeSet::new();
                     for (name, value) in args_names.iter().zip(args.iter()) {
                         if param_name_set.contains(name.as_str()) {
                             continue;
                         }
                         let last = last_use.get(name).copied().unwrap_or(op_idx);
                         if last <= op_idx {
-                            arg_cleanup.push(*value);
                             arg_cleanup_names.insert(name.clone());
+                            let root = alias_root_name(&alias_roots, name).to_string();
+                            if arg_cleanup_roots.insert(root.clone()) {
+                                arg_cleanup.push(*value);
+                                already_decrefed.insert(root);
+                            }
                         }
                     }
-                    let arg_cleanup_roots =
-                        cleanup_roots_for_names(&alias_roots, arg_cleanup_names.iter().cloned());
 
                     // `call` lowers to a multi-block control-flow sequence (recursion guard +
                     // call block + fail block + merge block). If the call happens in a non-entry
@@ -22302,6 +22331,19 @@ impl SimpleBackend {
                         )
                         .expect("dec_ref/release source not found");
                         builder.ins().call(local_dec_ref_obj, &[src]);
+                        let consumed_root = alias_root_name(&alias_roots, src_name).to_string();
+                        already_decrefed.insert(consumed_root.clone());
+                        let consumed_roots = BTreeSet::from([consumed_root]);
+                        scrub_tracked_roots(
+                            &consumed_roots,
+                            &mut tracked_vars,
+                            &mut tracked_obj_vars,
+                            &mut tracked_vars_set,
+                            &mut tracked_obj_vars_set,
+                            &mut entry_vars,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
                         if let Some(out_name) = op.out.as_ref()
                             && out_name != "none"
                         {
@@ -23120,6 +23162,7 @@ impl SimpleBackend {
                     let callargs_name = &args_names[1];
                     let mut callargs_arg_cleanup = Vec::new();
                     let mut callargs_arg_cleanup_names = BTreeSet::new();
+                    let mut callargs_arg_cleanup_roots = BTreeSet::new();
                     if let Some(source_names) = callargs_source_names.remove(callargs_name) {
                         for source_name in source_names {
                             if param_name_set.contains(source_name.as_str()) {
@@ -23144,14 +23187,14 @@ impl SimpleBackend {
                             let Some(val) = val else {
                                 continue;
                             };
-                            callargs_arg_cleanup.push(val);
+                            let root = alias_root_name(&alias_roots, &source_name).to_string();
                             callargs_arg_cleanup_names.insert(source_name);
+                            if callargs_arg_cleanup_roots.insert(root.clone()) {
+                                callargs_arg_cleanup.push(val);
+                                already_decrefed.insert(root);
+                            }
                         }
                     }
-                    let callargs_arg_cleanup_roots = cleanup_roots_for_names(
-                        &alias_roots,
-                        callargs_arg_cleanup_names.iter().cloned(),
-                    );
                     if std::env::var("MOLT_DEBUG_CALLARGS_CLEANUP").as_deref() == Ok("1")
                         && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                             .ok()
@@ -26550,6 +26593,8 @@ impl SimpleBackend {
                                 &mut carry_obj,
                                 cleanup,
                                 &protected_phi_inputs,
+                                &alias_roots,
+                                &mut already_decrefed,
                             );
                             for name in cleanup {
                                 let val =
@@ -26583,6 +26628,8 @@ impl SimpleBackend {
                                 &mut carry_ptr,
                                 cleanup,
                                 &protected_phi_inputs,
+                                &alias_roots,
+                                &mut already_decrefed,
                             );
                             for name in cleanup {
                                 let val =
@@ -26748,6 +26795,8 @@ impl SimpleBackend {
                                     &mut carry_obj,
                                     cleanup,
                                     &protected_phi_inputs,
+                                    &alias_roots,
+                                    &mut already_decrefed,
                                 );
                                 for name in cleanup {
                                     let val = resolve_cleanup_value(
@@ -26785,6 +26834,8 @@ impl SimpleBackend {
                                     &mut carry_ptr,
                                     cleanup,
                                     &protected_phi_inputs,
+                                    &alias_roots,
+                                    &mut already_decrefed,
                                 );
                                 for name in cleanup {
                                     let val = resolve_cleanup_value(
@@ -26911,6 +26962,8 @@ impl SimpleBackend {
                                     &mut carry_obj,
                                     cleanup,
                                     &protected_phi_inputs,
+                                    &alias_roots,
+                                    &mut already_decrefed,
                                 );
                                 for name in cleanup {
                                     let val = resolve_cleanup_value(
@@ -26948,6 +27001,8 @@ impl SimpleBackend {
                                     &mut carry_ptr,
                                     cleanup,
                                     &protected_phi_inputs,
+                                    &alias_roots,
+                                    &mut already_decrefed,
                                 );
                                 for name in cleanup {
                                     let val = resolve_cleanup_value(
@@ -30658,12 +30713,17 @@ impl SimpleBackend {
                             // Function return: fully drain per-block tracked values.
                             if let Some(names) = block_tracked_obj.remove(&block) {
                                 for name in names {
-                                    if already_decrefed
-                                        .contains(alias_root_name(&alias_roots, &name))
-                                    {
-                                        continue;
-                                    }
-                                    if param_name_set.contains(name.as_str()) {
+                                    if cleanup_name_excluded(
+                                        &name,
+                                        None,
+                                        &param_name_set,
+                                        &raw_primary_int,
+                                        &raw_primary_float,
+                                    ) || !mark_cleanup_root_once(
+                                        &alias_roots,
+                                        &mut already_decrefed,
+                                        &name,
+                                    ) {
                                         continue;
                                     }
                                     let val = resolve_cleanup_value(
@@ -30679,15 +30739,21 @@ impl SimpleBackend {
                                         )
                                     });
                                     builder.ins().call(local_dec_ref_obj, &[val]);
-                                    already_decrefed
-                                        .insert(alias_root_name(&alias_roots, &name).to_string());
                                 }
                             }
                             if let Some(names) = block_tracked_ptr.remove(&block) {
                                 for name in names {
-                                    if already_decrefed
-                                        .contains(alias_root_name(&alias_roots, &name))
-                                    {
+                                    if cleanup_name_excluded(
+                                        &name,
+                                        None,
+                                        &param_name_set,
+                                        &raw_primary_int,
+                                        &raw_primary_float,
+                                    ) || !mark_cleanup_root_once(
+                                        &alias_roots,
+                                        &mut already_decrefed,
+                                        &name,
+                                    ) {
                                         continue;
                                     }
                                     let val = resolve_cleanup_value(
@@ -30703,30 +30769,17 @@ impl SimpleBackend {
                                         )
                                     });
                                     builder.ins().call(local_dec_ref_obj, &[val]);
-                                    already_decrefed
-                                        .insert(alias_root_name(&alias_roots, &name).to_string());
                                 }
                             }
                         }
                         for name in &tracked_vars {
-                            if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
-                                continue;
-                            }
-                            // Parameters are borrowed from the caller — do not
-                            // dec-ref them. The caller owns the reference and
-                            // will handle cleanup. Without this skip, __init__
-                            // methods free `self` on return, causing the caller
-                            // to see a dangling instance pointer.
-                            if param_name_set.contains(name.as_str()) {
-                                continue;
-                            }
-                            // Raw-primary variables hold unboxed primitives (raw
-                            // i64 or raw f64), not heap pointers. dec_ref is both
-                            // incorrect and dangerous: box_int_value_hoisted does
-                            // NOT handle overflow, so large ints produce invalid
-                            // NaN-boxed values that look like heap pointers to
-                            // dec_ref, causing segfaults during process shutdown.
-                            if raw_primary_int.contains(name) || raw_primary_float.contains(name) {
+                            if cleanup_name_excluded(
+                                name,
+                                None,
+                                &param_name_set,
+                                &raw_primary_int,
+                                &raw_primary_float,
+                            ) {
                                 continue;
                             }
                             if let Some(val) = var_get_boxed(
@@ -30738,17 +30791,20 @@ impl SimpleBackend {
                                 box_int_mask_var,
                                 box_int_tag_var,
                             ) {
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                                if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
+                                {
+                                    builder.ins().call(local_dec_ref_obj, &[*val]);
+                                }
                             }
                         }
                         for name in &tracked_obj_vars {
-                            if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
-                                continue;
-                            }
-                            if param_name_set.contains(name.as_str()) {
-                                continue;
-                            }
-                            if raw_primary_int.contains(name) || raw_primary_float.contains(name) {
+                            if cleanup_name_excluded(
+                                name,
+                                None,
+                                &param_name_set,
+                                &raw_primary_int,
+                                &raw_primary_float,
+                            ) {
                                 continue;
                             }
                             if let Some(val) = var_get_boxed(
@@ -30760,7 +30816,10 @@ impl SimpleBackend {
                                 box_int_mask_var,
                                 box_int_tag_var,
                             ) {
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                                if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
+                                {
+                                    builder.ins().call(local_dec_ref_obj, &[*val]);
+                                }
                             }
                         }
                         reachable_blocks.insert(master_return_block);
@@ -30808,10 +30867,17 @@ impl SimpleBackend {
                         // Function return: fully drain per-block tracked values (except return).
                         if let Some(names) = block_tracked_obj.remove(&block) {
                             for name in names {
-                                if protected_return_aliases.contains(&name)
-                                    || already_decrefed
-                                        .contains(alias_root_name(&alias_roots, &name))
-                                {
+                                if cleanup_name_excluded(
+                                    &name,
+                                    Some(&protected_return_aliases),
+                                    &param_name_set,
+                                    &raw_primary_int,
+                                    &raw_primary_float,
+                                ) || !mark_cleanup_root_once(
+                                    &alias_roots,
+                                    &mut already_decrefed,
+                                    &name,
+                                ) {
                                     continue;
                                 }
                                 let val = entry_vars.get(&name).copied().or_else(|| {
@@ -30830,16 +30896,21 @@ impl SimpleBackend {
                                     continue;
                                 };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
-                                already_decrefed
-                                    .insert(alias_root_name(&alias_roots, &name).to_string());
                             }
                         }
                         if let Some(names) = block_tracked_ptr.remove(&block) {
                             for name in names {
-                                if protected_return_aliases.contains(&name)
-                                    || already_decrefed
-                                        .contains(alias_root_name(&alias_roots, &name))
-                                {
+                                if cleanup_name_excluded(
+                                    &name,
+                                    Some(&protected_return_aliases),
+                                    &param_name_set,
+                                    &raw_primary_int,
+                                    &raw_primary_float,
+                                ) || !mark_cleanup_root_once(
+                                    &alias_roots,
+                                    &mut already_decrefed,
+                                    &name,
+                                ) {
                                     continue;
                                 }
                                 let val = entry_vars.get(&name).copied().or_else(|| {
@@ -30858,8 +30929,6 @@ impl SimpleBackend {
                                     continue;
                                 };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
-                                already_decrefed
-                                    .insert(alias_root_name(&alias_roots, &name).to_string());
                             }
                         }
                     }
@@ -30870,17 +30939,13 @@ impl SimpleBackend {
                         tracked_obj_vars_set.remove(protected);
                     }
                     for name in &tracked_vars {
-                        if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
-                            continue;
-                        }
-                        if param_name_set.contains(name.as_str()) {
-                            continue;
-                        }
-                        // Raw-primary variables hold unboxed primitives, not
-                        // heap pointers — skip dec_ref to avoid segfaults from
-                        // non-overflow-safe boxing producing invalid NaN-boxed
-                        // values that look like heap pointers.
-                        if raw_primary_int.contains(name) || raw_primary_float.contains(name) {
+                        if cleanup_name_excluded(
+                            name,
+                            Some(&protected_return_aliases),
+                            &param_name_set,
+                            &raw_primary_int,
+                            &raw_primary_float,
+                        ) {
                             continue;
                         }
                         let val = entry_vars.get(name).copied().or_else(|| {
@@ -30896,17 +30961,19 @@ impl SimpleBackend {
                             .map(|v| *v)
                         });
                         if let Some(val) = val {
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
+                                builder.ins().call(local_dec_ref_obj, &[val]);
+                            }
                         }
                     }
                     for name in &tracked_obj_vars {
-                        if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
-                            continue;
-                        }
-                        if param_name_set.contains(name.as_str()) {
-                            continue;
-                        }
-                        if raw_primary_int.contains(name) || raw_primary_float.contains(name) {
+                        if cleanup_name_excluded(
+                            name,
+                            Some(&protected_return_aliases),
+                            &param_name_set,
+                            &raw_primary_int,
+                            &raw_primary_float,
+                        ) {
                             continue;
                         }
                         let val = entry_vars.get(name).copied().or_else(|| {
@@ -30922,7 +30989,9 @@ impl SimpleBackend {
                             .map(|v| *v)
                         });
                         if let Some(val) = val {
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
+                                builder.ins().call(local_dec_ref_obj, &[val]);
+                            }
                         }
                     }
                     reachable_blocks.insert(master_return_block);
@@ -30938,6 +31007,19 @@ impl SimpleBackend {
                         // Function return: fully drain per-block tracked values.
                         if let Some(names) = block_tracked_obj.remove(&block) {
                             for name in names {
+                                if cleanup_name_excluded(
+                                    &name,
+                                    None,
+                                    &param_name_set,
+                                    &raw_primary_int,
+                                    &raw_primary_float,
+                                ) || !mark_cleanup_root_once(
+                                    &alias_roots,
+                                    &mut already_decrefed,
+                                    &name,
+                                ) {
+                                    continue;
+                                }
                                 let val =
                                     resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
                                         .unwrap_or_else(|| {
@@ -30951,6 +31033,19 @@ impl SimpleBackend {
                         }
                         if let Some(names) = block_tracked_ptr.remove(&block) {
                             for name in names {
+                                if cleanup_name_excluded(
+                                    &name,
+                                    None,
+                                    &param_name_set,
+                                    &raw_primary_int,
+                                    &raw_primary_float,
+                                ) || !mark_cleanup_root_once(
+                                    &alias_roots,
+                                    &mut already_decrefed,
+                                    &name,
+                                ) {
+                                    continue;
+                                }
                                 let val =
                                     resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
                                         .unwrap_or_else(|| {
@@ -30964,13 +31059,35 @@ impl SimpleBackend {
                         }
                     }
                     for name in &tracked_vars {
+                        if cleanup_name_excluded(
+                            name,
+                            None,
+                            &param_name_set,
+                            &raw_primary_int,
+                            &raw_primary_float,
+                        ) {
+                            continue;
+                        }
                         if let Some(val) = entry_vars.get(name) {
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                            }
                         }
                     }
                     for name in &tracked_obj_vars {
+                        if cleanup_name_excluded(
+                            name,
+                            None,
+                            &param_name_set,
+                            &raw_primary_int,
+                            &raw_primary_float,
+                        ) {
+                            continue;
+                        }
                         if let Some(val) = entry_vars.get(name) {
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                            }
                         }
                     }
                     reachable_blocks.insert(master_return_block);
@@ -32262,13 +32379,35 @@ impl SimpleBackend {
             // Using raw dec_ref on NaN-boxed bits causes SIGSEGV for non-pointer
             // values (floats from abs/round, inline ints, etc.).
             for name in &tracked_vars {
+                if cleanup_name_excluded(
+                    name,
+                    None,
+                    &param_name_set,
+                    &raw_primary_int,
+                    &raw_primary_float,
+                ) {
+                    continue;
+                }
                 if let Some(val) = entry_vars.get(name) {
-                    builder.ins().call(local_dec_ref_obj, &[*val]);
+                    if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
+                    }
                 }
             }
             for name in &tracked_obj_vars {
+                if cleanup_name_excluded(
+                    name,
+                    None,
+                    &param_name_set,
+                    &raw_primary_int,
+                    &raw_primary_float,
+                ) {
+                    continue;
+                }
                 if let Some(val) = entry_vars.get(name) {
-                    builder.ins().call(local_dec_ref_obj, &[*val]);
+                    if mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
+                    }
                 }
             }
             if has_ret {
@@ -32584,8 +32723,9 @@ mod tests {
     use super::{
         ScalarLane, alias_root_name, cleanup_roots_for_names, collect_slot_backed_join_names,
         infer_scalar_lane, is_cold_module_chunk_function, live_exception_rebind_vars_for_op,
-        materialize_label_block, preanalyze_function_ir, scan_loop_int_sum_reduction,
-        switch_to_block_materialized, switch_to_block_with_rebind,
+        mark_cleanup_root_once, materialize_label_block, preanalyze_function_ir,
+        protect_cleanup_names, scan_loop_int_sum_reduction, switch_to_block_materialized,
+        switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
     use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
@@ -33344,6 +33484,54 @@ mod tests {
         assert_eq!(arg_cleanup_roots, BTreeSet::from(["src".to_string()]));
         assert!(arg_cleanup_roots.contains(alias_root_name(&analysis.alias_roots, "_bb4_arg0")));
         assert!(arg_cleanup_roots.contains(alias_root_name(&analysis.alias_roots, "joined")));
+    }
+
+    #[test]
+    fn cleanup_root_marking_dedups_aliases() {
+        let alias_roots = BTreeMap::from([
+            ("alias".to_string(), "root".to_string()),
+            ("join".to_string(), "root".to_string()),
+        ]);
+        let mut already_decrefed = BTreeSet::new();
+
+        assert!(mark_cleanup_root_once(
+            &alias_roots,
+            &mut already_decrefed,
+            "alias",
+        ));
+        assert!(!mark_cleanup_root_once(
+            &alias_roots,
+            &mut already_decrefed,
+            "join",
+        ));
+        assert!(!mark_cleanup_root_once(
+            &alias_roots,
+            &mut already_decrefed,
+            "root",
+        ));
+        assert_eq!(already_decrefed, BTreeSet::from(["root".to_string()]));
+    }
+
+    #[test]
+    fn protected_cleanup_rearms_preserved_alias_root() {
+        let alias_roots = BTreeMap::from([("phi_in".to_string(), "src".to_string())]);
+        let protected = BTreeSet::from(["phi_in"]);
+        let cleanup = vec!["phi_in".to_string(), "dead".to_string()];
+        let mut carry = Vec::new();
+        let mut already_decrefed = BTreeSet::from(["src".to_string(), "dead".to_string()]);
+
+        let actual = protect_cleanup_names(
+            &mut carry,
+            cleanup,
+            &protected,
+            &alias_roots,
+            &mut already_decrefed,
+        );
+
+        assert_eq!(carry, vec!["phi_in".to_string()]);
+        assert_eq!(actual, vec!["dead".to_string()]);
+        assert!(!already_decrefed.contains("src"));
+        assert!(already_decrefed.contains("dead"));
     }
 
     #[test]
