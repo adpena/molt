@@ -973,6 +973,9 @@ impl RustBackend {
             || used("molt_sys_version(")
             || used("molt_sys_hexversion(")
             || needs_module_import;
+        let needs_module_cache = used("molt_module_cache_get(")
+            || used("molt_module_cache_set(")
+            || used("molt_module_cache_del(");
         if needs_sys_version_state {
             self.output.push_str(
                 r#"#[derive(Clone)]
@@ -1082,6 +1085,35 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
 
 "#,
             );
+        }
+
+        if needs_module_cache {
+            self.output.push_str(concat!(
+                "fn molt_module_cache() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, MoltValue>> {\n",
+                "    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, MoltValue>>> = std::sync::OnceLock::new();\n",
+                "    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))\n",
+                "}\n\n",
+                "fn molt_module_cache_get(name: &MoltValue) -> MoltValue {\n",
+                "    let key = molt_str(name);\n",
+                "    molt_module_cache().lock().unwrap().get(&key).cloned().unwrap_or(MoltValue::None)\n",
+                "}\n\n",
+                "fn molt_module_cache_set(name: &MoltValue, module: MoltValue) -> MoltValue {\n",
+                "    let key = molt_str(name);\n",
+                "    let mut cache = molt_module_cache().lock().unwrap();\n",
+                "    if let Some(existing) = cache.get(&key) {\n",
+                "        if !matches!(existing, MoltValue::None) && existing != &module {\n",
+                "            return existing.clone();\n",
+                "        }\n",
+                "    }\n",
+                "    cache.insert(key, module);\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_module_cache_del(name: &MoltValue) -> MoltValue {\n",
+                "    let key = molt_str(name);\n",
+                "    molt_module_cache().lock().unwrap().remove(&key);\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+            ));
         }
 
         if needs_module_import {
@@ -2955,6 +2987,56 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
             | "class_layout_version"
             | "class_layout_field_count"
             | "class_layout_slot_count" => {}
+            "module_cache_get" | "module_load_cached" => {
+                let o = out();
+                let name = op
+                    .args
+                    .as_deref()
+                    .and_then(|args| args.first())
+                    .map(|name| rust_value(name))
+                    .or_else(|| {
+                        op.s_value.as_deref().map(|name| {
+                            format!("MoltValue::Str({}.to_string())", rust_string_literal(name))
+                        })
+                    })
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                if o != "_" && o != "none" && !o.is_empty() {
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("molt_module_cache_get(&{name})"),
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else {
+                    self.emit_line(&format!("molt_module_cache_get(&{name});"));
+                }
+            }
+            "module_cache_set" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let name = rust_value(&args[0]);
+                    let module = rust_clone(&args[1]);
+                    let expr = format!("molt_module_cache_set(&{name}, {module})");
+                    let o = out();
+                    if o != "_" && o != "none" && !o.is_empty() {
+                        self.emit_line(&declare(&o, &expr, &self.hoisted_vars.clone()));
+                    } else {
+                        self.emit_line(&format!("{expr};"));
+                    }
+                }
+            }
+            "module_cache_del" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(name_arg) = args.first() {
+                    let name = rust_value(name_arg);
+                    let expr = format!("molt_module_cache_del(&{name})");
+                    let o = out();
+                    if o != "_" && o != "none" && !o.is_empty() {
+                        self.emit_line(&declare(&o, &expr, &self.hoisted_vars.clone()));
+                    } else {
+                        self.emit_line(&format!("{expr};"));
+                    }
+                }
+            }
             "module_import" => {
                 let o = out();
                 let module = op
@@ -3176,20 +3258,6 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     "{{ let __sep = molt_str(&{sep}); if let MoltValue::List(ref __items) = {seq} {{ MoltValue::Str(__items.iter().map(|x| molt_str(x)).collect::<Vec<_>>().join(&__sep)) }} else {{ MoltValue::Str(molt_str(&{seq})) }} }}"
                 );
                 self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
-            }
-
-            // ── Module cache stubs ────────────────────────────────────────────
-            // Return a non-None sentinel so "is module cached?" guards pass.
-            // This prevents spurious ImportError early-returns in stub mode.
-            "module_cache_get" | "module_load_cached" => {
-                let o = out();
-                if o != "_" && o != "none" && !o.is_empty() {
-                    self.emit_line(&declare(
-                        &o,
-                        "MoltValue::Bool(true)",
-                        &self.hoisted_vars.clone(),
-                    ));
-                }
             }
 
             // ── Catch-all stub ─────────────────────────────────────────────────
@@ -3743,6 +3811,75 @@ mod tests {
         assert!(source.contains("let mut left: MoltValue = __unpack_seq[0].clone();"));
         assert!(source.contains("let mut right: MoltValue = __unpack_seq[1].clone();"));
         assert!(!source.contains("MOLT_STUB: unpack_sequence"));
+    }
+
+    #[test]
+    fn compile_module_cache_ops_lower_to_runtime_cache() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("alpha".to_string()),
+                        out: Some("name".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_cache_get".to_string(),
+                        args: Some(vec!["name".to_string()]),
+                        out: Some("miss".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_new".to_string(),
+                        args: Some(vec!["name".to_string()]),
+                        out: Some("module".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_cache_set".to_string(),
+                        args: Some(vec!["name".to_string(), "module".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_cache_get".to_string(),
+                        args: Some(vec!["name".to_string()]),
+                        out: Some("hit".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_cache_del".to_string(),
+                        args: Some(vec!["name".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "return_none".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend
+            .compile_checked(&ir)
+            .expect("module cache ops should lower without stub markers");
+        assert!(source.contains("fn molt_module_cache_get("));
+        assert!(source.contains("fn molt_module_cache_set("));
+        assert!(source.contains("fn molt_module_cache_del("));
+        assert!(source.contains("let mut miss: MoltValue = molt_module_cache_get(&name);"));
+        assert!(source.contains("molt_module_cache_set(&name, module.clone());"));
+        assert!(source.contains("let mut hit: MoltValue = molt_module_cache_get(&name);"));
+        assert!(source.contains("molt_module_cache_del(&name);"));
+        assert!(!source.contains("let mut miss: MoltValue = MoltValue::Bool(true);"));
+        assert!(!source.contains("let mut hit: MoltValue = MoltValue::Bool(true);"));
+        assert!(!source.contains("MOLT_STUB: module_cache"));
     }
 
     #[test]
