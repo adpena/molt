@@ -107,15 +107,20 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
 
     // Pre-compute: for each block, collect all incoming edges (predecessor
     // block → arg values). We accumulate across all blocks' terminators.
-    // Key: target BlockId, Value: list of incoming arg value lists.
-    let mut incoming_edges: HashMap<BlockId, Vec<Vec<ValueId>>> = HashMap::new();
-    for block in func.blocks.values() {
+    // Key: target BlockId. Value: list of (source BlockId, incoming arg
+    // values). Source identity matters because back-edges (incoming edges
+    // from blocks dominated by the target) must be treated specially when
+    // seeding loop-induction-variable block-arg types — see the seed pass
+    // below (after `eh_handler_args` is computed so the seed honors the
+    // EH-handler exclusion).
+    let mut incoming_edges: HashMap<BlockId, Vec<(BlockId, Vec<ValueId>)>> = HashMap::new();
+    for (source_bid, block) in &func.blocks {
         let edges = collect_branch_edges(block);
         for (target_id, arg_values) in edges {
             incoming_edges
                 .entry(target_id)
                 .or_default()
-                .push(arg_values);
+                .push((*source_bid, arg_values));
         }
     }
 
@@ -189,6 +194,120 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     }
 
     // ---------------------------------------------------------------------------
+    // Loop-induction-variable seeding (Lattner-style narrow-then-widen).
+    // ---------------------------------------------------------------------------
+    //
+    // The fixpoint below is monotonic upward (`meet` is lattice join in
+    // this codebase's terminology — `meet(I64, DynBox) = DynBox`).
+    // Without this pre-pass, a block-arg whose entry-edge brings I64
+    // and whose back-edge brings `Add(self_arg, ConstInt)` is stuck at
+    // DynBox: the body sees `i: DynBox` initially, infers
+    // `Add(DynBox, I64)` → no type, stays DynBox, the back-edge brings
+    // DynBox, and `meet(I64-from-entry, DynBox-from-back) = DynBox`
+    // widens the entry-side I64 in the very first round.
+    //
+    // Fix: pre-seed each block-arg's env entry to the meet of its
+    // **non-back-edge** incoming values' types. Back-edges (incoming
+    // edges from blocks the target dominates) are excluded from the
+    // initial seed so the body's inference can run with the optimistic
+    // entry type, after which the fixpoint runs normally and either
+    // confirms the seed (back-edge type matches) or widens it.
+    //
+    // This is sound: in SSA, a block arg's only mutators are its
+    // incoming edges. If the body actually re-types the loop arg
+    // (e.g., `i = obj.foo(i)` returning DynBox), the back-edge brings
+    // DynBox, the fixpoint widens to DynBox, and we land at the same
+    // conservative type as before. The seeding only **gains** precision
+    // — it never loses it.
+    //
+    // Two sub-passes are required:
+    //   (a) **Warmup**: a single forward pass over op result types so
+    //       that const ops (`ConstInt`, `ConstStr`, etc.) and any other
+    //       op whose operand types are already known produce refined
+    //       values in `env`. Without warmup, every op result starts as
+    //       DynBox (from the bulk init at the top of `refine_types`)
+    //       and the seed reads DynBox for the entry-edge value (e.g.,
+    //       `i_init = ConstInt(0)` is still DynBox), defeating the seed.
+    //   (b) **Seed**: meet of non-back-edge incoming types per block-arg.
+    {
+        // (a) Warmup — single forward pass over op result types.
+        for &block_id in &block_order {
+            let ops_snapshot = &ops_by_block[&block_id];
+            for (opcode, operands, results, return_type_hint) in ops_snapshot {
+                if results.is_empty() {
+                    continue;
+                }
+                if has_eh && matches!(opcode, OpCode::CheckException) {
+                    for &result_id in results {
+                        env.insert(result_id, TirType::DynBox);
+                    }
+                    continue;
+                }
+                let operand_types: Vec<TirType> = operands
+                    .iter()
+                    .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
+                    .collect();
+                let inferred = return_type_hint
+                    .clone()
+                    .or_else(|| infer_result_type(*opcode, &operand_types));
+                if results.len() == 1
+                    && let Some(new_ty) = inferred
+                {
+                    env.insert(results[0], new_ty);
+                }
+            }
+        }
+
+        // (b) Seed block-args from non-back-edge incoming meets.
+        let pred_map_seed = dominators::build_pred_map(func);
+        let idoms_seed = dominators::compute_idoms(func, &pred_map_seed);
+        for (&block_id, edge_list) in &incoming_edges {
+            let block_args: Vec<(usize, ValueId)> = match func.blocks.get(&block_id) {
+                Some(block) => block
+                    .args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| (i, a.id))
+                    .collect(),
+                None => continue,
+            };
+            if block_args.is_empty() {
+                continue;
+            }
+            for (i, arg_id) in block_args {
+                // Honor the EH-handler exclusion the fixpoint also
+                // enforces — exception handler args must stay DynBox.
+                if eh_handler_args.contains(&arg_id) {
+                    continue;
+                }
+                let mut accumulated = TirType::Never;
+                let mut saw_non_back_edge = false;
+                for (source_bid, edge_args) in edge_list {
+                    if i >= edge_args.len() {
+                        continue;
+                    }
+                    // A back-edge is one where the target block
+                    // dominates the source block (Muchnick §13.4).
+                    let is_back_edge =
+                        dominators::dominates(block_id, *source_bid, &idoms_seed);
+                    if is_back_edge {
+                        continue;
+                    }
+                    let incoming_ty = env
+                        .get(&edge_args[i])
+                        .cloned()
+                        .unwrap_or(TirType::DynBox);
+                    accumulated = accumulated.meet(&incoming_ty);
+                    saw_non_back_edge = true;
+                }
+                if saw_non_back_edge && !matches!(accumulated, TirType::Never) {
+                    env.insert(arg_id, accumulated);
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
     // Oscillation detection (GraalVM deopt cycle detection)
     // ---------------------------------------------------------------------------
     //
@@ -204,9 +323,25 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     let mut frozen: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
 
     // Fixpoint iteration.
+    //
+    // Each round splits into TWO phases:
+    //   Phase 1 — propagate op result types from operand types in every
+    //     block.
+    //   Phase 2 — recompute block-arg types from incoming-edge meets in
+    //     every block.
+    //
+    // The split matters because op results in a loop body depend on the
+    // current type of the loop's induction-variable block-arg. With the
+    // per-block "ops-then-args" order, recomputing the header's arg
+    // (Phase 2) before the body's ops (Phase 1) collapsed any IV
+    // pre-seed back to DynBox via the still-DynBox back-edge. Splitting
+    // ensures the body's ops always see the latest header-arg type from
+    // the previous round (or the seed in round 0), producing a refined
+    // back-edge value that the next round's Phase 2 confirms.
     for _round in 0..MAX_ROUNDS {
         let mut changed = false;
 
+        // Phase 1: op result types in every block.
         for &block_id in &block_order {
             let ops_snapshot = &ops_by_block[&block_id];
 
@@ -255,7 +390,10 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     }
                 }
             }
+        }
 
+        // Phase 2: block-arg types in every block.
+        for &block_id in &block_order {
             // Recompute block argument types from all incoming edges.
             // Start from Never (bottom) and meet all incoming values.
             if let Some(edge_list) = incoming_edges.get(&block_id) {
@@ -279,7 +417,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     }
 
                     let mut accumulated = TirType::Never;
-                    for edge_args in edge_list {
+                    for (_source_bid, edge_args) in edge_list {
                         if i < edge_args.len() {
                             let incoming_ty =
                                 env.get(&edge_args[i]).cloned().unwrap_or(TirType::DynBox);
@@ -1526,6 +1664,128 @@ mod tests {
         };
         let refined = refine_types(&mut func);
         assert_eq!(refined, 0);
+    }
+
+    /// Lock-in for the loop-induction-variable seeding contract.
+    ///
+    /// CFG:
+    /// ```text
+    /// entry:  i_init = ConstInt(0); branch header(i_init)
+    /// header(i: ?):  cond = ConstBool(true); cond_branch body, exit
+    /// body:  one = ConstInt(1); i_next = Add(i, one); branch header(i_next)
+    /// exit:  return
+    /// ```
+    /// Without IV seeding, `i` ends up DynBox: the body sees `i: DynBox`
+    /// initially, infers `Add(DynBox, I64)` as no-type, the back-edge
+    /// brings DynBox, and `meet(I64, DynBox) = DynBox` widens the entry.
+    /// With IV seeding, `i` is initialized to I64 (the entry-edge type
+    /// alone, since the back-edge is excluded from the seed), the body
+    /// then infers `Add(I64, I64) = I64`, the back-edge confirms I64,
+    /// and the fixpoint converges to I64.
+    #[test]
+    fn loop_iv_block_arg_seeded_to_entry_type() {
+        let entry_id = BlockId(0);
+        let header_id = BlockId(1);
+        let body_id = BlockId(2);
+        let exit_id = BlockId(3);
+
+        let i_init = ValueId(0);
+        let i = ValueId(1);
+        let cond = ValueId(2);
+        let one = ValueId(3);
+        let i_next = ValueId(4);
+
+        let entry = TirBlock {
+            id: entry_id,
+            args: vec![],
+            ops: vec![make_op(OpCode::ConstInt, vec![], vec![i_init], int_attr(0))],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![i_init],
+            },
+        };
+        let header = TirBlock {
+            id: header_id,
+            args: vec![TirValue {
+                id: i,
+                ty: TirType::DynBox, // intentionally pessimistic — the seeding fix narrows it
+            }],
+            ops: vec![make_op(
+                OpCode::ConstBool,
+                vec![],
+                vec![cond],
+                {
+                    let mut a = AttrDict::new();
+                    a.insert("value".into(), AttrValue::Bool(true));
+                    a
+                },
+            )],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body_id,
+                then_args: vec![],
+                else_block: exit_id,
+                else_args: vec![],
+            },
+        };
+        let body = TirBlock {
+            id: body_id,
+            args: vec![],
+            ops: vec![
+                make_op(OpCode::ConstInt, vec![], vec![one], int_attr(1)),
+                make_op(OpCode::Add, vec![i, one], vec![i_next], AttrDict::new()),
+            ],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![i_next],
+            },
+        };
+        let exit = TirBlock {
+            id: exit_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        };
+
+        let mut blocks = HashMap::new();
+        blocks.insert(entry_id, entry);
+        blocks.insert(header_id, header);
+        blocks.insert(body_id, body);
+        blocks.insert(exit_id, exit);
+
+        let mut func = TirFunction {
+            name: "iv_loop".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: TirType::None,
+            blocks,
+            entry_block: entry_id,
+            next_value: 5,
+            next_block: 4,
+            attrs: AttrDict::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        let _refined = refine_types(&mut func);
+
+        let header_block = &func.blocks[&header_id];
+        let i_arg_ty = header_block
+            .args
+            .iter()
+            .find(|a| a.id == i)
+            .map(|a| a.ty.clone())
+            .expect("loop header arg `i` present");
+        assert_eq!(
+            i_arg_ty,
+            TirType::I64,
+            "loop induction variable seeded with entry-edge I64 must converge to I64, got {:?}",
+            i_arg_ty
+        );
     }
 
     // ---- Guard propagation tests ----
