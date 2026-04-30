@@ -99,14 +99,17 @@ PYTHONPATH = "{root}/src"
 
 [tool.molt.dx.commands]
 install = "uv sync --group dev --group bench --python 3.12"
+clippy = "cargo clippy -p molt-backend --features native-backend -- -D warnings"
+security = "cargo deny check"
 build = "cargo build --profile release-fast --workspace"
 backend = "cargo test --profile release-fast -p molt-backend --features native-backend --lib"
 compliance = "{project_python} -m pytest tests/compliance/ -p no:cacheprovider --tb=line -q"
 gates = [
-    "cargo build --profile release-fast --workspace",
-    "cargo test --profile release-fast -p molt-backend --features native-backend --lib",
-    "{project_python} -m pytest tests/compliance/ -p no:cacheprovider --tb=line -q",
-    "git status --short",
+    "@clippy",
+    "@security",
+    "@build",
+    "@backend",
+    "@compliance",
 ]
 
 [dependency-groups]

@@ -222,9 +222,40 @@ def _split_command(command: object, name: str) -> list[str]:
     return shlex.split(_format_dx_command(command), posix=os.name != "nt")
 
 
-def _split_command_sequence(command: object, name: str) -> list[list[str]]:
+def _split_command_sequence(
+    command: object,
+    name: str,
+    *,
+    commands: dict[str, object] | None = None,
+    stack: tuple[str, ...] = (),
+) -> list[list[str]]:
+    commands = _dx_commands() if commands is None else commands
+
+    def split_item(item: str, item_name: str) -> list[list[str]]:
+        stripped = item.strip()
+        if stripped.startswith("@"):
+            ref = stripped[1:]
+            if not ref or any(ch.isspace() for ch in ref):
+                raise RuntimeError(
+                    f"Invalid [tool.molt.dx.commands].{item_name} reference: {item!r}"
+                )
+            if ref in stack:
+                chain = " -> ".join((*stack, ref))
+                raise RuntimeError(f"Cyclic [tool.molt.dx.commands] reference: {chain}")
+            if ref not in commands:
+                raise RuntimeError(
+                    f"Missing [tool.molt.dx.commands].{ref} referenced by {item_name}"
+                )
+            return _split_command_sequence(
+                commands[ref],
+                ref,
+                commands=commands,
+                stack=(*stack, ref),
+            )
+        return [_split_command(item, item_name)]
+
     if isinstance(command, str):
-        return [_split_command(command, name)]
+        return split_item(command, name)
     if isinstance(command, list) and command:
         split: list[list[str]] = []
         for idx, item in enumerate(command):
@@ -232,7 +263,7 @@ def _split_command_sequence(command: object, name: str) -> list[list[str]]:
                 raise RuntimeError(
                     f"Invalid [tool.molt.dx.commands].{name}[{idx}]: expected command string"
                 )
-            split.append(shlex.split(_format_dx_command(item), posix=os.name != "nt"))
+            split.extend(split_item(item, f"{name}[{idx}]"))
         return split
     raise RuntimeError(f"Missing [tool.molt.dx.commands].{name}")
 
@@ -320,6 +351,10 @@ def main() -> None:
         _print_canonical_env(_canonical_env())
     elif cmd[0] == "install":
         _run_dx_command("install", _canonical_env(), tty=use_tty)
+    elif cmd[0] == "clippy":
+        _run_dx_command("clippy", _canonical_env(), tty=use_tty)
+    elif cmd[0] == "security":
+        _run_dx_command("security", _canonical_env(), tty=use_tty)
     elif cmd[0] == "compliance":
         _require_project_python()
         _run_dx_command("compliance", _canonical_env(), tty=use_tty)
@@ -437,7 +472,7 @@ def main() -> None:
     else:
         print(
             "Usage: tools/dev.py "
-            "[env|install|compliance|backend|gates|lint|test|setup|doctor|update|validate]"
+            "[env|install|clippy|security|compliance|backend|gates|lint|test|setup|doctor|update|validate]"
         )
 
 
