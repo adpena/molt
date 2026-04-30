@@ -992,17 +992,21 @@ fn infer_result_type_with_attrs(
         OpCode::ConstBytes => Some(TirType::Bytes),
 
         // Add: numeric arithmetic + string concatenation + string/list repetition
-        OpCode::Add => match operand_types {
+        OpCode::Add | OpCode::InplaceAdd => match operand_types {
             [TirType::Str, TirType::Str] => Some(TirType::Str), // "a" + "b"
             _ => infer_numeric_arithmetic(operand_types),
         },
         // Mul: numeric arithmetic + string/list repetition (str * int, int * str)
-        OpCode::Mul => match operand_types {
+        OpCode::Mul | OpCode::InplaceMul => match operand_types {
             [TirType::Str, TirType::I64] | [TirType::I64, TirType::Str] => Some(TirType::Str),
             _ => infer_numeric_arithmetic(operand_types),
         },
-        // Sub, Mod, Pow: numeric only (str-str is TypeError in Python)
-        OpCode::Sub | OpCode::Mod | OpCode::Pow => infer_numeric_arithmetic(operand_types),
+        // Sub, Mod, Pow: numeric only (str-str is TypeError in Python).
+        // InplaceSub mirrors Sub for typed scalars; mutable-type sequence
+        // ops (list -= ...) are TypeError in CPython for these opcodes.
+        OpCode::Sub | OpCode::InplaceSub | OpCode::Mod | OpCode::Pow => {
+            infer_numeric_arithmetic(operand_types)
+        }
         OpCode::Div => {
             // Python: division always produces float unless both are DynBox.
             match operand_types {
@@ -1785,6 +1789,60 @@ mod tests {
             TirType::I64,
             "loop induction variable seeded with entry-edge I64 must converge to I64, got {:?}",
             i_arg_ty
+        );
+    }
+
+    /// Locks in the contract that `InplaceAdd`/`InplaceSub`/`InplaceMul`
+    /// participate in numeric arithmetic inference identically to their
+    /// regular `Add`/`Sub`/`Mul` counterparts. Without this, an
+    /// accumulator pattern like `total += i` (lowered as `InplaceAdd`)
+    /// stays at DynBox even when both operands are I64, causing the
+    /// native backend to coerce to a float lane and silently miscompile
+    /// the integer accumulator (printed bits look like a denormal float).
+    #[test]
+    fn inplace_add_typed_to_i64_for_int_operands() {
+        let ops = vec![
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(10)),
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(1)], int_attr(20)),
+            make_op(
+                OpCode::InplaceAdd,
+                vec![ValueId(0), ValueId(1)],
+                vec![ValueId(2)],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::InplaceSub,
+                vec![ValueId(2), ValueId(1)],
+                vec![ValueId(3)],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::InplaceMul,
+                vec![ValueId(3), ValueId(0)],
+                vec![ValueId(4)],
+                AttrDict::new(),
+            ),
+        ];
+        let mut func = single_block_func(ops, 5);
+        let _refined = refine_types(&mut func);
+
+        // Re-extract the type map post-refinement to inspect op result
+        // types (block args were already covered by other tests).
+        let env = extract_type_map(&func);
+        assert_eq!(
+            env.get(&ValueId(2)),
+            Some(&TirType::I64),
+            "InplaceAdd of (I64, I64) must produce I64"
+        );
+        assert_eq!(
+            env.get(&ValueId(3)),
+            Some(&TirType::I64),
+            "InplaceSub of (I64, I64) must produce I64"
+        );
+        assert_eq!(
+            env.get(&ValueId(4)),
+            Some(&TirType::I64),
+            "InplaceMul of (I64, I64) must produce I64"
         );
     }
 

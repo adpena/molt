@@ -73,6 +73,9 @@ fn is_typed_numberable(opcode: OpCode) -> bool {
         OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
+            | OpCode::InplaceAdd
+            | OpCode::InplaceSub
+            | OpCode::InplaceMul
             | OpCode::Div
             | OpCode::FloorDiv
             | OpCode::Mod
