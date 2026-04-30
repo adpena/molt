@@ -392,6 +392,11 @@ def _parser() -> argparse.ArgumentParser:
         "--summary-json",
         help="Write command result, violation, and peak RSS details as JSON.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        help="Abort the command if wall-clock runtime exceeds this many seconds.",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser
 
@@ -410,6 +415,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         poll_interval = float(args.poll_interval)
         if poll_interval <= 0:
             raise ValueError("poll interval must be greater than 0")
+        if args.timeout is not None and args.timeout <= 0:
+            raise ValueError("timeout must be greater than 0")
     except ValueError as exc:
         print(f"memory_guard: {exc}", file=sys.stderr)
         return 2
@@ -419,6 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_total_rss_kb=max_total_rss_kb,
         poll_interval=poll_interval,
         capture_output=False,
+        timeout=args.timeout,
     )
     if args.summary_json:
         try:
@@ -445,6 +453,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"limit={limit_gb:.2f}GB "
             f"scope={result.violation.scope} "
             f"command={result.violation.command}",
+            file=sys.stderr,
+        )
+    if result.timed_out:
+        print(
+            f"memory_guard: timeout after {args.timeout:.2f}s",
             file=sys.stderr,
         )
     return result.returncode
