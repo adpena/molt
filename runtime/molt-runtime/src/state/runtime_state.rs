@@ -487,17 +487,23 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
         _ => 1,
     };
     if !PROCESS_EXIT_FINALIZED.swap(true, AtomicOrdering::SeqCst) {
-        let _guard = runtime_state_lock().lock().unwrap();
-        let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
-        if !ptr.is_null() {
-            let state = unsafe { &*ptr };
-            let gil = GilGuard::new();
-            let py = gil.token();
-            runtime_teardown_for_process_exit(&py, state);
-            drop(gil);
+        let gil = GilGuard::new();
+        {
+            let _guard = runtime_state_lock().lock().unwrap();
+            let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
+            if !ptr.is_null() {
+                let state = unsafe { &*ptr };
+                let py = gil.token();
+                runtime_teardown_for_process_exit(&py, state);
+            }
         }
+        drop(gil);
     }
-    unsafe { libc::fflush(std::ptr::null_mut()) };
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+    }
     unsafe { libc::_exit(code) }
 }
 
@@ -509,6 +515,15 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     touch_tls_guard();
     #[cfg(not(target_arch = "wasm32"))]
     ensure_debug_sigtrap_handler();
+    if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
+        trace_runtime_init("already_initialized");
+        return 1;
+    }
+    if RUNTIME_SHUTDOWN_COMPLETE.load(AtomicOrdering::SeqCst) {
+        trace_runtime_init("shutdown_complete");
+        return 0;
+    }
+    let gil = GilGuard::new();
     let _guard = runtime_state_lock().lock().unwrap();
     if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
         trace_runtime_init("already_initialized");
@@ -531,7 +546,6 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     RUNTIME_STATE_PTR.store(ptr, AtomicOrdering::SeqCst);
     let state_ref = unsafe { &*ptr };
     trace_runtime_init("state_allocated");
-    let gil = GilGuard::new();
     {
         let py = gil.token();
         runtime_reset_for_init(&py, state_ref);
