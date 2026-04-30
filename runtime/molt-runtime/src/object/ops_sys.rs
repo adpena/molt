@@ -302,8 +302,32 @@ pub(crate) fn env_sys_version_info() -> Option<PythonVersionInfo> {
     Some(info)
 }
 
+pub(crate) fn env_target_python_info() -> Option<PythonVersionInfo> {
+    if let Some(info) = env_sys_version_info() {
+        return Some(info);
+    }
+    let raw = std::env::var("MOLT_PYTHON_VERSION").ok()?;
+    let mut parts = raw.trim().split('.');
+    let major = parts.next()?.trim().parse::<i64>().ok()?;
+    let minor = parts.next()?.trim().parse::<i64>().ok()?;
+    let micro = parts
+        .next()
+        .and_then(|part| part.trim().parse::<i64>().ok())
+        .unwrap_or(0);
+    if major < 0 || minor < 0 || micro < 0 {
+        return None;
+    }
+    Some(PythonVersionInfo {
+        major,
+        minor,
+        micro,
+        releaselevel: "final".to_string(),
+        serial: 0,
+    })
+}
+
 pub(crate) fn default_sys_version_info() -> PythonVersionInfo {
-    env_sys_version_info().unwrap_or_else(|| PythonVersionInfo {
+    env_target_python_info().unwrap_or_else(|| PythonVersionInfo {
         major: 3,
         minor: 12,
         micro: 0,
@@ -464,6 +488,19 @@ pub(crate) fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionIn
         *guard = Some(init.clone());
         (init, true)
     }
+}
+
+pub(crate) fn runtime_target_python_info(state: &RuntimeState) -> PythonVersionInfo {
+    current_sys_version_info(state).0
+}
+
+pub(crate) fn runtime_target_minor(_py: &PyToken<'_>) -> i64 {
+    runtime_target_python_info(runtime_state(_py)).minor
+}
+
+pub(crate) fn runtime_target_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
+    let info = runtime_target_python_info(runtime_state(_py));
+    info.major > major || (info.major == major && info.minor >= minor)
 }
 
 pub(crate) fn alloc_sys_version_info_tuple(

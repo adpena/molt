@@ -4736,7 +4736,7 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
                 obj_from_bits(annotations_bits),
             ) {
                 dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
-                if pep649_enabled() {
+                if pep649_enabled(_py) {
                     let annotate_bits = intern_static_name(
                         _py,
                         &runtime_state(_py).interned.annotate_name,
@@ -4753,7 +4753,7 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
                 b"__annotate__",
             );
             if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(annotate_bits))
-                && pep649_enabled()
+                && pep649_enabled(_py)
             {
                 let val_obj = obj_from_bits(val_bits);
                 if !val_obj.is_none() {

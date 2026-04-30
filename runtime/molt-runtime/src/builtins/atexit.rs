@@ -1,3 +1,4 @@
+use crate::object::ops_sys::runtime_target_minor;
 use crate::state::runtime_state::{AtexitCallbackEntry, AtexitCallbackKind};
 use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_EXCEPTION, TYPE_ID_FUNCTION, alloc_string,
@@ -144,7 +145,7 @@ fn atexit_unraisable_message_and_object(
     callback_bits: u64,
     callback_text: &str,
 ) -> (String, u64) {
-    if atexit_target_minor() >= 13 {
+    if runtime_target_minor(_py) >= 13 {
         (
             format!("Exception ignored in atexit callback {callback_text}"),
             MoltObject::none().bits(),
@@ -262,29 +263,6 @@ fn atexit_report_callback_exception(_py: &PyToken<'_>, callback_bits: u64, exc_b
     if !formatted.is_empty() {
         write_stderr_line(_py, &formatted);
     }
-}
-
-fn atexit_target_minor() -> i64 {
-    // Check explicit env-var overrides only.  Do NOT read from
-    // state.sys_version_info — that field is tainted by the host Python
-    // version used to run the compiler.  Default to 12 (molt's target).
-    if let Ok(raw) = std::env::var("MOLT_PYTHON_VERSION")
-        && let Some((major_raw, minor_raw)) = raw.split_once('.')
-        && major_raw.trim() == "3"
-        && let Ok(minor) = minor_raw.trim().parse::<i64>()
-    {
-        return minor;
-    }
-    if let Ok(raw) = std::env::var("MOLT_SYS_VERSION_INFO") {
-        let mut parts = raw.split(',');
-        if let (Some(major_raw), Some(minor_raw)) = (parts.next(), parts.next())
-            && major_raw.trim() == "3"
-            && let Ok(minor) = minor_raw.trim().parse::<i64>()
-        {
-            return minor;
-        }
-    }
-    12
 }
 
 fn callback_returned_raised_exception(_py: &PyToken<'_>, out_bits: u64) -> bool {

@@ -24,8 +24,9 @@ This file is forward-looking only.
 5. Finish consolidating setup, doctor, validate, and thin-wrapper behavior into
    one coherent CLI-first DX surface.
 6. Keep Python `3.12`/`3.13`/`3.14` target-version gates explicit across CLI,
-   pyproject/UV-oriented workflows, frontend caches, backend caches, and runtime
-   bootstrap evidence.
+   pyproject/UV-oriented workflows, frontend caches, backend caches, and the
+   unconditional runtime bootstrap/state contract used by importlib and stdlib
+   gates.
 7. Make performance reporting and compatibility reporting generator-owned
    instead of manually synchronized across multiple docs.
 8. Drive the Luau target from checked source emission to full current/future

@@ -22,9 +22,12 @@ It is current-state only. For forward-looking priorities, use
   `molt build --python-version`, `[tool.molt.build] python-version`, and
   `project.requires-python` resolve the target version before parsing, module
   graph discovery, frontend cache lookup, backend cache lookup, and runtime
-  `sys.version_info` bootstrap. Malformed or non-string target-version config
-  fails closed instead of falling back to another target. The default target
-  remains Python `3.12`.
+  `sys.version_info` bootstrap. The compiled bootstrap is unconditional: native,
+  WASM, and isolate entry paths stamp the selected target version before user
+  code/importlib gates run, and runtime version-gated stdlib decisions read that
+  runtime state instead of ambient process env. Malformed or non-string
+  target-version config fails closed instead of falling back to another target.
+  The default target remains Python `3.12`.
 - Rust-first stdlib lowering is the canonical direction, with generated audit
   surfaces under `docs/spec/areas/compat/surfaces/stdlib/`.
 - WASM remains a supported target area, but same-contract parity with native is
