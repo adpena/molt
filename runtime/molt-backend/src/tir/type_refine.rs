@@ -964,12 +964,10 @@ fn infer_result_type_with_attrs(
         opcode,
         OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
     ) && let Some(attrs) = attrs
+        && let Some(AttrValue::Str(name)) = attrs.get("return_type")
+        && let Some(ty) = parse_return_type_str(name)
     {
-        if let Some(AttrValue::Str(name)) = attrs.get("return_type")
-            && let Some(ty) = parse_return_type_str(name)
-        {
-            return Some(ty);
-        }
+        return Some(ty);
     }
     match opcode {
         // Constants — always produce a known type regardless of operands.
