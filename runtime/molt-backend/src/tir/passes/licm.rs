@@ -54,6 +54,9 @@ fn is_hoistable(op: &TirOp) -> bool {
         OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
+            | OpCode::InplaceAdd
+            | OpCode::InplaceSub
+            | OpCode::InplaceMul
             | OpCode::Neg
             | OpCode::Pos
             | OpCode::Eq
