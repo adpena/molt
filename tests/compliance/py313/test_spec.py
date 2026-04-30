@@ -74,6 +74,11 @@ def _compile_and_run(
                 str(src_path),
                 "--out-dir",
                 str(tmp),
+                *(
+                    ["--python-version", f"{min_version[0]}.{min_version[1]}"]
+                    if min_version > (3, 12)
+                    else []
+                ),
             ],
             capture_output=True,
             text=True,
@@ -168,6 +173,27 @@ def process(val: object) -> str:
 
 print(process(10))
 print(process("hi"))
+""",
+            min_version=(3, 13),
+        )
+
+
+class TestTargetVersionRuntimeContract:
+    """Runtime version gates must use the compiled target, not ambient env."""
+
+    def test_pep594_removed_module_absent_under_target_313(self):
+        _assert_match(
+            """\
+import importlib
+import sys
+
+print(sys.version_info >= (3, 13))
+try:
+    importlib.import_module("cgi")
+except ModuleNotFoundError as exc:
+    print(type(exc).__name__, str(exc))
+else:
+    print("present")
 """,
             min_version=(3, 13),
         )

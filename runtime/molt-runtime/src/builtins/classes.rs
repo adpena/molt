@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 
 use molt_obj_model::MoltObject;
 
+use crate::object::ops_sys::runtime_target_minor;
 use crate::state::runtime_state::runtime_state_lock;
 use crate::{
     BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_CLASSMETHOD, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
@@ -342,17 +343,12 @@ fn init_dict_subclass_layout(_py: &PyToken<'_>, dict_bits: u64) {
     }
 }
 
-fn union_type_class_name() -> &'static str {
-    let minor = std::env::var("MOLT_SYS_VERSION_INFO")
-        .ok()
-        .and_then(|raw| {
-            let mut parts = raw.split(',');
-            let _major = parts.next()?.trim().parse::<i64>().ok()?;
-            let minor = parts.next()?.trim().parse::<i64>().ok()?;
-            Some(minor)
-        })
-        .unwrap_or(14);
-    if minor >= 14 { "Union" } else { "UnionType" }
+fn union_type_class_name(_py: &PyToken<'_>) -> &'static str {
+    if runtime_target_minor(_py) >= 14 {
+        "Union"
+    } else {
+        "UnionType"
+    }
 }
 
 fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
@@ -432,7 +428,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let staticmethod = make_builtin_class(_py, "staticmethod");
     let property = make_builtin_class(_py, "property");
     let generic_alias = make_builtin_class(_py, "GenericAlias");
-    let union_type = make_builtin_class(_py, union_type_class_name());
+    let union_type = make_builtin_class(_py, union_type_class_name(_py));
 
     unsafe {
         for bits in [

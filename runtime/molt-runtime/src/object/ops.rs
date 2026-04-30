@@ -1851,9 +1851,9 @@ pub extern "C" fn molt_getargv() -> u64 {
 use super::ops_sys::{
     DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS, alloc_sys_version_info_tuple, current_sys_version_info,
     default_sys_version_info, dict_set_bytes_key, env_flag_bool, env_flag_level,
-    env_non_negative_i64, env_sys_version_info, format_sys_version, sys_abiflags, sys_api_version,
-    sys_cache_tag, sys_flags_hash_randomization, sys_hexversion_from_info, sys_implementation_name,
-    trace_sys_version,
+    env_non_negative_i64, env_target_python_info, format_sys_version, runtime_target_minor,
+    sys_abiflags, sys_api_version, sys_cache_tag, sys_flags_hash_randomization,
+    sys_hexversion_from_info, sys_implementation_name, trace_sys_version,
 };
 
 #[unsafe(no_mangle)]
@@ -1945,7 +1945,7 @@ pub extern "C" fn molt_sys_set_version_info(
             serial,
         };
         let mut info_overridden_from_env = false;
-        if let Some(env_info) = env_sys_version_info() {
+        if let Some(env_info) = env_target_python_info() {
             if env_info != info {
                 info_overridden_from_env = true;
                 if trace_sys_version() {
@@ -7527,24 +7527,12 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
     false
 }
 
-fn union_type_display_name() -> &'static str {
-    static NAME: OnceLock<&'static str> = OnceLock::new();
-    NAME.get_or_init(|| {
-        let minor = std::env::var("MOLT_SYS_VERSION_INFO")
-            .ok()
-            .and_then(|raw| {
-                let mut parts = raw.split(',');
-                let _major = parts.next()?.trim().parse::<i64>().ok()?;
-                let minor = parts.next()?.trim().parse::<i64>().ok()?;
-                Some(minor)
-            })
-            .unwrap_or(14);
-        if minor >= 14 {
-            "types.Union"
-        } else {
-            "types.UnionType"
-        }
-    })
+fn union_type_display_name(_py: &PyToken<'_>) -> &'static str {
+    if runtime_target_minor(_py) >= 14 {
+        "types.Union"
+    } else {
+        "types.UnionType"
+    }
 }
 
 pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str> {
@@ -7609,7 +7597,7 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_MODULE => Cow::Borrowed("module"),
                 TYPE_ID_TYPE => Cow::Borrowed("type"),
                 TYPE_ID_GENERIC_ALIAS => Cow::Borrowed("types.GenericAlias"),
-                TYPE_ID_UNION => Cow::Borrowed(union_type_display_name()),
+                TYPE_ID_UNION => Cow::Borrowed(union_type_display_name(_py)),
                 TYPE_ID_GENERATOR => Cow::Borrowed("generator"),
                 TYPE_ID_ASYNC_GENERATOR => Cow::Borrowed("async_generator"),
                 TYPE_ID_ENUMERATE => Cow::Borrowed("enumerate"),

@@ -184,3 +184,67 @@ def test_backend_cache_variant_changes_with_target_python() -> None:
     assert py312 != py314
     assert "target_python=py312" in py312
     assert "target_python=py314" in py314
+
+
+def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) -> None:
+    source_path = tmp_path / "main.py"
+    source_path.write_text("print('ok')\n")
+    entry_init = cli.SimpleTIRGenerator.module_init_symbol("__main__")
+    integration_state = cli._FrontendIntegrationState(
+        functions=[
+            {
+                "name": entry_init,
+                "params": [],
+                "ops": [{"kind": "ret_void"}],
+            }
+        ],
+        known_classes={},
+    )
+    diagnostics_state = cli._MidendDiagnosticsState(
+        policy_outcomes_by_function={},
+        pass_stats_by_function={},
+    )
+
+    prepared, error = cli._prepare_backend_ir(
+        entry_module="__main__",
+        module_graph={"__main__": source_path},
+        explicit_imports=set(),
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"__main__"},
+        known_classes={},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        frontend_phase_timeout=None,
+        integration_state=integration_state,
+        diagnostics_state=diagnostics_state,
+        record_frontend_timing=lambda **_: None,
+        fail=cli._fail,
+        json_output=True,
+        module_order=["__main__"],
+        generated_module_source_paths={},
+        spawn_enabled=False,
+        pgo_profile_summary=None,
+        runtime_feedback_summary=None,
+        emit_ir_path=None,
+        target_python=cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"],
+    )
+
+    assert error is None
+    assert prepared is not None
+    main_ops = next(
+        func["ops"] for func in prepared.ir["functions"] if func["name"] == "molt_main"
+    )
+    set_version_calls = [
+        op
+        for op in main_ops
+        if op.get("kind") == "call" and op.get("s_value") == "molt_sys_set_version_info"
+    ]
+    assert len(set_version_calls) == 1

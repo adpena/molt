@@ -49,12 +49,6 @@ const PLATFORM_BITS: &str = "64bit";
 #[cfg(target_pointer_width = "32")]
 const PLATFORM_BITS: &str = "32bit";
 
-/// Molt's emulated Python version string.
-const MOLT_PYTHON_VERSION: &str = "3.12.0";
-const MOLT_PYTHON_MAJOR: &str = "3";
-const MOLT_PYTHON_MINOR: &str = "12";
-const MOLT_PYTHON_MICRO: &str = "0";
-
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
@@ -212,15 +206,25 @@ pub extern "C" fn molt_platform_platform(aliased_bits: u64, terse_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_python_version() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { return_str(_py, MOLT_PYTHON_VERSION) })
+    crate::with_gil_entry_nopanic!(_py, {
+        let info = crate::object::ops_sys::runtime_target_python_info(runtime_state(_py));
+        return_str(
+            _py,
+            &format!("{}.{}.{}", info.major, info.minor, info.micro),
+        )
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_python_version_tuple() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let major_ptr = alloc_string(_py, MOLT_PYTHON_MAJOR.as_bytes());
-        let minor_ptr = alloc_string(_py, MOLT_PYTHON_MINOR.as_bytes());
-        let micro_ptr = alloc_string(_py, MOLT_PYTHON_MICRO.as_bytes());
+        let info = crate::object::ops_sys::runtime_target_python_info(runtime_state(_py));
+        let major = info.major.to_string();
+        let minor = info.minor.to_string();
+        let micro = info.micro.to_string();
+        let major_ptr = alloc_string(_py, major.as_bytes());
+        let minor_ptr = alloc_string(_py, minor.as_bytes());
+        let micro_ptr = alloc_string(_py, micro.as_bytes());
         if major_ptr.is_null() || minor_ptr.is_null() || micro_ptr.is_null() {
             return raise_exception::<u64>(_py, "MemoryError", "out of memory");
         }
