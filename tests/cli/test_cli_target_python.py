@@ -49,6 +49,70 @@ def test_target_python_cli_overrides_project_requires_python(tmp_path: Path) -> 
     assert target.short == "3.13"
 
 
+def test_target_python_build_config_overrides_project_requires_python(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nrequires-python = ">=3.12,<3.15"\n'
+    )
+
+    target = cli._resolve_target_python_version(
+        explicit=None,
+        build_config={"python-version": "3.14"},
+        project_root=tmp_path,
+    )
+
+    assert target.short == "3.14"
+
+
+def test_target_python_rejects_invalid_pyproject_toml(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nrequires-python = ">=3.12"\nbroken =\n'
+    )
+
+    with pytest.raises(ValueError, match="invalid pyproject.toml"):
+        cli._resolve_target_python_version(
+            explicit=None,
+            build_config=None,
+            project_root=tmp_path,
+        )
+
+
+def test_target_python_rejects_non_string_project_requires_python(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nrequires-python = 3.12\n'
+    )
+
+    with pytest.raises(ValueError, match="project.requires-python"):
+        cli._resolve_target_python_version(
+            explicit=None,
+            build_config=None,
+            project_root=tmp_path,
+        )
+
+
+def test_target_python_rejects_non_string_build_config_version(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="python-version"):
+        cli._resolve_target_python_version(
+            explicit=None,
+            build_config={"python-version": 3.14},
+            project_root=tmp_path,
+        )
+
+
+def test_target_python_rejects_empty_build_config_version(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="python-version"):
+        cli._resolve_target_python_version(
+            explicit=None,
+            build_config={"python-version": "  "},
+            project_root=tmp_path,
+        )
+
+
 def test_target_python_micro_release_selects_minor_line() -> None:
     target = cli._parse_target_python_version("3.14.4")
 
