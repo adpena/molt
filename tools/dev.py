@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime
 from pathlib import Path
 
@@ -165,6 +167,148 @@ def _parse_test_runner_flags(args: list[str]) -> tuple[list[str], bool, str | No
     return remaining, random_order, random_seed
 
 
+def _load_dx_config() -> dict[str, object]:
+    with (ROOT / "pyproject.toml").open("rb") as fh:
+        data = tomllib.load(fh)
+    tool = data.get("tool", {})
+    if not isinstance(tool, dict):
+        return {}
+    molt = tool.get("molt", {})
+    if not isinstance(molt, dict):
+        return {}
+    dx = molt.get("dx", {})
+    return dx if isinstance(dx, dict) else {}
+
+
+def _canonical_env() -> dict[str, str]:
+    dx = _load_dx_config()
+    env = os.environ.copy()
+    for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
+        env.pop(name, None)
+    env_cfg = dx.get("env", {})
+    if isinstance(env_cfg, dict):
+        for key, raw_value in env_cfg.items():
+            if not isinstance(key, str) or not isinstance(raw_value, str):
+                continue
+            env[key] = raw_value.format(root=str(ROOT))
+    env.setdefault("MOLT_SESSION_ID", f"dev-{os.getpid()}")
+    env.setdefault("MOLT_BACKEND_DAEMON", "1" if dx.get("backend_daemon") else "0")
+    env.setdefault("CARGO_BUILD_JOBS", str(dx.get("cargo_build_jobs", 2)))
+    for dirname in (
+        env["CARGO_TARGET_DIR"],
+        env["MOLT_CACHE"],
+        env["MOLT_DIFF_ROOT"],
+        env["MOLT_DIFF_TMPDIR"],
+        env["UV_CACHE_DIR"],
+        env["TMPDIR"],
+    ):
+        Path(dirname).mkdir(parents=True, exist_ok=True)
+    return env
+
+
+def _dx_commands() -> dict[str, object]:
+    dx = _load_dx_config()
+    commands = dx.get("commands", {})
+    return commands if isinstance(commands, dict) else {}
+
+
+def _format_dx_command(command: str) -> str:
+    return command.format(root=str(ROOT), project_python=str(_uv_project_python()))
+
+
+def _split_command(command: object, name: str) -> list[str]:
+    if not isinstance(command, str) or not command.strip():
+        raise RuntimeError(f"Missing [tool.molt.dx.commands].{name}")
+    return shlex.split(_format_dx_command(command), posix=os.name != "nt")
+
+
+def _split_command_sequence(command: object, name: str) -> list[list[str]]:
+    if isinstance(command, str):
+        return [_split_command(command, name)]
+    if isinstance(command, list) and command:
+        split: list[list[str]] = []
+        for idx, item in enumerate(command):
+            if not isinstance(item, str) or not item.strip():
+                raise RuntimeError(
+                    f"Invalid [tool.molt.dx.commands].{name}[{idx}]: expected command string"
+                )
+            split.append(shlex.split(_format_dx_command(item), posix=os.name != "nt"))
+        return split
+    raise RuntimeError(f"Missing [tool.molt.dx.commands].{name}")
+
+
+def _run_repo_cmd(cmd: list[str], env: dict[str, str], *, tty: bool) -> None:
+    _log("$ " + " ".join(shlex.quote(part) for part in cmd))
+    if tty and os.name == "posix":
+        _run_with_pty(cmd, env)
+    else:
+        subprocess.check_call(cmd, cwd=ROOT, env=env)
+
+
+def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:
+    command = _dx_commands().get(name)
+    _run_repo_cmd(_split_command(command, name), env, tty=tty)
+
+
+def _require_project_python() -> Path:
+    python = _uv_project_python()
+    if not python.exists():
+        raise RuntimeError(
+            f"{python} is missing; run `tools/dev.py install` before compliance gates"
+        )
+    return python
+
+
+def _print_canonical_env(env: dict[str, str]) -> None:
+    keys = [
+        "MOLT_EXT_ROOT",
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "MOLT_CACHE",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "UV_CACHE_DIR",
+        "TMPDIR",
+        "MOLT_SESSION_ID",
+        "MOLT_BACKEND_DAEMON",
+        "CARGO_BUILD_JOBS",
+        "PYTHONPATH",
+    ]
+    for key in keys:
+        print(f"export {key}={shlex.quote(env[key])}")
+
+
+def _run_dx_gates(args: list[str], *, tty: bool) -> None:
+    allow_dirty = "--allow-dirty" in args
+    unknown = [arg for arg in args if arg != "--allow-dirty"]
+    if unknown:
+        raise RuntimeError("Unrecognized tools/dev.py gates arguments: " + " ".join(unknown))
+    env = _canonical_env()
+    _require_project_python()
+    commands = _dx_commands()
+    gates = commands.get("gates")
+    if gates is None:
+        for name in ("build", "backend", "compliance"):
+            _run_dx_command(name, env, tty=tty)
+    else:
+        for gate_cmd in _split_command_sequence(gates, "gates"):
+            _run_repo_cmd(gate_cmd, env, tty=tty)
+    status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    if status:
+        print(status, end="")
+        if not allow_dirty:
+            raise RuntimeError("working tree is dirty; rerun with --allow-dirty while developing")
+    else:
+        _log("git status clean")
+
+
 def main() -> None:
     cmd = sys.argv[1:] or ["help"]
     use_tty = "--tty" in cmd or os.environ.get("MOLT_TTY") == "1"
@@ -172,7 +316,18 @@ def main() -> None:
         cmd = [arg for arg in cmd if arg != "--tty"]
     if not cmd:
         cmd = ["help"]
-    if cmd[0] == "lint":
+    if cmd[0] == "env":
+        _print_canonical_env(_canonical_env())
+    elif cmd[0] == "install":
+        _run_dx_command("install", _canonical_env(), tty=use_tty)
+    elif cmd[0] == "compliance":
+        _require_project_python()
+        _run_dx_command("compliance", _canonical_env(), tty=use_tty)
+    elif cmd[0] == "backend":
+        _run_dx_command("backend", _canonical_env(), tty=use_tty)
+    elif cmd[0] == "gates":
+        _run_dx_gates(cmd[1:], tty=use_tty)
+    elif cmd[0] == "lint":
         run_uv(["ruff", "check", "."], python=TEST_PYTHONS[0], tty=use_tty)
         run_uv(["ruff", "format", "--check", "."], python=TEST_PYTHONS[0], tty=use_tty)
         run_uv(["ty", "check", "src"], python=TEST_PYTHONS[0], tty=use_tty)
@@ -280,7 +435,10 @@ def main() -> None:
             tty=use_tty,
         )
     else:
-        print("Usage: tools/dev.py [lint|test|setup|doctor|update|validate]")
+        print(
+            "Usage: tools/dev.py "
+            "[env|install|compliance|backend|gates|lint|test|setup|doctor|update|validate]"
+        )
 
 
 if __name__ == "__main__":

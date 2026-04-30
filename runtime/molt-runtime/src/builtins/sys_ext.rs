@@ -1031,8 +1031,8 @@ pub extern "C" fn molt_sys_modules() -> u64 {
 
 /// `sys.path` → list[str]
 ///
-/// Returns the initial module search path derived from environment variables
-/// and the executable location.  The Python wrapper may mutate this list.
+/// Returns the initial module search path derived from explicit Molt module
+/// roots and the executable location. The Python wrapper may mutate this list.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_path() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1041,9 +1041,11 @@ pub extern "C" fn molt_sys_path() -> u64 {
         // 1. Current directory (empty string = cwd per CPython convention)
         entries.push(String::new());
 
-        // 2. PYTHONPATH entries
-        if let Ok(pypath) = std::env::var("PYTHONPATH") {
-            for p in pypath.split(if cfg!(windows) { ';' } else { ':' }) {
+        // 2. Explicit Molt module roots. Ambient PYTHONPATH belongs to the
+        // host Python process used to drive tooling; compiled binaries must
+        // not silently import from that host search path.
+        if let Ok(module_roots) = std::env::var("MOLT_MODULE_ROOTS") {
+            for p in module_roots.split(if cfg!(windows) { ';' } else { ':' }) {
                 if !p.is_empty() {
                     entries.push(p.to_string());
                 }

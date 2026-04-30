@@ -552,6 +552,33 @@ pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 /// # Safety
+/// `values_ptr` must point to `len` contiguous NaN-boxed values when `len > 0`.
+pub unsafe extern "C" fn molt_tuple_from_values(values_ptr: *const u64, len: u64) -> u64 {
+    unsafe {
+        crate::with_gil_entry_nopanic!(_py, {
+            let Ok(len) = usize::try_from(len) else {
+                return raise_exception::<_>(_py, "MemoryError", "tuple is too large");
+            };
+            if len > 0 && values_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "tuple values pointer is null");
+            }
+            let values = if len == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(values_ptr, len)
+            };
+            let tuple_ptr = alloc_tuple(_py, values);
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
 /// Caller must ensure `builder_bits` is valid. Elements in the builder's Vec
 /// are assumed to already have their own reference (the compiler emitted
 /// inc_ref before each append). No additional inc_ref is performed.

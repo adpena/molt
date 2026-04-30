@@ -246,7 +246,7 @@ fn write_valid_extension_manifest(
 }
 
 #[test]
-fn sys_bootstrap_state_includes_pythonpath_module_roots_and_pwd() {
+fn sys_bootstrap_state_ignores_pythonpath_and_includes_module_roots_and_pwd() {
     let sep = if sys_platform_str().starts_with("win") {
         ';'
     } else {
@@ -268,14 +268,10 @@ fn sys_bootstrap_state_includes_pythonpath_module_roots_and_pwd() {
             } else {
                 '/'
             };
-            let expected_alpha = bootstrap_resolve_path_entry("alpha", "/tmp/molt_pwd", path_sep);
             let expected_beta = bootstrap_resolve_path_entry("beta", "/tmp/molt_pwd", path_sep);
             let expected_gamma = bootstrap_resolve_path_entry("gamma", "/tmp/molt_pwd", path_sep);
             let expected_delta = bootstrap_resolve_path_entry("delta", "/tmp/molt_pwd", path_sep);
-            assert_eq!(
-                state.pythonpath_entries,
-                vec![expected_alpha.clone(), expected_beta.clone()]
-            );
+            assert!(state.pythonpath_entries.is_empty());
             assert_eq!(
                 state.module_roots_entries,
                 vec![
@@ -291,10 +287,9 @@ fn sys_bootstrap_state_includes_pythonpath_module_roots_and_pwd() {
                 state.path,
                 vec![
                     "".to_string(),
-                    expected_alpha,
-                    expected_beta,
                     expected_stdlib_root(),
                     expected_gamma,
+                    expected_beta,
                     expected_delta,
                 ]
             );
@@ -368,7 +363,7 @@ fn sys_bootstrap_state_falls_back_to_current_dir_when_pwd_missing() {
 }
 
 #[test]
-fn sys_bootstrap_state_includes_virtual_env_site_packages_when_present() {
+fn sys_bootstrap_state_ignores_virtual_env_site_packages_when_present() {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -400,14 +395,9 @@ fn sys_bootstrap_state_includes_virtual_env_site_packages_when_present() {
         ],
         || {
             let state = sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
-            assert_eq!(state.virtual_env_raw, venv_root_text);
-            assert!(
-                state
-                    .venv_site_packages_entries
-                    .iter()
-                    .any(|entry| entry == &site_packages_text)
-            );
-            assert!(state.path.iter().any(|entry| entry == &site_packages_text));
+            assert!(state.virtual_env_raw.is_empty());
+            assert!(state.venv_site_packages_entries.is_empty());
+            assert!(!state.path.iter().any(|entry| entry == &site_packages_text));
         },
     );
     std::fs::remove_dir_all(&tmp).expect("cleanup virtualenv temp dirs");
@@ -2060,8 +2050,6 @@ fn importlib_bootstrap_payload_reports_resolved_search_paths_and_env_fields() {
             } else {
                 '/'
             };
-            let expected_alpha =
-                bootstrap_resolve_path_entry("alpha", "/tmp/bootstrap_pwd", path_sep);
             let expected_vendor =
                 bootstrap_resolve_path_entry("vendor", "/tmp/bootstrap_pwd", path_sep);
             assert!(
@@ -2076,7 +2064,7 @@ fn importlib_bootstrap_payload_reports_resolved_search_paths_and_env_fields() {
                     .iter()
                     .any(|entry| entry == &expected_stdlib_root())
             );
-            assert_eq!(payload.pythonpath_entries, vec![expected_alpha]);
+            assert!(payload.pythonpath_entries.is_empty());
             assert!(
                 payload
                     .module_roots_entries

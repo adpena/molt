@@ -37,6 +37,10 @@ Modules may be:
 
 ### 3.1 Deterministic `sys.path`
 - `sys.path` is deterministic for a given build.
+- Compiled binaries do not read ambient `PYTHONPATH` or `VIRTUAL_ENV` during
+  runtime bootstrap. Build-time `--respect-pythonpath` may include
+  `PYTHONPATH` entries in the compiled module graph; runtime source roots must
+  be explicit through `MOLT_MODULE_ROOTS`.
 - Runtime mutation of `sys.path` is allowed only when explicitly enabled.
 - Resolution order is stable and documented in build metadata.
 
