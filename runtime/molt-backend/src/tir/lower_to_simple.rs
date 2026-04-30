@@ -2894,26 +2894,30 @@ fn op_kind_already_classified(kind: &str) -> bool {
             | "load_var"
             | "identity_alias"
             // Arithmetic — type inferred from operand lanes.
+            //
+            // The `inplace_*` variants are NOT in this list: lane
+            // analysis derives their lane from operand classification,
+            // but loop-carried accumulators (`total += i`) participate
+            // in a phi-like operand pattern where the operand may not
+            // be classified at the time the inplace op is processed —
+            // the iteration order of preanalysis isn't dominator-aware.
+            // Forcing the TIR-refined type through `type_hint` ensures
+            // the native backend honors the proven type even when the
+            // operand-lane heuristic falls through. See
+            // `project_iv_accumulator_int_as_float_print_bug.md` for
+            // the reproducer and full bisect.
             | "add"
-            | "inplace_add"
             | "sub"
             | "mul"
-            | "inplace_sub"
-            | "inplace_mul"
             | "floordiv"
             | "mod"
             | "mod_"
-            | "inplace_floordiv"
-            | "inplace_mod"
             | "bit_and"
             | "bit_or"
             | "bit_xor"
             | "bitand"
             | "bitor"
             | "bitxor"
-            | "inplace_bit_and"
-            | "inplace_bit_or"
-            | "inplace_bit_xor"
             | "lshift"
             | "rshift"
             | "shl"
