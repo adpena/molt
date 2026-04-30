@@ -16,8 +16,9 @@ This document defines the path from the current **correct-first dynamic** backen
 - `MoltValue` enum: `None | Bool(bool) | Int(i64) | Float(f64) | Str(String) | List(Vec<MoltValue>) | Dict(Vec<(MoltValue, MoltValue)>) | Func(Arc<dyn Fn>)`
 - Conditional prelude emission (only helpers referenced by the function body)
 - Phi hoisting, alias tracking, closure slot pre-declaration
-- Op coverage: constants, arithmetic, comparisons, control flow (if/else/loop/for), calls, list/dict/tuple ops, string methods, closures, classes (dict-based), exceptions (stub-level)
-- Not yet wired into `lib.rs` or CLI (`pub mod rust` is missing)
+- Op coverage: constants, arithmetic, comparisons, control flow (if/else/loop/for), calls, list/dict/tuple ops, string methods, closures, classes (dict-based), target-version `sys` bootstrap, and module-cache get/set/delete for emitted import bootstrap IR
+- Wired into the CLI `--target rust` source-emission path and `molt-backend` behind the `rust-backend` feature
+- Exceptions remain fail-fast/structural where full Python exception propagation is outside the current source-backend surface
 - No type specialization -- all variables are `MoltValue`, all uses clone
 
 ### Landscape of prior art
