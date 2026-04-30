@@ -4570,10 +4570,9 @@ mod tests {
         crate::tir::type_refine::refine_types(&mut tir);
         let type_map = crate::tir::type_refine::extract_type_map(&tir);
         let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
-        assert!(
-            crate::tir::verify_lir::verify_lir_function(&lir).is_ok(),
-            "LIR verification failed after TIR optimization"
-        );
+        if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir) {
+            panic!("LIR verification failed after TIR optimization: {errors:#?}");
+        }
         #[cfg(debug_assertions)]
         {
             let repr_violations =
