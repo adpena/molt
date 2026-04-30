@@ -19,6 +19,8 @@ DEFAULT_MAX_TOTAL_RSS_GB = 28.0
 DEFAULT_POLL_INTERVAL_SEC = 1.0
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
+INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
+INTERNAL_WORKER_ENV = "MOLT_MEMORY_GUARD_INTERNAL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,14 +403,79 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _load_internal_command(environ: Mapping[str, str]) -> list[str] | None:
+    if environ.get(INTERNAL_WORKER_ENV) != "1":
+        return None
+    raw = environ.get(INTERNAL_COMMAND_ENV)
+    if not raw:
+        raise ValueError(f"{INTERNAL_COMMAND_ENV} is required for internal worker")
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{INTERNAL_COMMAND_ENV} is invalid JSON") from exc
+    if not isinstance(decoded, list) or not all(
+        isinstance(item, str) for item in decoded
+    ):
+        raise ValueError(f"{INTERNAL_COMMAND_ENV} must be a JSON string list")
+    if not decoded:
+        raise ValueError(f"{INTERNAL_COMMAND_ENV} command must not be empty")
+    return decoded
+
+
+def _child_env_without_internal_keys(environ: Mapping[str, str]) -> dict[str, str]:
+    child_env = dict(environ)
+    child_env.pop(INTERNAL_COMMAND_ENV, None)
+    child_env.pop(INTERNAL_WORKER_ENV, None)
+    return child_env
+
+
+def _worker_env(environ: Mapping[str, str], command: Sequence[str]) -> dict[str, str]:
+    worker_env = dict(environ)
+    worker_env[INTERNAL_COMMAND_ENV] = json.dumps(list(command))
+    worker_env[INTERNAL_WORKER_ENV] = "1"
+    return worker_env
+
+
+def _worker_argv(args: argparse.Namespace) -> list[str]:
+    worker_args = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--max-rss-gb",
+        str(args.max_rss_gb),
+        "--max-total-rss-gb",
+        str(args.max_total_rss_gb),
+        "--poll-interval",
+        str(args.poll_interval),
+    ]
+    if args.summary_json:
+        worker_args.extend(["--summary-json", args.summary_json])
+    if args.timeout is not None:
+        worker_args.extend(["--timeout", str(args.timeout)])
+    return worker_args
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    hide_command_argv: bool = False,
+    execve: Callable[[str, Sequence[str], Mapping[str, str]], object] = os.execve,
+    environ: Mapping[str, str] | None = None,
+) -> int:
     args = _parser().parse_args(argv)
+    current_env = os.environ if environ is None else environ
     command = list(args.command)
     if command and command[0] == "--":
         command = command[1:]
     if not command:
-        print("memory_guard: command is required", file=sys.stderr)
-        return 2
+        try:
+            internal_command = _load_internal_command(current_env)
+        except ValueError as exc:
+            print(f"memory_guard: {exc}", file=sys.stderr)
+            return 2
+        if internal_command is None:
+            print("memory_guard: command is required", file=sys.stderr)
+            return 2
+        command = internal_command
     try:
         max_rss_kb = max_rss_kb_from_gb(args.max_rss_gb)
         max_total_rss_kb = max_rss_kb_from_gb(args.max_total_rss_gb)
@@ -420,6 +487,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         print(f"memory_guard: {exc}", file=sys.stderr)
         return 2
+    if hide_command_argv and current_env.get(INTERNAL_WORKER_ENV) != "1":
+        worker_argv = _worker_argv(args)
+        execve(
+            sys.executable,
+            worker_argv,
+            _worker_env(current_env, command),
+        )
+        print("memory_guard: failed to exec internal worker", file=sys.stderr)
+        return 2
     result = run_guarded(
         command,
         max_rss_kb=max_rss_kb,
@@ -427,6 +503,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         poll_interval=poll_interval,
         capture_output=False,
         timeout=args.timeout,
+        env=_child_env_without_internal_keys(current_env),
     )
     if args.summary_json:
         try:
@@ -464,4 +541,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(hide_command_argv=True))
