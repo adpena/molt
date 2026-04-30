@@ -146,21 +146,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                             op.opcode,
                             OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
                         ) {
-                            // Priority: explicit `return_type` (Year-1 Typed-IR
-                            // direction) → legacy `_type_hint` round-tripped
-                            // from SimpleIR.
-                            op.attrs
-                                .get("return_type")
-                                .and_then(|v| match v {
-                                    AttrValue::Str(s) => parse_return_type_str(s.as_str()),
-                                    _ => None,
-                                })
-                                .or_else(|| {
-                                    op.attrs.get("_type_hint").and_then(|v| match v {
-                                        AttrValue::Str(s) => parse_return_type_str(s.as_str()),
-                                        _ => None,
-                                    })
-                                })
+                            // Only explicit `return_type` is structural
+                            // return-type evidence. Legacy `_type_hint` is
+                            // semantic transport metadata and must not refine
+                            // representation.
+                            op.attrs.get("return_type").and_then(|v| match v {
+                                AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                                _ => None,
+                            })
                         } else {
                             None
                         };
@@ -955,32 +948,18 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
     infer_result_type_with_attrs(opcode, operand_types, None)
 }
 
-/// Variant of [`infer_result_type`] that consults a `return_type`
-/// `AttrValue::Str` (set by the frontend for opaque opcodes like `Call`,
-/// `CallMethod`, `CallBuiltin` that the operand-only inference cannot
-/// resolve).  Without this seed, a method call returning `int` produces
-/// `TirType::DynBox`, lane inference falls back to NaN-boxed accumulator
-/// in tight loops, and `total += obj.method(i)` silently coerces to float.
+/// Variant of [`infer_result_type`] that consults a structural `return_type`
+/// `AttrValue::Str` for opaque call-like opcodes that operand-only inference
+/// cannot resolve.
 fn infer_result_type_with_attrs(
     opcode: OpCode,
     operand_types: &[TirType],
     attrs: Option<&super::ops::AttrDict>,
 ) -> Option<TirType> {
-    // Frontend-provided return-type hint takes precedence for opaque
-    // call-like opcodes — the frontend has the function/method signature
-    // and operand inference cannot recover it.
-    //
-    // Two attr keys are consulted in priority order:
-    //   1. `return_type`: an explicit, structurally-encoded return type
-    //      (the Year-1 Typed-IR direction; preferred when populated).
-    //   2. `_type_hint`: the legacy SimpleIR `type_hint` round-tripped
-    //      through SSA lift.  The frontend already populates this on
-    //      method-call results when the method's `return_hint` is
-    //      a builtin scalar (`int`/`float`/`bool`/`str`/`bytes`) or a
-    //      user class.  Without this fallback, `total += obj.method(i)`
-    //      where `method` returns `int` infers `DynBox` for the call,
-    //      lane analysis falls back to NaN-boxed accumulator, and the
-    //      sum is silently coerced to float.
+    // Frontend-provided structural return type takes precedence for opaque
+    // call-like opcodes. Legacy `_type_hint` is deliberately ignored here:
+    // it is semantic transport metadata preserved for compatibility consumers,
+    // not representation or call-signature proof.
     if matches!(
         opcode,
         OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
@@ -988,11 +967,6 @@ fn infer_result_type_with_attrs(
     {
         if let Some(AttrValue::Str(name)) = attrs.get("return_type")
             && let Some(ty) = parse_return_type_str(name)
-        {
-            return Some(ty);
-        }
-        if let Some(AttrValue::Str(hint)) = attrs.get("_type_hint")
-            && let Some(ty) = parse_return_type_str(hint)
         {
             return Some(ty);
         }
@@ -2293,5 +2267,52 @@ mod tests {
         assert_eq!(parse_return_type_str("Func:foo"), None);
         assert_eq!(parse_return_type_str("BoundMethod:list:append"), None);
         assert_eq!(parse_return_type_str("list[int]"), None);
+    }
+
+    #[test]
+    fn legacy_type_hint_does_not_refine_call_return_type() {
+        let result = ValueId(0);
+        let mut attrs = AttrDict::new();
+        attrs.insert("_type_hint".into(), AttrValue::Str("int".into()));
+        let mut func = single_block_func(
+            vec![make_op(OpCode::CallMethod, vec![], vec![result], attrs)],
+            1,
+        );
+        func.blocks.get_mut(&BlockId(0)).unwrap().terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(
+            type_map.get(&result),
+            Some(&TirType::DynBox),
+            "legacy SimpleIR `_type_hint` must remain semantic transport metadata, not call-return proof",
+        );
+    }
+
+    #[test]
+    fn structural_return_type_refines_call_return_type() {
+        let result = ValueId(0);
+        let mut attrs = AttrDict::new();
+        attrs.insert("return_type".into(), AttrValue::Str("int".into()));
+        attrs.insert("_type_hint".into(), AttrValue::Str("str".into()));
+        let mut func = single_block_func(
+            vec![make_op(OpCode::CallMethod, vec![], vec![result], attrs)],
+            1,
+        );
+        func.blocks.get_mut(&BlockId(0)).unwrap().terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(
+            type_map.get(&result),
+            Some(&TirType::I64),
+            "explicit structural return_type remains the call-return refinement contract",
+        );
     }
 }

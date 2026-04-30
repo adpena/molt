@@ -62,9 +62,10 @@ It is current-state only. For forward-looking priorities, use
   runpy dynamic execution remains documented rather than tracked through an
   active expected-failure entry.
 - The current backend entry path still carries a stringly `SimpleIR` transport
-  and compatibility hint fields (`fast_int` / `fast_float` / `raw_int` /
-  `type_hint`) for legacy consumers, but the canonical backend contract is now
-  the shared representation-aware TIR/LIR path across native and WASM.
+  for legacy consumers, but scalar `fast_int` / `fast_float` / `raw_int` /
+  `type_hint` metadata is not backend-authoritative. The TIR-to-SimpleIR
+  lowerer no longer accepts an external type-map channel, and opaque call
+  returns refine only through structural TIR `return_type` metadata.
 - Benchmark reporting and compatibility rollups are being simplified so they are
   generated from canonical evidence instead of maintained by hand in multiple docs.
 

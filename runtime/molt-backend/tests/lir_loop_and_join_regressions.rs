@@ -1,7 +1,7 @@
 use molt_backend::tir::lower_from_simple::lower_to_tir;
 use molt_backend::tir::lower_to_simple::lower_to_simple_ir;
 use molt_backend::tir::passes::run_pipeline;
-use molt_backend::tir::type_refine::{extract_type_map, refine_types};
+use molt_backend::tir::type_refine::refine_types;
 use molt_backend::tir::verify::verify_function;
 use molt_backend::{CompileOutput, FunctionIR, OpIR, SimpleBackend, SimpleIR};
 
@@ -18,11 +18,10 @@ fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
     let _stats = run_pipeline(&mut typed);
     refine_types(&mut typed);
     verify_function(&typed).expect("typed TIR must verify");
-    let type_map = extract_type_map(&typed);
     eprintln!("TYPED_TIR_DEBUG: {typed:#?}");
     let lir_debug = molt_backend::tir::lower_to_lir::lower_function_to_lir(&typed);
     eprintln!("LIR_DEBUG: {lir_debug:#?}");
-    let round_tripped = lower_to_simple_ir(&typed, &type_map);
+    let round_tripped = lower_to_simple_ir(&typed);
     eprintln!("ROUNDTRIPPED_SIMPLE_DEBUG: {round_tripped:#?}");
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -549,8 +548,7 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
         verify_function(&tir).is_ok(),
         "TIR pipeline must verify without backend fallback"
     );
-    let type_map = extract_type_map(&tir);
-    let roundtripped = lower_to_simple_ir(&tir, &type_map);
+    let roundtripped = lower_to_simple_ir(&tir);
     assert!(
         !roundtripped.is_empty(),
         "roundtrip should produce lowered ops without fallback"
