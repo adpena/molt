@@ -123,6 +123,9 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 .push((*source_bid, arg_values));
         }
     }
+    let pred_map = dominators::build_pred_map(func);
+    let idoms = dominators::compute_idoms(func, &pred_map);
+    let reachable_blocks = dominators::executable_reachable_blocks(func);
 
     // Pre-compute op snapshots once (ops don't change during refinement,
     // only the type environment does). Avoids O(ops × rounds) Vec allocations.
@@ -131,44 +134,47 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // `TirType` rather than carrying the full `AttrDict` — the attr is
     // immutable across rounds and cloning AttrDict per op per round
     // would dominate the refinement cost.
-    let ops_by_block: HashMap<
-        BlockId,
-        Vec<(OpCode, Vec<ValueId>, Vec<ValueId>, Option<TirType>)>,
-    > = block_order
-        .iter()
-        .map(|&bid| {
-            let ops = func.blocks[&bid]
-                .ops
-                .iter()
-                .map(|op| {
-                    let return_type = if matches!(
-                        op.opcode,
-                        OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
-                    ) {
-                        // Priority: explicit `return_type` (Year-1 Typed-IR
-                        // direction) → legacy `_type_hint` round-tripped
-                        // from SimpleIR.
-                        op.attrs
-                            .get("return_type")
-                            .and_then(|v| match v {
-                                AttrValue::Str(s) => parse_return_type_str(s.as_str()),
-                                _ => None,
-                            })
-                            .or_else(|| {
-                                op.attrs.get("_type_hint").and_then(|v| match v {
+    let ops_by_block: HashMap<BlockId, Vec<(OpCode, Vec<ValueId>, Vec<ValueId>, Option<TirType>)>> =
+        block_order
+            .iter()
+            .map(|&bid| {
+                let ops = func.blocks[&bid]
+                    .ops
+                    .iter()
+                    .map(|op| {
+                        let return_type = if matches!(
+                            op.opcode,
+                            OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
+                        ) {
+                            // Priority: explicit `return_type` (Year-1 Typed-IR
+                            // direction) → legacy `_type_hint` round-tripped
+                            // from SimpleIR.
+                            op.attrs
+                                .get("return_type")
+                                .and_then(|v| match v {
                                     AttrValue::Str(s) => parse_return_type_str(s.as_str()),
                                     _ => None,
                                 })
-                            })
-                    } else {
-                        None
-                    };
-                    (op.opcode, op.operands.clone(), op.results.clone(), return_type)
-                })
-                .collect();
-            (bid, ops)
-        })
-        .collect();
+                                .or_else(|| {
+                                    op.attrs.get("_type_hint").and_then(|v| match v {
+                                        AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                                        _ => None,
+                                    })
+                                })
+                        } else {
+                            None
+                        };
+                        (
+                            op.opcode,
+                            op.operands.clone(),
+                            op.results.clone(),
+                            return_type,
+                        )
+                    })
+                    .collect();
+                (bid, ops)
+            })
+            .collect();
 
     // When exception handling is present, identify blocks that start with
     // StateBlockStart (exception handler entry points). Block arguments of
@@ -259,9 +265,10 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
 
         // (b) Seed block-args from non-back-edge incoming meets.
-        let pred_map_seed = dominators::build_pred_map(func);
-        let idoms_seed = dominators::compute_idoms(func, &pred_map_seed);
         for (&block_id, edge_list) in &incoming_edges {
+            if !reachable_blocks.contains(&block_id) {
+                continue;
+            }
             let block_args: Vec<(usize, ValueId)> = match func.blocks.get(&block_id) {
                 Some(block) => block
                     .args
@@ -286,17 +293,16 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     if i >= edge_args.len() {
                         continue;
                     }
+                    if !reachable_blocks.contains(source_bid) {
+                        continue;
+                    }
                     // A back-edge is one where the target block
                     // dominates the source block (Muchnick §13.4).
-                    let is_back_edge =
-                        dominators::dominates(block_id, *source_bid, &idoms_seed);
+                    let is_back_edge = dominators::dominates(block_id, *source_bid, &idoms);
                     if is_back_edge {
                         continue;
                     }
-                    let incoming_ty = env
-                        .get(&edge_args[i])
-                        .cloned()
-                        .unwrap_or(TirType::DynBox);
+                    let incoming_ty = env.get(&edge_args[i]).cloned().unwrap_or(TirType::DynBox);
                     accumulated = accumulated.meet(&incoming_ty);
                     saw_non_back_edge = true;
                 }
@@ -394,6 +400,9 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
 
         // Phase 2: block-arg types in every block.
         for &block_id in &block_order {
+            if !reachable_blocks.contains(&block_id) {
+                continue;
+            }
             // Recompute block argument types from all incoming edges.
             // Start from Never (bottom) and meet all incoming values.
             if let Some(edge_list) = incoming_edges.get(&block_id) {
@@ -417,7 +426,10 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     }
 
                     let mut accumulated = TirType::Never;
-                    for (_source_bid, edge_args) in edge_list {
+                    for (source_bid, edge_args) in edge_list {
+                        if !reachable_blocks.contains(source_bid) {
+                            continue;
+                        }
                         if i < edge_args.len() {
                             let incoming_ty =
                                 env.get(&edge_args[i]).cloned().unwrap_or(TirType::DynBox);
@@ -454,7 +466,10 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         // or a subtype.
         for (&vid, ty) in &env {
             let history = type_history.entry(vid).or_default();
-            if history.len() >= 2 && history[history.len() - 2] == *ty && history[history.len() - 1] != *ty {
+            if history.len() >= 2
+                && history[history.len() - 2] == *ty
+                && history[history.len() - 1] != *ty
+            {
                 // Oscillation detected: A -> B -> A.
                 // Fix to DynBox and freeze this value.
                 eprintln!(
@@ -1143,7 +1158,7 @@ fn collect_branch_edges(block: &TirBlock) -> Vec<(BlockId, Vec<ValueId>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+    use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
@@ -1714,16 +1729,11 @@ mod tests {
                 id: i,
                 ty: TirType::DynBox, // intentionally pessimistic — the seeding fix narrows it
             }],
-            ops: vec![make_op(
-                OpCode::ConstBool,
-                vec![],
-                vec![cond],
-                {
-                    let mut a = AttrDict::new();
-                    a.insert("value".into(), AttrValue::Bool(true));
-                    a
-                },
-            )],
+            ops: vec![make_op(OpCode::ConstBool, vec![], vec![cond], {
+                let mut a = AttrDict::new();
+                a.insert("value".into(), AttrValue::Bool(true));
+                a
+            })],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: body_id,
@@ -1789,6 +1799,123 @@ mod tests {
             TirType::I64,
             "loop induction variable seeded with entry-edge I64 must converge to I64, got {:?}",
             i_arg_ty
+        );
+    }
+
+    #[test]
+    fn unreachable_loop_end_edge_does_not_widen_reachable_loop_arg() {
+        let entry_id = BlockId(0);
+        let header_id = BlockId(1);
+        let body_id = BlockId(2);
+        let exit_id = BlockId(3);
+        let dead_loop_end_id = BlockId(4);
+
+        let i_init = ValueId(0);
+        let i = ValueId(1);
+        let cond = ValueId(2);
+        let one = ValueId(3);
+        let i_next = ValueId(4);
+        let dead_none = ValueId(5);
+
+        let entry = TirBlock {
+            id: entry_id,
+            args: vec![],
+            ops: vec![make_op(OpCode::ConstInt, vec![], vec![i_init], int_attr(0))],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![i_init],
+            },
+        };
+        let header = TirBlock {
+            id: header_id,
+            args: vec![TirValue {
+                id: i,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![make_op(OpCode::ConstBool, vec![], vec![cond], {
+                let mut a = AttrDict::new();
+                a.insert("value".into(), AttrValue::Bool(true));
+                a
+            })],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body_id,
+                then_args: vec![],
+                else_block: exit_id,
+                else_args: vec![],
+            },
+        };
+        let body = TirBlock {
+            id: body_id,
+            args: vec![],
+            ops: vec![
+                make_op(OpCode::ConstInt, vec![], vec![one], int_attr(1)),
+                make_op(OpCode::Add, vec![i, one], vec![i_next], AttrDict::new()),
+            ],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![i_next],
+            },
+        };
+        let exit = TirBlock {
+            id: exit_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        };
+        let dead_loop_end = TirBlock {
+            id: dead_loop_end_id,
+            args: vec![],
+            ops: vec![make_op(
+                OpCode::ConstNone,
+                vec![],
+                vec![dead_none],
+                AttrDict::new(),
+            )],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![dead_none],
+            },
+        };
+
+        let mut blocks = HashMap::new();
+        blocks.insert(entry_id, entry);
+        blocks.insert(header_id, header);
+        blocks.insert(body_id, body);
+        blocks.insert(exit_id, exit);
+        blocks.insert(dead_loop_end_id, dead_loop_end);
+
+        let mut func = TirFunction {
+            name: "unreachable_loop_end_meet".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: TirType::None,
+            blocks,
+            entry_block: entry_id,
+            next_value: 6,
+            next_block: 5,
+            attrs: AttrDict::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::from([(dead_loop_end_id, LoopRole::LoopEnd)]),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        refine_types(&mut func);
+
+        let header_block = &func.blocks[&header_id];
+        let i_arg_ty = header_block
+            .args
+            .iter()
+            .find(|a| a.id == i)
+            .map(|a| a.ty.clone())
+            .expect("loop header arg `i` present");
+        assert_eq!(
+            i_arg_ty,
+            TirType::I64,
+            "unreachable loop-end incoming values must not widen reachable loop-carried types"
         );
     }
 

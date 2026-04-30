@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use super::blocks::{Terminator, TirBlock};
+use super::dominators;
 use super::function::TirFunction;
 use super::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 use super::ops::{AttrDict, AttrValue, OpCode, TirOp};
@@ -13,6 +14,7 @@ use super::values::{TirValue, ValueId};
 pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
     let mut refined = func.clone();
     refine_types(&mut refined);
+    canonicalize_non_executable_blocks(&mut refined);
     let type_map = extract_type_map(&refined);
     let mut allocator = ValueIdAllocator::new(refined.next_value);
 
@@ -56,6 +58,17 @@ pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
         blocks,
         entry_block: refined.entry_block,
         label_id_map,
+    }
+}
+
+fn canonicalize_non_executable_blocks(func: &mut TirFunction) {
+    let executable = dominators::executable_reachable_blocks(func);
+    for (bid, block) in &mut func.blocks {
+        if executable.contains(bid) {
+            continue;
+        }
+        block.ops.clear();
+        block.terminator = Terminator::Unreachable;
     }
 }
 
@@ -452,8 +465,9 @@ impl ValueIdAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{BlockId, TirBlock};
+    use crate::tir::blocks::{BlockId, LoopRole, TirBlock};
     use crate::tir::ops::{AttrDict, Dialect};
+    use crate::tir::values::TirValue;
 
     fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
@@ -551,5 +565,92 @@ mod tests {
             LirTerminator::Return { values } => assert_eq!(values.len(), 1),
             other => panic!("expected return terminator, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn non_executable_loop_end_edges_do_not_lower_to_lir_branches() {
+        let entry = BlockId(0);
+        let header = BlockId(1);
+        let exit = BlockId(2);
+        let dead_loop_end = BlockId(3);
+
+        let i_init = ValueId(0);
+        let i = ValueId(1);
+        let dead_none = ValueId(2);
+
+        let mut blocks = HashMap::new();
+        blocks.insert(
+            entry,
+            TirBlock {
+                id: entry,
+                args: vec![],
+                ops: vec![make_op(OpCode::ConstInt, vec![], vec![i_init])],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![i_init],
+                },
+            },
+        );
+        blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: i,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: exit,
+                    args: vec![],
+                },
+            },
+        );
+        blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        blocks.insert(
+            dead_loop_end,
+            TirBlock {
+                id: dead_loop_end,
+                args: vec![],
+                ops: vec![make_op(OpCode::ConstNone, vec![], vec![dead_none])],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![dead_none],
+                },
+            },
+        );
+
+        let func = TirFunction {
+            name: "dead_loop_end_lir".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: TirType::None,
+            blocks,
+            entry_block: entry,
+            next_value: 3,
+            next_block: 4,
+            attrs: AttrDict::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::from([(dead_loop_end, LoopRole::LoopEnd)]),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        let lir = lower_function_to_lir(&func);
+        assert!(crate::tir::verify_lir::verify_lir_function(&lir).is_ok());
+        assert!(matches!(
+            lir.blocks[&dead_loop_end].terminator,
+            LirTerminator::Unreachable
+        ));
     }
 }

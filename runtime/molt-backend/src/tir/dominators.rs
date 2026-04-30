@@ -78,6 +78,35 @@ pub fn build_pred_map(func: &TirFunction) -> HashMap<BlockId, Vec<BlockId>> {
     pred_map
 }
 
+/// Blocks executable from the function entry through explicit terminator edges
+/// plus implicit exception edges.
+///
+/// Structural loop metadata can keep block records alive after optimization,
+/// but those metadata-only blocks are not executable CFG nodes and must not
+/// contribute typed predecessor edges.
+pub fn executable_reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut stack: Vec<BlockId> = vec![func.entry_block];
+    let label_to_block = exception_label_to_block(func);
+
+    while let Some(bid) = stack.pop() {
+        if !visited.insert(bid) {
+            continue;
+        }
+        let Some(block) = func.blocks.get(&bid) else {
+            continue;
+        };
+        for succ in terminator_successors(&block.terminator) {
+            stack.push(succ);
+        }
+        for succ in exception_successors(block, &label_to_block) {
+            stack.push(succ);
+        }
+    }
+
+    visited
+}
+
 // ---------------------------------------------------------------------------
 // Dominator tree
 // ---------------------------------------------------------------------------

@@ -66,6 +66,12 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 
 ## Invariants
 - **SSA**: every value is defined once; all uses are dominated by the definition (loop index carried via block params).
+- **Executable edges**: typed block-argument meets and LIR branch parameters are
+  computed only from blocks reachable from the function entry through explicit
+  terminators or implicit exception edges. Structural loop metadata blocks that
+  survive optimization but are not executable must not feed typed block
+  arguments; LIR lowering canonicalizes their bodies to `Unreachable` before
+  representation verification.
 - **Explicit effects**: calls and memory ops must declare their effect class.
 - **No implicit exceptions**: operations that can fail must either be guarded or emit `Throw`.
 - **Tier separation**: Tier 0 disallows `Any` and speculative guards; Tier 1 allows guards with deopt exits.
