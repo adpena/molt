@@ -3540,11 +3540,6 @@ impl SimpleBackend {
                             crate::tir::type_refine::refine_types(&mut tir_func);
                             let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
                             crate::tir::type_refine::refine_types(&mut tir_func);
-                            let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
-                                std::collections::HashMap::new()
-                            } else {
-                                crate::tir::type_refine::extract_type_map(&tir_func)
-                            };
                             let lir_func =
                                 crate::tir::lower_to_lir::lower_function_to_lir(&tir_func);
                             if let Err(errors) =
@@ -3570,9 +3565,8 @@ impl SimpleBackend {
                                     );
                                 }
                             }
-                            let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
-                                &tir_func, &type_map,
-                            );
+                            let ops =
+                                crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
                             assert!(
                                 crate::tir::lower_to_simple::validate_labels(&ops),
                                 "TIR roundtrip emitted invalid labels for '{}'",
@@ -4568,7 +4562,6 @@ mod tests {
         crate::tir::type_refine::refine_types(&mut tir);
         let _stats = crate::tir::passes::run_pipeline(&mut tir);
         crate::tir::type_refine::refine_types(&mut tir);
-        let type_map = crate::tir::type_refine::extract_type_map(&tir);
         let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
         if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir) {
             panic!("LIR verification failed after TIR optimization: {errors:#?}");
@@ -4586,7 +4579,7 @@ mod tests {
                 );
             }
         }
-        let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir, &type_map);
+        let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
         assert!(
             crate::tir::lower_to_simple::validate_labels(&ops),
             "TIR roundtrip must preserve all referenced labels: {ops:#?}"
