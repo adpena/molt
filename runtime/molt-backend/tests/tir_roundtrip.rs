@@ -116,10 +116,51 @@ fn make_comprehension_ir() -> FunctionIR {
     }
 }
 
+fn make_legacy_scalar_hint_ir() -> FunctionIR {
+    let ops = vec![
+        OpIR {
+            kind: "call_method".to_string(),
+            args: Some(vec!["obj".into()]),
+            s_value: Some("size".into()),
+            out: Some("method_result".into()),
+            type_hint: Some("int".into()),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["obj".into(), "idx".into()]),
+            out: Some("indexed".into()),
+            type_hint: Some("int".into()),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "call".to_string(),
+            args: Some(vec!["method_result".into(), "indexed".into()]),
+            s_value: Some("opaque".into()),
+            out: Some("called".into()),
+            type_hint: Some("int".into()),
+            ..Default::default()
+        },
+        OpIR {
+            kind: "ret".to_string(),
+            args: Some(vec!["called".into()]),
+            ..Default::default()
+        },
+    ];
+
+    FunctionIR {
+        name: "legacy_scalar_hints".to_string(),
+        ops,
+        params: vec!["obj".into(), "idx".into()],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+    }
+}
+
 fn roundtrip(ir: &FunctionIR) -> Vec<OpIR> {
     let tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(ir);
-    let type_map = molt_backend::tir::type_refine::extract_type_map(&tir_func);
-    molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map)
+    molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func)
 }
 
 #[test]
@@ -175,6 +216,20 @@ fn roundtrip_does_not_reseed_legacy_transport_hints() {
             .iter()
             .filter(|op| matches!(op.kind.as_str(), "list_new" | "list_append"))
             .map(|op| op.type_hint.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    let scalar_hint_roundtrip = roundtrip(&make_legacy_scalar_hint_ir());
+    assert!(
+        scalar_hint_roundtrip
+            .iter()
+            .filter(|op| matches!(op.kind.as_str(), "call" | "call_method" | "index"))
+            .all(|op| op.type_hint.is_none()),
+        "typed TIR roundtrip should not reintroduce legacy scalar hints for opaque ops: {:?}",
+        scalar_hint_roundtrip
+            .iter()
+            .filter(|op| matches!(op.kind.as_str(), "call" | "call_method" | "index"))
+            .map(|op| (op.kind.clone(), op.type_hint.clone()))
             .collect::<Vec<_>>(),
     );
 }

@@ -1895,7 +1895,6 @@ impl WasmBackend {
                 crate::tir::type_refine::refine_types(&mut tir_func);
                 let stats = crate::tir::passes::run_pipeline(&mut tir_func);
                 crate::tir::type_refine::refine_types(&mut tir_func);
-                let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
                 if tir_dump {
                     eprintln!("{}", crate::tir::printer::print_function(&tir_func));
                 }
@@ -1912,8 +1911,7 @@ impl WasmBackend {
                 {
                     lir_fast_outputs.insert(func_ir.name.clone(), output);
                 }
-                let optimized_ops =
-                    crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map);
+                let optimized_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
                 assert!(
                     crate::tir::lower_to_simple::validate_labels(&optimized_ops),
                     "TIR roundtrip emitted invalid labels for '{}' (WASM)",

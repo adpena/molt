@@ -8,7 +8,7 @@ mod tests {
     use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::lower_to_simple::lower_to_simple_ir;
     use crate::tir::passes::run_pipeline;
-    use crate::tir::type_refine::{extract_type_map, refine_types};
+    use crate::tir::type_refine::refine_types;
     use crate::tir::verify::verify_function;
     use std::f64::consts::PI;
 
@@ -31,13 +31,12 @@ mod tests {
         let ir = make_function(ops);
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
-        let type_map = extract_type_map(&tir);
         let _stats = run_pipeline(&mut tir);
         assert!(
             verify_function(&tir).is_ok(),
             "TIR verification failed after optimization"
         );
-        lower_to_simple_ir(&tir, &type_map)
+        lower_to_simple_ir(&tir)
     }
 
     fn op(kind: &str) -> OpIR {
@@ -240,8 +239,7 @@ mod tests {
         refine_types(&mut tir);
         let _stats = run_pipeline(&mut tir);
         assert!(verify_function(&tir).is_ok(), "TIR verification failed");
-        let type_map = extract_type_map(&tir);
-        let result = lower_to_simple_ir(&tir, &type_map);
+        let result = lower_to_simple_ir(&tir);
 
         let ret_count = result.iter().filter(|op| op.kind == "ret").count();
         assert_eq!(
@@ -367,10 +365,9 @@ mod tests {
         };
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
-        let type_map = extract_type_map(&tir);
         let _stats = run_pipeline(&mut tir);
         assert!(verify_function(&tir).is_ok());
-        let result = lower_to_simple_ir(&tir, &type_map);
+        let result = lower_to_simple_ir(&tir);
         assert!(!result.is_empty());
         assert!(
             result.iter().all(|op| op.kind != "load_param"),
@@ -398,10 +395,9 @@ mod tests {
         };
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
-        let type_map = extract_type_map(&tir);
         let _stats = run_pipeline(&mut tir);
         assert!(verify_function(&tir).is_ok());
-        let result = lower_to_simple_ir(&tir, &type_map);
+        let result = lower_to_simple_ir(&tir);
         assert!(!result.is_empty());
     }
 
@@ -637,8 +633,7 @@ mod tests {
     fn roundtrip_no_opt(ops: Vec<OpIR>) -> Vec<OpIR> {
         let ir = make_function(ops);
         let tir = lower_to_tir(&ir);
-        let type_map = std::collections::HashMap::new();
-        lower_to_simple_ir(&tir, &type_map)
+        lower_to_simple_ir(&tir)
     }
 
     // ---------------------------------------------------------------------------

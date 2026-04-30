@@ -54,7 +54,6 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_DEBUG_CHECK_EXCEPTION",
     "MOLT_LLVM_DUMP_IR",
     "MOLT_BACKEND_TIMING",
-    "MOLT_TIR_NO_TYPES",
     "MOLT_ENTRY_MODULE",
     "MOLT_STDLIB_OBJ",
     "MOLT_STDLIB_CACHE_KEY",
@@ -1906,10 +1905,7 @@ fn main() -> io::Result<()> {
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
             let _stats = molt_backend::tir::passes::run_pipeline(&mut tir_func);
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
-            let type_map = molt_backend::tir::type_refine::extract_type_map(&tir_func);
-            let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(
-                &tir_func, &type_map,
-            );
+            let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
             if molt_backend::tir::lower_to_simple::validate_labels(&ops) {
                 func.ops = ops;
                 tir_count += 1;

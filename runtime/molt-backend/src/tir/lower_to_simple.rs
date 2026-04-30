@@ -19,7 +19,6 @@ use crate::ir::OpIR;
 use super::blocks::{BlockId, LoopBreakKind, Terminator, TirBlock};
 use super::function::TirFunction;
 use super::ops::{AttrValue, OpCode, TirOp};
-use super::types::TirType;
 use super::values::ValueId;
 
 /// A detected natural-loop region, keyed by the loop header block.
@@ -83,10 +82,10 @@ fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId) -> Vec<Bl
 /// - One [`OpIR`] per [`TirOp`] in the block.
 /// - Control-flow [`OpIR`] ops derived from the block's [`Terminator`].
 ///
-/// When a `types` map is provided, the back-conversion may use it for
-/// structural emission decisions, but it does not mint backend-authoritative
-/// optimization hints on the SimpleIR transport.
-pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>) -> Vec<OpIR> {
+/// Back-conversion is intentionally independent of the TIR type map: typed TIR
+/// carries representation proof inside the midend, and SimpleIR `type_hint`
+/// remains non-authoritative transport metadata.
+pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     VALUE_NAME_OVERRIDES.with(|overrides| {
         let mut overrides = overrides.borrow_mut();
         overrides.clear();
@@ -662,7 +661,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 &block_param_vars,
                 &block_label_id,
                 &if_inlined_blocks,
-                types,
                 &original_to_new_label,
                 &original_label_to_block,
                 &mut out,
@@ -717,7 +715,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let emit_block_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
             emit_block_ops_inner(
                 block,
-                types,
                 &original_to_new_label,
                 &original_label_to_block,
                 &block_param_vars,
@@ -797,7 +794,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             // Emit then-block ops inline.
             for op in &then_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
-                    annotate_type_flags(&mut opir, op, types);
+                    annotate_type_flags(&mut opir, op);
                     if matches!(
                         opir.kind.as_str(),
                         "check_exception" | "try_start" | "try_end"
@@ -832,7 +829,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             // Emit else-block ops inline.
             for op in &else_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
-                    annotate_type_flags(&mut opir, op, types);
+                    annotate_type_flags(&mut opir, op);
                     if matches!(
                         opir.kind.as_str(),
                         "check_exception" | "try_start" | "try_end"
@@ -1749,7 +1746,6 @@ fn emit_structured_loop_region(
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
     if_inlined_blocks: &HashSet<BlockId>,
-    types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
     label_to_block: &HashMap<i64, BlockId>,
     out: &mut Vec<OpIR>,
@@ -1866,7 +1862,6 @@ fn emit_structured_loop_region(
             // Emit ops for this block.
             emit_block_ops_inner(
                 region_block,
-                types,
                 original_to_new_label,
                 label_to_block,
                 block_param_vars,
@@ -1990,7 +1985,6 @@ fn emit_structured_loop_region(
                                 block_param_vars,
                                 block_label_id,
                                 if_inlined_blocks,
-                                types,
                                 original_to_new_label,
                                 label_to_block,
                                 out,
@@ -2103,7 +2097,6 @@ fn emit_structured_loop_region(
                 block_param_vars,
                 block_label_id,
                 if_inlined_blocks,
-                types,
                 original_to_new_label,
                 label_to_block,
                 out,
@@ -2204,7 +2197,6 @@ fn emit_structured_loop_region(
         // Emit ops.
         emit_block_ops_inner(
             body_block,
-            types,
             original_to_new_label,
             label_to_block,
             block_param_vars,
@@ -2260,7 +2252,6 @@ fn emit_structured_loop_region(
             block_param_vars,
             block_label_id,
             &loop_inline_blocks,
-            types,
             original_to_new_label,
             label_to_block,
             out,
@@ -2323,7 +2314,6 @@ fn emit_structured_loop_region(
         }
         emit_block_ops_inner(
             body_block,
-            types,
             original_to_new_label,
             label_to_block,
             block_param_vars,
@@ -2356,7 +2346,6 @@ fn emit_guard_raise_path(
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
     if_inlined_blocks: &HashSet<BlockId>,
-    types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
     label_to_block: &HashMap<i64, BlockId>,
     out: &mut Vec<OpIR>,
@@ -2401,7 +2390,6 @@ fn emit_guard_raise_path(
         // Emit ops.
         emit_block_ops_inner(
             blk,
-            types,
             original_to_new_label,
             label_to_block,
             block_param_vars,
@@ -2470,7 +2458,6 @@ fn emit_guard_raise_path(
 /// Shared by both the main emission loop and structured loop emission.
 fn emit_block_ops_inner(
     block: &TirBlock,
-    types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
     original_label_to_block: &HashMap<i64, BlockId>,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
@@ -2484,7 +2471,7 @@ fn emit_block_ops_inner(
             emit_block_arg_stores(handler_block, &op.operands, block_param_vars, out);
         }
         if let Some(mut opir) = lower_op(op) {
-            annotate_type_flags(&mut opir, op, types);
+            annotate_type_flags(&mut opir, op);
             if matches!(
                 opir.kind.as_str(),
                 "check_exception" | "try_start" | "try_end"
@@ -2805,7 +2792,7 @@ fn successors_of(block: &TirBlock) -> Vec<BlockId> {
 
 /// Annotate a SimpleIR [`OpIR`] with non-semantic transport metadata that is
 /// still required by specific backend consumers.
-fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId, TirType>) {
+fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp) {
     // Propagate StackAlloc: if the TIR op is StackAlloc, mark the SimpleIR op
     // so the native backend can emit stack allocation instead of heap allocation.
     // Also mark it as arena-eligible for the scope arena integration.
@@ -2825,142 +2812,6 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
     {
         opir.end_col_offset = Some(*ecol);
     }
-
-    // Propagate proven type information from the TIR type map into type_hint
-    // so the native backend's preanalysis can classify variables that the
-    // op-based heuristics cannot (e.g. values proven int after a TypeGuard).
-    //
-    // We skip ops whose SimpleIR kind already fully determines the output
-    // type in preanalysis (constants, comparisons, arithmetic, copies, etc.)
-    // to avoid redundant metadata.  Only ops that fall into the catch-all
-    // branch of the preanalysis benefit from type_hint.
-    if opir.type_hint.is_none()
-        && !tir_op.results.is_empty()
-        && !op_kind_already_classified(opir.kind.as_str())
-        && let Some(ty) = tir_op
-            .results
-            .first()
-            .and_then(|r| types.get(r))
-        {
-            match ty {
-                TirType::I64 => {
-                    opir.type_hint = Some("int".into());
-                }
-                TirType::F64 => {
-                    opir.type_hint = Some("float".into());
-                }
-                TirType::Bool => {
-                    opir.type_hint = Some("bool".into());
-                }
-                TirType::Str => {
-                    opir.type_hint = Some("str".into());
-                }
-                _ => {}
-            }
-        }
-}
-
-/// Returns true if the SimpleIR op kind is already classified by the native
-/// backend's preanalysis without needing a type_hint.  These ops have their
-/// output type fully determined by the op kind or by source-argument analysis.
-fn op_kind_already_classified(kind: &str) -> bool {
-    matches!(
-        kind,
-        // Constants — type determined by kind.
-        "const"
-            | "const_bool"
-            | "const_float"
-            | "const_none"
-            | "const_str"
-            | "loop_index_start"
-            | "loop_index_next"
-            | "len"
-            // Comparisons — always Bool.
-            | "lt"
-            | "le"
-            | "gt"
-            | "ge"
-            | "eq"
-            | "ne"
-            | "is"
-            | "bool"
-            | "cast_bool"
-            | "builtin_bool"
-            | "is_truthy"
-            | "not"
-            // Copies — type comes from source argument.
-            | "copy"
-            | "copy_var"
-            | "load_var"
-            | "identity_alias"
-            // Arithmetic — type inferred from operand lanes.
-            //
-            // The `inplace_*` variants are NOT in this list: lane
-            // analysis derives their lane from operand classification,
-            // but loop-carried accumulators (`total += i`) participate
-            // in a phi-like operand pattern where the operand may not
-            // be classified at the time the inplace op is processed —
-            // the iteration order of preanalysis isn't dominator-aware.
-            // Forcing the TIR-refined type through `type_hint` ensures
-            // the native backend honors the proven type even when the
-            // operand-lane heuristic falls through. See
-            // `project_iv_accumulator_int_as_float_print_bug.md` for
-            // the reproducer and full bisect.
-            | "add"
-            | "sub"
-            | "mul"
-            | "floordiv"
-            | "mod"
-            | "mod_"
-            | "bit_and"
-            | "bit_or"
-            | "bit_xor"
-            | "bitand"
-            | "bitor"
-            | "bitxor"
-            | "lshift"
-            | "rshift"
-            | "shl"
-            | "shr"
-            | "neg"
-            | "pos"
-            | "abs"
-            | "invert"
-            | "builtin_abs"
-            // GPU intrinsics — always Int.
-            | "gpu_thread_id"
-            | "gpu_block_id"
-            | "gpu_block_dim"
-            | "gpu_grid_dim"
-            // Heap-allocating container constructors — kind alone fully
-            // determines the output type, so propagating a scalar type_hint
-            // ("int"/"float"/...) would lie to the backend.  The TIR type
-            // map can spuriously bind I64 to these results through SSA
-            // aliasing of constant operands; classifying them here ensures
-            // we never reseed legacy container hints.
-            | "list_new"
-            | "dict_new"
-            | "set_new"
-            | "tuple_new"
-            | "frozenset_new"
-            | "build_list"
-            | "build_dict"
-            | "build_tuple"
-            | "build_set"
-            | "build_slice"
-            // Container side-effect ops — return None or a container handle
-            // whose type is structurally implied; never benefit from a
-            // scalar type_hint.
-            | "list_append"
-            | "list_extend"
-            | "dict_set"
-            | "set_add"
-            | "store_attr"
-            | "store_index"
-            | "del_attr"
-            | "del_index"
-            | "store_var"
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -3074,7 +2925,7 @@ mod tests {
     #[test]
     fn linearize_simple_function_compiles() {
         let func = add_function();
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         // Must produce at least one op.
         assert!(!ops.is_empty(), "expected non-empty ops for add function");
     }
@@ -3082,7 +2933,7 @@ mod tests {
     #[test]
     fn linearize_emits_return() {
         let func = add_function();
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         let has_ret = ops.iter().any(|o| o.kind == "ret" || o.kind == "ret_void");
         assert!(has_ret, "expected a return op, got: {:?}", ops);
     }
@@ -3117,13 +2968,7 @@ mod tests {
         });
         entry.terminator = Terminator::Return { values: vec![shr] };
 
-        let type_map = HashMap::from([
-            (ValueId(0), TirType::I64),
-            (ValueId(1), TirType::I64),
-            (shl, TirType::DynBox),
-            (shr, TirType::DynBox),
-        ]);
-        let ops = lower_to_simple_ir(&func, &type_map);
+        let ops = lower_to_simple_ir(&func);
         assert!(ops.iter().any(|op| op.kind == "lshift"));
         assert!(ops.iter().any(|op| op.kind == "rshift"));
         assert!(!ops.iter().any(|op| op.kind == "shl"));
@@ -3162,8 +3007,7 @@ mod tests {
             values: vec![imported],
         };
 
-        let type_map = HashMap::from([(name, TirType::Str), (imported, TirType::DynBox)]);
-        let ops = lower_to_simple_ir(&func, &type_map);
+        let ops = lower_to_simple_ir(&func);
         let import_op = ops
             .iter()
             .find(|op| op.kind == "module_import")
@@ -3188,7 +3032,7 @@ mod tests {
         });
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         let module_op = ops
             .iter()
             .find(|op| op.kind == simple_kind)
@@ -3230,7 +3074,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
 
         assert!(
             !ops.iter().any(|op| op.kind == "ret_void"),
@@ -3267,7 +3111,7 @@ mod tests {
     #[test]
     fn ret_op_has_var_set() {
         let func = add_function();
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         let ret_op = ops
             .iter()
             .find(|o| o.kind == "ret")
@@ -3310,8 +3154,7 @@ mod tests {
 
         let mut tir_func = lower_to_tir(&func_ir);
         type_refine::refine_types(&mut tir_func);
-        let type_map = type_refine::extract_type_map(&tir_func);
-        let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
+        let round_tripped = lower_to_simple_ir(&tir_func);
 
         let ret_op = round_tripped
             .iter()
@@ -3327,7 +3170,7 @@ mod tests {
     #[test]
     fn linearize_emits_add_op() {
         let func = add_function();
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         let has_add = ops.iter().any(|o| o.kind == "add");
         assert!(has_add, "expected an 'add' op, got: {:?}", ops);
     }
@@ -3389,7 +3232,7 @@ mod tests {
             },
         );
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         let kinds: Vec<&str> = ops.iter().map(|o| o.kind.as_str()).collect();
         // Simple CondBranch with both successors returning is now emitted
         // as structured if/else/end_if instead of labels + jumps.
@@ -3502,7 +3345,7 @@ mod tests {
             },
         );
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         assert!(
             validate_labels(&ops),
             "shared join labels must remain valid after lower_to_simple: {ops:?}"
@@ -3602,7 +3445,7 @@ mod tests {
             },
         );
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         assert!(
             validate_labels(&ops),
             "shared-arm lowering must remain label-valid after lower_to_simple: {ops:?}"
@@ -3701,7 +3544,7 @@ mod tests {
             },
         );
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
 
         assert!(kinds.contains(&"if"), "{ops:?}");
@@ -3786,7 +3629,7 @@ mod tests {
         func.has_exception_handling = true;
         func.label_id_map.insert(handler_block.0, 100);
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         let handler_param = format!("_bb{}_arg0", handler_block.0);
         let handler_value = value_var(handler_arg);
         let entry_value = value_var(value);
@@ -3864,7 +3707,7 @@ mod tests {
             },
         );
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         assert!(
             validate_labels(&ops),
             "mixed return/fallthrough shape must keep valid labels after lower_to_simple: {ops:?}"
@@ -3938,7 +3781,7 @@ mod tests {
             },
         );
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         assert!(
             validate_labels(&ops),
             "nested-scf successor lowering must keep valid labels after lower_to_simple: {ops:?}"
@@ -4023,7 +3866,7 @@ mod tests {
                 terminator: Terminator::Return { values: vec![] },
             },
         );
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         assert!(
             validate_labels(&ops),
             "try-region successor lowering must keep valid labels after lower_to_simple: {ops:?}"
@@ -4092,7 +3935,7 @@ mod tests {
         func.loop_roles
             .insert(join_blk, crate::tir::blocks::LoopRole::LoopHeader);
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         assert!(
             validate_labels(&ops),
             "loop-header join lowering must keep valid labels after lower_to_simple: {ops:?}"
@@ -4145,7 +3988,7 @@ mod tests {
         func.loop_roles
             .insert(target_block, crate::tir::blocks::LoopRole::LoopEnd);
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         assert!(
             validate_labels(&ops),
             "loop-end block labels must survive when explicit branches still target them: {ops:?}"
@@ -4494,7 +4337,7 @@ mod tests {
             "v2 should be I64 (add of two I64s)"
         );
 
-        let ops = lower_to_simple_ir(&func, &type_map);
+        let ops = lower_to_simple_ir(&func);
         let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
         assert!(!add_ops.is_empty(), "expected an 'add' op in output");
         for add_op in &add_ops {
@@ -4509,7 +4352,7 @@ mod tests {
     /// Verify that typed TIR does not re-emit float transport hints.
     #[test]
     fn type_propagation_does_not_emit_fast_float_on_float_arithmetic() {
-        use crate::tir::type_refine::{extract_type_map, refine_types};
+        use crate::tir::type_refine::refine_types;
 
         let mut func = TirFunction::new("add_floats".into(), vec![], TirType::F64);
 
@@ -4553,8 +4396,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![v2] };
 
         refine_types(&mut func);
-        let type_map = extract_type_map(&func);
-        let ops = lower_to_simple_ir(&func, &type_map);
+        let ops = lower_to_simple_ir(&func);
 
         let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
         assert!(!add_ops.is_empty());
@@ -4570,7 +4412,7 @@ mod tests {
     /// Verify that typed TIR does not re-emit bool type hints.
     #[test]
     fn type_propagation_does_not_emit_type_hint_for_bool() {
-        use crate::tir::type_refine::{extract_type_map, refine_types};
+        use crate::tir::type_refine::refine_types;
 
         let mut func = TirFunction::new("cmp".into(), vec![], TirType::Bool);
 
@@ -4614,8 +4456,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![v2] };
 
         refine_types(&mut func);
-        let type_map = extract_type_map(&func);
-        let ops = lower_to_simple_ir(&func, &type_map);
+        let ops = lower_to_simple_ir(&func);
 
         let eq_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "eq").collect();
         assert!(!eq_ops.is_empty());
@@ -4636,11 +4477,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn type_propagation_does_not_emit_scalar_type_hint_for_call_result() {
+        let mut func = TirFunction::new("call_result".into(), vec![], TirType::I64);
+
+        let result = ValueId(func.next_value);
+        func.next_value += 1;
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CallMethod,
+            operands: vec![],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let ops = lower_to_simple_ir(&func);
+
+        let call_ops: Vec<&OpIR> = ops.iter().filter(|op| op.kind == "call_method").collect();
+        assert!(!call_ops.is_empty());
+        for call_op in &call_ops {
+            assert!(
+                call_op.type_hint.is_none(),
+                "typed TIR must not backfill scalar type_hint metadata for opaque calls: {:?}",
+                call_op
+            );
+        }
+    }
+
     /// Verify that no type map (empty) means no flags are set.
     #[test]
     fn empty_type_map_sets_no_flags() {
         let func = add_function();
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
         let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
         assert!(!add_ops.is_empty());
         for add_op in &add_ops {
@@ -4690,7 +4564,7 @@ mod tests {
         };
 
         let tir_func = lower_to_tir(&func_ir);
-        let round_tripped = lower_to_simple_ir(&tir_func, &HashMap::new());
+        let round_tripped = lower_to_simple_ir(&tir_func);
         let store_op = round_tripped
             .iter()
             .find(|op| op.kind == "guarded_field_set")
@@ -4722,7 +4596,7 @@ mod tests {
         };
 
         let tir_func = lower_to_tir(&func_ir);
-        let round_tripped = lower_to_simple_ir(&tir_func, &HashMap::new());
+        let round_tripped = lower_to_simple_ir(&tir_func);
         let load_op = round_tripped
             .iter()
             .find(|op| op.kind == "guarded_field_get")
@@ -4741,7 +4615,7 @@ mod tests {
         use crate::ir::{FunctionIR, OpIR};
         use crate::tir::lower_from_simple::lower_to_tir;
         use crate::tir::passes::run_pipeline;
-        use crate::tir::type_refine::{extract_type_map, refine_types};
+        use crate::tir::type_refine::refine_types;
 
         let func_ir = FunctionIR {
             name: "method_trace__C_f".into(),
@@ -4881,8 +4755,7 @@ mod tests {
         refine_types(&mut tir_func);
         run_pipeline(&mut tir_func);
         refine_types(&mut tir_func);
-        let type_map = extract_type_map(&tir_func);
-        let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
+        let round_tripped = lower_to_simple_ir(&tir_func);
 
         let cache_get_idx = round_tripped
             .iter()
@@ -5010,7 +4883,7 @@ mod tests {
         use crate::ir::{FunctionIR, OpIR};
         use crate::tir::lower_from_simple::lower_to_tir;
         use crate::tir::passes::run_pipeline;
-        use crate::tir::type_refine::{extract_type_map, refine_types};
+        use crate::tir::type_refine::refine_types;
 
         let callee_ir = FunctionIR {
             name: "func_objarg__g".into(),
@@ -5617,8 +5490,7 @@ mod tests {
             refine_types(&mut tir_func);
             run_pipeline(&mut tir_func);
             refine_types(&mut tir_func);
-            let type_map = extract_type_map(&tir_func);
-            let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
+            let round_tripped = lower_to_simple_ir(&tir_func);
 
             for op in &round_tripped {
                 assert!(
@@ -5748,7 +5620,7 @@ mod tests {
         };
 
         let tir_func = lower_to_tir(&func_ir);
-        let round_tripped = lower_to_simple_ir(&tir_func, &HashMap::new());
+        let round_tripped = lower_to_simple_ir(&tir_func);
 
         let loop_start_idx = round_tripped
             .iter()
@@ -5841,7 +5713,7 @@ mod tests {
         );
         func.label_id_map.insert(handler_block.0, 100);
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
 
         assert!(
             validate_labels(&ops),
@@ -5937,7 +5809,6 @@ mod tests {
             &block_param_vars,
             &block_label_id,
             &HashSet::new(),
-            &HashMap::new(),
             &HashMap::new(),
             &original_label_to_block,
             &mut out,
@@ -6086,7 +5957,7 @@ mod tests {
             },
         );
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
 
         assert!(
             validate_labels(&ops),
@@ -6322,7 +6193,7 @@ mod tests {
             .insert(header, LoopBreakKind::BreakIfFalse);
         func.loop_cond_blocks.insert(header, cond_block);
 
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let ops = lower_to_simple_ir(&func);
 
         assert!(
             validate_labels(&ops),
@@ -6427,8 +6298,7 @@ mod not_roundtrip_tests {
             );
 
             // Roundtrip: TIR → SimpleIR.
-            let types = std::collections::HashMap::new();
-            let roundtripped = super::lower_to_simple_ir(&tir, &types);
+            let roundtripped = super::lower_to_simple_ir(&tir);
 
             // The roundtripped const_bool must carry value=0 for False, value=1
             // for True.  If the ssa lift stored AttrValue::Int(0) instead of
@@ -6482,8 +6352,7 @@ mod not_roundtrip_tests {
 
         let tir = lower_to_tir(&func);
         // Roundtrip: TIR → SimpleIR
-        let types = std::collections::HashMap::new();
-        let roundtripped = super::lower_to_simple_ir(&tir, &types);
+        let roundtripped = super::lower_to_simple_ir(&tir);
 
         // Find the "not" op
         let not_op = roundtripped.iter().find(|op| op.kind == "not");
