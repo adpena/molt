@@ -460,7 +460,32 @@ def _check_env(check: Check) -> dict[str, str]:
     env["PYTHONPATH"] = str(ROOT / "src")
     env["PYTHONUNBUFFERED"] = "1"
     env.update(check.env_extra)
+    _apply_canonical_env_defaults(env)
     return env
+
+
+def _apply_canonical_env_defaults(env: dict[str, str]) -> None:
+    ext_root = Path(env.setdefault("MOLT_EXT_ROOT", str(ROOT))).expanduser()
+    cargo_target_dir = env.setdefault("CARGO_TARGET_DIR", str(ext_root / "target"))
+    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", cargo_target_dir)
+    env.setdefault("MOLT_CACHE", str(ext_root / ".molt_cache"))
+    env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "tmp" / "diff"))
+    env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
+    env.setdefault("UV_CACHE_DIR", str(ext_root / ".uv-cache"))
+    env.setdefault("TMPDIR", str(ext_root / "tmp"))
+    env.setdefault("MOLT_SESSION_ID", f"ci-gate-{os.getpid()}")
+    env.setdefault("CARGO_BUILD_JOBS", "2")
+    for key in (
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "MOLT_CACHE",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "UV_CACHE_DIR",
+        "TMPDIR",
+    ):
+        with contextlib.suppress(OSError):
+            Path(env[key]).expanduser().mkdir(parents=True, exist_ok=True)
 
 
 def _truncate_output(text: str) -> str:

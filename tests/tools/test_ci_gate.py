@@ -71,6 +71,56 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
     assert calls[0]["env"]["PYTHONPATH"] == str(module.ROOT / "src")
 
 
+def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
+    module = _load_ci_gate()
+    for key in (
+        "MOLT_EXT_ROOT",
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "MOLT_CACHE",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "UV_CACHE_DIR",
+        "TMPDIR",
+        "MOLT_SESSION_ID",
+        "CARGO_BUILD_JOBS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    env = module._check_env(module.Check(name="unit", tier=1, cmd=["true"]))
+
+    assert env["MOLT_EXT_ROOT"] == str(module.ROOT)
+    assert env["CARGO_TARGET_DIR"] == str(module.ROOT / "target")
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
+    assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
+    assert env["MOLT_DIFF_ROOT"] == str(module.ROOT / "tmp" / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(module.ROOT / "tmp")
+    assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
+    assert env["TMPDIR"] == str(module.ROOT / "tmp")
+    assert env["MOLT_SESSION_ID"].startswith("ci-gate-")
+    assert env["CARGO_BUILD_JOBS"] == "2"
+
+
+def test_check_env_preserves_explicit_artifact_roots(monkeypatch, tmp_path) -> None:
+    module = _load_ci_gate()
+    target = tmp_path / "target-custom"
+    diff_target = tmp_path / "target-diff-custom"
+    cache = tmp_path / "cache-custom"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.setenv("MOLT_DIFF_CARGO_TARGET_DIR", str(diff_target))
+    monkeypatch.setenv("MOLT_CACHE", str(cache))
+    monkeypatch.setenv("MOLT_SESSION_ID", "caller-session")
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "1")
+
+    env = module._check_env(module.Check(name="unit", tier=1, cmd=["true"]))
+
+    assert env["CARGO_TARGET_DIR"] == str(target)
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(diff_target)
+    assert env["MOLT_CACHE"] == str(cache)
+    assert env["MOLT_SESSION_ID"] == "caller-session"
+    assert env["CARGO_BUILD_JOBS"] == "1"
+
+
 def test_run_check_can_opt_out_of_memory_guard(monkeypatch) -> None:
     module = _load_ci_gate()
     direct_calls: list[dict[str, object]] = []

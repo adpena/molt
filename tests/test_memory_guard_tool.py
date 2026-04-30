@@ -200,6 +200,36 @@ def test_run_command_returns_timeout_code_when_wall_clock_expires() -> None:
     assert "timeout after" in result.stderr
 
 
+def test_main_enforces_timeout_and_writes_summary(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary_path = tmp_path / "timeout-summary.json"
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--poll-interval",
+            "0.01",
+            "--timeout",
+            "0.01",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            "import time; time.sleep(10)",
+        ]
+    )
+
+    assert rc == memory_guard.TIMEOUT_RETURN_CODE
+    assert "timeout after" in capsys.readouterr().err
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["returncode"] == memory_guard.TIMEOUT_RETURN_CODE
+    assert payload["timed_out"] is True
+    assert payload["violation"] is None
+
+
 def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> None:
     rc = memory_guard.main(["--max-rss-gb", "30", "--", sys.executable, "-c", "pass"])
 
