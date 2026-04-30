@@ -26,7 +26,8 @@ This file is forward-looking only.
 6. Keep Python `3.12`/`3.13`/`3.14` target-version gates explicit across CLI,
    pyproject/UV-oriented workflows, frontend caches, backend caches, and the
    unconditional runtime bootstrap/state contract used by importlib and stdlib
-   gates.
+   gates across native, WASM, standalone Rust source emission, and isolate
+   entry paths.
 7. Make performance reporting and compatibility reporting generator-owned
    instead of manually synchronized across multiple docs.
 8. Drive the Luau target from checked source emission to full current/future

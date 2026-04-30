@@ -70,7 +70,12 @@ def _find_cpython() -> str:
     pytest.skip("CPython executable not found for baseline comparison")
 
 
-def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> str:
+def _compile_and_run_rust(
+    python_source: str,
+    *,
+    expect_fail: bool = False,
+    python_version: str | None = None,
+) -> str:
     """Compile Python → Rust via molt CLI, compile with rustc, run binary."""
     with tempfile.TemporaryDirectory() as tmpdir:
         py_path = os.path.join(tmpdir, "input.py")
@@ -105,12 +110,26 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
         }
         build_timeout = int(os.environ.get("MOLT_RUST_BUILD_TIMEOUT", "1200"))
         py_exec = sys.executable or _find_cpython()
-
-        # Step 1: molt build --target rust
-        try:
-            result = subprocess.run(
-                [
-                    py_exec,
+        build_cmd = [
+            py_exec,
+            "-m",
+            "molt.cli",
+            "build",
+            py_path,
+            "--target",
+            "rust",
+            "--output",
+            rs_path,
+        ]
+        if python_version is not None:
+            build_cmd.extend(["--python-version", python_version])
+            if uv := shutil.which("uv"):
+                build_cmd = [
+                    uv,
+                    "run",
+                    "--python",
+                    python_version,
+                    "python3",
                     "-m",
                     "molt.cli",
                     "build",
@@ -119,7 +138,15 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
                     "rust",
                     "--output",
                     rs_path,
-                ],
+                    "--python-version",
+                    python_version,
+                ]
+                env.pop("UV_NO_SYNC", None)
+
+        # Step 1: molt build --target rust
+        try:
+            result = subprocess.run(
+                build_cmd,
                 capture_output=True,
                 text=True,
                 timeout=build_timeout,
@@ -192,6 +219,19 @@ def assert_rust_eq_python(source: str) -> None:
     )
 
 
+def assert_rust_output(
+    source: str, expected: str, *, python_version: str | None = None
+) -> None:
+    """Assert that Rust-compiled output matches an explicit target contract."""
+    actual = _compile_and_run_rust(source, python_version=python_version)
+    assert actual == expected, (
+        f"Rust output != expected output\n"
+        f"Source:\n{source}\n"
+        f"Expected:\n{expected}\n"
+        f"Got:\n{actual}"
+    )
+
+
 # ─── Basic print / literals ───────────────────────────────────────────────────
 
 
@@ -229,6 +269,23 @@ def test_print_multiple_args():
 
 def test_print_mixed_args():
     assert_rust_eq_python('print("x =", 42)')
+
+
+def test_target_python_version_313_sys_metadata():
+    assert_rust_output(
+        "\n".join(
+            [
+                "import sys",
+                "print(sys.version_info[0])",
+                "print(sys.version_info[1])",
+                "print(sys.version_info[2])",
+                "print(sys.version)",
+                "print(sys.hexversion)",
+            ]
+        ),
+        "\n".join(["3", "13", "0", "3.13.0 (molt)", "51183856"]),
+        python_version="3.13",
+    )
 
 
 # ─── Arithmetic ───────────────────────────────────────────────────────────────
