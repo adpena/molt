@@ -1,11 +1,11 @@
 Title: Runtime State Lifecycle and Shutdown
 Status: Draft
 Owner: runtime
-Last Updated: 2026-01-17
+Last Updated: 2026-04-30
 
 ## Summary
 Molt's runtime uses process-global caches (builtins, interned names, module and
-exception caches, object pools, capability state, and async registries). These
+exception caches, capability state, and async registries). These
 live for the life of the process and cannot be reclaimed, which blocks Miri
 from passing leak checks and makes long-running processes accumulate memory.
 This document defines a production-grade lifecycle with explicit init/shutdown,
@@ -13,7 +13,10 @@ full teardown of global caches, and a path to auditability.
 
 ## Goals
 - Provide explicit `molt_runtime_init()` and `molt_runtime_shutdown()`.
-- Allow full teardown of all runtime-global caches and pools.
+- Allow full teardown of all runtime-global caches.
+- Distinguish executable process exit from embedding teardown: native
+  executables must run Python-level exit hooks and then hard-exit without
+  C/Rust allocator or TLS destructor teardown.
 - Preserve current fast paths (minimal overhead for steady-state execution).
 - Enable Miri leak checks to pass without suppressing leaks.
 - Prepare for optional allocation tracking and future GC/cycle collection.
@@ -33,7 +36,7 @@ full teardown of global caches, and a path to auditability.
 - Builtin classes (`BuiltinClasses`) and their `__bases__`/`__mro__` tuples.
 - Interned names (`INTERN_*`) and method tables (OnceLock values).
 - Module cache, exception cache, last-exception tracking.
-- Object pools (global + TLS) retain allocations until shutdown, parse arena, and other TLS caches.
+- Parse arena and TLS caches retain allocations until shutdown/thread exit.
 - Capability cache and hash secret storage.
 - Async registries (task exception stacks, cancel tokens, per-task maps).
 
@@ -43,7 +46,6 @@ Introduce a `RuntimeState` struct that owns all runtime-global state:
 - Builtin classes and method table caches.
 - Interned names and attribute name caches.
 - Module/exception caches and last-exception tracking.
-- Object pools (global + TLS registries).
 - Hash secret and capability cache.
 - Async registries and task metadata maps.
 
@@ -60,21 +62,42 @@ Expose a single global pointer (fast path) to the active RuntimeState:
 ### Shutdown
 - Requires runtime quiescence (no running tasks/threads).
 - Drains caches (module/exception, intern tables, method caches).
-- Flushes object pools and TLS caches.
+- Flushes TLS caches.
 - Decrefs builtin classes, tuples, and method objects.
 - Clears async registries and task metadata.
 
-## Implementation Status (2026-01-17)
-- `molt_runtime_init()`/`molt_runtime_shutdown()` are wired into generated entrypoints.
+### Executable Process Exit
+- Native executable stubs and backend-generated `molt_main` success exits use
+  `molt_runtime_exit(code)` rather than `molt_runtime_shutdown()`.
+- `molt_runtime_exit` runs the safe Python-level process-exit subset once:
+  worker quiescence, task/exception cleanup, `atexit` callback execution, and
+  stdio flushing.
+- `molt_runtime_exit` intentionally does not free `RuntimeState` or depend on
+  Rust/C TLS destructors; it calls `_exit(code)` after
+  Python-level finalization. Full state reclamation remains the explicit
+  embedding/C-API `molt_runtime_shutdown()` contract.
+
+## Implementation Status (2026-04-30)
+- `molt_runtime_init()` is wired into generated entrypoints; executable exits
+  route through `molt_runtime_exit()` for Python-level finalization plus
+  hard-exit, while `molt_runtime_shutdown()` remains the explicit embedding
+  teardown API.
 - `RuntimeState` now owns builtin classes, interned/method caches, module/exception caches,
-  object pools, hash/capability state, async registries, and argv storage (no lazy_static globals).
-- TLS guard drains per-thread caches/pools on thread exit; scheduler/sleep worker threads
+  hash/capability state, async registries, and argv storage (no lazy_static globals).
+- TLS guard drains per-thread caches on thread exit; scheduler/sleep worker threads
   still participate in shutdown cleanup and are joined before teardown completes.
 - Pointer registry is reset on shutdown so NaN-boxed addresses cannot outlive
   runtime teardown; object pointer resolution consults the registry to satisfy
   strict provenance tooling.
-- Object pools now reclaim `TYPE_ID_OBJECT` allocations on decref; non-pooled
-  types deallocate immediately while pools drain during shutdown.
+- Immediate object-address recycling pools were removed: NaN-boxed pointer
+  identity can outlive refcount-zero in generated cleanup edges, so all
+  allocator-backed objects now return directly to the allocator on decref.
+- The implicit thread-local object nursery was removed from the default
+  allocation path: without a global write barrier and function-exit reset
+  contract, nursery objects could escape and later drop heap-backed payloads
+  while their object headers remained addressable. Scope arenas remain the
+  only bulk-reclaimed object storage and are marked explicitly with
+  `HEADER_FLAG_ARENA`.
 - Remaining: optional allocation registry + pointer registry lock overhead optimization (OPT-0003).
 
 ## Allocation Tracking (Phase 2)
@@ -101,7 +124,7 @@ safe and measurable.
 1. Create `RuntimeState` and move high-risk globals first (builtin classes,
    interned names, module cache, exception cache).
 2. Provide init/shutdown entrypoints and wire in CLI/tests.
-3. Migrate object pools and TLS caches into runtime-managed registries.
+3. Migrate TLS caches into runtime-managed registries.
 4. Add optional allocation registry and leak reports.
 5. Gate all runtime entrypoints on a valid RuntimeState pointer.
 

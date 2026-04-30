@@ -14,9 +14,8 @@ use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING,
     TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs,
     alloc_exception_from_class_bits, alloc_instance_for_class,
-    alloc_instance_for_default_object_new, alloc_object, alloc_object_zeroed_with_pool,
-    alloc_string, alloc_tuple,
-    apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
+    alloc_instance_for_default_object_new, alloc_object, alloc_object_zeroed, alloc_string,
+    alloc_tuple, apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
     attr_name_bits_from_bytes,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
@@ -154,16 +153,13 @@ enum TraceCallBindMode {
 
 fn trace_call_bind_mode() -> TraceCallBindMode {
     static MODE: OnceLock<TraceCallBindMode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        match std::env::var("MOLT_TRACE_CALL_BIND")
-            .ok()
-            .as_deref()
-        {
+    *MODE.get_or_init(
+        || match std::env::var("MOLT_TRACE_CALL_BIND").ok().as_deref() {
             Some("all" | "verbose") => TraceCallBindMode::Verbose,
             Some("1") => TraceCallBindMode::Basic,
             _ => TraceCallBindMode::Off,
-        }
-    })
+        },
+    )
 }
 
 #[derive(Copy, Clone)]
@@ -480,13 +476,9 @@ unsafe fn call_type_with_builder(
                 // `type.__new__` (intrinsic `molt_type_new`); use the fast
                 // path that also runs `__init_subclass__` and class slot
                 // setup inline.  Otherwise dispatch to the user's override.
-                let new_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.new_name,
-                    b"__new__",
-                );
-                let new_lookup =
-                    class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
+                let new_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
+                let new_lookup = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
                 let new_is_default = new_lookup
                     .map(|bits| {
                         let obj = obj_from_bits(bits);
@@ -511,10 +503,8 @@ unsafe fn call_type_with_builder(
                     )
                 } else {
                     let new_bits = new_lookup.expect("non-default __new__ must resolve");
-                    let new_builder = molt_callargs_new(
-                        (4 + kw_names.len()) as u64,
-                        kw_names.len() as u64,
-                    );
+                    let new_builder =
+                        molt_callargs_new((4 + kw_names.len()) as u64, kw_names.len() as u64);
                     if new_builder == 0 {
                         if !kw_names.is_empty() {
                             dec_ref_bits(_py, kwargs_bits);
@@ -544,8 +534,7 @@ unsafe fn call_type_with_builder(
                 let new_class_obj = obj_from_bits(new_class_bits);
                 let returned_instance = if let Some(p) = new_class_obj.as_ptr() {
                     let inst_class_bits = object_class_bits(p);
-                    inst_class_bits != 0
-                        && issubclass_bits(inst_class_bits, class_bits)
+                    inst_class_bits != 0 && issubclass_bits(inst_class_bits, class_bits)
                 } else {
                     false
                 };
@@ -562,10 +551,8 @@ unsafe fn call_type_with_builder(
                     if let Some(init_bits) =
                         class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)
                     {
-                        let init_builder = molt_callargs_new(
-                            (4 + kw_names.len()) as u64,
-                            kw_names.len() as u64,
-                        );
+                        let init_builder =
+                            molt_callargs_new((4 + kw_names.len()) as u64, kw_names.len() as u64);
                         if init_builder != 0 {
                             let _ = molt_callargs_push_pos(init_builder, new_class_bits);
                             let _ = molt_callargs_push_pos(init_builder, pos_args[0]);
@@ -2131,21 +2118,15 @@ unsafe fn call_bind_ic_entry_for_call(
                     return None;
                 }
                 // Only cacheable when __new__ is the default object.__new__.
-                let new_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.new_name,
-                    b"__new__",
-                );
+                let new_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
                 let new_bits = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
                 if !resolved_new_is_default_object_new(new_bits) {
                     return None;
                 }
                 // Resolve __init__ and ensure it is a simple direct-callable function.
-                let init_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.init_name,
-                    b"__init__",
-                );
+                let init_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
                 let init_bits = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)?;
                 let init_ptr = obj_from_bits(init_bits).as_ptr()?;
                 if object_type_id(init_ptr) != TYPE_ID_FUNCTION {
@@ -2163,9 +2144,7 @@ unsafe fn call_bind_ic_entry_for_call(
                 // Cache the allocation size so the IC fast path skips
                 // the entire class_layout_size computation (MRO walks,
                 // dict probes, name interning) on every instantiation.
-                let layout_size = crate::call::class_init::class_layout_size_cached(
-                    _py, call_ptr,
-                );
+                let layout_size = crate::call::class_init::class_layout_size_cached(_py, call_ptr);
                 let total_alloc = layout_size + std::mem::size_of::<crate::object::MoltHeader>();
                 Some(CallBindIcEntry {
                     fn_ptr: function_fn_ptr(init_ptr) as u64,
@@ -2361,7 +2340,7 @@ unsafe fn try_call_bind_ic_fast(
             // entry was populated.
             let inst_bits = if entry.cached_alloc_size > 0 {
                 let total = entry.cached_alloc_size as usize;
-                let obj_ptr = alloc_object_zeroed_with_pool(_py, total, TYPE_ID_OBJECT);
+                let obj_ptr = alloc_object_zeroed(_py, total, TYPE_ID_OBJECT);
                 if obj_ptr.is_null() {
                     return Some(MoltObject::none().bits());
                 }
@@ -2411,8 +2390,13 @@ unsafe fn try_call_bind_ic_fast(
                     3 => {
                         let f: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
                             std::mem::transmute(fn_ptr as usize);
-                        f(closure_bits, inst_bits, args.pos[0], args.pos[1], args.pos[2])
-                            as u64
+                        f(
+                            closure_bits,
+                            inst_bits,
+                            args.pos[0],
+                            args.pos[1],
+                            args.pos[2],
+                        ) as u64
                     }
                     _ => {
                         let mut argv = [0u64; 5];
@@ -2420,18 +2404,13 @@ unsafe fn try_call_bind_ic_fast(
                         for (idx, arg) in args.pos.iter().copied().enumerate() {
                             argv[idx + 1] = arg;
                         }
-                        call_function_obj_vec(
-                            _py,
-                            entry.target_bits,
-                            &argv[..args.pos.len() + 1],
-                        )
+                        call_function_obj_vec(_py, entry.target_bits, &argv[..args.pos.len() + 1])
                     }
                 }
             } else {
                 match args.pos.len() {
                     0 => {
-                        let f: extern "C" fn(u64) -> i64 =
-                            std::mem::transmute(fn_ptr as usize);
+                        let f: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                         f(inst_bits) as u64
                     }
                     1 => {
@@ -2455,11 +2434,7 @@ unsafe fn try_call_bind_ic_fast(
                         for (idx, arg) in args.pos.iter().copied().enumerate() {
                             argv[idx + 1] = arg;
                         }
-                        call_function_obj_vec(
-                            _py,
-                            entry.target_bits,
-                            &argv[..args.pos.len() + 1],
-                        )
+                        call_function_obj_vec(_py, entry.target_bits, &argv[..args.pos.len() + 1])
                     }
                 }
             };

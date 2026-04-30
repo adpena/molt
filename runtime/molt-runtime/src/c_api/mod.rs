@@ -403,7 +403,6 @@ fn c_api_method_build_function(
     method_flags: u32,
     doc_bytes: Option<&[u8]>,
 ) -> Result<u64, i32> {
-    let _nursery_guard = crate::object::NurserySuspendGuard::new();
     if method_target.is_null() {
         return Err(raise_i32(
             _py,

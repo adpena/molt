@@ -12,13 +12,12 @@ use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
     CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
     GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, GilReleaseGuard, MoltObject,
-    NEXT_CANCEL_TOKEN_ID, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH,
-    RECURSION_LIMIT, TASK_RAISE_ACTIVE, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE,
-    alloc_string, builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_state,
-    clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_clear_in_place_shutdown,
-    dict_get_in_place, exception_pending, inc_ref_bits, intern_static_name, module_dict_bits,
-    molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
-    runtime_state,
+    NEXT_CANCEL_TOKEN_ID, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT, TASK_RAISE_ACTIVE,
+    TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string, builtin_classes_shutdown,
+    call_callable0, clear_exception, clear_exception_state, clear_exception_type_cache,
+    dec_ref_bits, default_cancel_tokens, dict_clear_in_place_shutdown, dict_get_in_place,
+    exception_pending, inc_ref_bits, intern_static_name, module_dict_bits, molt_file_flush,
+    molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
 };
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -46,15 +45,12 @@ impl Drop for ThreadLocalGuard {
         //   (b) trigger `molt_runtime_init` to re-allocate a new RuntimeState
         //       just to tear it down again.
         // Both are incorrect.  The shutdown path already called
-        // `clear_thread_local_state` + `clear_object_pool`, so there is
-        // nothing left to clean up.
+        // `clear_thread_local_state`, so there is nothing left to clean up.
         //
-        // HOWEVER: we must still release any heap-backed TLS memory (nursery,
-        // object pool) NOW, while the global allocator (mimalloc) is still
-        // alive.  If we leave these allocations for Rust's TLS destructor
-        // phase, the dealloc calls may race with mimalloc's own thread-local
-        // cleanup (registered via pthread_key_create), causing a
-        // use-after-free crash (exit code 245 on macOS).
+        // HOWEVER: we must still release heap-backed TLS caches NOW, while the
+        // global allocator (mimalloc) is still alive. If we leave them for
+        // Rust's TLS destructor phase, deallocation can race with mimalloc's
+        // own thread-local cleanup (registered via pthread_key_create).
         if crate::state::runtime_state::runtime_state_for_gil().is_none() {
             drain_heap_tls();
             return;
@@ -62,7 +58,6 @@ impl Drop for ThreadLocalGuard {
         crate::with_gil_entry_nopanic!(_py, {
             clear_thread_local_state(_py);
         });
-        clear_object_pool_tls();
     }
 }
 
@@ -79,9 +74,24 @@ pub(crate) fn runtime_teardown_isolate(_py: &PyToken<'_>, state: &RuntimeState) 
     runtime_teardown_inner(_py, state, false);
 }
 
-fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: bool) {
+pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
-    trace_shutdown("start");
+    trace_shutdown("process_exit_start");
+    shutdown_started_runtime_workers(_py, state);
+    trace_shutdown("process_exit_clear_task_state");
+    clear_task_state(_py, state);
+    trace_shutdown("process_exit_clear_exception_state");
+    clear_exception_state(_py);
+    trace_shutdown("process_exit_run_atexit_callbacks");
+    crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    trace_shutdown("process_exit_flush_stdio");
+    flush_stdio_handles(_py, state);
+    trace_shutdown("process_exit_flush_stdio_post_finalizers");
+    flush_stdio_handles(_py, state);
+    trace_shutdown("process_exit_done");
+}
+
+fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
     let scheduler_started = state.scheduler_started.load(AtomicOrdering::Acquire);
     let sleep_queue_started = state.sleep_queue_started.load(AtomicOrdering::Acquire);
     let io_poller_started = state.io_poller_started.load(AtomicOrdering::Acquire);
@@ -116,6 +126,12 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
         }
         trace_shutdown("workers_shutdown_done");
     }
+}
+
+fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: bool) {
+    crate::gil_assert();
+    trace_shutdown("start");
+    shutdown_started_runtime_workers(_py, state);
     trace_shutdown("clear_async_hang_probe");
     clear_async_hang_probe(state);
     trace_shutdown("clear_task_state");
@@ -154,8 +170,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_utf8_caches(state);
     trace_shutdown("clear_code_slots");
     clear_code_slots(_py, state);
-    trace_shutdown("clear_object_pool");
-    clear_object_pool(state);
     trace_shutdown("clear_asyncgen_registry");
     clear_asyncgen_registry(state);
     trace_shutdown("clear_asyncgen_hooks");
@@ -203,7 +217,7 @@ fn trace_shutdown(step: &str) {
 pub(crate) fn runtime_reset_for_init(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
     PARSE_ARENA.with(|arena| arena.borrow_mut().reset());
-    reset_object_pool(state);
+    let _ = state;
 }
 
 fn clear_asyncgen_registry(state: &RuntimeState) {
@@ -330,7 +344,6 @@ fn clear_code_slots(_py: &PyToken<'_>, state: &RuntimeState) {
 pub(crate) fn clear_worker_thread_state(_py: &PyToken<'_>) {
     crate::gil_assert();
     clear_thread_local_state(_py);
-    clear_object_pool_tls();
 }
 
 fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
@@ -574,42 +587,12 @@ fn clear_utf8_caches(state: &RuntimeState) {
     }
 }
 
-fn clear_object_pool_tls() {
-    let _ = OBJECT_POOL_TLS.try_with(|pool| {
-        let mut pool = pool.borrow_mut();
-        for (idx, bucket) in pool.iter_mut().enumerate() {
-            let size = idx * 8;
-            if size == 0 {
-                bucket.clear();
-                continue;
-            }
-            let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
-            for slot in bucket.drain(..) {
-                unsafe {
-                    std::alloc::dealloc(slot.0, layout);
-                }
-            }
-        }
-        *pool = Vec::new();
-    });
-    clear_nursery_tls();
-}
-
-/// Release the nursery's heap-backed buffer so that Rust's TLS destructor
-/// for `NURSERY_TLS` has nothing left to deallocate.  This prevents a
-/// use-after-free when mimalloc's thread-local state is torn down before
-/// Rust's TLS destructors run during process exit.
-fn clear_nursery_tls() {
-    crate::object::nursery_drain();
-}
-
 /// Drain all heap-backed thread-local storage.  Called from
 /// `ThreadLocalGuard::drop` after `molt_runtime_shutdown` has already
 /// completed, so we cannot acquire the GIL or touch `RuntimeState`.
 /// The only goal is to release heap memory while the global allocator
 /// is still alive, preventing a crash during Rust's TLS destructor phase.
 fn drain_heap_tls() {
-    clear_object_pool_tls();
     // Replace the parse arena with an empty state whose outer Vec has zero
     // capacity, so the TLS destructor has nothing to deallocate.
     let _ = PARSE_ARENA.try_with(|arena| {
@@ -645,40 +628,6 @@ fn drain_heap_tls() {
     });
     let _ = crate::REPR_SET.try_with(|s| {
         let _ = std::mem::take(&mut *s.borrow_mut());
-    });
-}
-
-fn clear_object_pool(state: &RuntimeState) {
-    let mut guard = state.object_pool.lock().unwrap();
-    for (idx, bucket) in guard.iter_mut().enumerate() {
-        let size = idx * 8;
-        if size == 0 {
-            bucket.clear();
-            continue;
-        }
-        let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
-        for slot in bucket.drain(..) {
-            unsafe {
-                std::alloc::dealloc(slot.0, layout);
-            }
-        }
-    }
-    clear_object_pool_tls();
-    *guard = Vec::new();
-}
-
-fn reset_object_pool(state: &RuntimeState) {
-    let mut guard = state.object_pool.lock().unwrap();
-    if guard.len() != OBJECT_POOL_BUCKETS {
-        *guard = vec![Vec::new(); OBJECT_POOL_BUCKETS];
-    } else {
-        for bucket in guard.iter_mut() {
-            bucket.clear();
-        }
-    }
-    OBJECT_POOL_TLS.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        *pool = vec![Vec::new(); OBJECT_POOL_BUCKETS];
     });
 }
 
