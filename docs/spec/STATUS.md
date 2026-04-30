@@ -30,9 +30,11 @@ It is current-state only. For forward-looking priorities, use
   `sys.version`, and `sys.hexversion` from the same stamped state. Rust source
   outputs also own executable module-cache get/set/delete semantics for emitted
   import bootstrap IR, with cache misses represented as `None` rather than a
-  truthy sentinel. Malformed or non-string target-version config fails closed
-  instead of falling back to another target. The default target remains Python
-  `3.12`.
+  truthy sentinel. Luau source outputs materialize the same target-version `sys`
+  metadata into `molt_module_cache["sys"]`, and dynamic Luau module import now
+  fails closed instead of manufacturing empty table fallbacks for unsupported
+  modules. Malformed or non-string target-version config fails closed instead of
+  falling back to another target. The default target remains Python `3.12`.
 - Rust-first stdlib lowering is the canonical direction, with generated audit
   surfaces under `docs/spec/areas/compat/surfaces/stdlib/`.
 - WASM remains a supported target area, but same-contract parity with native is
