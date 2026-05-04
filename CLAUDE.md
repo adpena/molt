@@ -15,6 +15,24 @@ When you identify a structurally correct fix and feel pulled toward an "immediat
 
 If you cannot complete the structural fix in this session, **do not commit the localized hack as a placeholder**. Leave a clean baton-pass note describing the structural fix needed; the next session picks it up. Half-measures committed to main are worse than nothing committed.
 
+### Concrete examples of partial implementations to reject
+
+These are real shortcuts caught and reversed in past sessions. Do not repeat them:
+
+- **Compressing architect/research output**: When a sub-agent returns a 1500-line architecture plan, write the *full* text to disk. Condensing to "key points" loses the line numbers, sub-phase test specifications, and risk treatments that an implementing agent needs. The architect's full text is the artifact.
+- **Asymmetric coverage of a structural fix**: If you migrate the in-loop call sites of a helper, also migrate the out-of-loop sites. If you fix the int lane's shadow system, mirror the same change to bool/float/str. Asymmetry is a partial implementation that re-creates the original bug at the unmigrated site.
+- **Splitting an atomic refactor across commits to "make progress visible"**: If Phases 1a/1b/1c/1d are one structural arc per the design, ship them as one atomic change or commit them with explicit "this leaves the codebase in a hybrid state until 1d lands" notes. Three commits that shipped 1a/1b/1c without 1d leave two parallel sources of truth in the tree — exactly the compound-interest-of-bugs trap this policy exists to prevent.
+- **Stopping at the first measurable win**: A 10% perf bump from Phase 1b is not "good enough" if Phase 1d would yield 50%. The 10% does not justify halting the structural change.
+- **"Debug-gated assertion" as a substitute for migration**: An assertion that catches divergence between the static and dynamic sources of truth is a verification tool, not a substitute for unifying them. Verify the invariant *while* completing the migration, not as a way to defer it.
+- **Per-test special cases**: If a test fails after a structural change, the change is wrong (or the test reveals a missing invariant). Do not add a guard that special-cases the failing test.
+- **Renaming `_unused`** to silence a compiler warning instead of using or removing the variable: pick one. Both options are clean; the rename is a shortcut.
+
+### Structural change as the unit of work
+
+The unit of work is the *complete structural change*, not the smallest committable diff. When the design says "Phase 1 = 1a + 1b + 1c + 1d", Phase 1 is not done until 1d lands. Intermediate commits are acceptable only when each is itself a complete structural piece (not a partial fix toward the next piece) and a baton-pass note documents the remaining unfinished arc.
+
+If the structural change is too large for one session, the honest paths are: (a) do a smaller, fully-complete piece that delivers measurable value on its own, OR (b) leave a clean baton-pass note and stop. Splitting the same structural change into "I'll do half this session and the other half next session" is the shortcut this policy rejects.
+
 This rule applies equally to:
 - **Correctness**: bug class fixes, not bug instance fixes (e.g., fix the phi-representation invariant, not just the one site that exposed it)
 - **Optimization**: structural codegen changes, not localized peephole tweaks
