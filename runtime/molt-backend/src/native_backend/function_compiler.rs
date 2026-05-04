@@ -2533,6 +2533,117 @@ impl SimpleBackend {
                     .cloned()
                     .collect()
             };
+        // Typed IR Phase 1a: build int_primary_vars as the immutable static
+        // analog of float_primary_vars for proven-int variables. A var is in
+        // int_primary_vars only when every definition site produces raw i64
+        // (no NaN-boxed source). raw_primary_int (the dynamic, mutated set
+        // queried by var_get_boxed) must converge to a subset of this.
+        // Phase 1a does not yet drive codegen decisions off this set — it is
+        // the foundation for Phases 1b/1c/1d.
+        //
+        // Exclusions match float_primary_vars logic plus:
+        //   - Join slots (`_bb*_arg*`) excluded until Phase 1c, when the
+        //     loop_start demote / store_var fast-path interaction is taught
+        //     to keep them consistently raw across edges.
+        let int_unsafe_outputs: BTreeSet<String> = {
+            let mut unsafe_set = BTreeSet::new();
+            for op in &func_ir.ops {
+                if let Some(ref out) = op.out {
+                    let kind = op.kind.as_str();
+                    let is_safe_int_op = matches!(
+                        kind,
+                        "const"
+                            | "loop_index_start"
+                            | "loop_index_next"
+                            | "len"
+                            | "add"
+                            | "sub"
+                            | "mul"
+                            | "inplace_add"
+                            | "inplace_sub"
+                            | "inplace_mul"
+                            | "floordiv"
+                            | "mod"
+                            | "inplace_floordiv"
+                            | "inplace_mod"
+                            | "bit_and"
+                            | "bit_or"
+                            | "bit_xor"
+                            | "inplace_bit_and"
+                            | "inplace_bit_or"
+                            | "inplace_bit_xor"
+                            | "lshift"
+                            | "rshift"
+                            | "shl"
+                            | "shr"
+                            | "neg"
+                            | "abs"
+                            | "builtin_abs"
+                            | "invert"
+                            | "copy"
+                            | "copy_var"
+                            | "load_var"
+                            | "identity_alias"
+                            | "store_var"
+                    );
+                    if !is_safe_int_op && int_like_vars.contains(out) {
+                        unsafe_set.insert(out.clone());
+                    }
+                }
+            }
+            unsafe_set
+        };
+        let vars_with_non_int_defs: BTreeSet<String> = {
+            let mut non_int = BTreeSet::new();
+            for op in &func_ir.ops {
+                if op.kind == "store_var" {
+                    let target = op.var.as_ref().or(op.out.as_ref());
+                    let source = op.args.as_ref().and_then(|a| a.first());
+                    if let (Some(t), Some(s)) = (target, source)
+                        && !int_like_vars.contains(s)
+                        && !bool_like_vars.contains(s)
+                    {
+                        non_int.insert(t.clone());
+                    }
+                }
+                if let Some(ref out) = op.out {
+                    let lane = infer_scalar_lane(
+                        op,
+                        &int_like_vars,
+                        &bool_like_vars,
+                        &float_like_vars,
+                        &str_like_vars,
+                    );
+                    let proven_int = matches!(
+                        lane,
+                        Some(ScalarLane::Int) | Some(ScalarLane::Bool)
+                    );
+                    if !proven_int && int_like_vars.contains(out) {
+                        non_int.insert(out.clone());
+                    }
+                }
+            }
+            non_int
+        };
+        let int_primary_vars: BTreeSet<String> =
+            if is_cold_module_chunk_function(&func_ir.name) {
+                // Cold-module chunks already opt out of every scalar fast
+                // path (`scalar_fast_paths_enabled` is `!is_cold_module_chunk_function`),
+                // so the static set is empty for them too.
+                BTreeSet::new()
+            } else {
+                int_like_vars
+                    .iter()
+                    .filter(|name| {
+                        !param_name_set.contains(name.as_str())
+                            && !int_unsafe_outputs.contains(*name)
+                            && !vars_with_non_int_defs.contains(*name)
+                            && !float_like_vars.contains(*name)
+                            && !is_join_slot_name(name)
+                    })
+                    .cloned()
+                    .collect()
+            };
         for name in var_names.iter() {
             let var_type = if float_primary_vars.contains(name) {
                 types::F64
@@ -32702,6 +32813,24 @@ impl SimpleBackend {
                 panic!("declare_function failed for {}: {}", func_ir.name, e);
             }
         };
+        // Typed IR Phase 1a invariant: every variable that the dynamic
+        // codegen path classified as raw-primary-int (raw_primary_int) must
+        // also have been included in the static int_primary_vars set
+        // computed before codegen.  A divergence means either the static
+        // analysis is too narrow (under-approximates the runtime decisions
+        // — Phases 1b/1c will widen it) or the dynamic path inserted a
+        // name that the static analysis cannot prove safe (a correctness
+        // hazard, since a future phase will use the static set as the
+        // ground truth).  Gated by env var so production builds skip it.
+        if std::env::var("MOLT_TYPED_IR_VERIFY").is_ok() {
+            for name in raw_primary_int.iter() {
+                debug_assert!(
+                    int_primary_vars.contains(name),
+                    "MOLT_TYPED_IR_VERIFY: raw_primary_int {{{name}}} not in int_primary_vars for fn {}",
+                    func_ir.name,
+                );
+            }
+        }
         // ── Deferred compilation ──────────────────────────────
         // Instead of compiling each function immediately, extract the
         // finalized Cranelift IR and push it onto the deferred list.
