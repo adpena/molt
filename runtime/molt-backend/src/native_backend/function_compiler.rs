@@ -2669,6 +2669,14 @@ impl SimpleBackend {
                 // so the static set is empty for them too.
                 BTreeSet::new()
             } else {
+                // Phase 1c: join-slot names (`_bb*_arg*`) are now eligible
+                // for int_primary_vars when their definition sites are all
+                // raw-producing. The store_var fast path and loop_start
+                // demote both check int_primary_vars membership and skip
+                // boxing, so the loop-header phi sees raw i64 on both the
+                // entry-edge preheader and the back-edge — eliminating the
+                // box→unbox round trip per iteration that defeated proven-int
+                // accumulator perf.
                 int_like_vars
                     .iter()
                     .filter(|name| {
@@ -2676,7 +2684,6 @@ impl SimpleBackend {
                             && !int_unsafe_outputs.contains(*name)
                             && !vars_with_non_int_defs.contains(*name)
                             && !float_like_vars.contains(*name)
-                            && !is_join_slot_name(name)
                     })
                     .cloned()
                     .collect()
@@ -27592,9 +27599,16 @@ impl SimpleBackend {
                     // generic load_var reads produce a valid NaN-boxed value.
                     // The store_var handler re-promotes if the source is raw.
                     {
+                        // Phase 1c: int_primary_vars join slots are exempt from
+                        // demote — they hold raw i64 consistently across both
+                        // edges of the loop-header phi, so re-boxing here
+                        // would re-introduce the very mismatch this demote
+                        // was added to prevent.
                         let demote_int: Vec<String> = raw_primary_int
                             .iter()
-                            .filter(|name| is_join_slot_name(name))
+                            .filter(|name| {
+                                is_join_slot_name(name) && !int_primary_vars.contains(name.as_str())
+                            })
                             .cloned()
                             .collect();
                         for name in &demote_int {
@@ -31747,15 +31761,23 @@ impl SimpleBackend {
                                     .expect("store_var: raw src var not found");
                                 builder.use_var(var)
                             });
-                            // Loop-carried block-arg main Variables (`_bb*_arg*`)
-                            // must hold NaN-boxed values consistently: the
-                            // loop header phi merges the entry edge (boxed by
-                            // `loop_start` demote) with the back edge, and
-                            // Cranelift cannot express raw-vs-boxed phi
-                            // disagreement. The raw value still flows through
-                            // the shadow Variable, which is phi-correct in its
-                            // own lane.
-                            if is_join_slot_name(name) {
+                            // Phase 1c: int_primary_vars join slots write raw
+                            // i64 directly to the main Variable. The
+                            // loop_start demote is taught to skip them, so
+                            // both the entry preheader and the back edge
+                            // pass raw i64 to the loop header phi —
+                            // consistent representation, no per-iteration
+                            // box→unbox round trip.
+                            //
+                            // Non-int_primary join slots still take the
+                            // legacy box-on-back-edge path (post 5127b12f):
+                            // the loop_start demote re-boxes on entry, and
+                            // we box here on the back edge. This is
+                            // necessary when the join slot's other
+                            // definition sites might produce boxed values
+                            // (mixed-type stores, generic-runtime calls
+                            // that return NaN-boxed results).
+                            if is_join_slot_name(name) && !int_primary_vars.contains(name) {
                                 let boxed = box_int_value_hoisted(
                                     &mut builder,
                                     raw_val,
