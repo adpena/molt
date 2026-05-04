@@ -632,6 +632,43 @@ fn shadow_value_var_only(
     raw_int_shadow.get(name).map(|&var| builder.use_var(var))
 }
 
+/// Phase 1b: recover a raw i64 operand inside a loop body without falling
+/// to the boxed slow path.
+///
+/// `shadow_value_var_only` returns `Some` only when a Variable-tier shadow
+/// exists. Constants and other raw-primary values populated via the const
+/// handler (`raw_primary_int.insert + def_var(main, raw_iconst)`) carry
+/// their raw i64 in the *main* Variable, but never receive a Variable-tier
+/// shadow — `loop_start` clears the Value-tier shadow on entry, so the
+/// `add` / `sub` / `mul` proven-int fast path used to fail eligibility on
+/// `total += i; i += 1` style loops (the `i + 1` ran the slow
+/// unbox-add-box-overflow chain because `_v6 = const 1` had no shadow).
+///
+/// The structural fix: `raw_primary_int` membership is itself proof that
+/// `use_var(vars[name])` produces a raw i64. Try the shadow first
+/// (cheaper when present), fall back to the main Variable when the name is
+/// raw-primary. Both produce the same Cranelift `Value` for the same
+/// underlying SSA — the choice is which Variable to read from.
+#[cfg(feature = "native-backend")]
+#[inline]
+fn raw_int_value_for_arith(
+    builder: &mut FunctionBuilder<'_>,
+    raw_int_shadow: &BTreeMap<String, Variable>,
+    raw_primary_int: &BTreeSet<String>,
+    vars: &BTreeMap<String, Variable>,
+    name: &str,
+) -> Option<Value> {
+    if let Some(&v) = raw_int_shadow.get(name) {
+        return Some(builder.use_var(v));
+    }
+    if raw_primary_int.contains(name)
+        && let Some(&var) = vars.get(name)
+    {
+        return Some(builder.use_var(var));
+    }
+    None
+}
+
 /// Produce a correctly NaN-boxed value for a variable that may carry a
 /// raw-int shadow exceeding the 47-bit inline range.  When the variable
 /// has no raw shadow, falls back to `var_get` (the normal boxed path).
@@ -4344,12 +4381,20 @@ impl SimpleBackend {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
+                        // Phase 1b: inside loops, accept either a Variable-tier
+                        // shadow (phi-correct across back-edges) OR a
+                        // raw_primary_int main Variable (loop-invariant
+                        // constants and non-phi raw values). This widens fast
+                        // path eligibility for `i + 1` patterns where the
+                        // const is in raw_primary_int but never shadowed.
                         let lhs_raw = if in_active_loop {
-                            // Inside loops, only use Variable-backed shadows
-                            // (phi-correct across back-edges). Value-tier
-                            // shadows may hold stale SSA values from a
-                            // previous block/iteration.
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(
+                                &mut builder,
+                                &raw_int_shadow,
+                                &raw_primary_int,
+                                &vars,
+                                lhs_name,
+                            )
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -4359,7 +4404,13 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(
+                                &mut builder,
+                                &raw_int_shadow,
+                                &raw_primary_int,
+                                &vars,
+                                rhs_name,
+                            )
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -4663,7 +4714,7 @@ impl SimpleBackend {
                         // instead of panicking on unwrap.
                         let in_loop = !loop_stack.is_empty();
                         let lhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -4673,7 +4724,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -5900,7 +5951,7 @@ impl SimpleBackend {
                             // (phi-correct across back-edges). Value-tier
                             // shadows may hold stale SSA values from a
                             // previous block/iteration.
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -5910,7 +5961,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -6186,7 +6237,7 @@ impl SimpleBackend {
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
                         let lhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -6197,7 +6248,7 @@ impl SimpleBackend {
                         }
                         .unwrap();
                         let rhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -6461,7 +6512,7 @@ impl SimpleBackend {
                             // (phi-correct across back-edges). Value-tier
                             // shadows may hold stale SSA values from a
                             // previous block/iteration.
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -6471,7 +6522,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -6738,7 +6789,7 @@ impl SimpleBackend {
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
                         let lhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -6749,7 +6800,7 @@ impl SimpleBackend {
                         }
                         .unwrap();
                         let rhs_val = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -6944,7 +6995,7 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -6954,7 +7005,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -7246,7 +7297,7 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -7256,7 +7307,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -7547,7 +7598,7 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -7557,7 +7608,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -7848,7 +7899,7 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -7858,7 +7909,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -7925,7 +7976,7 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -7935,7 +7986,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -8405,7 +8456,7 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -8415,7 +8466,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -8682,7 +8733,7 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -8692,7 +8743,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -9048,7 +9099,7 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, lhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -9058,7 +9109,7 @@ impl SimpleBackend {
                             )
                         };
                         let rhs_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, rhs_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -12447,7 +12498,7 @@ impl SimpleBackend {
                             // Falls back to the safe runtime function otherwise.
                             // Inside loops, use Variable-only shadows (phi-correct).
                             let raw_idx_lookup = if !loop_stack.is_empty() {
-                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                             } else {
                                 shadow_value_for(
                                     &mut builder,
@@ -12646,7 +12697,7 @@ impl SimpleBackend {
                             // can branch between u64-load (regular list) and u8-load+NaN-box
                             // (list_bool) without re-loading the header.
                             let raw_idx_lookup = if !loop_stack.is_empty() {
-                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                             } else {
                                 shadow_value_for(
                                     &mut builder,
@@ -13196,7 +13247,7 @@ impl SimpleBackend {
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
                         let raw_idx_opt = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -13206,7 +13257,7 @@ impl SimpleBackend {
                             )
                         };
                         let raw_val_opt = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[2])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[2])
                         } else {
                             raw_int_shadow_vals.get(&args[2]).copied().or_else(|| {
                                 raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v))
@@ -13352,7 +13403,7 @@ impl SimpleBackend {
                         // Inline list setitem — handles both TYPE_ID_LIST (Vec<u64>)
                         // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
                         let raw_idx_opt = if !loop_stack.is_empty() {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -13791,7 +13842,7 @@ impl SimpleBackend {
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
                         let raw_key_opt = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -13801,7 +13852,7 @@ impl SimpleBackend {
                             )
                         };
                         let raw_val_opt = if in_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, &args[2])
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[2])
                         } else {
                             raw_int_shadow_vals.get(&args[2]).copied().or_else(|| {
                                 raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v))
@@ -17265,7 +17316,7 @@ impl SimpleBackend {
                     let lr = if in_active_loop {
                         // Variable-backed shadows are phi-correct across loop
                         // back-edges; Value-tier may be stale.
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -17275,7 +17326,7 @@ impl SimpleBackend {
                         )
                     };
                     let rr = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -17484,7 +17535,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let lr = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -17494,7 +17545,7 @@ impl SimpleBackend {
                         )
                     };
                     let rr = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -17702,7 +17753,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let lhs_shadow = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -17712,7 +17763,7 @@ impl SimpleBackend {
                         )
                     };
                     let rhs_shadow = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -17919,7 +17970,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let lhs_shadow = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -17929,7 +17980,7 @@ impl SimpleBackend {
                         )
                     };
                     let rhs_shadow = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -18140,7 +18191,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let eq_lr = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -18150,7 +18201,7 @@ impl SimpleBackend {
                         )
                     };
                     let eq_rr = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -18338,7 +18389,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let ne_lr = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -18348,7 +18399,7 @@ impl SimpleBackend {
                         )
                     };
                     let ne_rr = if in_active_loop {
-                        shadow_value_var_only(&mut builder, &raw_int_shadow, &args[1])
+                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
                     } else {
                         shadow_value_for(
                             &mut builder,
@@ -18714,7 +18765,7 @@ impl SimpleBackend {
                         let src_name = &args[0];
                         let in_active_loop = !loop_stack.is_empty();
                         let src_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, src_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, src_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -18824,7 +18875,7 @@ impl SimpleBackend {
                         let src_name = &args[0];
                         let in_active_loop = !loop_stack.is_empty();
                         let src_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, src_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, src_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -18938,7 +18989,7 @@ impl SimpleBackend {
                         let src_name = &args[0];
                         let in_active_loop = !loop_stack.is_empty();
                         let src_raw = if in_active_loop {
-                            shadow_value_var_only(&mut builder, &raw_int_shadow, src_name)
+                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, src_name)
                         } else {
                             shadow_value_for(
                                 &mut builder,
@@ -28448,7 +28499,7 @@ impl SimpleBackend {
                             // NaN-boxed int: unbox and check != 0.
                             // Inside loops, use Variable-only shadows (phi-correct).
                             let raw_val = if !loop_stack.is_empty() {
-                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                             } else {
                                 shadow_value_for(
                                     &mut builder,
@@ -28656,7 +28707,7 @@ impl SimpleBackend {
                             // NaN-boxed int: unbox and check != 0.
                             // Inside loops, use Variable-only shadows (phi-correct).
                             let raw_val = if !loop_stack.is_empty() {
-                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                             } else {
                                 shadow_value_for(
                                     &mut builder,
@@ -31678,7 +31729,7 @@ impl SimpleBackend {
                             let raw_val = {
                                 let in_loop = !loop_stack.is_empty();
                                 if in_loop {
-                                    shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                                    raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                                 } else {
                                     shadow_value_for(
                                         &mut builder,
@@ -31952,7 +32003,7 @@ impl SimpleBackend {
                         {
                             let in_loop = !loop_stack.is_empty();
                             let raw_val = if in_loop {
-                                shadow_value_var_only(&mut builder, &raw_int_shadow, var_name)
+                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, var_name)
                             } else {
                                 shadow_value_for(
                                     &mut builder,
@@ -32148,7 +32199,7 @@ impl SimpleBackend {
                         {
                             let in_loop = !loop_stack.is_empty();
                             let raw_val = if in_loop {
-                                shadow_value_var_only(&mut builder, &raw_int_shadow, &args[0])
+                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
                             } else {
                                 shadow_value_for(
                                     &mut builder,
