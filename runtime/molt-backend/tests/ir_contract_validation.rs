@@ -102,6 +102,31 @@ fn validate_simple_ir_accepts_fast_int_flags_on_arithmetic_ops() {
 }
 
 #[test]
+fn validate_simple_ir_accepts_fast_int_flags_on_division_transport_ops() {
+    let mut lhs = op("const");
+    lhs.value = Some(7);
+    lhs.out = Some("v0".to_string());
+
+    let mut rhs = op("const");
+    rhs.value = Some(3);
+    rhs.out = Some("v1".to_string());
+
+    let mut div = op("div");
+    div.args = Some(vec!["v0".to_string(), "v1".to_string()]);
+    div.out = Some("v2".to_string());
+    div.fast_int = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![test_func(
+            "molt_test_validate_fast_int_div",
+            vec![lhs, rhs, div],
+        )],
+        profile: None,
+    };
+    assert!(validate_simple_ir(&ir).is_ok());
+}
+
+#[test]
 fn validate_simple_ir_rejects_param_type_arity_mismatch() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

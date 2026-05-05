@@ -102,6 +102,11 @@ additional transport-only hint fields.
 
 ### Validation Constraints
 
+The backend enforces the representation and shape constraints in this section
+while constructing `SimpleIR` from JSON, NDJSON, and serde-backed binary
+formats. The stricter internal validator also checks value-use ordering where
+the legacy transport surface has already been normalized into SSA values.
+
 - `param_types`, when present, must have the same length as `params`.
 - `fast_int` and `fast_float` cannot both be `true` on the same op.
 - `fast_int` / `fast_float` are accepted only on op families that own scalar
