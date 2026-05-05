@@ -2,6 +2,7 @@
 
 use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
+use molt_backend::tir::lir::LirRepr;
 use molt_backend::tir::lower_to_lir::lower_function_to_lir;
 use molt_backend::tir::lower_to_wasm::lower_lir_to_wasm;
 use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -23,6 +24,157 @@ fn make_op(
         attrs,
         source_span: None,
     }
+}
+
+fn empty_tir_function(
+    name: &str,
+    blocks: std::collections::HashMap<BlockId, TirBlock>,
+    return_type: TirType,
+    next_value: u32,
+    next_block: u32,
+) -> TirFunction {
+    TirFunction {
+        name: name.into(),
+        param_names: vec![],
+        param_types: vec![],
+        return_type,
+        blocks,
+        entry_block: BlockId(0),
+        next_value,
+        next_block,
+        attrs: AttrDict::new(),
+        has_exception_handling: false,
+        label_id_map: std::collections::HashMap::new(),
+        loop_roles: std::collections::HashMap::new(),
+        loop_pairs: std::collections::HashMap::new(),
+        loop_break_kinds: std::collections::HashMap::new(),
+        loop_cond_blocks: std::collections::HashMap::new(),
+    }
+}
+
+#[test]
+fn wasm_lir_ref64_stack_object_uses_i64_reference_word() {
+    let entry_id = BlockId(0);
+    let obj = ValueId(0);
+    let mut attrs = AttrDict::new();
+    attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
+    attrs.insert("value".into(), AttrValue::Int(24));
+    let mut blocks = std::collections::HashMap::new();
+    blocks.insert(
+        entry_id,
+        TirBlock {
+            id: entry_id,
+            args: vec![],
+            ops: vec![make_op(
+                OpCode::ObjectNewBoundStack,
+                vec![],
+                vec![obj],
+                attrs,
+            )],
+            terminator: Terminator::Return { values: vec![obj] },
+        },
+    );
+    let func = empty_tir_function(
+        "ref64_stack_object",
+        blocks,
+        TirType::UserClass("Point".into()),
+        1,
+        1,
+    );
+
+    let lir = lower_function_to_lir(&func);
+    let alloc = &lir.blocks[&entry_id].ops[0];
+    assert_eq!(alloc.result_values[0].repr, LirRepr::Ref64);
+
+    let output = lower_lir_to_wasm(&lir);
+
+    assert_eq!(output.result_types, vec![ValType::I64]);
+    assert_eq!(output.locals, vec![ValType::I64]);
+}
+
+#[test]
+fn wasm_lir_ref64_condition_uses_runtime_truthiness() {
+    let entry_id = BlockId(0);
+    let then_id = BlockId(1);
+    let else_id = BlockId(2);
+    let obj = ValueId(0);
+    let mut attrs = AttrDict::new();
+    attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
+    attrs.insert("value".into(), AttrValue::Int(24));
+    let mut blocks = std::collections::HashMap::new();
+    blocks.insert(
+        entry_id,
+        TirBlock {
+            id: entry_id,
+            args: vec![],
+            ops: vec![make_op(
+                OpCode::ObjectNewBoundStack,
+                vec![],
+                vec![obj],
+                attrs,
+            )],
+            terminator: Terminator::CondBranch {
+                cond: obj,
+                then_block: then_id,
+                then_args: vec![],
+                else_block: else_id,
+                else_args: vec![],
+            },
+        },
+    );
+    blocks.insert(
+        then_id,
+        TirBlock {
+            id: then_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    blocks.insert(
+        else_id,
+        TirBlock {
+            id: else_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    let func = empty_tir_function("ref64_truthy", blocks, TirType::None, 1, 3);
+
+    let lir = lower_function_to_lir(&func);
+    assert_eq!(
+        lir.blocks[&entry_id].ops[0].result_values[0].repr,
+        LirRepr::Ref64
+    );
+
+    let output = lower_lir_to_wasm(&lir);
+
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_))),
+        "Ref64 object truthiness must lower through runtime truthiness"
+    );
+    assert!(
+        !output.instructions.windows(3).any(|w| matches!(
+            w,
+            [
+                Instruction::LocalGet(_),
+                Instruction::I64Const(0),
+                Instruction::I64Ne
+            ]
+        )),
+        "Ref64 condition must not be treated as integer nonzero"
+    );
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::BrIf(_))),
+        "expected br_if after Ref64 truthiness materialization"
+    );
 }
 
 #[test]

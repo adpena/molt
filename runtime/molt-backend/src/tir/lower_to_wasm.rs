@@ -14,6 +14,7 @@
 //! | Bool        | i32         | 0 or 1                         |
 //! | None        | i64         | Sentinel constant              |
 //! | DynBox      | i64         | NaN-boxed runtime value        |
+//! | Ref64       | i64         | Runtime reference word         |
 //! | Str/List/…  | i64         | Heap pointer as i64            |
 //!
 //! ## SSA → stack machine
@@ -95,7 +96,7 @@ fn lir_repr_to_val(repr: LirRepr) -> ValType {
         LirRepr::I64 => ValType::I64,
         LirRepr::F64 => ValType::F64,
         LirRepr::Bool1 => ValType::I32,
-        LirRepr::DynBox => ValType::I64,
+        LirRepr::DynBox | LirRepr::Ref64 => ValType::I64,
     }
 }
 
@@ -939,7 +940,7 @@ fn emit_box_none(ctx: &mut LirLowerCtx) {
 fn emit_return_boxed_i64(ctx: &mut LirLowerCtx, value: ValueId) {
     match ctx.repr_of(value) {
         LirRepr::I64 => emit_box_inline_i64(ctx, value),
-        LirRepr::DynBox => ctx.emit_get(value),
+        LirRepr::DynBox | LirRepr::Ref64 => ctx.emit_get(value),
         LirRepr::Bool1 => {
             ctx.emit_get(value);
             ctx.instructions.push(Instruction::I64ExtendI32U);
@@ -1022,7 +1023,7 @@ fn emit_lir_terminator_multiblock(ctx: &mut LirLowerCtx, term: &LirTerminator, n
                         .push(Instruction::F64Const(Ieee64::from(0.0)));
                     ctx.instructions.push(Instruction::F64Ne);
                 }
-                LirRepr::DynBox => {
+                LirRepr::DynBox | LirRepr::Ref64 => {
                     ctx.emit_get(*cond);
                     ctx.instructions.push(Instruction::Call(0));
                 }

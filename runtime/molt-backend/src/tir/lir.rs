@@ -29,6 +29,12 @@ impl LirRepr {
             _ => Self::DynBox,
         }
     }
+
+    /// True for representations whose physical carrier is a runtime reference
+    /// word rather than a semantic machine scalar.
+    pub fn is_runtime_reference_word(self) -> bool {
+        matches!(self, Self::DynBox | Self::Ref64)
+    }
 }
 
 /// A semantic SSA value paired with its backend-facing representation.
@@ -110,5 +116,14 @@ mod tests {
             LirRepr::for_type(&TirType::UserClass("Point".into())),
             LirRepr::DynBox
         );
+    }
+
+    #[test]
+    fn ref64_is_reference_word_not_scalar_i64() {
+        assert!(LirRepr::Ref64.is_runtime_reference_word());
+        assert!(LirRepr::DynBox.is_runtime_reference_word());
+        assert!(!LirRepr::I64.is_runtime_reference_word());
+        assert!(!LirRepr::F64.is_runtime_reference_word());
+        assert!(!LirRepr::Bool1.is_runtime_reference_word());
     }
 }
