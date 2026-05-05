@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::ir_schema;
 use crate::json_boundary::{
@@ -17,7 +17,7 @@ pub struct PgoProfileIR {
     pub hot_functions: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 #[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
@@ -122,7 +122,7 @@ impl SimpleIR {
                 Some(PgoProfileIR::from_json_value(profile_value, "ir.profile")?)
             }
         };
-        Ok(Self { functions, profile })
+        Self::new_validated(functions, profile)
     }
 
     pub fn from_ndjson_reader<R: std::io::BufRead>(reader: R) -> Result<Self, String> {
@@ -151,7 +151,17 @@ impl SimpleIR {
                 _ => {} // skip unknown kinds for forward compat
             }
         }
-        Ok(Self { functions, profile })
+        Self::new_validated(functions, profile)
+    }
+
+    fn new_validated(
+        functions: Vec<FunctionIR>,
+        profile: Option<PgoProfileIR>,
+    ) -> Result<Self, String> {
+        let ir = Self { functions, profile };
+        validate_simple_ir_transport_contract(&ir)
+            .map_err(|err| format!("invalid SimpleIR contract: {err}"))?;
+        Ok(ir)
     }
 
     pub fn tree_shake_luau(&mut self) {
@@ -232,6 +242,23 @@ impl SimpleIR {
 
         self.functions
             .retain(|func| reachable.contains(func.name.as_str()));
+    }
+}
+
+impl<'de> Deserialize<'de> for SimpleIR {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SimpleIRWire {
+            functions: Vec<FunctionIR>,
+            #[serde(default)]
+            profile: Option<PgoProfileIR>,
+        }
+
+        let wire = SimpleIRWire::deserialize(deserializer)?;
+        Self::new_validated(wire.functions, wire.profile).map_err(serde::de::Error::custom)
     }
 }
 
@@ -319,15 +346,10 @@ fn allows_undefined_value(op: &OpIR, name: &str, position: usize) -> bool {
 }
 
 pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
+    validate_simple_ir_transport_contract(ir)?;
     for func in &ir.functions {
-        ir_schema::validate_function_param_types(
-            &func.name,
-            &func.params,
-            func.param_types.as_deref(),
-        )?;
         let mut defined: BTreeSet<&str> = func.params.iter().map(String::as_str).collect();
         for op in &func.ops {
-            ir_schema::validate_required_fields(op)?;
             for (name, position) in op_uses(op) {
                 if !is_defined_value_name(name) {
                     continue;
@@ -342,6 +364,20 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
             {
                 defined.insert(out);
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
+    for func in &ir.functions {
+        ir_schema::validate_function_param_types(
+            &func.name,
+            &func.params,
+            func.param_types.as_deref(),
+        )?;
+        for op in &func.ops {
+            ir_schema::validate_required_fields(op)?;
         }
     }
     Ok(())
@@ -397,6 +433,75 @@ mod json_parse_tests {
     }
 
     #[test]
+    fn simple_ir_from_json_str_rejects_contract_violations() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["seq", "idx"],
+                        "ops": [
+                            {
+                                "kind": "index",
+                                "args": ["seq", "idx"],
+                                "out": "item",
+                                "container_type": "dict",
+                                "bce_safe": true
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("contract-invalid JSON should fail at parse boundary");
+
+        assert!(err.contains("invalid SimpleIR contract"));
+        assert!(err.contains("bce_safe does not support container_type `dict`"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_accepts_legacy_var_names_at_transport_boundary() {
+        let ir = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [
+                            {"kind": "const", "value": 1, "out": "v0"},
+                            {"kind": "store_var", "var": "future_features", "args": ["v0"]},
+                            {"kind": "ret_void"}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect("transport boundary should accept legacy variable identifiers");
+
+        assert_eq!(ir.functions.len(), 1);
+    }
+
+    #[test]
+    fn serde_deserialize_rejects_contract_violations() {
+        let err = serde_json::from_str::<SimpleIR>(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["x"],
+                        "param_types": ["int", "bool"],
+                        "ops": [{"kind": "ret_void"}]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("serde SimpleIR boundary should validate contracts");
+
+        assert!(err.to_string().contains("invalid SimpleIR contract"));
+        assert!(err.to_string().contains("has 1 params but 2 param_types"));
+    }
+
+    #[test]
     fn ndjson_reader_parses_stream() {
         let input = r#"{"kind":"ir_stream_start","profile":null}
 {"kind":"function","name":"molt_main","params":[],"ops":[{"kind":"ret_void"}]}
@@ -447,5 +552,19 @@ mod json_parse_tests {
         let ir = SimpleIR::from_ndjson_reader(reader).expect("ndjson parse");
         assert_eq!(ir.functions.len(), 0);
         assert!(ir.profile.is_none());
+    }
+
+    #[test]
+    fn ndjson_reader_rejects_contract_violations() {
+        let input = r#"{"kind":"ir_stream_start","profile":null}
+{"kind":"function","name":"__main__","params":["x"],"param_types":["int","bool"],"ops":[{"kind":"ret_void"}]}
+{"kind":"ir_stream_end"}
+"#;
+        let reader = std::io::BufReader::new(input.as_bytes());
+        let err =
+            SimpleIR::from_ndjson_reader(reader).expect_err("NDJSON boundary should validate");
+
+        assert!(err.contains("invalid SimpleIR contract"));
+        assert!(err.contains("has 1 params but 2 param_types"));
     }
 }

@@ -12,6 +12,7 @@ const SCALAR_FAST_INT_KINDS: &[&str] = &[
     "const",
     "copy",
     "copy_var",
+    "div",
     "eq",
     "floordiv",
     "ge",
