@@ -1786,7 +1786,13 @@ fn var_get(
 /// This is the core of the typed IR redesign: proven-type variables store raw
 /// values as their primary representation. Boxing happens only when a generic
 /// consumer (runtime FFI call) needs the NaN-boxed form.
+/// Phase 1d Step 0.6 NOTE: zero callers after the float_value_for_mixed
+/// migration. Retained as a template for the Phase 2 bool-lane mirror's
+/// inline-only fast-box equivalent. Will be deleted by Phase 1d Step 1
+/// (`raw_primary_int` becomes the static `int_primary_vars` and
+/// `box_int_value_hoisted` is no longer safe at any escape).
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn var_get_boxed(
     builder: &mut FunctionBuilder,
     vars: &BTreeMap<String, Variable>,
