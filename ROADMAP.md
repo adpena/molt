@@ -80,8 +80,9 @@ This file is forward-looking only.
   `float_primary_vars` is the only raw-F64 authority, and non-primary floats
   are boxed immediately in their main I64 variable. Native scalar store-target
   discovery is now shared across int, float, bool, and str lanes, preserving
-  the all-sources rule so remaining non-primary bool shadows cannot drift from
-  the scalar lane contract used by the other raw carriers.
+  the all-sources rule. The native raw-bool shadow lane is retired as well:
+  `bool_primary_vars` is the only raw-bool authority, and non-primary bools
+  stay boxed in their main I64 variables.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 
