@@ -68,6 +68,10 @@ It is current-state only. For forward-looking priorities, use
   returns refine only through structural TIR `return_type` metadata.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
+  Native float-primary lowering likewise uses static `float_primary_vars` as
+  the only authority for F64-primary Cranelift variables; float shadow maps are
+  restricted to non-primary boxed-variable lanes that still require explicit
+  loop-carried raw-f64 tracking.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.
