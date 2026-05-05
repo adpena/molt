@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 from datetime import datetime
@@ -32,6 +33,21 @@ def _safe_div(num: float | None, den: float | None) -> float | None:
     if num is None or den is None or den == 0:
         return None
     return num / den
+
+
+def _valid_positive_time(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    normalized = float(value)
+    if not math.isfinite(normalized) or normalized <= 0:
+        return None
+    return normalized
+
+
+def _wasm_time_if_ok(entry: dict[str, Any]) -> float | None:
+    if not entry.get("molt_wasm_ok"):
+        return None
+    return _valid_positive_time(entry.get("molt_wasm_time_s"))
 
 
 def _format_time(value: float | None) -> str:
@@ -194,9 +210,9 @@ def _status_summary(
     slowest = sorted(speedups, key=lambda item: item[1])
 
     wasm_times = [
-        (name, entry["molt_wasm_time_s"])
+        (name, wasm_time)
         for name, entry in wasm_bench.items()
-        if entry.get("molt_wasm_time_s") is not None
+        if (wasm_time := _wasm_time_if_ok(entry)) is not None
     ]
     wasm_times.sort(key=lambda item: item[1], reverse=True)
 
@@ -209,7 +225,7 @@ def _status_summary(
 
     wasm_ratios = []
     for name, entry in wasm_bench.items():
-        wasm_time = entry.get("molt_wasm_time_s")
+        wasm_time = _wasm_time_if_ok(entry)
         cpython_time = native_bench.get(name, {}).get("cpython_time_s")
         ratio = _safe_div(wasm_time, cpython_time)
         if ratio is not None:
@@ -300,7 +316,7 @@ def _render_report_markdown(
         molt_time = n_entry.get("molt_time_s")
         cpython_time = n_entry.get("cpython_time_s")
         speedup = n_entry.get("molt_speedup")
-        wasm_time = w_entry.get("molt_wasm_time_s")
+        wasm_time = _wasm_time_if_ok(w_entry)
 
         wasm_speedup = _safe_div(cpython_time, wasm_time)
         wasm_native_ratio = _safe_div(wasm_time, molt_time)
@@ -454,7 +470,7 @@ def _render_report_markdown(
         molt_build = n_entry.get("molt_build_s")
         molt_time = n_entry.get("molt_time_s")
         molt_size = n_entry.get("molt_size_kb")
-        wasm_time = w_entry.get("molt_wasm_time_s")
+        wasm_time = _wasm_time_if_ok(w_entry)
         wasm_native_ratio = _safe_div(wasm_time, molt_time)
         wasm_cpython_ratio = _safe_div(wasm_time, cpython_time)
         lines.append(

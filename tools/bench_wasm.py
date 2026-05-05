@@ -2,6 +2,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -1487,8 +1488,16 @@ def measure_wasm_run(
             error=summarized or None,
             error_class=error_class,
         )
+    elapsed_s = end - start
+    if not math.isfinite(elapsed_s) or elapsed_s <= 0:
+        return _SampleResult(
+            elapsed_s=None,
+            returncode=run_res.returncode,
+            error=f"invalid elapsed time: {elapsed_s!r}",
+            error_class="invalid_timing",
+        )
     return _SampleResult(
-        elapsed_s=end - start,
+        elapsed_s=elapsed_s,
         returncode=run_res.returncode,
         error=None,
         error_class=None,
@@ -1702,7 +1711,7 @@ def collect_samples(
                 first_failure = result
             continue
         timings.append(result.elapsed_s)
-    return timings, bool(timings), first_failure
+    return timings, len(timings) == samples and first_failure is None, first_failure
 
 
 def _resolve_runner(
@@ -1818,7 +1827,7 @@ def bench_results(
     print("-" * 60)
     for script in benchmarks:
         name = Path(script).stem
-        wasm_time = 0.0
+        wasm_time: float | None = None
         wasm_size = 0.0
         wasm_build = 0.0
         linked_used = False
@@ -1847,7 +1856,7 @@ def bench_results(
                     runner_name,
                     log=log,
                 )
-                wasm_time = statistics.mean(wasm_samples) if ok else 0.0
+                wasm_time = statistics.mean(wasm_samples) if ok else None
                 wasm_size = wasm_binary.size_kb
                 wasm_build = wasm_binary.build_s
                 linked_used = wasm_binary.linked_used
@@ -1875,6 +1884,7 @@ def bench_results(
         print(f"{name:<30} | {time_cell} | {wasm_size:>8.1f} KB")
         data[name] = {
             "molt_wasm_time_s": wasm_time,
+            "molt_wasm_samples_s": wasm_samples,
             "molt_wasm_build_s": wasm_build,
             "molt_wasm_size_kb": wasm_size,
             "molt_wasm_ok": ok,

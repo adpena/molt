@@ -570,14 +570,17 @@ logs/
   - machine info
   - date/time
 - For WASM benches, capture the native CPython baseline and compute WASM vs
-  CPython ratios.
+  CPython ratios only for rows where `molt_wasm_ok` is true and
+  `molt_wasm_time_s` is a positive finite duration.
 - When validating linked WASM runs, pass `--linked` to `tools/bench_wasm.py` and
   note in logs whether the run used linked or fallback mode.
 - Prefer CSV or JSON outputs
 - Do not overwrite previous results
 - Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`)
-  execute 10 samples and store mean/median/variance/range stats in JSON output;
-  reserve these for release tagging or explicit requests.
+  execute 10 samples, store raw successful sample arrays plus
+  mean/median/variance/range stats in JSON output, and reject partial sample
+  failure as benchmark evidence; reserve these for release tagging or explicit
+  requests.
 
 ### Why this matters
 - Enables async review
