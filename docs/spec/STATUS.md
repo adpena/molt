@@ -73,9 +73,11 @@ It is current-state only. For forward-looking priorities, use
   restricted to non-primary boxed-variable lanes that still require explicit
   loop-carried raw-f64 tracking. Native bool lowering now has a raw-closed
   `bool_primary_vars` subset for constants, alias/store propagation,
-  comparisons, identity checks, and truthiness casts. Residual non-primary bool
-  shadows are limited to list-bool and other boxed-variable cases that still
-  require explicit raw 0/1 side channels.
+  comparisons, identity checks, and truthiness casts. Bool-primary escape
+  boxing uses an explicit raw-bool `0/1` carrier conversion before NaN-boxing,
+  so the b1-condition bool boxer is not used as a mixed raw/condition helper.
+  Residual non-primary bool shadows are limited to list-bool and other
+  boxed-variable cases that still require explicit raw 0/1 side channels.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.

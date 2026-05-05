@@ -998,6 +998,17 @@ fn var_get_boxed_overflow_safe_base(
 /// Remaining bool-typed variables use `raw_bool_values` /
 /// `raw_bool_shadow_vars`.
 #[cfg(feature = "native-backend")]
+#[inline]
+fn box_raw_bool_value(
+    builder: &mut FunctionBuilder<'_>,
+    raw_bool: Value,
+    nbc: &crate::NanBoxConsts,
+) -> Value {
+    let cond = builder.ins().icmp_imm(IntCC::NotEqual, raw_bool, 0);
+    box_bool_value(builder, cond, nbc)
+}
+
+#[cfg(feature = "native-backend")]
 fn ensure_boxed_bool_safe(
     builder: &mut FunctionBuilder<'_>,
     raw_bool_values: &std::collections::BTreeMap<String, Value>,
@@ -1018,7 +1029,7 @@ fn ensure_boxed_bool_safe(
     )
     .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
     if let Some(raw_val) = raw_val {
-        return Some(box_bool_value(builder, raw_val, nbc));
+        return Some(box_raw_bool_value(builder, raw_val, nbc));
     }
     var_get(builder, vars, name).map(|v| v.0)
 }
@@ -3787,7 +3798,7 @@ impl SimpleBackend {
          -> Option<crate::VarValue> {
             if bool_primary_vars.contains(name) {
                 let raw = vars.get(name).map(|&var| builder.use_var(var))?;
-                return Some(crate::VarValue(box_bool_value(builder, raw, &nbc)));
+                return Some(crate::VarValue(box_raw_bool_value(builder, raw, &nbc)));
             }
             var_get_boxed_overflow_safe_base(
                 module,
@@ -36339,17 +36350,43 @@ impl SimpleBackend {
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
-        ScalarLane, alias_root_name, cleanup_roots_for_names, collect_slot_backed_join_names,
-        infer_scalar_lane, is_cold_module_chunk_function, live_exception_rebind_vars_for_op,
-        mark_cleanup_root_once, materialize_label_block, op_produces_raw_bool_for_bool_primary,
-        preanalyze_function_ir, protect_cleanup_names, scan_loop_int_sum_reduction,
-        switch_to_block_materialized, switch_to_block_with_rebind,
+        ScalarLane, alias_root_name, box_raw_bool_value, cleanup_roots_for_names,
+        collect_slot_backed_join_names, infer_scalar_lane, is_cold_module_chunk_function,
+        live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
+        op_produces_raw_bool_for_bool_primary, preanalyze_function_ir, protect_cleanup_names,
+        scan_loop_int_sum_reduction, switch_to_block_materialized, switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
-    use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
     use cranelift_codegen::isa::CallConv;
+    use cranelift_codegen::{
+        ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types},
+        settings,
+        verifier::verify_function,
+    };
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn raw_bool_boxing_accepts_i64_carrier() {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+        let mut context = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut func, &mut context);
+            let entry = builder.create_block();
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+            let raw = builder.ins().iconst(types::I64, 1);
+            let nbc = crate::NanBoxConsts::new(&mut builder);
+            let boxed = box_raw_bool_value(&mut builder, raw, &nbc);
+            builder.ins().return_(&[boxed]);
+            builder.finalize();
+        }
+
+        let flags = settings::Flags::new(settings::builder());
+        verify_function(&func, &flags).expect("raw bool boxing must verify with an i64 carrier");
+    }
 
     #[test]
     fn bool_primary_predicate_is_raw_closed() {
