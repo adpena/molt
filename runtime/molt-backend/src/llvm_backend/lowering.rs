@@ -1107,9 +1107,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     // This eliminates the runtime call (GIL + debug checks).
                     let i64_ty = self.backend.context.i64_type();
                     let i8_ty = self.backend.context.i8_type();
-                    let ptr_ty = self.backend.context.ptr_type(
-                        inkwell::AddressSpace::default(),
-                    );
+                    let ptr_ty = self
+                        .backend
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default());
                     let raw_ptr = self
                         .backend
                         .builder
@@ -1284,9 +1285,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                     return;
                 }
-                if matches!(original_kind, Some("store_init"))
-                    && op.operands.len() >= 2
-                {
+                if matches!(original_kind, Some("store_init")) && op.operands.len() >= 2 {
                     let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
                     let val_bits = self.materialize_dynbox_operand(op.operands[1]);
                     let offset = op
@@ -1302,32 +1301,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     // runtime call only for heap pointers (need inc_ref + mark_has_ptrs).
                     let i64_ty = self.backend.context.i64_type();
                     let i8_ty = self.backend.context.i8_type();
-                    let ptr_ty = self.backend.context.ptr_type(
-                        inkwell::AddressSpace::default(),
-                    );
+                    let ptr_ty = self
+                        .backend
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default());
                     // Check if val is a heap pointer: (val & TAG_MASK) == TAG_PTR
-                    let tag_mask = i64_ty.const_int(
-                        nanbox::QNAN | 0x0007_0000_0000_0000,
-                        false,
-                    );
+                    let tag_mask = i64_ty.const_int(nanbox::QNAN | 0x0007_0000_0000_0000, false);
                     let tag_bits = self
                         .backend
                         .builder
                         .build_and(val_bits, tag_mask, "init_tag")
                         .unwrap();
-                    let ptr_tag = i64_ty.const_int(
-                        nanbox::QNAN | 0x0004_0000_0000_0000,
-                        false,
-                    );
+                    let ptr_tag = i64_ty.const_int(nanbox::QNAN | 0x0004_0000_0000_0000, false);
                     let is_ptr = self
                         .backend
                         .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::EQ,
-                            tag_bits,
-                            ptr_tag,
-                            "is_ptr",
-                        )
+                        .build_int_compare(inkwell::IntPredicate::EQ, tag_bits, ptr_tag, "is_ptr")
                         .unwrap();
                     let current_fn = self.llvm_fn;
                     let fast_bb = self
@@ -1401,9 +1390,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                     return;
                 }
-                if matches!(original_kind, Some("store"))
-                    && op.operands.len() >= 2
-                {
+                if matches!(original_kind, Some("store")) && op.operands.len() >= 2 {
                     let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
                     let val_bits = self.materialize_dynbox_operand(op.operands[1]);
                     let offset = op
@@ -5322,24 +5309,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
             (0..param_count).map(|_| i64_ty.into()).collect();
         let fn_ty = i64_ty.fn_type(&params, false);
-        let func = self
-            .backend
-            .module
-            .add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
+        let func =
+            self.backend
+                .module
+                .add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
         // All molt runtime functions use explicit error returns (NaN-boxed
         // sentinels) and catch_unwind at FFI boundaries — no C++ exceptions
         // escape.  Adding nounwind + willreturn lets LLVM omit landing pads,
         // perform aggressive code motion, and inline/CSE through call sites.
-        let nounwind_kind =
-            inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
+        let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
         func.add_attribute(
             AttributeLoc::Function,
-            self.backend
-                .context
-                .create_enum_attribute(nounwind_kind, 0),
+            self.backend.context.create_enum_attribute(nounwind_kind, 0),
         );
-        let willreturn_kind =
-            inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn");
+        let willreturn_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn");
         func.add_attribute(
             AttributeLoc::Function,
             self.backend
@@ -9167,7 +9150,12 @@ mod tests {
 
         let rpo = compute_function_rpo(&func);
 
-        assert_eq!(rpo.len(), 4, "all four blocks must appear in RPO: {:?}", rpo);
+        assert_eq!(
+            rpo.len(),
+            4,
+            "all four blocks must appear in RPO: {:?}",
+            rpo
+        );
         assert_eq!(rpo[0], entry, "entry must be first: {:?}", rpo);
         assert_eq!(rpo[3], merge, "merge must be last: {:?}", rpo);
 
@@ -9239,7 +9227,12 @@ mod tests {
 
         let rpo = compute_function_rpo(&func);
 
-        assert_eq!(rpo.len(), 4, "all four blocks must appear in RPO: {:?}", rpo);
+        assert_eq!(
+            rpo.len(),
+            4,
+            "all four blocks must appear in RPO: {:?}",
+            rpo
+        );
 
         let pos_entry = position_of(&rpo, entry);
         let pos_header = position_of(&rpo, header);

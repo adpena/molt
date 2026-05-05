@@ -107,7 +107,10 @@ fn is_typed_numberable(opcode: OpCode) -> bool {
 /// A type is "primitive" when arithmetic on it is provably side-effect-free.
 fn is_primitive_type(ty: &crate::tir::types::TirType) -> bool {
     use crate::tir::types::TirType;
-    matches!(ty, TirType::I64 | TirType::F64 | TirType::Bool | TirType::None)
+    matches!(
+        ty,
+        TirType::I64 | TirType::F64 | TirType::Bool | TirType::None
+    )
 }
 
 /// Extract constant keys for deduplicating constants by exact value.
@@ -169,18 +172,17 @@ fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>, Option<Vec<u8>>) {
 }
 
 /// Build the dominator-tree children map from an idom map.
-fn build_dom_children(
-    idoms: &HashMap<BlockId, Option<BlockId>>,
-) -> HashMap<BlockId, Vec<BlockId>> {
+fn build_dom_children(idoms: &HashMap<BlockId, Option<BlockId>>) -> HashMap<BlockId, Vec<BlockId>> {
     let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
     for &bid in idoms.keys() {
         children.entry(bid).or_default();
     }
     for (&child, parent) in idoms {
         if let Some(parent) = parent
-            && *parent != child {
-                children.entry(*parent).or_default().push(child);
-            }
+            && *parent != child
+        {
+            children.entry(*parent).or_default().push(child);
+        }
     }
     // Sort children for deterministic traversal order.
     for kids in children.values_mut() {
@@ -509,18 +511,19 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // Apply replacements (replace redundant ops with Copy).
     for (bid, op_idx, leader) in &replacements {
         if let Some(block) = func.blocks.get_mut(bid)
-            && *op_idx < block.ops.len() {
-                let result = block.ops[*op_idx].results[0];
-                block.ops[*op_idx] = TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::Copy,
-                    operands: vec![*leader],
-                    results: vec![result],
-                    attrs: Default::default(),
-                    source_span: block.ops[*op_idx].source_span,
-                };
-                stats.values_changed += 1;
-            }
+            && *op_idx < block.ops.len()
+        {
+            let result = block.ops[*op_idx].results[0];
+            block.ops[*op_idx] = TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![*leader],
+                results: vec![result],
+                attrs: Default::default(),
+                source_span: block.ops[*op_idx].source_span,
+            };
+            stats.values_changed += 1;
+        }
     }
 
     // Operand renaming is deferred to copy_prop + DCE.  Direct operand
@@ -611,9 +614,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_binop(OpCode::Add, p0, p1, sum1));
         entry.ops.push(make_binop(OpCode::Add, p0, p1, sum2));
-        entry.terminator = Terminator::Return {
-            values: vec![sum2],
-        };
+        entry.terminator = Terminator::Return { values: vec![sum2] };
 
         let stats = run(&mut func);
         assert!(stats.values_changed > 0);
@@ -764,11 +765,7 @@ mod tests {
     /// → s2 should become Copy(s1).
     #[test]
     fn cross_block_redundant_arithmetic() {
-        let mut func = TirFunction::new(
-            "f".into(),
-            vec![TirType::I64, TirType::I64],
-            TirType::I64,
-        );
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
         let p0 = ValueId(0);
         let p1 = ValueId(1);
         let body = func.fresh_block();
@@ -1193,11 +1190,7 @@ mod tests {
     /// second sibling enters with a clean (parent-scope) leader table.
     #[test]
     fn scope_pops_after_sibling() {
-        let mut func = TirFunction::new(
-            "f".into(),
-            vec![TirType::Bool],
-            TirType::I64,
-        );
+        let mut func = TirFunction::new("f".into(), vec![TirType::Bool], TirType::I64);
         let cond = ValueId(0);
         let then_b = func.fresh_block();
         let else_b = func.fresh_block();

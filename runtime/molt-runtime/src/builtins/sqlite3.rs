@@ -135,9 +135,9 @@ fn classify_sqlite_error(err: &rusqlite::Error) -> (&'static str, String) {
             ErrorCode::ConstraintViolation => ("__IntegrityError__", msg),
             ErrorCode::TypeMismatch => ("__InterfaceError__", msg),
             ErrorCode::ApiMisuse | ErrorCode::ParameterOutOfRange => ("__ProgrammingError__", msg),
-            ErrorCode::DatabaseCorrupt
-            | ErrorCode::NotADatabase
-            | ErrorCode::SystemIoFailure => ("__DatabaseError__", msg),
+            ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase | ErrorCode::SystemIoFailure => {
+                ("__DatabaseError__", msg)
+            }
             _ => ("__OperationalError__", msg),
         },
         rusqlite::Error::InvalidParameterName(_)
@@ -211,7 +211,9 @@ fn molt_to_sql_value(bits: u64) -> Result<SqlValue, String> {
     if let Some(b) = extract_bytes(bits) {
         return Ok(SqlValue::Blob(b));
     }
-    Err(format!("unsupported parameter type for SQLite (bits=0x{bits:x})"))
+    Err(format!(
+        "unsupported parameter type for SQLite (bits=0x{bits:x})"
+    ))
 }
 
 /// Decode a parameter sequence (list/tuple) into a Vec of SQLite values.
@@ -346,7 +348,11 @@ enum Either<L, R> {
 /// (and any DDL inside an explicit transaction).
 fn statement_starts_transaction(sql: &str) -> bool {
     let trimmed = sql.trim_start();
-    let upper: String = trimmed.chars().take(16).flat_map(|c| c.to_uppercase()).collect();
+    let upper: String = trimmed
+        .chars()
+        .take(16)
+        .flat_map(|c| c.to_uppercase())
+        .collect();
     let upper_sliced = upper.trim_start();
     !(upper_sliced.starts_with("SELECT")
         || upper_sliced.starts_with("EXPLAIN")
@@ -387,10 +393,7 @@ fn execute_statement(
     // (deferred): the first DML statement after a commit or rollback opens a
     // transaction implicitly.
     if statement_starts_transaction(sql) && !conn_state.in_transaction {
-        conn_state
-            .conn
-            .connection()
-            .execute_batch("BEGIN")?;
+        conn_state.conn.connection().execute_batch("BEGIN")?;
         conn_state.in_transaction = true;
     }
 
@@ -474,7 +477,9 @@ pub extern "C" fn molt_sqlite3_connect(database_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let path_str = match extract_text(database_bits) {
             Some(s) => s,
-            None => return raise_exception::<u64>(_py, "TypeError", "database path must be a string"),
+            None => {
+                return raise_exception::<u64>(_py, "TypeError", "database path must be a string");
+            }
         };
 
         let path = Path::new(&path_str);
@@ -624,10 +629,7 @@ pub extern "C" fn molt_sqlite3_cursor(handle_bits: u64) -> u64 {
         // Validate the connection exists and is open.
         let exists = CONNECTIONS.with(|map| {
             let borrow = map.borrow();
-            borrow
-                .get(&conn_id)
-                .map(|s| !s.closed)
-                .unwrap_or(false)
+            borrow.get(&conn_id).map(|s| !s.closed).unwrap_or(false)
         });
         if !exists {
             return raise_exception::<u64>(
@@ -690,11 +692,7 @@ pub extern "C" fn molt_sqlite3_cursor_drop(cursor_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_execute(
-    cursor_bits: u64,
-    sql_bits: u64,
-    params_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_sqlite3_execute(cursor_bits: u64, sql_bits: u64, params_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
@@ -910,10 +908,7 @@ pub extern "C" fn molt_sqlite3_executescript(cursor_bits: u64, script_bits: u64)
             conn_state.conn.connection().execute_batch(&script)?;
             // execute_batch may leave us inside a fresh transaction if the
             // script contains explicit BEGIN.  Inspect the connection.
-            conn_state.in_transaction = !conn_state
-                .conn
-                .connection()
-                .is_autocommit();
+            conn_state.in_transaction = !conn_state.conn.connection().is_autocommit();
             Ok(())
         });
 
@@ -1099,7 +1094,10 @@ pub extern "C" fn molt_sqlite3_arraysize_get(cursor_bits: u64) -> u64 {
             None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
         };
         let val = CURSORS.with(|map| {
-            map.borrow().get(&cursor_id).map(|s| s.arraysize).unwrap_or(1)
+            map.borrow()
+                .get(&cursor_id)
+                .map(|s| s.arraysize)
+                .unwrap_or(1)
         });
         MoltObject::from_int(val).bits()
     })
@@ -1151,7 +1149,9 @@ pub extern "C" fn molt_sqlite3_description(cursor_bits: u64) -> u64 {
             } else {
                 MoltObject::from_ptr(name_ptr).bits()
             };
-            let inner: [u64; 7] = [name_bits, none_bits, none_bits, none_bits, none_bits, none_bits, none_bits];
+            let inner: [u64; 7] = [
+                name_bits, none_bits, none_bits, none_bits, none_bits, none_bits, none_bits,
+            ];
             let inner_ptr = alloc_tuple(_py, &inner);
             // alloc_tuple incremented the name ref; drop our local copy.
             dec_ref_bits(_py, name_bits);

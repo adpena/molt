@@ -148,14 +148,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         }
 
         // One operand must be const 1.
-        let (counter_val, _const_one_val) =
-            if const_map.get(&then_op.operands[1]) == Some(&1) {
-                (then_op.operands[0], then_op.operands[1])
-            } else if const_map.get(&then_op.operands[0]) == Some(&1) {
-                (then_op.operands[1], then_op.operands[0])
-            } else {
-                continue;
-            };
+        let (counter_val, _const_one_val) = if const_map.get(&then_op.operands[1]) == Some(&1) {
+            (then_op.operands[0], then_op.operands[1])
+        } else if const_map.get(&then_op.operands[0]) == Some(&1) {
+            (then_op.operands[1], then_op.operands[0])
+        } else {
+            continue;
+        };
 
         let incremented_val = then_op.results[0];
 
@@ -281,7 +280,7 @@ struct Rewrite {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{TirBlock, Terminator};
+    use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
@@ -626,7 +625,10 @@ mod tests {
 
         let stats = run(&mut func);
 
-        assert_eq!(stats.values_changed, 1, "comparison-cond pattern should fuse");
+        assert_eq!(
+            stats.values_changed, 1,
+            "comparison-cond pattern should fuse"
+        );
         assert_eq!(func.blocks.len(), 2);
     }
 }

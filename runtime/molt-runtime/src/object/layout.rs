@@ -434,8 +434,7 @@ pub(crate) unsafe fn map_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
 const MAP_CACHED_OFFSET: usize = std::mem::size_of::<u64>() + std::mem::size_of::<*mut Vec<u64>>();
 
 /// Total payload bytes for a TYPE_ID_MAP object (after the header).
-pub(crate) const MAP_PAYLOAD_SIZE: usize =
-    MAP_CACHED_OFFSET + std::mem::size_of::<*mut u8>();
+pub(crate) const MAP_PAYLOAD_SIZE: usize = MAP_CACHED_OFFSET + std::mem::size_of::<*mut u8>();
 
 pub(crate) unsafe fn map_cached_tuple(ptr: *mut u8) -> *mut u8 {
     unsafe { *(ptr.add(MAP_CACHED_OFFSET) as *const *mut u8) }

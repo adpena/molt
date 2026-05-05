@@ -93,7 +93,12 @@ fn llvm_rpo_diamond_cfg_orders_entry_first_then_arms_then_merge() {
 
     let rpo = compute_function_rpo(&func);
 
-    assert_eq!(rpo.len(), 4, "all four blocks must appear in RPO: {:?}", rpo);
+    assert_eq!(
+        rpo.len(),
+        4,
+        "all four blocks must appear in RPO: {:?}",
+        rpo
+    );
     assert_eq!(rpo[0], entry, "entry must be first: {:?}", rpo);
     assert_eq!(rpo[3], merge, "merge must be last: {:?}", rpo);
 
@@ -165,7 +170,12 @@ fn llvm_rpo_simple_loop_orders_entry_before_header_before_body() {
 
     let rpo = compute_function_rpo(&func);
 
-    assert_eq!(rpo.len(), 4, "all four blocks must appear in RPO: {:?}", rpo);
+    assert_eq!(
+        rpo.len(),
+        4,
+        "all four blocks must appear in RPO: {:?}",
+        rpo
+    );
 
     let pos_entry = position_of(&rpo, entry);
     let pos_header = position_of(&rpo, header);

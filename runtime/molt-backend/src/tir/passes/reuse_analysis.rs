@@ -111,28 +111,19 @@ fn size_class(ty: &crate::tir::types::TirType) -> SizeClass {
 
 /// Returns `true` if a `List(A)` and `List(B)` are reuse-compatible.
 /// List headers are the same size regardless of element type.
-fn lists_compatible(
-    a: &crate::tir::types::TirType,
-    b: &crate::tir::types::TirType,
-) -> bool {
+fn lists_compatible(a: &crate::tir::types::TirType, b: &crate::tir::types::TirType) -> bool {
     use crate::tir::types::TirType;
     matches!((a, b), (TirType::List(_), TirType::List(_)))
 }
 
 /// Returns `true` if a `Dict(K1,V1)` and `Dict(K2,V2)` are reuse-compatible.
-fn dicts_compatible(
-    a: &crate::tir::types::TirType,
-    b: &crate::tir::types::TirType,
-) -> bool {
+fn dicts_compatible(a: &crate::tir::types::TirType, b: &crate::tir::types::TirType) -> bool {
     use crate::tir::types::TirType;
     matches!((a, b), (TirType::Dict(_, _), TirType::Dict(_, _)))
 }
 
 /// Returns `true` if two types are reuse-compatible (same allocation size class).
-fn reuse_compatible(
-    a: &crate::tir::types::TirType,
-    b: &crate::tir::types::TirType,
-) -> bool {
+fn reuse_compatible(a: &crate::tir::types::TirType, b: &crate::tir::types::TirType) -> bool {
     // Fast path: structural equality.
     if a == b {
         return true;
@@ -154,7 +145,12 @@ fn reuse_compatible(
 /// Returns `true` if the op at the given index might alias with or observe
 /// the memory of `val`. Conservative: any op that could read/write heap memory
 /// through `val` is considered aliasing.
-fn is_aliasing_op(func: &TirFunction, block_id: crate::tir::blocks::BlockId, op_idx: usize, val: ValueId) -> bool {
+fn is_aliasing_op(
+    func: &TirFunction,
+    block_id: crate::tir::blocks::BlockId,
+    op_idx: usize,
+    val: ValueId,
+) -> bool {
     let block = &func.blocks[&block_id];
     let op = &block.ops[op_idx];
 
@@ -213,8 +209,7 @@ pub fn analyze(func: &TirFunction) -> Vec<ReuseCandidate> {
     let mut paired_allocs: HashSet<(crate::tir::blocks::BlockId, usize)> = HashSet::new();
 
     // Sorted block iteration for deterministic output.
-    let mut block_ids: Vec<crate::tir::blocks::BlockId> =
-        func.blocks.keys().copied().collect();
+    let mut block_ids: Vec<crate::tir::blocks::BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
 
     for &bid in &block_ids {
@@ -366,11 +361,9 @@ mod tests {
             .ops
             .push(make_op(OpCode::Alloc, vec![], vec![alloc_x]));
         // Use x locally (LoadAttr — non-aliasing)
-        entry.ops.push(make_op(
-            OpCode::LoadAttr,
-            vec![alloc_x],
-            vec![load_result],
-        ));
+        entry
+            .ops
+            .push(make_op(OpCode::LoadAttr, vec![alloc_x], vec![load_result]));
         // DecRef x
         entry
             .ops
@@ -572,16 +565,13 @@ mod tests {
     /// is not a reuse candidate.
     #[test]
     fn decref_on_parameter_not_eligible() {
-        let mut func =
-            TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
         let param = ValueId(0); // entry block argument
         let alloc_y = func.fresh_value();
         let const_none = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry
-            .ops
-            .push(make_op(OpCode::DecRef, vec![param], vec![]));
+        entry.ops.push(make_op(OpCode::DecRef, vec![param], vec![]));
         entry
             .ops
             .push(make_op(OpCode::Alloc, vec![], vec![alloc_y]));

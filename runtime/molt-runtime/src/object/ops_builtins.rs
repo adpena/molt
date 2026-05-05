@@ -185,7 +185,8 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_exit() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if trace_exit_pending_enabled() && exception_pending(_py)
+        if trace_exit_pending_enabled()
+            && exception_pending(_py)
             && let Some((file, line, func, _, _)) =
                 crate::builtins::exceptions::frame_stack_top_info(_py)
         {

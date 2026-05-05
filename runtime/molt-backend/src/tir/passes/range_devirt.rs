@@ -277,10 +277,12 @@ fn build_const_map(func: &TirFunction, block_ids: &[BlockId]) -> HashMap<ValueId
     for &bid in block_ids {
         if let Some(block) = func.blocks.get(&bid) {
             for op in &block.ops {
-                if op.opcode == OpCode::ConstInt && !op.results.is_empty()
-                    && let Some(AttrValue::Int(v)) = op.attrs.get("value") {
-                        map.insert(op.results[0], *v);
-                    }
+                if op.opcode == OpCode::ConstInt
+                    && !op.results.is_empty()
+                    && let Some(AttrValue::Int(v)) = op.attrs.get("value")
+                {
+                    map.insert(op.results[0], *v);
+                }
             }
         }
     }

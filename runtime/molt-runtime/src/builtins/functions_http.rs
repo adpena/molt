@@ -6631,8 +6631,7 @@ fn http_client_connection_new_impl(
             };
             Some(value)
         };
-        let Some(handle) =
-            http_client_connection_store(host, port_value as u16, timeout, use_tls)
+        let Some(handle) = http_client_connection_store(host, port_value as u16, timeout, use_tls)
         else {
             return MoltObject::none().bits();
         };

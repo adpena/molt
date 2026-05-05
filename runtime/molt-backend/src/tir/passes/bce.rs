@@ -206,14 +206,19 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         // of length `count`.  Only fires when one operand is a
                         // BuildList with exactly 1 element.
                         let (a, b) = (op.operands[0], op.operands[1]);
-                        let list_count_pair =
-                            if container_length.get(&a).is_some_and(|l| matches!(l, KnownLength::Constant(1))) {
-                                Some(b)
-                            } else if container_length.get(&b).is_some_and(|l| matches!(l, KnownLength::Constant(1))) {
-                                Some(a)
-                            } else {
-                                None
-                            };
+                        let list_count_pair = if container_length
+                            .get(&a)
+                            .is_some_and(|l| matches!(l, KnownLength::Constant(1)))
+                        {
+                            Some(b)
+                        } else if container_length
+                            .get(&b)
+                            .is_some_and(|l| matches!(l, KnownLength::Constant(1)))
+                        {
+                            Some(a)
+                        } else {
+                            None
+                        };
                         if let Some(count_val) = list_count_pair {
                             for &result in &op.results {
                                 if let Some(&c) = const_int_value.get(&count_val) {
@@ -230,11 +235,23 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         let (a, b) = (op.operands[0], op.operands[1]);
                         if let Some(&cv) = const_int_value.get(&b) {
                             for &result in &op.results {
-                                add_const_decomp.insert(result, AddConst { base: a, offset: cv });
+                                add_const_decomp.insert(
+                                    result,
+                                    AddConst {
+                                        base: a,
+                                        offset: cv,
+                                    },
+                                );
                             }
                         } else if let Some(&cv) = const_int_value.get(&a) {
                             for &result in &op.results {
-                                add_const_decomp.insert(result, AddConst { base: b, offset: cv });
+                                add_const_decomp.insert(
+                                    result,
+                                    AddConst {
+                                        base: b,
+                                        offset: cv,
+                                    },
+                                );
                             }
                         }
                     }
@@ -379,25 +396,32 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             };
             // Trace the condition to a comparison op.
             if let Some((opcode, operands)) = value_def_op.get(&cond_val)
-                && operands.len() == 2 {
-                    match opcode {
-                        OpCode::Le => {
-                            while_guard_facts.insert(header, GuardFact {
+                && operands.len() == 2
+            {
+                match opcode {
+                    OpCode::Le => {
+                        while_guard_facts.insert(
+                            header,
+                            GuardFact {
                                 var: operands[0],
                                 bound: operands[1],
                                 is_le: true,
-                            });
-                        }
-                        OpCode::Lt => {
-                            while_guard_facts.insert(header, GuardFact {
+                            },
+                        );
+                    }
+                    OpCode::Lt => {
+                        while_guard_facts.insert(
+                            header,
+                            GuardFact {
                                 var: operands[0],
                                 bound: operands[1],
                                 is_le: false,
-                            });
-                        }
-                        _ => {}
+                            },
+                        );
                     }
+                    _ => {}
                 }
+            }
         }
     }
 
@@ -466,9 +490,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                                     false
                                 }
                             }
-                            Some(KnownLength::SameAs(len_val)) => {
-                                *len_val == upper_bound
-                            }
+                            Some(KnownLength::SameAs(len_val)) => *len_val == upper_bound,
                             None => false,
                         };
                     }
@@ -477,49 +499,49 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 // --- While-loop guard BCE (Phase 3 logic) ---
                 // Check if the index is bounded by a while-loop condition
                 // (Le or Lt) and the container length matches.
-                if !proven
-                    && let Some(headers) = block_to_loop.get(bid) {
-                        for &header in headers {
-                            if let Some(guard) = while_guard_facts.get(&header) {
-                                if guard.var != index_operand {
-                                    continue;
-                                }
-                                // guard.var <= guard.bound (Le) or
-                                // guard.var < guard.bound (Lt)
-                                // We need: index < len(container).
-                                //
-                                // For Le(i, n): i <= n, so i < n+1.
-                                //   Proven if len(container) >= n+1.
-                                // For Lt(i, n): i < n.
-                                //   Proven if len(container) >= n.
+                if !proven && let Some(headers) = block_to_loop.get(bid) {
+                    for &header in headers {
+                        if let Some(guard) = while_guard_facts.get(&header) {
+                            if guard.var != index_operand {
+                                continue;
+                            }
+                            // guard.var <= guard.bound (Le) or
+                            // guard.var < guard.bound (Lt)
+                            // We need: index < len(container).
+                            //
+                            // For Le(i, n): i <= n, so i < n+1.
+                            //   Proven if len(container) >= n+1.
+                            // For Lt(i, n): i < n.
+                            //   Proven if len(container) >= n.
 
-                                // Strategy 0: guard bound IS len(container).
-                                // When the guard is Lt(i, len(container)) and the
-                                // len call targets the same container, the access
-                                // is trivially in-bounds: i < len(container).
-                                // This is the common case after iter_devirt rewrites
-                                // `for x in lst` into `while i < len(lst): lst[i]`.
-                                if !guard.is_le
-                                    && let Some(&bound_container) = len_of_container.get(&guard.bound)
-                                        && bound_container == container_operand {
-                                            proven = true;
-                                        }
+                            // Strategy 0: guard bound IS len(container).
+                            // When the guard is Lt(i, len(container)) and the
+                            // len call targets the same container, the access
+                            // is trivially in-bounds: i < len(container).
+                            // This is the common case after iter_devirt rewrites
+                            // `for x in lst` into `while i < len(lst): lst[i]`.
+                            if !guard.is_le
+                                && let Some(&bound_container) = len_of_container.get(&guard.bound)
+                                && bound_container == container_operand
+                            {
+                                proven = true;
+                            }
 
-                                if !proven {
-                                    proven = prove_guard_bound(
-                                        guard,
-                                        container_operand,
-                                        &container_length,
-                                        &const_int_value,
-                                        &add_const_decomp,
-                                    );
-                                }
-                                if proven {
-                                    break;
-                                }
+                            if !proven {
+                                proven = prove_guard_bound(
+                                    guard,
+                                    container_operand,
+                                    &container_length,
+                                    &const_int_value,
+                                    &add_const_decomp,
+                                );
+                            }
+                            if proven {
+                                break;
                             }
                         }
                     }
+                }
 
                 if proven {
                     op.attrs
@@ -593,7 +615,6 @@ fn prove_guard_bound(
 /// Collect all blocks that belong to a loop body rooted at `header`.
 /// Uses the same logic as `loop_narrow::collect_loop_body`.
 fn collect_loop_body(func: &TirFunction, header: BlockId) -> Vec<BlockId> {
-
     let mut ordered_blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
     ordered_blocks.sort_by_key(|bid| bid.0);
 
@@ -1299,11 +1320,7 @@ mod tests {
                 args: vec![],
                 ops: vec![
                     make_const_int(false_val, 0),
-                    make_op(
-                        OpCode::StoreIndex,
-                        vec![is_prime, i_phi, false_val],
-                        vec![],
-                    ),
+                    make_op(OpCode::StoreIndex, vec![is_prime, i_phi, false_val], vec![]),
                     make_op(OpCode::Add, vec![i_phi, const_1], vec![i_next]),
                 ],
                 terminator: Terminator::Branch {

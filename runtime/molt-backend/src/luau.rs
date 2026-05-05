@@ -2721,7 +2721,9 @@ impl LuauBackend {
                             );
                             // rawget bypasses metamethods — safe for plain list
                             // tables and faster in Luau's native codegen path.
-                            self.emit_line(&format!("local {out} = rawget({container}, {idx_var})"));
+                            self.emit_line(&format!(
+                                "local {out} = rawget({container}, {idx_var})"
+                            ));
                         } else if key_known_nonneg {
                             // Known non-negative: skip negative index ternary.
                             self.emit_line(&format!("local {out} = {container}[{key} + 1]"));
@@ -3823,10 +3825,7 @@ impl LuauBackend {
             // ================================================================
             // Memoryview / complex / bytearray stubs
             // ================================================================
-            "memoryview_new"
-            | "memoryview_tobytes"
-            | "memoryview_cast"
-            | "intarray_from_seq"
+            "memoryview_new" | "memoryview_tobytes" | "memoryview_cast" | "intarray_from_seq"
             | "complex_from_obj" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
@@ -4456,10 +4455,7 @@ impl LuauBackend {
             // issues when the sink pass inlines into `not` expressions.
             // Without parens: `not a == b` → `(not a) == b` (wrong).
             // With parens: `not (a == b)` (correct).
-            let is_cmp = matches!(
-                operator,
-                "==" | "~=" | "<" | "<=" | ">" | ">="
-            );
+            let is_cmp = matches!(operator, "==" | "~=" | "<" | "<=" | ">" | ">=");
             let is_logical = matches!(operator, "and" | "or");
             // Type annotation: arithmetic → number, comparisons → boolean.
             let ty_ann = if arithmetic {
@@ -7560,11 +7556,7 @@ fn optimize_luau_perf(source: &mut String) {
                         } else {
                             raw_var.to_string()
                         };
-                        (
-                            true,
-                            Some(var_name),
-                            Some(&rest[eq_pos + 3..]),
-                        )
+                        (true, Some(var_name), Some(&rest[eq_pos + 3..]))
                     } else {
                         (true, None, None)
                     }

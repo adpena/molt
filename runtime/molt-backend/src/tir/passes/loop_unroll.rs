@@ -87,10 +87,12 @@ fn build_const_int_map(func: &TirFunction) -> HashMap<ValueId, i64> {
     let mut map = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if op.opcode == OpCode::ConstInt && op.results.len() == 1
-                && let Some(AttrValue::Int(v)) = op.attrs.get("value") {
-                    map.insert(op.results[0], *v);
-                }
+            if op.opcode == OpCode::ConstInt
+                && op.results.len() == 1
+                && let Some(AttrValue::Int(v)) = op.attrs.get("value")
+            {
+                map.insert(op.results[0], *v);
+            }
         }
     }
     map
@@ -157,12 +159,7 @@ fn header_args_from(term: &Terminator, header: BlockId) -> Option<&[ValueId]> {
 /// a value defined inside the body — proves there are no escaping uses we
 /// would have to repair after unrolling. Header block args (the induction
 /// variable) are local to the loop and never escape after the rewrite.
-fn body_value_escapes(
-    func: &TirFunction,
-    header: BlockId,
-    body: BlockId,
-    exit: BlockId,
-) -> bool {
+fn body_value_escapes(func: &TirFunction, header: BlockId, body: BlockId, exit: BlockId) -> bool {
     // Collect all values defined inside the body.
     let body_block = match func.blocks.get(&body) {
         Some(b) => b,
@@ -314,10 +311,7 @@ fn find_unroll_candidates(func: &TirFunction) -> Vec<UnrollCandidate> {
         };
 
         // No nested loops — the body block itself must not be a header.
-        if matches!(
-            func.loop_roles.get(&body_id),
-            Some(&LoopRole::LoopHeader)
-        ) {
+        if matches!(func.loop_roles.get(&body_id), Some(&LoopRole::LoopHeader)) {
             continue;
         }
 
@@ -410,8 +404,8 @@ fn find_unroll_candidates(func: &TirFunction) -> Vec<UnrollCandidate> {
                 continue;
             }
             preheader_count += 1;
-            preheader_args = header_args_from(&pred_block.terminator, header_id)
-                .map(|s| s.to_vec());
+            preheader_args =
+                header_args_from(&pred_block.terminator, header_id).map(|s| s.to_vec());
         }
         if preheader_count != 1 || backedge_count != 1 {
             // We require exactly one preheader (so the start is unambiguous)
@@ -664,9 +658,10 @@ fn unroll_candidate(func: &mut TirFunction, c: &UnrollCandidate, stats: &mut Pas
             // last_iter_remap[body_back_args[k]].
             if let Some(arg_idx) = header_arg_ids.iter().position(|&id| id == v)
                 && let Some(&body_value) = body_back_args.get(arg_idx)
-                    && let Some(&remapped) = last_iter_remap.get(&body_value) {
-                        return remapped;
-                    }
+                && let Some(&remapped) = last_iter_remap.get(&body_value)
+            {
+                return remapped;
+            }
             v
         })
         .collect();
@@ -861,7 +856,10 @@ mod tests {
     /// ```
     fn build_test_loop(start: i64, stop: i64, step: i64, body_op_count: usize) -> TestLoop {
         assert!(step != 0, "step must be non-zero in test fixture");
-        assert!(body_op_count >= 1, "tests rely on at least one user body op");
+        assert!(
+            body_op_count >= 1,
+            "tests rely on at least one user body op"
+        );
 
         let mut func = TirFunction::new("f".into(), vec![], TirType::None);
 
@@ -1049,7 +1047,10 @@ mod tests {
         // for i in range(5, 0, -1): body_op(i) -> trip count = 5 (5,4,3,2,1)
         let TestLoop { mut func, .. } = build_test_loop(5, 0, -1, 1);
         let stats = run(&mut func);
-        assert!(stats.ops_added > 0, "negative-step loop should still unroll");
+        assert!(
+            stats.ops_added > 0,
+            "negative-step loop should still unroll"
+        );
 
         let landing = match &func.blocks[&func.entry_block].terminator {
             Terminator::Branch { target, .. } => *target,
@@ -1187,7 +1188,9 @@ mod tests {
         // Build a loop where the comparison is Lt but step is negative —
         // this is a non-terminating loop that range_devirt would never emit,
         // and the unroller must reject it rather than synthesize bogus trips.
-        let TestLoop { mut func, header, .. } = build_test_loop(5, 0, -1, 1);
+        let TestLoop {
+            mut func, header, ..
+        } = build_test_loop(5, 0, -1, 1);
         // Mutate the comparison from Gt (as built for step=-1) to Lt to break
         // the polarity contract.
         let header_block = func.blocks.get_mut(&header).unwrap();
@@ -1206,7 +1209,9 @@ mod tests {
 
     #[test]
     fn does_not_unroll_when_function_has_exception_handling() {
-        let TestLoop { mut func, header, .. } = build_test_loop(0, 4, 1, 1);
+        let TestLoop {
+            mut func, header, ..
+        } = build_test_loop(0, 4, 1, 1);
         func.has_exception_handling = true;
         let stats = run(&mut func);
         assert_eq!(stats.ops_added, 0);
@@ -1242,7 +1247,9 @@ mod tests {
         } = build_test_loop(0, 4, 1, 1);
         let dummy = func.fresh_value();
         let exit_block = func.blocks.get_mut(&exit).unwrap();
-        exit_block.ops.push(add_op(body_op_result, body_op_result, dummy));
+        exit_block
+            .ops
+            .push(add_op(body_op_result, body_op_result, dummy));
 
         let stats = run(&mut func);
         assert_eq!(stats.ops_added, 0, "escaping body value must block unroll");

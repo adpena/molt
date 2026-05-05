@@ -43,12 +43,8 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
 unsafe extern "C" {
     fn molt_exception_clear() -> u64;
     fn molt_object_getattr_bytes(obj_bits: u64, name_ptr: *const u8, name_len: u64) -> u64;
-    fn molt_call_func_dispatch(
-        func_bits: u64,
-        args_ptr_bits: u64,
-        nargs: u64,
-        code_id: u64,
-    ) -> u64;
+    fn molt_call_func_dispatch(func_bits: u64, args_ptr_bits: u64, nargs: u64, code_id: u64)
+    -> u64;
     fn molt_string_as_ptr(string_bits: u64, out_len: *mut u64) -> *const u8;
 }
 
@@ -183,7 +179,10 @@ unsafe fn preload_bridge_dylib_and_register_hooks() {
     // Initialise static type table inside the dylib copy.
     let init_sym = CString::new("molt_cpython_abi_init").unwrap();
     let init_ptr = unsafe { libc::dlsym(handle, init_sym.as_ptr()) };
-    assert!(!init_ptr.is_null(), "molt_cpython_abi_init missing in dylib");
+    assert!(
+        !init_ptr.is_null(),
+        "molt_cpython_abi_init missing in dylib"
+    );
     let init_fn: extern "C" fn() = unsafe { std::mem::transmute(init_ptr) };
     init_fn();
 
@@ -195,8 +194,7 @@ unsafe fn preload_bridge_dylib_and_register_hooks() {
         !reg_ptr.is_null(),
         "molt_cpython_abi_register_hooks missing in dylib"
     );
-    type RegFn =
-        unsafe extern "C" fn(*const molt_cpython_abi::RuntimeHooks);
+    type RegFn = unsafe extern "C" fn(*const molt_cpython_abi::RuntimeHooks);
     let reg_fn: RegFn = unsafe { std::mem::transmute(reg_ptr) };
     let hooks = molt_cpython_abi::hooks().expect("runtime hooks must be registered");
     unsafe { reg_fn(hooks as *const _) };
@@ -240,9 +238,7 @@ fn hello_extension_load_and_greet() {
     );
 
     let args: [u64; 0] = [];
-    let result_bits = unsafe {
-        molt_call_func_dispatch(greet_bits, args.as_ptr() as u64, 0, 0)
-    };
+    let result_bits = unsafe { molt_call_func_dispatch(greet_bits, args.as_ptr() as u64, 0, 0) };
     let mut result_len: u64 = 0;
     let result_ptr = unsafe { molt_string_as_ptr(result_bits, &mut result_len) };
     assert!(

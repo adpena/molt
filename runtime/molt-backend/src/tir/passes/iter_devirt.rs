@@ -98,7 +98,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 /// an explicit container_type starting with "list".  Returns `None` when
 /// the type cannot be determined (conservative: the backend will use the
 /// generic dispatch path).
-fn infer_container_type(func: &TirFunction, source_val: ValueId, block_ids: &[BlockId]) -> Option<String> {
+fn infer_container_type(
+    func: &TirFunction,
+    source_val: ValueId,
+    block_ids: &[BlockId],
+) -> Option<String> {
     for &bid in block_ids {
         let Some(block) = func.blocks.get(&bid) else {
             continue;
@@ -123,9 +127,10 @@ fn infer_container_type(func: &TirFunction, source_val: ValueId, block_ids: &[Bl
             }
             // Explicit container_type attr.
             if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type")
-                && ct.starts_with("list") {
-                    return Some(ct.clone());
-                }
+                && ct.starts_with("list")
+            {
+                return Some(ct.clone());
+            }
             return None;
         }
     }
@@ -156,9 +161,10 @@ fn is_list_source(func: &TirFunction, source_val: ValueId, block_ids: &[BlockId]
             }
             // Check container_type attr on the source op.
             if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type")
-                && ct.starts_with("list") {
-                    return true;
-                }
+                && ct.starts_with("list")
+            {
+                return true;
+            }
             return false;
         }
     }
@@ -177,10 +183,7 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
     for &bid in &block_ids {
         let block = &func.blocks[&bid];
         for (op_idx, op) in block.ops.iter().enumerate() {
-            if op.opcode == OpCode::GetIter
-                && !op.operands.is_empty()
-                && !op.results.is_empty()
-            {
+            if op.opcode == OpCode::GetIter && !op.operands.is_empty() && !op.results.is_empty() {
                 get_iter_defs.insert(op.results[0], (bid, op_idx, op.operands[0]));
             }
         }
@@ -243,9 +246,8 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
             // Determine the container_type for the synthesized Index op.
             // Prefer the GetIter's explicit container_type; fall back to
             // inferring from the source defining op.
-            let container_type = get_iter_container_type.or_else(|| {
-                infer_container_type(func, source_val, &block_ids)
-            });
+            let container_type = get_iter_container_type
+                .or_else(|| infer_container_type(func, source_val, &block_ids));
 
             // Reject if source_val is defined INSIDE the loop (mutation risk).
             // The list must be defined before the loop header.
@@ -967,12 +969,7 @@ mod tests {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops = vec![
                 make_op(OpCode::BuildDict, vec![], vec![dict_val]),
-                make_op_with_container(
-                    OpCode::GetIter,
-                    vec![dict_val],
-                    vec![iter_val],
-                    "dict",
-                ),
+                make_op_with_container(OpCode::GetIter, vec![dict_val], vec![iter_val], "dict"),
             ];
             entry.terminator = Terminator::Branch {
                 target: header_id,
@@ -1021,7 +1018,10 @@ mod tests {
         func.blocks.insert(exit_id, exit);
 
         let stats = run(&mut func);
-        assert_eq!(stats.values_changed, 0, "dict loop should not be transformed");
+        assert_eq!(
+            stats.values_changed, 0,
+            "dict loop should not be transformed"
+        );
     }
 
     #[test]
@@ -1105,10 +1105,7 @@ mod tests {
 
         // The body should now contain an Index op with container_type="list".
         let body_block = &func.blocks[&body_id];
-        let index_op = body_block
-            .ops
-            .iter()
-            .find(|op| op.opcode == OpCode::Index);
+        let index_op = body_block.ops.iter().find(|op| op.opcode == OpCode::Index);
         assert!(index_op.is_some(), "Body must contain synthesized Index op");
         let idx_op = index_op.unwrap();
         assert_eq!(

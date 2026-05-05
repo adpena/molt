@@ -511,10 +511,7 @@ fn exception_label_to_block(func: &LirFunction) -> HashMap<i64, BlockId> {
 /// reachable from the function entry; otherwise their value uses appear to
 /// violate dominance even though at runtime control flow correctly reaches
 /// them via the runtime exception path.
-fn exception_successors(
-    block: &LirBlock,
-    label_to_block: &HashMap<i64, BlockId>,
-) -> Vec<BlockId> {
+fn exception_successors(block: &LirBlock, label_to_block: &HashMap<i64, BlockId>) -> Vec<BlockId> {
     let mut successors = Vec::new();
     for op in &block.ops {
         if matches!(
@@ -1339,7 +1336,9 @@ mod tests {
         };
         let errors = verify_lir_function(&func).expect_err("mismatched class return must fail");
         assert!(
-            errors.iter().any(|err| err.message.contains("type mismatch")),
+            errors
+                .iter()
+                .any(|err| err.message.contains("type mismatch")),
             "expected class identity type mismatch, got {errors:?}"
         );
     }

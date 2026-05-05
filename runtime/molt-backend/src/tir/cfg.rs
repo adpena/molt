@@ -1050,15 +1050,15 @@ mod tests {
     #[test]
     fn loop_break_in_then_loop_skips_enclosing_else_block() {
         let ops = vec![
-            op_args("if", &["v0"]), // 0 enclosing if
-            op("loop_start"),       // 1 then loop header
+            op_args("if", &["v0"]),                 // 0 enclosing if
+            op("loop_start"),                       // 1 then loop header
             op_args("loop_break_if_true", &["v1"]), // 2 implicit break target
-            op("add"),              // 3 loop body fall-through
-            op("loop_end"),         // 4 then loop end marker
-            op("else"),             // 5 sibling else block
-            op("sub"),              // 6 else body
-            op("end_if"),           // 7 structured join
-            op("ret_void"),         // 8 after if/else
+            op("add"),                              // 3 loop body fall-through
+            op("loop_end"),                         // 4 then loop end marker
+            op("else"),                             // 5 sibling else block
+            op("sub"),                              // 6 else body
+            op("end_if"),                           // 7 structured join
+            op("ret_void"),                         // 8 after if/else
         ];
         let cfg = CFG::build(&ops);
 
@@ -1165,21 +1165,21 @@ mod tests {
         // Build: const; if cond; loop_start; loop_break_if_false cond;
         //        ... loop_end; else; loop_start; loop_end; end_if; ret
         let ops = vec![
-            op("const"),                  // 0  if-cond setup
-            op_args("if", &["c0"]),       // 1  IF
-            op("loop_start"),             // 2  THEN-body loop header
-            op("const"),                  // 3  loop body cond
+            op("const"),                             // 0  if-cond setup
+            op_args("if", &["c0"]),                  // 1  IF
+            op("loop_start"),                        // 2  THEN-body loop header
+            op("const"),                             // 3  loop body cond
             op_args("loop_break_if_false", &["c1"]), // 4  exit cond (no label)
-            op("nop"),                    // 5  body op
-            op("loop_continue"),          // 6
-            op("loop_end"),               // 7  THEN-body loop end
-            op("else"),                   // 8  ELSE block start
-            op("loop_start"),             // 9  ELSE-body loop header
+            op("nop"),                               // 5  body op
+            op("loop_continue"),                     // 6
+            op("loop_end"),                          // 7  THEN-body loop end
+            op("else"),                              // 8  ELSE block start
+            op("loop_start"),                        // 9  ELSE-body loop header
             op_args("loop_break_if_false", &["c2"]), // 10
-            op("loop_continue"),          // 11
-            op("loop_end"),               // 12 ELSE-body loop end
-            op("end_if"),                 // 13 join
-            op("ret_void"),               // 14
+            op("loop_continue"),                     // 11
+            op("loop_end"),                          // 12 ELSE-body loop end
+            op("end_if"),                            // 13 join
+            op("ret_void"),                          // 14
         ];
         let cfg = CFG::build(&ops);
 
@@ -1190,12 +1190,12 @@ mod tests {
         let break_op_idx = 4;
         let else_op_idx = 8;
         let end_if_op_idx = 13;
-        let break_bid = block_containing(&cfg.blocks, break_op_idx)
-            .expect("break op should be in a block");
-        let else_bid = block_containing(&cfg.blocks, else_op_idx)
-            .expect("else op should be in a block");
-        let end_if_bid = block_containing(&cfg.blocks, end_if_op_idx)
-            .expect("end_if op should be in a block");
+        let break_bid =
+            block_containing(&cfg.blocks, break_op_idx).expect("break op should be in a block");
+        let else_bid =
+            block_containing(&cfg.blocks, else_op_idx).expect("else op should be in a block");
+        let end_if_bid =
+            block_containing(&cfg.blocks, end_if_op_idx).expect("end_if op should be in a block");
 
         // The break path from the THEN-body loop must NOT include
         // the else block.

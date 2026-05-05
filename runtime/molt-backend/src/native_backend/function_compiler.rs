@@ -946,14 +946,7 @@ fn def_raw_bool_value(
         return;
     }
     let boxed = box_raw_bool_value(builder, raw_bool, nbc);
-    def_bool_result(
-        builder,
-        vars,
-        bool_primary_vars,
-        out,
-        boxed,
-        Some(raw_bool),
-    );
+    def_bool_result(builder, vars, bool_primary_vars, out, boxed, Some(raw_bool));
 }
 
 /// Read a raw 0/1 bool only from a bool-primary Variable.
@@ -1157,13 +1150,8 @@ fn ensure_boxed_bool_safe(
     nbc: &crate::NanBoxConsts,
     name: &str,
 ) -> Option<Value> {
-    let raw_val = bool_raw_value(
-        builder,
-        vars,
-        bool_primary_vars,
-        name,
-    )
-    .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
+    let raw_val = bool_raw_value(builder, vars, bool_primary_vars, name)
+        .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
     if let Some(raw_val) = raw_val {
         return Some(box_raw_bool_value(builder, raw_val, nbc));
     }
@@ -20486,14 +20474,7 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
-                        def_bool_result(
-                            &mut builder,
-                            &vars,
-                            &bool_primary_vars,
-                            &out__,
-                            res,
-                            None,
-                        );
+                        def_bool_result(&mut builder, &vars, &bool_primary_vars, &out__, res, None);
                     }
                 }
                 "is" => {
@@ -20537,25 +20518,15 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
-                        def_bool_result(
-                            &mut builder,
-                            &vars,
-                            &bool_primary_vars,
-                            &out__,
-                            res,
-                            None,
-                        );
+                        def_bool_result(&mut builder, &vars, &bool_primary_vars, &out__, res, None);
                     }
                 }
                 "not" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let mut not_raw: Option<Value> = None;
-                    let res = if let Some(raw_val) = bool_raw_value(
-                        &mut builder,
-                        &vars,
-                        &bool_primary_vars,
-                        &args[0],
-                    ) {
+                    let res = if let Some(raw_val) =
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0])
+                    {
                         // Raw bool: not(x) = bool(x == 0). Skip runtime call.
                         let is_zero = builder.ins().icmp_imm(IntCC::Equal, raw_val, 0);
                         let result = box_bool_value(&mut builder, is_zero, &nbc);
@@ -20950,12 +20921,9 @@ impl SimpleBackend {
                 }
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let (res, bool_raw) = if let Some(raw_val) = bool_raw_value(
-                        &mut builder,
-                        &vars,
-                        &bool_primary_vars,
-                        &args[0],
-                    ) {
+                    let (res, bool_raw) = if let Some(raw_val) =
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0])
+                    {
                         // Raw bool from proven list_bool getitem or const_bool.
                         // bool(x) where x is already raw 0/1 — just re-box.
                         // Propagate the raw shadow directly (already 0/1).
@@ -21082,12 +21050,9 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("RHS not found");
-                    let cond = if let Some(raw_val) = bool_raw_value(
-                        &mut builder,
-                        &vars,
-                        &bool_primary_vars,
-                        &args[0],
-                    ) {
+                    let cond = if let Some(raw_val) =
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0])
+                    {
                         // Raw bool from proven list_bool getitem or const_bool.
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_int_lane(&op) {
@@ -21156,12 +21121,9 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("RHS not found");
-                    let cond = if let Some(raw_val) = bool_raw_value(
-                        &mut builder,
-                        &vars,
-                        &bool_primary_vars,
-                        &args[0],
-                    ) {
+                    let cond = if let Some(raw_val) =
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0])
+                    {
                         // Raw bool from proven list_bool getitem or const_bool.
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_int_lane(&op) {
@@ -28757,12 +28719,9 @@ impl SimpleBackend {
                     }
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Inline truthiness for bool/int types to avoid function call overhead.
-                    let cond_bool = if let Some(raw_val) = bool_raw_value(
-                        &mut builder,
-                        &vars,
-                        &bool_primary_vars,
-                        &args[0],
-                    ) {
+                    let cond_bool = if let Some(raw_val) =
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0])
+                    {
                         // Raw bool from proven list_bool getitem or const_bool.
                         // Branch directly on raw 0/1 — ZERO NaN-box overhead.
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
@@ -31033,12 +30992,9 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if let Some(raw_val) = bool_raw_value(
-                            &mut builder,
-                            &vars,
-                            &bool_primary_vars,
-                            cond_name,
-                        ) {
+                        let cond_bool = if let Some(raw_val) =
+                            bool_raw_value(&mut builder, &vars, &bool_primary_vars, cond_name)
+                        {
                             // Raw bool from proven list_bool getitem or const_bool.
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else if cond_is_bool_typed {
@@ -31242,12 +31198,9 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if let Some(raw_val) = bool_raw_value(
-                            &mut builder,
-                            &vars,
-                            &bool_primary_vars,
-                            cond_name,
-                        ) {
+                        let cond_bool = if let Some(raw_val) =
+                            bool_raw_value(&mut builder, &vars, &bool_primary_vars, cond_name)
+                        {
                             // Raw bool from proven list_bool getitem or const_bool.
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else if cond_is_bool_typed {
@@ -34517,12 +34470,9 @@ impl SimpleBackend {
                     // cond is NaN-boxed — dispatch based on type hint to avoid
                     // unnecessary GIL-wrapped molt_is_truthy calls.
                     let cond_name = &args[0];
-                    let cond_bool = if let Some(raw_val) = bool_raw_value(
-                        &mut builder,
-                        &vars,
-                        &bool_primary_vars,
-                        cond_name,
-                    ) {
+                    let cond_bool = if let Some(raw_val) =
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, cond_name)
+                    {
                         // Raw bool from proven list_bool getitem or const_bool.
                         // Branch directly on raw 0/1 — ZERO NaN-box overhead.
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
@@ -34934,15 +34884,14 @@ impl SimpleBackend {
                             && scalar_fast_paths_enabled
                             && !slot_backed_join_slots.contains_key(name)
                         {
-                            let raw_bool = bool_raw_value(
-                                &mut builder,
-                                &vars,
-                                &bool_primary_vars,
-                                &args[0],
-                            )
-                            .unwrap_or_else(|| {
-                                panic!("store_var: bool-primary src missing raw bool: {}", args[0])
-                            });
+                            let raw_bool =
+                                bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0])
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "store_var: bool-primary src missing raw bool: {}",
+                                            args[0]
+                                        )
+                                    });
                             def_raw_bool_value(
                                 &mut builder,
                                 &vars,
@@ -35197,15 +35146,14 @@ impl SimpleBackend {
                             && scalar_fast_paths_enabled
                             && op.out.as_ref().is_some_and(|o| bool_like_vars.contains(o))
                         {
-                            let raw_bool = bool_raw_value(
-                                &mut builder,
-                                &vars,
-                                &bool_primary_vars,
-                                &args[0],
-                            )
-                            .unwrap_or_else(|| {
-                                panic!("copy_var: bool-primary src missing raw bool: {}", args[0])
-                            });
+                            let raw_bool =
+                                bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0])
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "copy_var: bool-primary src missing raw bool: {}",
+                                            args[0]
+                                        )
+                                    });
                             let out_name = op.out.as_ref().unwrap();
                             def_raw_bool_value(
                                 &mut builder,
