@@ -764,6 +764,106 @@ fn infer_scalar_lane(
     }
 }
 
+#[cfg(feature = "native-backend")]
+fn compute_float_primary_vars(
+    func_ir: &FunctionIR,
+    int_like_vars: &BTreeSet<String>,
+    bool_like_vars: &BTreeSet<String>,
+    float_like_vars: &BTreeSet<String>,
+    str_like_vars: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    if is_cold_module_chunk_function(&func_ir.name) {
+        return BTreeSet::new();
+    }
+
+    let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
+    // Variables proven to be always float AND not function parameters
+    // are declared as F64 so the primary Cranelift Variable carries the raw
+    // f64 value.  This eliminates bitcast(f64->i64) on every store and
+    // bitcast(i64->f64) on every load in hot float loops (e.g. mandelbrot).
+    // Boxing is deferred to escape points via var_get_boxed / float_primary_vars.
+    //
+    // SAFETY: exclude variables assigned by generic ops (via type_hint) that
+    // produce NaN-boxed I64 values -- only ops with explicit float codegen
+    // paths (const_float, float arithmetic, copy/load_var, identity_alias,
+    // div) are safe to use with F64 primary Variables.
+    let float_unsafe_outputs: BTreeSet<String> = {
+        let mut unsafe_set = BTreeSet::new();
+        for op in &func_ir.ops {
+            if let Some(ref out) = op.out {
+                let kind = op.kind.as_str();
+                let is_safe_float_op = matches!(
+                    kind,
+                    "const_float"
+                        | "add"
+                        | "sub"
+                        | "mul"
+                        | "div"
+                        | "inplace_add"
+                        | "inplace_sub"
+                        | "inplace_mul"
+                        | "neg"
+                        | "unary_neg"
+                        | "copy_var"
+                        | "load_var"
+                        | "identity_alias"
+                        | "store_var"
+                );
+                if !is_safe_float_op && float_like_vars.contains(out) {
+                    unsafe_set.insert(out.clone());
+                }
+            }
+        }
+        unsafe_set
+    };
+    // Build the set of variables that are defined by ANY non-float-safe op.
+    // A variable is F64-primary ONLY if every definition site produces a
+    // raw f64 value. If even one definition produces I64 (NaN-boxed),
+    // the Variable must remain I64 to avoid Cranelift type-mismatch panics.
+    let vars_with_non_float_defs: BTreeSet<String> = {
+        let mut non_float = BTreeSet::new();
+        for op in &func_ir.ops {
+            // store_var can define a variable via its target (var or out).
+            // If the source is not proven float, the target gets a non-float def.
+            if op.kind == "store_var" {
+                let target = op.var.as_ref().or(op.out.as_ref());
+                let source = op.args.as_ref().and_then(|a| a.first());
+                if let (Some(t), Some(s)) = (target, source)
+                    && !float_like_vars.contains(s)
+                {
+                    non_float.insert(t.clone());
+                }
+            }
+            // Any op with an output: if the op doesn't produce a float value
+            // AND the output is in float_like_vars, it's a mixed-type variable.
+            if let Some(ref out) = op.out {
+                let lane = infer_scalar_lane(
+                    op,
+                    int_like_vars,
+                    bool_like_vars,
+                    float_like_vars,
+                    str_like_vars,
+                );
+                if lane != Some(ScalarLane::Float) && float_like_vars.contains(out) {
+                    non_float.insert(out.clone());
+                }
+            }
+        }
+        non_float
+    };
+
+    float_like_vars
+        .iter()
+        .filter(|name| {
+            !param_name_set.contains(name.as_str())
+                && !float_unsafe_outputs.contains(*name)
+                && !int_like_vars.contains(*name)
+                && !vars_with_non_float_defs.contains(*name)
+        })
+        .cloned()
+        .collect()
+}
+
 /// Phase 1d typed-IR: recover a raw i64 operand from a variable that holds
 /// raw i64 in its main Cranelift Variable.  The static `int_primary_vars`
 /// set (Step 0's operand-recursive fixpoint) is the single source of truth:
@@ -2922,99 +3022,13 @@ impl SimpleBackend {
             cranelift_codegen::ir::StackSlot,
         > = BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
-        // Variables proven to be always float AND not function parameters
-        // are declared as F64 so the primary Cranelift Variable carries the raw
-        // f64 value.  This eliminates bitcast(f64->i64) on every store and
-        // bitcast(i64->f64) on every load in hot float loops (e.g. mandelbrot).
-        // Boxing is deferred to escape points via var_get_boxed / float_primary_vars.
-        //
-        // SAFETY: exclude variables assigned by generic ops (via type_hint) that
-        // produce NaN-boxed I64 values -- only ops with explicit float codegen
-        // paths (const_float, float arithmetic, copy/load_var, identity_alias,
-        // div) are safe to use with F64 primary Variables.
-        let float_unsafe_outputs: BTreeSet<String> = {
-            let mut unsafe_set = BTreeSet::new();
-            for op in &func_ir.ops {
-                if let Some(ref out) = op.out {
-                    let kind = op.kind.as_str();
-                    let is_safe_float_op = matches!(
-                        kind,
-                        "const_float"
-                            | "add"
-                            | "sub"
-                            | "mul"
-                            | "div"
-                            | "inplace_add"
-                            | "inplace_sub"
-                            | "inplace_mul"
-                            | "neg"
-                            | "unary_neg"
-                            | "copy_var"
-                            | "load_var"
-                            | "identity_alias"
-                            | "store_var"
-                    );
-                    if !is_safe_float_op && float_like_vars.contains(out) {
-                        unsafe_set.insert(out.clone());
-                    }
-                }
-            }
-            unsafe_set
-        };
-        // Build the set of variables that are defined by ANY non-float-safe op.
-        // A variable is F64-primary ONLY if every definition site produces a
-        // raw f64 value. If even one definition produces I64 (NaN-boxed),
-        // the Variable must remain I64 to avoid Cranelift type-mismatch panics.
-        let vars_with_non_float_defs: BTreeSet<String> = {
-            let mut non_float = BTreeSet::new();
-            for op in &func_ir.ops {
-                // store_var can define a variable via its target (var or out).
-                // If the source is not proven float, the target gets a non-float def.
-                if op.kind == "store_var" {
-                    let target = op.var.as_ref().or(op.out.as_ref());
-                    let source = op.args.as_ref().and_then(|a| a.first());
-                    if let (Some(t), Some(s)) = (target, source)
-                        && !float_like_vars.contains(s)
-                    {
-                        non_float.insert(t.clone());
-                    }
-                }
-                // Any op with an output: if the op doesn't produce a float value
-                // AND the output is in float_like_vars, it's a mixed-type variable.
-                if let Some(ref out) = op.out {
-                    let lane = infer_scalar_lane(
-                        op,
-                        &int_like_vars,
-                        &bool_like_vars,
-                        &float_like_vars,
-                        &str_like_vars,
-                    );
-                    if lane != Some(ScalarLane::Float) && float_like_vars.contains(out) {
-                        non_float.insert(out.clone());
-                    }
-                }
-            }
-            non_float
-        };
-        // Disable F64-primary when the function contains pow ops that mix
-        // int and float — the intermediate variable classification can't
-        // prove that all definition sites produce F64.
-        let has_pow_ops = func_ir.ops.iter().any(|op| op.kind == "pow");
-        let float_primary_vars: BTreeSet<String> =
-            if is_cold_module_chunk_function(&func_ir.name) || has_pow_ops {
-                BTreeSet::new()
-            } else {
-                float_like_vars
-                    .iter()
-                    .filter(|name| {
-                        !param_name_set.contains(name.as_str())
-                            && !float_unsafe_outputs.contains(*name)
-                            && !int_like_vars.contains(*name)
-                            && !vars_with_non_float_defs.contains(*name)
-                    })
-                    .cloned()
-                    .collect()
-            };
+        let float_primary_vars = compute_float_primary_vars(
+            &func_ir,
+            &int_like_vars,
+            &bool_like_vars,
+            &float_like_vars,
+            &str_like_vars,
+        );
         // Typed IR Phase 1a: build int_primary_vars as the immutable static
         // analog of float_primary_vars for proven-int variables. A var is in
         // int_primary_vars only when every definition site produces raw i64
@@ -36458,11 +36472,11 @@ impl SimpleBackend {
 mod tests {
     use super::{
         ScalarLane, alias_root_name, box_raw_bool_value, cleanup_roots_for_names,
-        collect_slot_backed_join_names, infer_scalar_lane, is_cold_module_chunk_function,
-        live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
-        op_produces_raw_bool_for_bool_primary, preanalyze_function_ir, protect_cleanup_names,
-        scalar_lane_store_target_names, scan_loop_int_sum_reduction, switch_to_block_materialized,
-        switch_to_block_with_rebind,
+        collect_slot_backed_join_names, compute_float_primary_vars, infer_scalar_lane,
+        is_cold_module_chunk_function, live_exception_rebind_vars_for_op, mark_cleanup_root_once,
+        materialize_label_block, op_produces_raw_bool_for_bool_primary, preanalyze_function_ir,
+        protect_cleanup_names, scalar_lane_store_target_names, scan_loop_int_sum_reduction,
+        switch_to_block_materialized, switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
     use cranelift_codegen::isa::CallConv;
@@ -36870,6 +36884,80 @@ mod tests {
             scalar_lane_store_target_names(&func, ScalarLane::Str, &empty, &empty, &empty, &empty,),
             BTreeSet::from(["s_slot".to_string()]),
         );
+    }
+
+    #[test]
+    fn float_primary_scope_excludes_pow_without_disabling_unrelated_float_defs() {
+        let func = FunctionIR {
+            name: "float_primary_pow_scope".to_string(),
+            params: vec!["p".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "const_float".to_string(),
+                    out: Some("base".to_string()),
+                    f_value: Some(2.0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_float".to_string(),
+                    out: Some("exp".to_string()),
+                    f_value: Some(3.0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "pow".to_string(),
+                    args: Some(vec!["base".to_string(), "exp".to_string()]),
+                    out: Some("pow_result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".to_string(),
+                    args: Some(vec!["base".to_string(), "exp".to_string()]),
+                    out: Some("sum".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some("sum".to_string()),
+                    out: Some("sum_copy".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some("p".to_string()),
+                    out: Some("param_copy".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let float_like_vars = BTreeSet::from([
+            "p".to_string(),
+            "base".to_string(),
+            "exp".to_string(),
+            "pow_result".to_string(),
+            "sum".to_string(),
+            "sum_copy".to_string(),
+            "param_copy".to_string(),
+        ]);
+
+        let primary = compute_float_primary_vars(
+            &func,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &float_like_vars,
+            &BTreeSet::new(),
+        );
+
+        assert!(primary.contains("base"));
+        assert!(primary.contains("exp"));
+        assert!(primary.contains("sum"));
+        assert!(primary.contains("sum_copy"));
+        assert!(!primary.contains("pow_result"));
+        assert!(!primary.contains("p"));
+        assert!(primary.contains("param_copy"));
     }
 
     #[test]
