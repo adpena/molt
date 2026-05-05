@@ -1328,6 +1328,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.stable_module_funcs: set[str] = set()
         self.module_declared_funcs: dict[str, str] = {}
         self.module_declared_classes: set[str] = set()
+        self.stable_module_classes: set[str] = set()
         self.module_defined_funcs: set[str] = set()
         self.class_definition_pending: set[str] = set()
         self.module_global_mutations: set[str] = set()
@@ -1480,6 +1481,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_break_counter = 0
         self.loop_layout_guards: list[dict[str, tuple[str, MoltValue]]] = []
         self.loop_guard_assumptions: list[dict[str, tuple[str, bool]]] = []
+        self.loop_static_class_refs: list[dict[str, MoltValue]] = []
+        self.loop_static_class_counter = 0
         self.active_exceptions: list[ActiveException] = []
         self.func_aliases: dict[str, str] = {}
         self.reserved_func_symbols: dict[str, str] = {}
@@ -1874,6 +1877,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_break_counter = 0
         self.loop_layout_guards = []
         self.loop_guard_assumptions = []
+        self.loop_static_class_refs = []
+        self.loop_static_class_counter = 0
         self.active_exceptions = []
 
     def _module_chunk_stmt_cost(self, stmt: ast.stmt) -> int:
@@ -3128,6 +3133,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_slot_index = None
         self.return_slot_offset = None
         self.block_terminated = False
+        self.loop_static_class_refs = []
         if needs_return_slot:
             self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)
@@ -3794,6 +3800,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prev_mutated = self.mutated_classes
         prev_declared = self.module_declared_funcs
         prev_declared_classes = self.module_declared_classes
+        prev_stable_classes = self.stable_module_classes
         prev_reserved = self.reserved_func_symbols
         prev_defined = self.module_defined_funcs
         prev_defaults = self.module_func_defaults
@@ -3815,6 +3822,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_const_dicts = self._collect_module_const_dicts(node)
         self.module_declared_funcs = self._collect_module_func_kinds(node)
         self.module_declared_classes = self._collect_module_class_names(node)
+        self.stable_module_classes = self._collect_stable_module_classes(node)
         self.class_definition_pending = set(self.module_declared_classes)
         self.reserved_func_symbols = {}
         for func_name, kind in self.module_declared_funcs.items():
@@ -3986,6 +3994,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.mutated_classes = prev_mutated
         self.module_declared_funcs = prev_declared
         self.module_declared_classes = prev_declared_classes
+        self.stable_module_classes = prev_stable_classes
         self.reserved_func_symbols = prev_reserved
         self.module_defined_funcs = prev_defined
         self.class_definition_pending = prev_pending_classes
@@ -8232,6 +8241,112 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             candidates[name] = expected_class
         return candidates
 
+    def _collect_loop_static_class_candidates(self, body: list[ast.stmt]) -> list[str]:
+        if (
+            self.is_async()
+            or self.current_func_name == "molt_main"
+            or not self.stable_module_classes
+        ):
+            return []
+        assigned = self._collect_assigned_names(body)
+        assigned |= {
+            name for stmt in body for name in self._collect_namedexpr_names(stmt)
+        }
+        candidates: set[str] = set()
+        outer = self
+
+        class ClassCallCollector(ast.NodeVisitor):
+            def visit_Call(self, node: ast.Call) -> None:
+                if isinstance(node.func, ast.Name):
+                    class_name = node.func.id
+                    if (
+                        class_name in outer.stable_module_classes
+                        and class_name not in assigned
+                        and class_name not in outer.scope_assigned
+                        and class_name not in outer.global_decls
+                        and outer._class_layout_stable(class_name)
+                    ):
+                        candidates.add(class_name)
+                self.generic_visit(node)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                return
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                return
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:
+                return
+
+        collector = ClassCallCollector()
+        for stmt in body:
+            collector.visit(stmt)
+        return sorted(candidates)
+
+    def _push_loop_static_class_refs(self, body: list[ast.stmt]) -> None:
+        refs: dict[str, MoltValue] = {}
+        for class_name in self._collect_loop_static_class_candidates(body):
+            self.loop_static_class_counter += 1
+            slot = f"__molt_static_class_{self.loop_static_class_counter}_{class_name}"
+            init = MoltValue(self.next_var(), type_hint="missing")
+            self.emit(MoltOp(kind="MISSING", args=[], result=init))
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[init],
+                    result=MoltValue("none"),
+                    metadata={"var": slot},
+                )
+            )
+            refs[class_name] = MoltValue(slot, type_hint="type")
+        self.loop_static_class_refs.append(refs)
+
+    def _pop_loop_static_class_refs(self) -> None:
+        if self.loop_static_class_refs:
+            self.loop_static_class_refs.pop()
+
+    def _emit_loop_static_class_ref(self, class_name: str) -> MoltValue | None:
+        for refs in reversed(self.loop_static_class_refs):
+            slot = refs.get(class_name)
+            if slot is None:
+                continue
+            cached = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_VAR",
+                    args=[],
+                    result=cached,
+                    metadata={"var": slot.name},
+                )
+            )
+            missing = MoltValue(self.next_var(), type_hint="missing")
+            self.emit(MoltOp(kind="MISSING", args=[], result=missing))
+            is_missing = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="IS", args=[cached, missing], result=is_missing))
+            result = MoltValue(self.next_var(), type_hint="type")
+            placeholder = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
+            self.emit(MoltOp(kind="COPY", args=[placeholder], result=result))
+            self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
+            resolved = self._emit_module_attr_get(class_name)
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[resolved],
+                    result=MoltValue("none"),
+                    metadata={"var": slot.name},
+                )
+            )
+            self.emit(MoltOp(kind="COPY", args=[resolved], result=result))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="COPY", args=[cached], result=result))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            return result
+        return None
+
     def _collect_target_names(self, target: ast.AST) -> set[str]:
         if isinstance(target, ast.Name):
             return {target.id}
@@ -8293,6 +8408,61 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         collector = GlobalsEscapeCollector()
         collector.visit(node)
         return collector.escaped
+
+    def _collect_stable_module_classes(self, node: ast.Module) -> set[str]:
+        if self._module_globals_dict_escapes(node):
+            return set()
+        class_defs: dict[str, int] = {}
+        rebound: set[str] = set()
+        deleted: set[str] = set()
+        global_decls: set[str] = set()
+
+        def record_target(target: ast.AST, names: set[str]) -> None:
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+                return
+            if isinstance(target, ast.Starred):
+                record_target(target.value, names)
+                return
+            if isinstance(target, (ast.Tuple, ast.List)):
+                for elt in target.elts:
+                    record_target(elt, names)
+
+        for stmt in node.body:
+            if isinstance(stmt, ast.ClassDef):
+                class_defs[stmt.name] = class_defs.get(stmt.name, 0) + 1
+                continue
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if stmt.name in class_defs:
+                    rebound.add(stmt.name)
+                global_decls.update(self._collect_global_decls(stmt.body))
+                continue
+            if isinstance(stmt, ast.Assign):
+                for target in stmt.targets:
+                    record_target(target, rebound)
+                continue
+            if isinstance(stmt, ast.AnnAssign):
+                record_target(stmt.target, rebound)
+                continue
+            if isinstance(stmt, ast.AugAssign):
+                record_target(stmt.target, rebound)
+                continue
+            if isinstance(stmt, ast.Delete):
+                for target in stmt.targets:
+                    record_target(target, deleted)
+                continue
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                for alias in stmt.names:
+                    rebound.add(alias.asname or alias.name.split(".", 1)[0])
+
+        return {
+            name
+            for name, count in class_defs.items()
+            if count == 1
+            and name not in rebound
+            and name not in deleted
+            and name not in global_decls
+        }
 
     def _collect_nonlocal_decls(self, nodes: list[ast.stmt]) -> set[str]:
         class NonlocalCollector(ast.NodeVisitor):
@@ -11635,6 +11805,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         stop = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
         guard_map = self._emit_hoisted_loop_guards(body)
+        self._push_loop_static_class_refs(body)
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         idx = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
@@ -11664,6 +11835,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        self._pop_loop_static_class_refs()
         self._store_local_value(index_name, idx)
         if self.current_func_name == "molt_main" and self.module_obj is not None:
             key2 = MoltValue(self.next_var(), type_hint="str")
@@ -20160,11 +20332,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if static_class_ref is not None:
                     class_ref = static_class_ref
                 else:
-                    local_class = self._load_local_value(class_id)
-                    if local_class is not None:
-                        class_ref = local_class
+                    loop_static_class_ref = self._emit_loop_static_class_ref(class_id)
+                    if loop_static_class_ref is not None:
+                        class_ref = loop_static_class_ref
                     else:
-                        class_ref = self._emit_module_attr_get(class_id)
+                        local_class = self._load_local_value(class_id)
+                        if local_class is not None:
+                            class_ref = local_class
+                        else:
+                            class_ref = self._emit_module_attr_get(class_id)
                 if self._class_is_exception_subclass(class_id, class_info):
                     new_method = class_info.get("methods", {}).get("__new__")
                     if new_method is None:
@@ -26540,6 +26716,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         guard_map = self._emit_hoisted_loop_guards(node.body)
 
         def emit_loop_body() -> None:
+            self._push_loop_static_class_refs(node.body)
             self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
             cond = self.visit(node.test)
             self.emit(
@@ -26561,6 +26738,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                 )
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            self._pop_loop_static_class_refs()
 
         if guard_map:
             guard_cond = self._emit_guard_map_condition(guard_map)

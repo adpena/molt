@@ -1580,9 +1580,9 @@ struct FunctionPreanalysis {
     ///   - it has explicit inc_ref/dec_ref ops in the IR
     scalar_slot_exclusion_unsafe: BTreeSet<String>,
     /// Op indexes for `store` / `store_init` operations proven safe to lower
-    /// as plain payload writes.  These are limited to fresh stack-allocated
-    /// objects and known non-heap values, so codegen can skip refcount,
-    /// profiling, header-flag, and pointer-tag slow-path scaffolding.
+    /// as plain payload writes. These are limited to fresh fixed-layout objects
+    /// and known non-heap values, so codegen can skip refcount, profiling,
+    /// header-flag, and pointer-tag slow-path scaffolding.
     direct_field_store_ops: BTreeSet<usize>,
 }
 
@@ -1744,15 +1744,24 @@ fn direct_field_store_passthrough(kind: &str) -> bool {
 #[cfg(feature = "native-backend")]
 fn remove_direct_field_store_root(
     root: &str,
-    stack_object_roots: &mut BTreeSet<String>,
+    direct_object_roots: &mut BTreeSet<String>,
     known_non_heap_slots: &mut BTreeSet<(String, i64)>,
 ) {
-    stack_object_roots.remove(root);
+    direct_object_roots.remove(root);
     known_non_heap_slots.retain(|(slot_root, _)| slot_root != root);
 }
 
 #[cfg(feature = "native-backend")]
-fn analyze_direct_stack_field_stores(
+fn op_allocates_fresh_fixed_layout_object(op: &OpIR) -> bool {
+    match op.kind.as_str() {
+        "object_new_bound_stack" => op.value.is_some_and(|payload_size| payload_size > 0),
+        "object_new_bound" => op.value.is_some_and(|payload_size| payload_size > 0),
+        _ => false,
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn analyze_direct_field_stores(
     func_ir: &FunctionIR,
     alias_roots: &BTreeMap<String, String>,
     int_like_vars: &BTreeSet<String>,
@@ -1761,21 +1770,21 @@ fn analyze_direct_stack_field_stores(
     none_like_vars: &BTreeSet<String>,
 ) -> BTreeSet<usize> {
     let mut direct_ops = BTreeSet::new();
-    let mut stack_object_roots: BTreeSet<String> = BTreeSet::new();
+    let mut direct_object_roots: BTreeSet<String> = BTreeSet::new();
     let mut known_non_heap_slots: BTreeSet<(String, i64)> = BTreeSet::new();
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
         let kind = op.kind.as_str();
         if direct_field_store_control_boundary(kind) {
-            stack_object_roots.clear();
+            direct_object_roots.clear();
             known_non_heap_slots.clear();
             continue;
         }
 
-        if kind == "object_new_bound_stack" {
+        if op_allocates_fresh_fixed_layout_object(op) {
             if let Some(out) = op.out.as_deref() {
                 let root = alias_root_name(alias_roots, out).to_string();
-                stack_object_roots.insert(root);
+                direct_object_roots.insert(root);
             }
             continue;
         }
@@ -1788,7 +1797,7 @@ fn analyze_direct_stack_field_stores(
                 continue;
             };
             let root = alias_root_name(alias_roots, obj_name).to_string();
-            if !stack_object_roots.contains(&root) {
+            if !direct_object_roots.contains(&root) {
                 continue;
             }
             let offset = op.value.unwrap_or(0);
@@ -1808,7 +1817,7 @@ fn analyze_direct_stack_field_stores(
             } else {
                 remove_direct_field_store_root(
                     &root,
-                    &mut stack_object_roots,
+                    &mut direct_object_roots,
                     &mut known_non_heap_slots,
                 );
             }
@@ -1823,21 +1832,21 @@ fn analyze_direct_stack_field_stores(
         if let Some(args) = op.args.as_ref() {
             for arg in args {
                 let root = alias_root_name(alias_roots, arg).to_string();
-                if stack_object_roots.contains(&root) {
+                if direct_object_roots.contains(&root) {
                     touched_roots.insert(root);
                 }
             }
         }
         if let Some(var) = op.var.as_ref() {
             let root = alias_root_name(alias_roots, var).to_string();
-            if stack_object_roots.contains(&root) {
+            if direct_object_roots.contains(&root) {
                 touched_roots.insert(root);
             }
         }
         for root in touched_roots {
             remove_direct_field_store_root(
                 &root,
-                &mut stack_object_roots,
+                &mut direct_object_roots,
                 &mut known_non_heap_slots,
             );
         }
@@ -2333,7 +2342,7 @@ fn preanalyze_function_ir(
             }
         }
     }
-    let direct_field_store_ops = analyze_direct_stack_field_stores(
+    let direct_field_store_ops = analyze_direct_field_stores(
         func_ir,
         &alias_roots,
         &int_like_vars,
@@ -36459,7 +36468,7 @@ mod tests {
     }
 
     #[test]
-    fn preanalysis_treats_immediate_stack_object_field_stores_as_direct() {
+    fn preanalysis_treats_immediate_fresh_object_field_stores_as_direct() {
         let func = FunctionIR {
             name: "stack_field_store".to_string(),
             params: vec![],
@@ -36528,6 +36537,157 @@ mod tests {
             [3usize, 6usize].into_iter().collect(),
             "both the init write and later same-slot immediate write should be direct"
         );
+    }
+
+    #[test]
+    fn preanalysis_treats_immediate_heap_fixed_layout_field_stores_as_direct() {
+        let func = FunctionIR {
+            name: "heap_fixed_layout_field_store".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("cls".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "object_new_bound".to_string(),
+                    out: Some("obj".to_string()),
+                    args: Some(vec!["cls".to_string()]),
+                    value: Some(24),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("zero".to_string()),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_init".to_string(),
+                    args: Some(vec!["obj".to_string(), "zero".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("p".to_string()),
+                    args: Some(vec!["obj".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_var".to_string(),
+                    var: Some("p".to_string()),
+                    out: Some("alias".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("one".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store".to_string(),
+                    args: Some(vec!["alias".to_string(), "one".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+
+        assert!(
+            !analysis.has_store,
+            "non-heap stores into fresh fixed-layout heap object slots should lower as direct field writes"
+        );
+        assert_eq!(
+            analysis.direct_field_store_ops,
+            [3usize, 7usize].into_iter().collect(),
+            "sized object_new_bound roots should share the stack-object direct-store contract"
+        );
+    }
+
+    #[test]
+    fn preanalysis_rejects_unsized_heap_object_direct_field_stores() {
+        let func = FunctionIR {
+            name: "unsized_heap_field_store".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("cls".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "object_new_bound".to_string(),
+                    out: Some("obj".to_string()),
+                    args: Some(vec!["cls".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("zero".to_string()),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_init".to_string(),
+                    args: Some(vec!["obj".to_string(), "zero".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("p".to_string()),
+                    args: Some(vec!["obj".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_var".to_string(),
+                    var: Some("p".to_string()),
+                    out: Some("alias".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("one".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store".to_string(),
+                    args: Some(vec!["alias".to_string(), "one".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+
+        assert!(
+            analysis.has_store,
+            "heap object stores without a fixed payload-size proof must keep runtime field helpers"
+        );
+        assert!(analysis.direct_field_store_ops.is_empty());
     }
 
     #[test]
