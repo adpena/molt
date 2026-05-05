@@ -30,6 +30,7 @@ _LOWER_IS_BETTER = {
     "molt_pypy_ratio",
     "molt_time_s",
     "molt_wasm_build_s",
+    "molt_wasm_control_time_s",
     "molt_wasm_size_kb",
     "molt_wasm_time_s",
 }
@@ -38,10 +39,30 @@ _HIGHER_IS_BETTER = {
     "molt_speedup",
 }
 
+_METRIC_OK_GATES = {
+    "codon_time_s": ("codon_ok",),
+    "molt_codon_ratio": ("molt_ok", "codon_ok"),
+    "molt_cpython_ratio": ("molt_ok",),
+    "molt_nuitka_ratio": ("molt_ok", "nuitka_ok"),
+    "molt_pypy_ratio": ("molt_ok", "pypy_ok"),
+    "molt_pyodide_ratio": ("molt_ok", "pyodide_ok"),
+    "molt_speedup": ("molt_ok",),
+    "molt_time_s": ("molt_ok",),
+    "molt_wasm_control_time_s": ("molt_wasm_control_ok",),
+    "molt_wasm_time_s": ("molt_wasm_ok",),
+    "nuitka_time_s": ("nuitka_ok",),
+    "pypy_time_s": ("pypy_ok",),
+    "pyodide_time_s": ("pyodide_ok",),
+}
+
 _SKIP_METRICS = {
     "molt_ok",
     "molt_wasm_ok",
+    "molt_output_parity",
     "molt_wasm_linked",
+    "molt_wasm_control_ok",
+    "molt_wasm_failure_returncode",
+    "molt_wasm_control_failure_returncode",
     "pypy_ok",
     "codon_ok",
     "nuitka_ok",
@@ -94,9 +115,15 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _metric_is_comparable(entry: dict[str, Any], metric: str) -> bool:
+    return all(entry.get(gate) is True for gate in _METRIC_OK_GATES.get(metric, ()))
+
+
 def _available_metrics(
     old_bench: dict[str, dict[str, Any]],
     new_bench: dict[str, dict[str, Any]],
+    *,
+    require_comparable_rows: bool = True,
 ) -> list[str]:
     metrics: set[str] = set()
     common = sorted(set(old_bench) & set(new_bench))
@@ -107,8 +134,14 @@ def _available_metrics(
         for metric in shared:
             if metric in _SKIP_METRICS:
                 continue
-            if _is_number(old_entry[metric]) and _is_number(new_entry[metric]):
-                metrics.add(metric)
+            if not (_is_number(old_entry[metric]) and _is_number(new_entry[metric])):
+                continue
+            if require_comparable_rows and not (
+                _metric_is_comparable(old_entry, metric)
+                and _metric_is_comparable(new_entry, metric)
+            ):
+                continue
+            metrics.add(metric)
     return sorted(metrics)
 
 
@@ -131,7 +164,12 @@ def _compute_metric_diffs(
     for benchmark in sorted(set(old_bench) & set(new_bench)):
         old_raw = old_bench[benchmark].get(metric)
         new_raw = new_bench[benchmark].get(metric)
-        if not (_is_number(old_raw) and _is_number(new_raw)):
+        if not (
+            _metric_is_comparable(old_bench[benchmark], metric)
+            and _metric_is_comparable(new_bench[benchmark], metric)
+            and _is_number(old_raw)
+            and _is_number(new_raw)
+        ):
             continue
         old_val = float(old_raw)
         new_val = float(new_raw)
@@ -289,7 +327,12 @@ def main() -> int:
         metrics = available
     else:
         wanted = list(dict.fromkeys(args.metrics))
-        unknown = [metric for metric in wanted if metric not in available]
+        numeric_available = _available_metrics(
+            old_bench,
+            new_bench,
+            require_comparable_rows=False,
+        )
+        unknown = [metric for metric in wanted if metric not in numeric_available]
         if unknown:
             raise SystemExit(
                 "requested metrics are unavailable/non-numeric in shared rows: "

@@ -220,6 +220,10 @@ python3 tools/bench_diff.py \
 
 Notes:
 - By default, it diffs all shared numeric metrics.
+- Runtime-gated metrics are comparable only when the matching `*_ok` gate is
+  true in both artifacts. Failed native Molt rows do not contribute
+  `molt_time_s`, speedup, or ratio diffs; failed WASM rows do not contribute
+  `molt_wasm_time_s` diffs.
 - It skips all-zero metrics unless `--include-zero-only-metrics` is passed.
 - Use `--metrics` to constrain analysis (for example `--metrics molt_time_s molt_codon_ratio`).
 - Use `--fail-regression-count`, `--fail-regression-pct`, and
