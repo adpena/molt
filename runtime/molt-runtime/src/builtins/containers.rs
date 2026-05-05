@@ -7,9 +7,8 @@ macro_rules! fn_addr {
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
     TYPE_ID_FROZENSET, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_SET, alloc_tuple,
-    builtin_func_bits,
-    builtin_func_bits_with_defaults_tuple, dec_ref_bits, dict_clear_method, dict_copy_method,
-    dict_fromkeys_method, dict_get_method, dict_items_method, dict_keys_method,
+    builtin_func_bits, builtin_func_bits_with_defaults_tuple, dec_ref_bits, dict_clear_method,
+    dict_copy_method, dict_fromkeys_method, dict_get_method, dict_items_method, dict_keys_method,
     dict_popitem_method, dict_setdefault_method, dict_update_method, dict_values_method,
     exception_pending, molt_contains, molt_delitem_method, molt_dict_pop_method,
     molt_frozenset_copy_method, molt_frozenset_difference_multi, molt_frozenset_intersection_multi,

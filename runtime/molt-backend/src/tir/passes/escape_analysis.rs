@@ -111,27 +111,24 @@ fn is_borrowing_method_call(attrs: &AttrDict) -> bool {
         Some(m) => m,
         None => return false,
     };
-    let (receiver_type, method) =
-        if let Some(rest) = method_attr.strip_prefix("BoundMethod:") {
-            // Frontend canonical form: split on the first ':' to
-            // recover (receiver_type, method_name).  Both halves
-            // must be non-empty for the lookup to succeed.
-            let mut parts = rest.splitn(2, ':');
-            match (parts.next(), parts.next()) {
-                (Some(rcv), Some(mthd)) if !rcv.is_empty() && !mthd.is_empty() => {
-                    (rcv, mthd)
-                }
-                _ => return false,
-            }
-        } else {
-            // Test / future-refined form: bare method name plus
-            // explicit receiver_type attr.
-            let receiver_type = match attr_str(attrs, "receiver_type") {
-                Some(rt) => rt,
-                None => return false,
-            };
-            (receiver_type, method_attr)
+    let (receiver_type, method) = if let Some(rest) = method_attr.strip_prefix("BoundMethod:") {
+        // Frontend canonical form: split on the first ':' to
+        // recover (receiver_type, method_name).  Both halves
+        // must be non-empty for the lookup to succeed.
+        let mut parts = rest.splitn(2, ':');
+        match (parts.next(), parts.next()) {
+            (Some(rcv), Some(mthd)) if !rcv.is_empty() && !mthd.is_empty() => (rcv, mthd),
+            _ => return false,
+        }
+    } else {
+        // Test / future-refined form: bare method name plus
+        // explicit receiver_type attr.
+        let receiver_type = match attr_str(attrs, "receiver_type") {
+            Some(rt) => rt,
+            None => return false,
         };
+        (receiver_type, method_attr)
+    };
     effects::method_effects(receiver_type, method).is_some_and(|fx| fx.effect_free)
 }
 
@@ -990,10 +987,7 @@ mod tests {
 
         let mut attrs = AttrDict::new();
         // No method portion (string ends at the receiver colon).
-        attrs.insert(
-            "method".into(),
-            AttrValue::Str("BoundMethod:str:".into()),
-        );
+        attrs.insert("method".into(), AttrValue::Str("BoundMethod:str:".into()));
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry

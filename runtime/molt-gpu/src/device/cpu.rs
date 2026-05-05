@@ -798,14 +798,8 @@ pub mod interpret {
             return None;
         }
 
-        let has_reduce_max = kernel
-            .ops
-            .iter()
-            .any(|op| op.op == PrimitiveOp::ReduceMax);
-        let has_reduce_sum = kernel
-            .ops
-            .iter()
-            .any(|op| op.op == PrimitiveOp::ReduceSum);
+        let has_reduce_max = kernel.ops.iter().any(|op| op.op == PrimitiveOp::ReduceMax);
+        let has_reduce_sum = kernel.ops.iter().any(|op| op.op == PrimitiveOp::ReduceSum);
 
         if !has_reduce_max || !has_reduce_sum {
             return None;
@@ -1138,10 +1132,10 @@ pub mod interpret {
                         FusedSrc::Buf(idx) => {
                             let buf = &bufs[*idx];
                             let offset = base * 4; // 4 bytes per f32
-                            // Load 4 contiguous f32 values in one shot via pointer cast.
-                            // Buffers are allocated with 16-byte alignment (alloc_simd_aligned),
-                            // and base is always a multiple of 4 (chunk * 4), so offset is
-                            // always 16-byte aligned. Use ptr::read for aligned access.
+                                                   // Load 4 contiguous f32 values in one shot via pointer cast.
+                                                   // Buffers are allocated with 16-byte alignment (alloc_simd_aligned),
+                                                   // and base is always a multiple of 4 (chunk * 4), so offset is
+                                                   // always 16-byte aligned. Use ptr::read for aligned access.
                             let ptr = buf[offset..].as_ptr() as *const [f32; 4];
                             // SAFETY: Buffer is 16-byte aligned (alloc_simd_aligned/alloc_page_aligned),
                             // offset is 16-byte aligned (base = chunk * 4, so offset = chunk * 16),

@@ -153,11 +153,17 @@ fn sqlite3_db_api_smoke() {
 
     let row1_bits = molt_runtime::molt_sqlite3_fetchone(cursor_bits);
     let row1 = MoltObject::from_bits(row1_bits);
-    assert!(row1.as_ptr().is_some(), "first fetchone must return a tuple");
+    assert!(
+        row1.as_ptr().is_some(),
+        "first fetchone must return a tuple"
+    );
 
     let row2_bits = molt_runtime::molt_sqlite3_fetchone(cursor_bits);
     let row2 = MoltObject::from_bits(row2_bits);
-    assert!(row2.as_ptr().is_some(), "second fetchone must return a tuple");
+    assert!(
+        row2.as_ptr().is_some(),
+        "second fetchone must return a tuple"
+    );
 
     let row3_bits = molt_runtime::molt_sqlite3_fetchone(cursor_bits);
     assert!(

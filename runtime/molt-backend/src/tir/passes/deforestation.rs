@@ -1477,8 +1477,11 @@ mod tests {
     ///     (%3, %4) = unpack_sequence(%2, 2)
     ///     → Return(%3, %4)
     fn build_fib_swap_function() -> TirFunction {
-        let mut func =
-            TirFunction::new("fib_swap".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "fib_swap".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
 
         // params: ValueId(0)=b, ValueId(1)=a_plus_b
         let tuple_val = func.fresh_value(); // 2
@@ -1541,8 +1544,11 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn tuple_scalarize_escaping_tuple_not_eliminated() {
-        let mut func =
-            TirFunction::new("escape".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "escape".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
 
         let tuple_val = func.fresh_value(); // 2
         let new_a = func.fresh_value(); // 3
@@ -1564,11 +1570,9 @@ mod tests {
             .push(make_unpack_sequence(tuple_val, vec![new_a, new_b], 2));
 
         // Also pass the tuple to a function call (second use -> escapes)
-        entry.ops.push(make_op(
-            OpCode::Call,
-            vec![tuple_val],
-            vec![call_result],
-        ));
+        entry
+            .ops
+            .push(make_op(OpCode::Call, vec![tuple_val], vec![call_result]));
 
         entry.terminator = Terminator::Return {
             values: vec![new_a],
@@ -1587,8 +1591,11 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn tuple_scalarize_count_mismatch_not_eliminated() {
-        let mut func =
-            TirFunction::new("mismatch".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "mismatch".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
 
         let tuple_val = func.fresh_value(); // 2
         let out_a = func.fresh_value(); // 3
@@ -1605,9 +1612,11 @@ mod tests {
         ));
 
         // Unpack expecting 3 elements (mismatch!)
-        entry
-            .ops
-            .push(make_unpack_sequence(tuple_val, vec![out_a, out_b, out_c], 3));
+        entry.ops.push(make_unpack_sequence(
+            tuple_val,
+            vec![out_a, out_b, out_c],
+            3,
+        ));
 
         entry.terminator = Terminator::Return {
             values: vec![out_a],
@@ -1628,9 +1637,7 @@ mod tests {
         let c = func.fresh_value();
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry
-                .ops
-                .push(make_op(OpCode::ConstInt, vec![], vec![c]));
+            entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![c]));
             entry.terminator = Terminator::Return { values: vec![c] };
         }
 
@@ -1698,8 +1705,11 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn tuple_scalarize_multiple_in_same_block() {
-        let mut func =
-            TirFunction::new("multi".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "multi".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
 
         // First tuple: swap a,b
         let tuple1 = func.fresh_value(); // 2
@@ -1740,7 +1750,10 @@ mod tests {
         let stats = run_tuple_scalarize(&mut func);
 
         assert_eq!(stats.values_changed, 2, "should scalarize 2 tuples");
-        assert_eq!(stats.ops_removed, 4, "should remove 2 BuildTuple + 2 unpack");
+        assert_eq!(
+            stats.ops_removed, 4,
+            "should remove 2 BuildTuple + 2 unpack"
+        );
         assert_eq!(stats.ops_added, 4, "should add 4 Copy ops total");
 
         let entry = &func.blocks[&func.entry_block];
@@ -1753,8 +1766,11 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn tuple_scalarize_tuple_in_terminator_not_eliminated() {
-        let mut func =
-            TirFunction::new("term_use".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "term_use".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
 
         let tuple_val = func.fresh_value(); // 2
 
@@ -1784,8 +1800,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn tuple_scalarize_single_element() {
-        let mut func =
-            TirFunction::new("single".into(), vec![TirType::I64], TirType::I64);
+        let mut func = TirFunction::new("single".into(), vec![TirType::I64], TirType::I64);
 
         let tuple_val = func.fresh_value(); // 1
         let out_a = func.fresh_value(); // 2

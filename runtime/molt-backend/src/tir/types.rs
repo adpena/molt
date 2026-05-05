@@ -219,10 +219,7 @@ impl TirType {
             "bytes" => return TirType::Bytes,
             "list" => return TirType::List(Box::new(TirType::DynBox)),
             "dict" => {
-                return TirType::Dict(
-                    Box::new(TirType::DynBox),
-                    Box::new(TirType::DynBox),
-                );
+                return TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox));
             }
             "set" => return TirType::Set(Box::new(TirType::DynBox)),
             "tuple" => return TirType::Tuple(Vec::new()),
@@ -233,8 +230,7 @@ impl TirType {
         }
         // Compound hints (Func:..., BoundMethod:...) — defer to
         // a future commit that adds proper signature parsing.
-        if hint.contains(':') || hint.contains('[') || hint.contains('(')
-        {
+        if hint.contains(':') || hint.contains('[') || hint.contains('(') {
             return TirType::DynBox;
         }
         // Identifier shape check: ASCII alphanumeric or `_`, not
@@ -413,19 +409,13 @@ mod tests {
         );
         assert_eq!(
             TirType::from_type_hint("dict"),
-            TirType::Dict(
-                Box::new(TirType::DynBox),
-                Box::new(TirType::DynBox),
-            )
+            TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox),)
         );
         assert_eq!(
             TirType::from_type_hint("set"),
             TirType::Set(Box::new(TirType::DynBox))
         );
-        assert_eq!(
-            TirType::from_type_hint("tuple"),
-            TirType::Tuple(Vec::new())
-        );
+        assert_eq!(TirType::from_type_hint("tuple"), TirType::Tuple(Vec::new()));
         assert_eq!(TirType::from_type_hint("None"), TirType::None);
         assert_eq!(TirType::from_type_hint("NoneType"), TirType::None);
         assert_eq!(TirType::from_type_hint("BigInt"), TirType::BigInt);
@@ -456,10 +446,7 @@ mod tests {
             TirType::DynBox,
             "Parameterized hints contain `[` — defer to DynBox"
         );
-        assert_eq!(
-            TirType::from_type_hint("Optional(Point)"),
-            TirType::DynBox,
-        );
+        assert_eq!(TirType::from_type_hint("Optional(Point)"), TirType::DynBox,);
         // Hints that look almost-identifier but aren't valid
         // (start with digit, contain whitespace) fall back.
         assert_eq!(TirType::from_type_hint("1Point"), TirType::DynBox);

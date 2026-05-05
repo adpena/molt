@@ -250,10 +250,8 @@ mod tests {
 
     #[test]
     fn first_check_kept() {
-        let mut func = make_func_with_block(vec![
-            make_const_int(1, ValueId(0)),
-            make_check_exception(),
-        ]);
+        let mut func =
+            make_func_with_block(vec![make_const_int(1, ValueId(0)), make_check_exception()]);
         let stats = run(&mut func);
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&BlockId(0)].ops.len(), 2);

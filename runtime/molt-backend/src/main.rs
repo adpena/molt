@@ -1900,8 +1900,7 @@ fn main() -> io::Result<()> {
             if func.ops.iter().any(|op| op.kind == "phi") {
                 molt_backend::rewrite_phi_to_store_load(&mut func.ops);
             }
-            let mut tir_func =
-                molt_backend::tir::lower_from_simple::lower_to_tir(func);
+            let mut tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(func);
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
             let _stats = molt_backend::tir::passes::run_pipeline(&mut tir_func);
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
@@ -1912,9 +1911,7 @@ fn main() -> io::Result<()> {
             }
         }
         let tir_elapsed = tir_start.elapsed();
-        eprintln!(
-            "[molt-luau] TIR optimization: {tir_count} functions in {tir_elapsed:.2?}"
-        );
+        eprintln!("[molt-luau] TIR optimization: {tir_count} functions in {tir_elapsed:.2?}");
     }
 
     let output_kind = if is_luau {
@@ -2249,6 +2246,8 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "rust-backend")]
+    use super::rust_source_for_ir;
     use super::{
         BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE,
         DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse,
@@ -2260,8 +2259,6 @@ mod tests {
         resolved_batch_size_limit, shared_stdlib_cache_matches, write_cached_output,
         write_shared_stdlib_cache_sidecars,
     };
-    #[cfg(feature = "rust-backend")]
-    use super::rust_source_for_ir;
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
     use std::io::Cursor;
     use std::io::Write;

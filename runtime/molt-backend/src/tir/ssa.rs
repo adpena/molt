@@ -2050,11 +2050,7 @@ mod tests {
 
     #[test]
     fn module_cache_del_lowers_to_first_class_tir_opcode() {
-        assert_first_class_module_mutation(
-            "module_cache_del",
-            OpCode::ModuleCacheDel,
-            &["name"],
-        );
+        assert_first_class_module_mutation("module_cache_del", OpCode::ModuleCacheDel, &["name"]);
     }
 
     #[test]

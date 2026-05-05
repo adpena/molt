@@ -6340,11 +6340,7 @@ mod not_roundtrip_tests {
         let func = FunctionIR {
             name: "test_not".to_string(),
             params: vec![],
-            ops: vec![
-                op_const_bool("x", true),
-                op_not("x", "y"),
-                op_ret("y"),
-            ],
+            ops: vec![op_const_bool("x", true), op_not("x", "y"), op_ret("y")],
             param_types: None,
             source_file: None,
             is_extern: false,

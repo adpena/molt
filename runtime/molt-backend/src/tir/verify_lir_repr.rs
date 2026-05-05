@@ -116,7 +116,10 @@ mod tests {
         );
         let func = make_lir_function(blocks);
         let violations = verify_register_passable(&func);
-        assert!(violations.is_empty(), "expected no violations: {violations:?}");
+        assert!(
+            violations.is_empty(),
+            "expected no violations: {violations:?}"
+        );
     }
 
     #[test]
@@ -173,6 +176,9 @@ mod tests {
         );
         let func = make_lir_function(blocks);
         let violations = verify_register_passable(&func);
-        assert!(violations.is_empty(), "expected no violations: {violations:?}");
+        assert!(
+            violations.is_empty(),
+            "expected no violations: {violations:?}"
+        );
     }
 }
