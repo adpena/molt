@@ -797,6 +797,81 @@ fn ensure_boxed_overflow_safe(
     }
 }
 
+/// Phase 1d Step 0.5 — overflow-safe sibling of `var_get_boxed` for use at
+/// boxing escape points (function return, call arguments, heap stores,
+/// runtime print/repr/str, exception rebind, def_var_global).
+///
+/// `var_get_boxed` (in lib.rs) emits inline-only `box_int_value_hoisted` for
+/// every name in `raw_primary_int`; that boxing OR-folds the 47-bit raw i64
+/// payload into the QNAN | TAG_INT mask in a single instruction. **It is only
+/// correct for values that fit the 47-bit signed inline range.** Values
+/// exceeding 2^46 produce a NaN-box whose high bits collide with the QNAN
+/// tag — readers see a denormal f64 instead of a tagged i64.
+///
+/// Pre-Step-0, the dynamic `raw_primary_int` set was populated only by
+/// codegen paths that proved inline-fits at every emit site; the inline-only
+/// box was therefore safe at every escape. Post-Step-0 the static analog
+/// `int_primary_vars` is operand-recursive and includes IV accumulators
+/// (e.g. `bench_sum`'s `total` reaching 49999995000000) whose raw i64 may
+/// exceed 2^46. Phase 1d Step 1 will swap the dynamic set for the static set
+/// across the entire codebase; this sibling makes the boxing escape
+/// invariant agnostic to whether the raw i64 fits inline, so the swap is
+/// provably semantics-preserving.
+///
+/// Internally dispatches int-primary names to `ensure_boxed_overflow_safe`
+/// (which has a fits-inline fast path + a cold `molt_int_from_i64` BigInt
+/// slow path), float-primary names to a bitcast (same as `var_get_boxed`),
+/// and otherwise returns the already-NaN-boxed main Variable verbatim.
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn var_get_boxed_overflow_safe(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    raw_int_shadow: &BTreeMap<String, Variable>,
+    raw_int_shadow_vals: &BTreeMap<String, Value>,
+    vars: &BTreeMap<String, Variable>,
+    name: &str,
+    raw_primary_int: &std::collections::BTreeSet<String>,
+    raw_primary_float: &std::collections::BTreeSet<String>,
+    box_int_mask_var: Variable,
+    box_int_tag_var: Variable,
+) -> Option<crate::VarValue> {
+    use crate::VarValue;
+    if raw_primary_int.contains(name) {
+        // Overflow-safe boxing: fits-inline fast path + BigInt cold path.
+        // ensure_boxed_overflow_safe consults the shadows first (preserving
+        // the existing pre-Phase-1d behavior where shadows hold the raw i64
+        // for join-slot accumulators) and falls back to the main Variable.
+        let boxed = ensure_boxed_overflow_safe(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            raw_int_shadow,
+            raw_int_shadow_vals,
+            vars,
+            box_int_mask_var,
+            box_int_tag_var,
+            raw_primary_int,
+            name,
+        );
+        Some(VarValue(boxed))
+    } else if raw_primary_float.contains(name) {
+        let var = *vars.get(name)?;
+        let val = builder.use_var(var);
+        let bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
+        Some(VarValue(bits))
+    } else {
+        let var = *vars.get(name)?;
+        let val = builder.use_var(var);
+        Some(VarValue(val))
+    }
+}
+
 /// Box a known-bool variable's raw 0/1 value into a TAG_BOOL NaN-box.
 ///
 /// Bool-typed variables (proven by static lane inference, e.g. `const_bool`,
@@ -861,8 +936,14 @@ fn ensure_boxed_primitive_safe(
     name: &str,
 ) -> Value {
     if raw_primary_float.contains(name) {
-        *var_get_boxed(
+        *var_get_boxed_overflow_safe(
+            module,
+            import_ids,
             builder,
+            import_refs,
+            sealed_blocks,
+            raw_int_shadow,
+            raw_int_shadow_vals,
             vars,
             name,
             raw_primary_int,
@@ -1002,6 +1083,13 @@ fn float_value_for_mixed(
             return builder.ins().fcvt_from_sint(types::F64, raw_int_val);
         }
         // Fall back to unboxing the NaN-boxed int representation.
+        // Step 0.5 NOTE: this var_get_boxed call is reached only when `name`
+        // is NOT in `raw_primary_int` (the early-return at lines above fires
+        // otherwise), so the int-box branch of var_get_boxed never executes
+        // here — only the identity branch returning the already-NaN-boxed
+        // main Variable.  Inline-only boxing is therefore overflow-safe by
+        // exclusion at this site, and threading the import-ref machinery
+        // through float_value_for_mixed would be churn for no semantic gain.
         let boxed = var_get_boxed(
             builder,
             vars,
@@ -1017,6 +1105,8 @@ fn float_value_for_mixed(
     }
 
     // 3. Not int — must be a NaN-boxed float without a shadow. Bitcast.
+    // Step 0.5 NOTE: same reasoning as the int-fallback site above —
+    // var_get_boxed's int-box branch is unreachable when name is not int.
     let boxed = var_get_boxed(
         builder,
         vars,
@@ -3503,8 +3593,14 @@ impl SimpleBackend {
         }
 
         if stateful && vars.contains_key("self") {
-            let self_ptr = var_get_boxed(
+            let self_ptr = var_get_boxed_overflow_safe(
+                &mut self.module,
+                &mut self.import_ids,
                 &mut builder,
+                &mut import_refs,
+                &mut sealed_blocks,
+                &raw_int_shadow,
+                &raw_int_shadow_vals,
                 &vars,
                 "self",
                 &raw_primary_int,
@@ -4380,8 +4476,14 @@ impl SimpleBackend {
                     let res = if op_prefers_str_lane(&op) {
                         // Both operands known to be strings — direct concat,
                         // skips the 8-branch dispatch in molt_add.
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -4390,8 +4492,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -4548,8 +4656,14 @@ impl SimpleBackend {
                             // operands are int-like. Skip tag check, unbox directly.
                             // Overflow guard retained for BigInt fallback.
                             // Propagate raw shadow so downstream ops skip unbox.
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -4558,8 +4672,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -4612,8 +4732,14 @@ impl SimpleBackend {
                             merged_boxed
                         }
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -4622,8 +4748,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -4717,8 +4849,14 @@ impl SimpleBackend {
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_str_lane(&op) {
                         // Both operands known to be strings — direct concat.
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -4727,8 +4865,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -4847,8 +4991,14 @@ impl SimpleBackend {
                         // with only Value-tier shadows). Box both operands and use the
                         // unbox-add-rebox path with overflow guard.
                         // Propagate raw shadow so downstream ops skip unbox.
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -4857,8 +5007,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -4918,8 +5074,14 @@ impl SimpleBackend {
                         }
                         merge_res
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -4928,8 +5090,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -5017,8 +5185,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_int" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5027,8 +5201,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5053,8 +5233,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_int_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5063,8 +5249,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5089,8 +5281,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_int_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5099,8 +5297,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5109,8 +5313,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5135,8 +5345,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5145,8 +5361,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5155,8 +5377,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5181,8 +5409,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_int_range_iter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5191,8 +5425,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5217,8 +5457,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_int_range_iter_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5227,8 +5473,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5253,8 +5505,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_float" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5263,8 +5521,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5289,8 +5553,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_float_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5299,8 +5569,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5325,8 +5601,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_float_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5335,8 +5617,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5345,8 +5633,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5371,8 +5665,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_float_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5381,8 +5681,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5391,8 +5697,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5417,8 +5729,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_float_range_iter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5427,8 +5745,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5453,8 +5777,14 @@ impl SimpleBackend {
                 }
                 "vec_sum_float_range_iter_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5463,8 +5793,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5489,8 +5825,14 @@ impl SimpleBackend {
                 }
                 "vec_prod_int" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5499,8 +5841,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5525,8 +5873,14 @@ impl SimpleBackend {
                 }
                 "vec_prod_int_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5535,8 +5889,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5561,8 +5921,14 @@ impl SimpleBackend {
                 }
                 "vec_prod_int_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5571,8 +5937,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5581,8 +5953,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5607,8 +5985,14 @@ impl SimpleBackend {
                 }
                 "vec_prod_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5617,8 +6001,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5627,8 +6017,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5653,8 +6049,14 @@ impl SimpleBackend {
                 }
                 "vec_min_int" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5663,8 +6065,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5689,8 +6097,14 @@ impl SimpleBackend {
                 }
                 "vec_min_int_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5699,8 +6113,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5725,8 +6145,14 @@ impl SimpleBackend {
                 }
                 "vec_min_int_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5735,8 +6161,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5745,8 +6177,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5771,8 +6209,14 @@ impl SimpleBackend {
                 }
                 "vec_min_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5781,8 +6225,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5791,8 +6241,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5817,8 +6273,14 @@ impl SimpleBackend {
                 }
                 "vec_max_int" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5827,8 +6289,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5853,8 +6321,14 @@ impl SimpleBackend {
                 }
                 "vec_max_int_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5863,8 +6337,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5889,8 +6369,14 @@ impl SimpleBackend {
                 }
                 "vec_max_int_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5899,8 +6385,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5909,8 +6401,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -5935,8 +6433,14 @@ impl SimpleBackend {
                 }
                 "vec_max_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -5945,8 +6449,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Seq arg not found");
-                    let acc = var_get_boxed(
+                    let acc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -5955,8 +6465,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Acc arg not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -6099,8 +6615,14 @@ impl SimpleBackend {
                             // operands are int-like. Skip tag check, unbox directly.
                             // Overflow guard retained for BigInt fallback.
                             // Propagate raw shadow so downstream ops skip unbox.
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -6111,8 +6633,14 @@ impl SimpleBackend {
                             .unwrap_or_else(|| {
                                 panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                             });
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -6167,8 +6695,14 @@ impl SimpleBackend {
                             merged_boxed
                         }
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -6177,8 +6711,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -6368,8 +6908,14 @@ impl SimpleBackend {
                         continue;
                     } else if op_prefers_int_lane(&op) {
                         // Propagate raw shadow so downstream ops skip unbox.
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -6380,8 +6926,14 @@ impl SimpleBackend {
                         .unwrap_or_else(|| {
                             panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                         });
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -6443,8 +6995,14 @@ impl SimpleBackend {
                         }
                         merge_res
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -6453,8 +7011,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -6660,8 +7224,14 @@ impl SimpleBackend {
                             // operands are int-like. Skip tag check, unbox directly.
                             // Overflow guard retained for BigInt fallback.
                             // Propagate raw shadow so downstream ops skip unbox.
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -6670,8 +7240,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -6721,8 +7297,14 @@ impl SimpleBackend {
                             merged_boxed
                         }
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -6731,8 +7313,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -6920,8 +7508,14 @@ impl SimpleBackend {
                         continue;
                     } else if op_prefers_int_lane(&op) {
                         // Propagate raw shadow so downstream ops skip unbox.
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -6930,8 +7524,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -6988,8 +7588,14 @@ impl SimpleBackend {
                         }
                         merge_res
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -6998,8 +7604,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -7125,8 +7737,14 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -7135,8 +7753,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -7189,8 +7813,14 @@ impl SimpleBackend {
                             builder.block_params(merge_block)[0]
                         }
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -7199,8 +7829,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -7267,8 +7903,14 @@ impl SimpleBackend {
                 }
                 "inplace_bit_or" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -7277,8 +7919,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -7426,8 +8074,14 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -7436,8 +8090,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -7490,8 +8150,14 @@ impl SimpleBackend {
                             builder.block_params(merge_block)[0]
                         }
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -7500,8 +8166,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -7568,8 +8240,14 @@ impl SimpleBackend {
                 }
                 "inplace_bit_and" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -7578,8 +8256,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -7727,8 +8411,14 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -7737,8 +8427,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -7791,8 +8487,14 @@ impl SimpleBackend {
                             builder.block_params(merge_block)[0]
                         }
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -7801,8 +8503,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -7869,8 +8577,14 @@ impl SimpleBackend {
                 }
                 "inplace_bit_xor" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -7879,8 +8593,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -8031,8 +8751,14 @@ impl SimpleBackend {
                         }
                     }
                     // Fallback: runtime call.
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -8041,8 +8767,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -8108,8 +8840,14 @@ impl SimpleBackend {
                         }
                     }
                     // Fallback: runtime call.
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -8118,8 +8856,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -8144,8 +8888,14 @@ impl SimpleBackend {
                 }
                 "matmul" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -8154,8 +8904,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -8241,8 +8997,14 @@ impl SimpleBackend {
                         // Defer var_get to cold path -- only needed for runtime call.
                         switch_to_block_materialized(&mut builder, zero_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, zero_block);
-                        let lhs_boxed = var_get_boxed(
+                        let lhs_boxed = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -8251,8 +9013,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs_boxed = var_get_boxed(
+                        let rhs_boxed = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -8316,8 +9084,14 @@ impl SimpleBackend {
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o));
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -8326,8 +9100,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -8414,8 +9194,14 @@ impl SimpleBackend {
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o));
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -8424,8 +9210,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -8611,8 +9403,14 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                            let lhs_boxed = var_get_boxed(
+                            let lhs_boxed = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -8621,8 +9419,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs_boxed = var_get_boxed(
+                            let rhs_boxed = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -8650,8 +9454,14 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -8660,8 +9470,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -8723,8 +9539,14 @@ impl SimpleBackend {
                             builder.block_params(merge_block)[0]
                         }
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -8733,8 +9555,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -8885,8 +9713,14 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                            let lhs_boxed = var_get_boxed(
+                            let lhs_boxed = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -8895,8 +9729,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs_boxed = var_get_boxed(
+                            let rhs_boxed = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -8923,8 +9763,14 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -8933,8 +9779,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -8994,8 +9846,14 @@ impl SimpleBackend {
                             builder.block_params(merge_block)[0]
                         }
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -9004,8 +9862,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -9088,8 +9952,14 @@ impl SimpleBackend {
                 }
                 "floor_div" | "binop_floor_div" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9098,8 +9968,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -9271,8 +10147,14 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                            let lhs_boxed = var_get_boxed(
+                            let lhs_boxed = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -9281,8 +10163,14 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("LHS not found");
-                            let rhs_boxed = var_get_boxed(
+                            let rhs_boxed = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -9310,8 +10198,14 @@ impl SimpleBackend {
                             continue;
                         }
                         // No both-shadow: proven-int path with boxing.
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -9320,8 +10214,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -9414,8 +10314,14 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -9424,8 +10330,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -9451,8 +10363,14 @@ impl SimpleBackend {
                 }
                 "pow_mod" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9461,8 +10379,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -9471,8 +10395,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("RHS not found");
-                    let modulus = var_get_boxed(
+                    let modulus = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -9497,8 +10427,14 @@ impl SimpleBackend {
                 }
                 "round" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9507,8 +10443,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Round arg not found");
-                    let ndigits = var_get_boxed(
+                    let ndigits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -9517,8 +10459,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Round ndigits not found");
-                    let has_ndigits = var_get_boxed(
+                    let has_ndigits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -9545,8 +10493,14 @@ impl SimpleBackend {
                 }
                 "trunc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9585,8 +10539,14 @@ impl SimpleBackend {
                             raw_int_shadow_vals.insert(out__.clone(), raw_len);
                         }
                     } else {
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -9632,8 +10592,14 @@ impl SimpleBackend {
                 }
                 "id" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9658,8 +10624,14 @@ impl SimpleBackend {
                 }
                 "ord" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9684,8 +10656,14 @@ impl SimpleBackend {
                 }
                 "chr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9757,8 +10735,14 @@ impl SimpleBackend {
                         .module
                         .declare_func_in_func(append_callee, builder.func);
                     for name in args {
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             name,
                             &raw_primary_int,
@@ -9796,8 +10780,14 @@ impl SimpleBackend {
                 "list_int_new" => {
                     // Specialized flat i64 list: args = [count, fill_value]
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let count = var_get_boxed(
+                    let count = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9806,8 +10796,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("list_int_new: count not found");
-                    let fill = var_get_boxed(
+                    let fill = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -9838,8 +10834,14 @@ impl SimpleBackend {
                     {
                         names.insert(source_name.clone());
                     }
-                    let builder_ptr = var_get_boxed(
+                    let builder_ptr = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9848,8 +10850,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Callargs builder not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -9878,8 +10886,14 @@ impl SimpleBackend {
                             names.insert(source_name.clone());
                         }
                     }
-                    let builder_ptr = var_get_boxed(
+                    let builder_ptr = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9888,8 +10902,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Callargs builder not found");
-                    let name = var_get_boxed(
+                    let name = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -9898,8 +10918,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Callargs name not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -9928,8 +10954,14 @@ impl SimpleBackend {
                     {
                         names.insert(source_name.clone());
                     }
-                    let builder_ptr = var_get_boxed(
+                    let builder_ptr = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9938,8 +10970,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Callargs builder not found");
-                    let iterable = var_get_boxed(
+                    let iterable = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -9966,8 +11004,14 @@ impl SimpleBackend {
                     {
                         names.insert(source_name.clone());
                     }
-                    let builder_ptr = var_get_boxed(
+                    let builder_ptr = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -9976,8 +11020,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Callargs builder not found");
-                    let mapping = var_get_boxed(
+                    let mapping = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -9998,8 +11048,14 @@ impl SimpleBackend {
                 }
                 "range_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10008,8 +11064,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Range start not found");
-                    let stop = var_get_boxed(
+                    let stop = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10018,8 +11080,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Range stop not found");
-                    let step = var_get_boxed(
+                    let step = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -10044,8 +11112,14 @@ impl SimpleBackend {
                 }
                 "list_from_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10054,8 +11128,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List-from-range start not found");
-                    let stop = var_get_boxed(
+                    let stop = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10064,8 +11144,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List-from-range stop not found");
-                    let step = var_get_boxed(
+                    let step = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -10098,8 +11184,14 @@ impl SimpleBackend {
                     if op.stack_eligible == Some(true) && args.len() <= 4 {
                         let mut elems: Vec<Value> = Vec::with_capacity(args.len());
                         for name in args {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -10122,8 +11214,14 @@ impl SimpleBackend {
                             3,
                         ));
                         for (idx, name) in args.iter().enumerate() {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -10160,8 +11258,14 @@ impl SimpleBackend {
                     // args[1..] are the output variable names.
                     // op.value holds the expected element count.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq_val = var_get_boxed(
+                    let seq_val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10213,8 +11317,14 @@ impl SimpleBackend {
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
                     list_is_bool_cache.remove(&args[0]);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10264,8 +11374,14 @@ impl SimpleBackend {
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
                     list_is_bool_cache.remove(&args[0]);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10274,8 +11390,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List not found");
-                    let idx = var_get_boxed(
+                    let idx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10305,8 +11427,14 @@ impl SimpleBackend {
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
                     list_is_bool_cache.remove(&args[0]);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10315,8 +11443,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List not found");
-                    let other = var_get_boxed(
+                    let other = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10346,8 +11480,14 @@ impl SimpleBackend {
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
                     list_is_bool_cache.remove(&args[0]);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10356,8 +11496,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List not found");
-                    let idx = var_get_boxed(
+                    let idx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10366,8 +11512,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List insert index not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -10398,8 +11550,14 @@ impl SimpleBackend {
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
                     list_is_bool_cache.remove(&args[0]);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10408,8 +11566,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10440,8 +11604,14 @@ impl SimpleBackend {
                     list_data_cache.remove(&args[0]);
                     list_len_cache.remove(&args[0]);
                     list_is_bool_cache.remove(&args[0]);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10466,8 +11636,14 @@ impl SimpleBackend {
                 }
                 "list_copy" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10492,8 +11668,14 @@ impl SimpleBackend {
                 }
                 "list_reverse" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10518,8 +11700,14 @@ impl SimpleBackend {
                 }
                 "list_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10528,8 +11716,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10554,8 +11748,14 @@ impl SimpleBackend {
                 }
                 "list_index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10564,8 +11764,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10590,8 +11796,14 @@ impl SimpleBackend {
                 }
                 "list_index_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10600,8 +11812,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10610,8 +11828,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List index value not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -10620,8 +11844,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("List index start not found");
-                    let stop = var_get_boxed(
+                    let stop = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -10648,8 +11878,14 @@ impl SimpleBackend {
                 }
                 "tuple_from_list" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let list = var_get_boxed(
+                    let list = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10701,8 +11937,14 @@ impl SimpleBackend {
                     let set_local = self.module.declare_func_in_func(set_callee, builder.func);
                     let mut current = dict_bits;
                     for pair in args.chunks(2) {
-                        let key = var_get_boxed(
+                        let key = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &pair[0],
                             &raw_primary_int,
@@ -10711,8 +11953,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("Dict key not found");
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &pair[1],
                             &raw_primary_int,
@@ -10728,8 +11976,14 @@ impl SimpleBackend {
                 }
                 "dict_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10781,8 +12035,14 @@ impl SimpleBackend {
                         );
                         let add_local = self.module.declare_func_in_func(add_callee, builder.func);
                         for name in args {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -10828,8 +12088,14 @@ impl SimpleBackend {
                         );
                         let add_local = self.module.declare_func_in_func(add_callee, builder.func);
                         for name in args {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -10848,8 +12114,14 @@ impl SimpleBackend {
                 }
                 "dict_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10858,8 +12130,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let key = var_get_boxed(
+                    let key = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10868,8 +12146,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict key not found");
-                    let default = var_get_boxed(
+                    let default = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -10894,8 +12178,14 @@ impl SimpleBackend {
                 }
                 "dict_inc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10904,8 +12194,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let key = var_get_boxed(
+                    let key = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10914,8 +12210,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict key not found");
-                    let delta = var_get_boxed(
+                    let delta = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -10940,8 +12242,14 @@ impl SimpleBackend {
                 }
                 "dict_str_int_inc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10950,8 +12258,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let key = var_get_boxed(
+                    let key = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -10960,8 +12274,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict key not found");
-                    let delta = var_get_boxed(
+                    let delta = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -10986,8 +12306,14 @@ impl SimpleBackend {
                 }
                 "string_split_ws_dict_inc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let line = var_get_boxed(
+                    let line = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -10996,8 +12322,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Line not found");
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11006,8 +12338,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let delta = var_get_boxed(
+                    let delta = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -11032,8 +12370,14 @@ impl SimpleBackend {
                 }
                 "taq_ingest_line" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11042,8 +12386,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let line = var_get_boxed(
+                    let line = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11052,8 +12402,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Line not found");
-                    let bucket_size = var_get_boxed(
+                    let bucket_size = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -11080,8 +12436,14 @@ impl SimpleBackend {
                 }
                 "string_split_sep_dict_inc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let line = var_get_boxed(
+                    let line = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11090,8 +12452,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Line not found");
-                    let sep = var_get_boxed(
+                    let sep = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11100,8 +12468,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Separator not found");
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -11110,8 +12484,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let delta = var_get_boxed(
+                    let delta = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -11138,8 +12518,14 @@ impl SimpleBackend {
                 }
                 "dict_pop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11148,8 +12534,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let key = var_get_boxed(
+                    let key = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11158,8 +12550,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict key not found");
-                    let default = var_get_boxed(
+                    let default = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -11168,8 +12566,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict default not found");
-                    let has_default = var_get_boxed(
+                    let has_default = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -11196,8 +12600,14 @@ impl SimpleBackend {
                 }
                 "dict_setdefault" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11206,8 +12616,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let key = var_get_boxed(
+                    let key = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11216,8 +12632,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict key not found");
-                    let default = var_get_boxed(
+                    let default = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -11242,8 +12664,14 @@ impl SimpleBackend {
                 }
                 "dict_setdefault_empty_list" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11252,8 +12680,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let key = var_get_boxed(
+                    let key = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11278,8 +12712,14 @@ impl SimpleBackend {
                 }
                 "dict_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11288,8 +12728,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let other = var_get_boxed(
+                    let other = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11314,8 +12760,14 @@ impl SimpleBackend {
                 }
                 "dict_clear" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11340,8 +12792,14 @@ impl SimpleBackend {
                 }
                 "dict_copy" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11366,8 +12824,14 @@ impl SimpleBackend {
                 }
                 "dict_popitem" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11392,8 +12856,14 @@ impl SimpleBackend {
                 }
                 "dict_update_kwstar" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11402,8 +12872,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dict not found");
-                    let other = var_get_boxed(
+                    let other = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11428,8 +12904,14 @@ impl SimpleBackend {
                 }
                 "set_add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11438,8 +12920,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Set not found");
-                    let key_bits = var_get_boxed(
+                    let key_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11464,8 +12952,14 @@ impl SimpleBackend {
                 }
                 "frozenset_add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11474,8 +12968,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Frozenset not found");
-                    let key_bits = var_get_boxed(
+                    let key_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11500,8 +13000,14 @@ impl SimpleBackend {
                 }
                 "set_discard" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11510,8 +13016,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Set not found");
-                    let key_bits = var_get_boxed(
+                    let key_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11536,8 +13048,14 @@ impl SimpleBackend {
                 }
                 "set_remove" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11546,8 +13064,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Set not found");
-                    let key_bits = var_get_boxed(
+                    let key_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11572,8 +13096,14 @@ impl SimpleBackend {
                 }
                 "set_pop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11598,8 +13128,14 @@ impl SimpleBackend {
                 }
                 "set_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11608,8 +13144,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Set not found");
-                    let other_bits = var_get_boxed(
+                    let other_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11634,8 +13176,14 @@ impl SimpleBackend {
                 }
                 "set_intersection_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11644,8 +13192,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Set not found");
-                    let other_bits = var_get_boxed(
+                    let other_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11670,8 +13224,14 @@ impl SimpleBackend {
                 }
                 "set_difference_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11680,8 +13240,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Set not found");
-                    let other_bits = var_get_boxed(
+                    let other_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11706,8 +13272,14 @@ impl SimpleBackend {
                 }
                 "set_symdiff_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let set_bits = var_get_boxed(
+                    let set_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11716,8 +13288,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Set not found");
-                    let other_bits = var_get_boxed(
+                    let other_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11742,8 +13320,14 @@ impl SimpleBackend {
                 }
                 "dict_keys" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11768,8 +13352,14 @@ impl SimpleBackend {
                 }
                 "dict_values" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11794,8 +13384,14 @@ impl SimpleBackend {
                 }
                 "dict_items" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict = var_get_boxed(
+                    let dict = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11820,8 +13416,14 @@ impl SimpleBackend {
                 }
                 "tuple_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let tuple = var_get_boxed(
+                    let tuple = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11830,8 +13432,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Tuple not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11856,8 +13464,14 @@ impl SimpleBackend {
                 }
                 "tuple_index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let tuple = var_get_boxed(
+                    let tuple = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11866,8 +13480,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Tuple not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11892,8 +13512,14 @@ impl SimpleBackend {
                 }
                 "iter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11918,8 +13544,14 @@ impl SimpleBackend {
                 }
                 "enumerate" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let iterable = var_get_boxed(
+                    let iterable = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11928,8 +13560,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Enumerate iterable not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -11938,8 +13576,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Enumerate start not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -11966,8 +13610,14 @@ impl SimpleBackend {
                 }
                 "aiter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -11995,8 +13645,14 @@ impl SimpleBackend {
                     // directly.  op.args[0] = iterator, op.var = value output,
                     // op.out = done_flag output.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let iter = var_get_boxed(
+                    let iter = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12118,8 +13774,14 @@ impl SimpleBackend {
                 }
                 "iter_next" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let iter = var_get_boxed(
+                    let iter = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12303,8 +13965,14 @@ impl SimpleBackend {
                 }
                 "anext" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let iter = var_get_boxed(
+                    let iter = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12329,8 +13997,14 @@ impl SimpleBackend {
                 }
                 "asyncgen_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let gen_obj = var_get_boxed(
+                    let gen_obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12370,8 +14044,14 @@ impl SimpleBackend {
                 }
                 "gen_send" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let gen_obj = var_get_boxed(
+                    let gen_obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12380,8 +14060,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Generator not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -12406,8 +14092,14 @@ impl SimpleBackend {
                 }
                 "gen_throw" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let gen_obj = var_get_boxed(
+                    let gen_obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12416,8 +14108,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Generator not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -12442,8 +14140,14 @@ impl SimpleBackend {
                 }
                 "gen_close" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let gen_obj = var_get_boxed(
+                    let gen_obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12468,8 +14172,14 @@ impl SimpleBackend {
                 }
                 "is_generator" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12494,8 +14204,14 @@ impl SimpleBackend {
                 }
                 "is_bound_method" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12520,8 +14236,14 @@ impl SimpleBackend {
                 }
                 "is_callable" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -12562,8 +14284,14 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out__, elem_val);
                         }
                     } else {
-                        let obj = var_get_boxed(
+                        let obj = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -12572,8 +14300,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("Obj not found");
-                        let idx = var_get_boxed(
+                        let idx = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -13307,8 +15041,14 @@ impl SimpleBackend {
                 }
                 "store_index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -13317,8 +15057,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Obj not found in {} op {}", func_ir.name, op_idx));
-                    let idx = var_get_boxed(
+                    let idx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -13327,8 +15073,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Index not found in {} op {}", func_ir.name, op_idx));
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -13899,8 +15651,14 @@ impl SimpleBackend {
                 }
                 "dict_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict_bits = var_get_boxed(
+                    let dict_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -13909,8 +15667,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_ir.name, op_idx));
-                    let key_bits = var_get_boxed(
+                    let key_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -13919,8 +15683,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Key not found in {} op {}", func_ir.name, op_idx));
-                    let val_bits = var_get_boxed(
+                    let val_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14014,8 +15784,14 @@ impl SimpleBackend {
                 }
                 "dict_update_missing" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict_bits = var_get_boxed(
+                    let dict_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14024,8 +15800,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_ir.name, op_idx));
-                    let key_bits = var_get_boxed(
+                    let key_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14034,8 +15816,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Key not found in {} op {}", func_ir.name, op_idx));
-                    let val_bits = var_get_boxed(
+                    let val_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14062,8 +15850,14 @@ impl SimpleBackend {
                 }
                 "del_index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14072,8 +15866,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Obj not found in {} op {}", func_ir.name, op_idx));
-                    let idx = var_get_boxed(
+                    let idx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14098,8 +15898,14 @@ impl SimpleBackend {
                 }
                 "slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let target = var_get_boxed(
+                    let target = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14108,8 +15914,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Slice target not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14118,8 +15930,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Slice start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14144,8 +15962,14 @@ impl SimpleBackend {
                 }
                 "slice_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14154,8 +15978,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Slice start not found");
-                    let stop = var_get_boxed(
+                    let stop = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14164,8 +15994,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Slice stop not found");
-                    let step = var_get_boxed(
+                    let step = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14190,8 +16026,14 @@ impl SimpleBackend {
                 }
                 "bytes_find" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14200,8 +16042,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14226,8 +16074,14 @@ impl SimpleBackend {
                 }
                 "bytes_find_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14236,8 +16090,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14246,8 +16106,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14256,8 +16122,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -14266,8 +16138,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -14276,8 +16154,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -14312,8 +16196,14 @@ impl SimpleBackend {
                 }
                 "bytearray_find" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14322,8 +16212,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14348,8 +16244,14 @@ impl SimpleBackend {
                 }
                 "bytearray_find_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14358,8 +16260,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14368,8 +16276,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14378,8 +16292,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -14388,8 +16308,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -14398,8 +16324,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -14434,8 +16366,14 @@ impl SimpleBackend {
                 }
                 "bytearray_fill_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let bytearray = var_get_boxed(
+                    let bytearray = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14444,8 +16382,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("bytearray fill target not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14454,8 +16398,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("bytearray fill start not found");
-                    let stop = var_get_boxed(
+                    let stop = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14464,8 +16414,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("bytearray fill stop not found");
-                    let value = var_get_boxed(
+                    let value = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -14492,8 +16448,14 @@ impl SimpleBackend {
                 }
                 "string_find" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14502,8 +16464,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14528,8 +16496,14 @@ impl SimpleBackend {
                 }
                 "string_find_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14538,8 +16512,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14548,8 +16528,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14558,8 +16544,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -14568,8 +16560,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -14578,8 +16576,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Find has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -14614,8 +16618,14 @@ impl SimpleBackend {
                 }
                 "string_format" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14624,8 +16634,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Format value not found");
-                    let spec = var_get_boxed(
+                    let spec = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14650,8 +16666,14 @@ impl SimpleBackend {
                 }
                 "string_startswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14660,8 +16682,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14686,8 +16714,14 @@ impl SimpleBackend {
                 }
                 "string_startswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14696,8 +16730,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14706,8 +16746,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14716,8 +16762,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -14726,8 +16778,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -14736,8 +16794,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -14772,8 +16836,14 @@ impl SimpleBackend {
                 }
                 "bytes_startswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14782,8 +16852,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14808,8 +16884,14 @@ impl SimpleBackend {
                 }
                 "bytes_startswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14818,8 +16900,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14828,8 +16916,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14838,8 +16932,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -14848,8 +16948,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -14858,8 +16964,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -14894,8 +17006,14 @@ impl SimpleBackend {
                 }
                 "bytearray_startswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14904,8 +17022,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14930,8 +17054,14 @@ impl SimpleBackend {
                 }
                 "bytearray_startswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -14940,8 +17070,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -14950,8 +17086,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -14960,8 +17102,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -14970,8 +17118,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -14980,8 +17134,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Startswith has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -15016,8 +17176,14 @@ impl SimpleBackend {
                 }
                 "string_endswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15026,8 +17192,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15052,8 +17224,14 @@ impl SimpleBackend {
                 }
                 "string_endswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15062,8 +17240,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15072,8 +17256,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -15082,8 +17272,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -15092,8 +17288,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -15102,8 +17304,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -15138,8 +17346,14 @@ impl SimpleBackend {
                 }
                 "bytes_endswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15148,8 +17362,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15174,8 +17394,14 @@ impl SimpleBackend {
                 }
                 "bytes_endswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15184,8 +17410,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15194,8 +17426,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -15204,8 +17442,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -15214,8 +17458,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -15224,8 +17474,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -15260,8 +17516,14 @@ impl SimpleBackend {
                 }
                 "bytearray_endswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15270,8 +17532,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15296,8 +17564,14 @@ impl SimpleBackend {
                 }
                 "bytearray_endswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15306,8 +17580,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15316,8 +17596,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -15326,8 +17612,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -15336,8 +17628,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -15346,8 +17644,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Endswith has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -15382,8 +17686,14 @@ impl SimpleBackend {
                 }
                 "string_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15392,8 +17702,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15418,8 +17734,14 @@ impl SimpleBackend {
                 }
                 "bytes_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15428,8 +17750,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15454,8 +17782,14 @@ impl SimpleBackend {
                 }
                 "bytearray_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15464,8 +17798,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15490,8 +17830,14 @@ impl SimpleBackend {
                 }
                 "string_count_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15500,8 +17846,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15510,8 +17862,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -15520,8 +17878,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -15530,8 +17894,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -15540,8 +17910,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -15576,8 +17952,14 @@ impl SimpleBackend {
                 }
                 "bytes_count_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15586,8 +17968,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15596,8 +17984,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -15606,8 +18000,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -15616,8 +18016,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -15626,8 +18032,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -15662,8 +18074,14 @@ impl SimpleBackend {
                 }
                 "bytearray_count_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15672,8 +18090,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15682,8 +18106,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count needle not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -15692,8 +18122,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -15702,8 +18138,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -15712,8 +18154,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Count has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -15748,8 +18196,14 @@ impl SimpleBackend {
                 }
                 "env_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let key = var_get_boxed(
+                    let key = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15758,8 +18212,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Env key not found");
-                    let default = var_get_boxed(
+                    let default = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15784,8 +18244,14 @@ impl SimpleBackend {
                 }
                 "string_join" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let sep = var_get_boxed(
+                    let sep = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15794,8 +18260,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Join separator not found");
-                    let items = var_get_boxed(
+                    let items = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15820,8 +18292,14 @@ impl SimpleBackend {
                 }
                 "string_split" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15830,8 +18308,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15856,8 +18340,14 @@ impl SimpleBackend {
                 }
                 "string_split_max" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15866,8 +18356,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15876,8 +18372,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split needle not found");
-                    let maxsplit = var_get_boxed(
+                    let maxsplit = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -15904,8 +18406,14 @@ impl SimpleBackend {
                 }
                 "statistics_mean_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15914,8 +18422,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Statistics mean slice sequence not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15924,8 +18438,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Statistics mean slice start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -15934,8 +18454,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Statistics mean slice end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -15944,8 +18470,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Statistics mean slice has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -15972,8 +18504,14 @@ impl SimpleBackend {
                 }
                 "statistics_stdev_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let seq = var_get_boxed(
+                    let seq = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -15982,8 +18520,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Statistics stdev slice sequence not found");
-                    let start = var_get_boxed(
+                    let start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -15992,8 +18536,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Statistics stdev slice start not found");
-                    let end = var_get_boxed(
+                    let end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16002,8 +18552,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Statistics stdev slice end not found");
-                    let has_start = var_get_boxed(
+                    let has_start = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -16012,8 +18568,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Statistics stdev slice has_start not found");
-                    let has_end = var_get_boxed(
+                    let has_end = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -16040,8 +18602,14 @@ impl SimpleBackend {
                 }
                 "string_lower" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16066,8 +18634,14 @@ impl SimpleBackend {
                 }
                 "string_upper" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16092,8 +18666,14 @@ impl SimpleBackend {
                 }
                 "string_capitalize" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16118,8 +18698,14 @@ impl SimpleBackend {
                 }
                 "string_strip" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16128,8 +18714,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Strip string not found");
-                    let chars = var_get_boxed(
+                    let chars = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16154,8 +18746,14 @@ impl SimpleBackend {
                 }
                 "string_lstrip" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16164,8 +18762,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Lstrip string not found");
-                    let chars = var_get_boxed(
+                    let chars = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16190,8 +18794,14 @@ impl SimpleBackend {
                 }
                 "string_rstrip" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16200,8 +18810,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Rstrip string not found");
-                    let chars = var_get_boxed(
+                    let chars = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16226,8 +18842,14 @@ impl SimpleBackend {
                 }
                 "string_replace" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16236,8 +18858,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16246,8 +18874,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace needle not found");
-                    let replacement = var_get_boxed(
+                    let replacement = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16256,8 +18890,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace replacement not found");
-                    let count = var_get_boxed(
+                    let count = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -16284,8 +18924,14 @@ impl SimpleBackend {
                 }
                 "bytes_split" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16294,8 +18940,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16320,8 +18972,14 @@ impl SimpleBackend {
                 }
                 "bytes_split_max" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16330,8 +18988,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16340,8 +19004,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split needle not found");
-                    let maxsplit = var_get_boxed(
+                    let maxsplit = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16368,8 +19038,14 @@ impl SimpleBackend {
                 }
                 "bytearray_split" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16378,8 +19054,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16404,8 +19086,14 @@ impl SimpleBackend {
                 }
                 "bytearray_split_max" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16414,8 +19102,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16424,8 +19118,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Split needle not found");
-                    let maxsplit = var_get_boxed(
+                    let maxsplit = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16452,8 +19152,14 @@ impl SimpleBackend {
                 }
                 "bytes_replace" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16462,8 +19168,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16472,8 +19184,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace needle not found");
-                    let replacement = var_get_boxed(
+                    let replacement = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16482,8 +19200,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace replacement not found");
-                    let count = var_get_boxed(
+                    let count = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -16510,8 +19234,14 @@ impl SimpleBackend {
                 }
                 "bytearray_replace" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let hay = var_get_boxed(
+                    let hay = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16520,8 +19250,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace haystack not found");
-                    let needle = var_get_boxed(
+                    let needle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16530,8 +19266,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace needle not found");
-                    let replacement = var_get_boxed(
+                    let replacement = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16540,8 +19282,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Replace replacement not found");
-                    let count = var_get_boxed(
+                    let count = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -16568,8 +19316,14 @@ impl SimpleBackend {
                 }
                 "bytes_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16594,8 +19348,14 @@ impl SimpleBackend {
                 }
                 "bytes_from_str" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16604,8 +19364,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Bytes source not found");
-                    let encoding = var_get_boxed(
+                    let encoding = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16614,8 +19380,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Bytes encoding not found");
-                    let errors = var_get_boxed(
+                    let errors = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16642,8 +19414,14 @@ impl SimpleBackend {
                 }
                 "bytearray_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16668,8 +19446,14 @@ impl SimpleBackend {
                 }
                 "bytearray_from_str" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16678,8 +19462,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Bytearray source not found");
-                    let encoding = var_get_boxed(
+                    let encoding = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16688,8 +19478,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Bytearray encoding not found");
-                    let errors = var_get_boxed(
+                    let errors = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16716,8 +19512,14 @@ impl SimpleBackend {
                 }
                 "float_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16742,8 +19544,14 @@ impl SimpleBackend {
                 }
                 "int_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16752,8 +19560,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Int value not found");
-                    let base = var_get_boxed(
+                    let base = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16762,8 +19576,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Int base not found");
-                    let has_base = var_get_boxed(
+                    let has_base = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16788,8 +19608,14 @@ impl SimpleBackend {
                 }
                 "complex_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16798,8 +19624,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Complex value not found");
-                    let imag = var_get_boxed(
+                    let imag = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16808,8 +19640,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Complex imag not found");
-                    let has_imag = var_get_boxed(
+                    let has_imag = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16834,8 +19672,14 @@ impl SimpleBackend {
                 }
                 "intarray_from_seq" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16860,8 +19704,14 @@ impl SimpleBackend {
                 }
                 "memoryview_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16886,8 +19736,14 @@ impl SimpleBackend {
                 }
                 "memoryview_tobytes" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16912,8 +19768,14 @@ impl SimpleBackend {
                 }
                 "memoryview_cast" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let view = var_get_boxed(
+                    let view = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16922,8 +19784,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Memoryview not found");
-                    let format = var_get_boxed(
+                    let format = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16932,8 +19800,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Memoryview format not found");
-                    let shape = var_get_boxed(
+                    let shape = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -16942,8 +19816,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Memoryview shape not found");
-                    let has_shape = var_get_boxed(
+                    let has_shape = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -16970,8 +19850,14 @@ impl SimpleBackend {
                 }
                 "buffer2d_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let rows = var_get_boxed(
+                    let rows = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -16980,8 +19866,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Buffer2D rows not found");
-                    let cols = var_get_boxed(
+                    let cols = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -16990,8 +19882,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Buffer2D cols not found");
-                    let init = var_get_boxed(
+                    let init = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -17016,8 +19914,14 @@ impl SimpleBackend {
                 }
                 "buffer2d_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let buf = var_get_boxed(
+                    let buf = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17026,8 +19930,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Buffer2D not found");
-                    let row = var_get_boxed(
+                    let row = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -17036,8 +19946,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Buffer2D row not found");
-                    let col = var_get_boxed(
+                    let col = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -17062,8 +19978,14 @@ impl SimpleBackend {
                 }
                 "buffer2d_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let buf = var_get_boxed(
+                    let buf = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17072,8 +19994,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Buffer2D not found");
-                    let row = var_get_boxed(
+                    let row = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -17082,8 +20010,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Buffer2D row not found");
-                    let col = var_get_boxed(
+                    let col = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -17092,8 +20026,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Buffer2D col not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -17118,8 +20058,14 @@ impl SimpleBackend {
                 }
                 "buffer2d_matmul" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17128,8 +20074,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Buffer2D lhs not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -17154,8 +20106,14 @@ impl SimpleBackend {
                 }
                 "str_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17180,8 +20138,14 @@ impl SimpleBackend {
                 }
                 "repr_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17206,8 +20170,14 @@ impl SimpleBackend {
                 }
                 "ascii_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src = var_get_boxed(
+                    let src = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17232,8 +20202,14 @@ impl SimpleBackend {
                 }
                 "dataclass_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let name = var_get_boxed(
+                    let name = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17242,8 +20218,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dataclass name not found");
-                    let fields = var_get_boxed(
+                    let fields = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -17252,8 +20234,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dataclass fields not found");
-                    let values = var_get_boxed(
+                    let values = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -17262,8 +20250,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dataclass values not found");
-                    let flags = var_get_boxed(
+                    let flags = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -17290,8 +20284,14 @@ impl SimpleBackend {
                 }
                 "dataclass_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17300,8 +20300,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dataclass object not found");
-                    let idx = var_get_boxed(
+                    let idx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -17326,8 +20332,14 @@ impl SimpleBackend {
                 }
                 "dataclass_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17336,8 +20348,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dataclass object not found");
-                    let idx = var_get_boxed(
+                    let idx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -17346,8 +20364,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dataclass index not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -17372,8 +20396,14 @@ impl SimpleBackend {
                 }
                 "dataclass_set_class" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -17382,8 +20412,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Dataclass object not found");
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -17443,8 +20479,14 @@ impl SimpleBackend {
                     } else if lr.is_some() || rr.is_some() {
                         // One-operand: unbox only the non-raw side
                         let lv = lr.unwrap_or_else(|| {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -17456,8 +20498,14 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *lhs, &nbc)
                         });
                         let rv = rr.unwrap_or_else(|| {
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -17512,8 +20560,14 @@ impl SimpleBackend {
                         lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -17522,8 +20576,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -17538,8 +20598,14 @@ impl SimpleBackend {
                         lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -17548,8 +20614,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -17657,8 +20729,14 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
                         let lv = lr.unwrap_or_else(|| {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -17670,8 +20748,14 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *lhs, &nbc)
                         });
                         let rv = rr.unwrap_or_else(|| {
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -17726,8 +20810,14 @@ impl SimpleBackend {
                         le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -17736,8 +20826,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -17755,8 +20851,14 @@ impl SimpleBackend {
                         le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -17765,8 +20867,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -17876,8 +20984,14 @@ impl SimpleBackend {
                     } else if lhs_shadow.is_some() || rhs_shadow.is_some() {
                         // One operand raw, one boxed: unbox only the non-raw side.
                         let lv = lhs_shadow.unwrap_or_else(|| {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -17889,8 +21003,14 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *lhs, &nbc)
                         });
                         let rv = rhs_shadow.unwrap_or_else(|| {
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -17945,8 +21065,14 @@ impl SimpleBackend {
                         gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -17955,8 +21081,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -17973,8 +21105,14 @@ impl SimpleBackend {
                         gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -17983,8 +21121,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -18093,8 +21237,14 @@ impl SimpleBackend {
                     } else if lhs_shadow.is_some() || rhs_shadow.is_some() {
                         // One operand raw, one boxed: unbox only the non-raw side.
                         let lv = lhs_shadow.unwrap_or_else(|| {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -18106,8 +21256,14 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *lhs, &nbc)
                         });
                         let rv = rhs_shadow.unwrap_or_else(|| {
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -18162,8 +21318,14 @@ impl SimpleBackend {
                         ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18172,8 +21334,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -18191,8 +21359,14 @@ impl SimpleBackend {
                         ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18201,8 +21375,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -18316,8 +21496,14 @@ impl SimpleBackend {
                     } else if eq_lr.is_some() || eq_rr.is_some() {
                         // One operand raw, one boxed: unbox only the non-raw side.
                         let lv = eq_lr.unwrap_or_else(|| {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -18329,8 +21515,14 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *lhs, &nbc)
                         });
                         let rv = eq_rr.unwrap_or_else(|| {
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -18386,8 +21578,14 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, direct unbox + compare.
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18396,8 +21594,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -18412,8 +21616,14 @@ impl SimpleBackend {
                         eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18422,8 +21632,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -18513,8 +21729,14 @@ impl SimpleBackend {
                     } else if ne_lr.is_some() || ne_rr.is_some() {
                         // One operand raw, one boxed.
                         let lv = ne_lr.unwrap_or_else(|| {
-                            let lhs = var_get_boxed(
+                            let lhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -18526,8 +21748,14 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *lhs, &nbc)
                         });
                         let rv = ne_rr.unwrap_or_else(|| {
-                            let rhs = var_get_boxed(
+                            let rhs = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -18583,8 +21811,14 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, direct unbox + compare.
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18593,8 +21827,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -18609,8 +21849,14 @@ impl SimpleBackend {
                         ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
-                        let lhs = var_get_boxed(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18619,8 +21865,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("LHS not found");
-                        let rhs = var_get_boxed(
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -18680,8 +21932,14 @@ impl SimpleBackend {
                 }
                 "string_eq" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -18690,8 +21948,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -18717,8 +21981,14 @@ impl SimpleBackend {
                 }
                 "is" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -18727,8 +21997,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -18774,8 +22050,14 @@ impl SimpleBackend {
                         result
                     } else if op_prefers_bool_lane(&op) {
                         // NaN-boxed bool: extract bit 0 and flip.
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18797,8 +22079,14 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18827,8 +22115,14 @@ impl SimpleBackend {
                             &args[0],
                         )
                         .unwrap_or_else(|| {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -18885,8 +22179,14 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -18939,8 +22239,14 @@ impl SimpleBackend {
                             builder.block_params(merge_block)[0]
                         }
                     } else {
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -18997,8 +22303,14 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -19053,8 +22365,14 @@ impl SimpleBackend {
                             builder.block_params(merge_block)[0]
                         }
                     } else {
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -19109,8 +22427,14 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -19130,8 +22454,14 @@ impl SimpleBackend {
                             )
                         }
                     } else {
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -19180,8 +22510,14 @@ impl SimpleBackend {
                             &args[0],
                         )
                         .unwrap_or_else(|| {
-                            let val = var_get_boxed(
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -19198,8 +22534,14 @@ impl SimpleBackend {
                         box_bool_value(&mut builder, is_nonzero, &nbc)
                     } else if op_prefers_bool_lane(&op) {
                         // For known bools, extract bit 0 directly — no function call.
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -19222,8 +22564,14 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -19249,8 +22597,14 @@ impl SimpleBackend {
                 }
                 "and" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -19259,8 +22613,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -19319,8 +22679,14 @@ impl SimpleBackend {
                 }
                 "or" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs = var_get_boxed(
+                    let lhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -19329,8 +22695,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("LHS not found");
-                    let rhs = var_get_boxed(
+                    let rhs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -19385,8 +22757,14 @@ impl SimpleBackend {
                 }
                 "contains" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let container = var_get_boxed(
+                    let container = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -19395,8 +22773,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Container not found");
-                    let item = var_get_boxed(
+                    let item = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -19429,8 +22813,14 @@ impl SimpleBackend {
                 }
                 "print" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = if let Some(val) = var_get_boxed(
+                    let val = if let Some(val) = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -19461,8 +22851,14 @@ impl SimpleBackend {
                             func_ir.name, args, is_block_filled
                         );
                     }
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -19495,8 +22891,14 @@ impl SimpleBackend {
                 "json_parse" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let arg_name = &args[0];
-                    if let Some(len) = var_get_boxed(
+                    if let Some(len) = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &format!("{}_len", arg_name),
                         &raw_primary_int,
@@ -19504,8 +22906,14 @@ impl SimpleBackend {
                         box_int_mask_var,
                         box_int_tag_var,
                     ) {
-                        let ptr = var_get_boxed(
+                        let ptr = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &format!("{}_ptr", arg_name),
                             &raw_primary_int,
@@ -19514,8 +22922,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .or_else(|| {
-                            var_get_boxed(
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 arg_name,
                                 &raw_primary_int,
@@ -19559,8 +22973,14 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, err_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, err_block);
-                        let arg_bits = var_get_boxed(
+                        let arg_bits = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
                             &raw_primary_int,
@@ -19588,8 +23008,14 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out__, res);
                         }
                     } else {
-                        let arg_bits = var_get_boxed(
+                        let arg_bits = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
                             &raw_primary_int,
@@ -19616,8 +23042,14 @@ impl SimpleBackend {
                 "msgpack_parse" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let arg_name = &args[0];
-                    if let Some(len) = var_get_boxed(
+                    if let Some(len) = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &format!("{}_len", arg_name),
                         &raw_primary_int,
@@ -19625,8 +23057,14 @@ impl SimpleBackend {
                         box_int_mask_var,
                         box_int_tag_var,
                     ) {
-                        let ptr = var_get_boxed(
+                        let ptr = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &format!("{}_ptr", arg_name),
                             &raw_primary_int,
@@ -19635,8 +23073,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .or_else(|| {
-                            var_get_boxed(
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 arg_name,
                                 &raw_primary_int,
@@ -19680,8 +23124,14 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, err_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, err_block);
-                        let arg_bits = var_get_boxed(
+                        let arg_bits = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
                             &raw_primary_int,
@@ -19709,8 +23159,14 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out__, res);
                         }
                     } else {
-                        let arg_bits = var_get_boxed(
+                        let arg_bits = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
                             &raw_primary_int,
@@ -19737,8 +23193,14 @@ impl SimpleBackend {
                 "cbor_parse" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let arg_name = &args[0];
-                    if let Some(len) = var_get_boxed(
+                    if let Some(len) = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &format!("{}_len", arg_name),
                         &raw_primary_int,
@@ -19746,8 +23208,14 @@ impl SimpleBackend {
                         box_int_mask_var,
                         box_int_tag_var,
                     ) {
-                        let ptr = var_get_boxed(
+                        let ptr = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &format!("{}_ptr", arg_name),
                             &raw_primary_int,
@@ -19756,8 +23224,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .or_else(|| {
-                            var_get_boxed(
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 arg_name,
                                 &raw_primary_int,
@@ -19801,8 +23275,14 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, err_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, err_block);
-                        let arg_bits = var_get_boxed(
+                        let arg_bits = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
                             &raw_primary_int,
@@ -19830,8 +23310,14 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out__, res);
                         }
                     } else {
-                        let arg_bits = var_get_boxed(
+                        let arg_bits = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
                             &raw_primary_int,
@@ -19857,8 +23343,14 @@ impl SimpleBackend {
                 }
                 "block_on" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let task = var_get_boxed(
+                    let task = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -19922,8 +23414,14 @@ impl SimpleBackend {
                 }
                 "state_transition" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let future = var_get_boxed(
+                    let future = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -19936,8 +23434,14 @@ impl SimpleBackend {
                     let (slot_bits, pending_state_bits) = if args.len() == 2 {
                         (
                             None,
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
                                 &raw_primary_int,
@@ -19950,8 +23454,14 @@ impl SimpleBackend {
                     } else {
                         (
                             Some(
-                                *var_get_boxed(
+                                *var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &args[1],
                                     &raw_primary_int,
@@ -19961,8 +23471,14 @@ impl SimpleBackend {
                                 )
                                 .expect("Await slot not found"),
                             ),
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[2],
                                 &raw_primary_int,
@@ -19974,8 +23490,14 @@ impl SimpleBackend {
                         )
                     };
                     let next_state_id = op.value.unwrap_or(0);
-                    let self_bits = *var_get_boxed(
+                    let self_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         "self",
                         &raw_primary_int,
@@ -20102,8 +23624,14 @@ impl SimpleBackend {
                 }
                 "state_yield" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let pair = var_get_boxed(
+                    let pair = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20113,8 +23641,14 @@ impl SimpleBackend {
                     )
                     .expect("Yield pair not found");
                     let next_state_id = op.value.unwrap_or(0);
-                    let self_bits = *var_get_boxed(
+                    let self_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         "self",
                         &raw_primary_int,
@@ -20165,8 +23699,14 @@ impl SimpleBackend {
                 }
                 "chan_send_yield" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let chan = var_get_boxed(
+                    let chan = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20175,8 +23715,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Chan not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -20185,8 +23731,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Val not found");
-                    let pending_state_bits = *var_get_boxed(
+                    let pending_state_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -20196,8 +23748,14 @@ impl SimpleBackend {
                     )
                     .expect("Pending state not found");
                     let next_state_id = op.value.unwrap_or(0);
-                    let self_bits = *var_get_boxed(
+                    let self_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         "self",
                         &raw_primary_int,
@@ -20295,8 +23853,14 @@ impl SimpleBackend {
                 }
                 "chan_recv_yield" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let chan = var_get_boxed(
+                    let chan = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20305,8 +23869,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Chan not found");
-                    let pending_state_bits = *var_get_boxed(
+                    let pending_state_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -20316,8 +23886,14 @@ impl SimpleBackend {
                     )
                     .expect("Pending state not found");
                     let next_state_id = op.value.unwrap_or(0);
-                    let self_bits = *var_get_boxed(
+                    let self_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         "self",
                         &raw_primary_int,
@@ -20415,8 +23991,14 @@ impl SimpleBackend {
                 }
                 "chan_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let capacity = var_get_boxed(
+                    let capacity = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20441,8 +24023,14 @@ impl SimpleBackend {
                 }
                 "chan_drop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let chan = var_get_boxed(
+                    let chan = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20464,8 +24052,14 @@ impl SimpleBackend {
                 }
                 "spawn" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let task = var_get_boxed(
+                    let task = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20486,8 +24080,14 @@ impl SimpleBackend {
                 }
                 "cancel_token_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let parent = var_get_boxed(
+                    let parent = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20512,8 +24112,14 @@ impl SimpleBackend {
                 }
                 "cancel_token_clone" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let token = var_get_boxed(
+                    let token = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20534,8 +24140,14 @@ impl SimpleBackend {
                 }
                 "cancel_token_drop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let token = var_get_boxed(
+                    let token = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20556,8 +24168,14 @@ impl SimpleBackend {
                 }
                 "cancel_token_cancel" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let token = var_get_boxed(
+                    let token = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20578,8 +24196,14 @@ impl SimpleBackend {
                 }
                 "future_cancel" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let future = var_get_boxed(
+                    let future = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20600,8 +24224,14 @@ impl SimpleBackend {
                 }
                 "future_cancel_msg" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let future = var_get_boxed(
+                    let future = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20610,8 +24240,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Future not found");
-                    let msg = var_get_boxed(
+                    let msg = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -20632,8 +24268,14 @@ impl SimpleBackend {
                 }
                 "future_cancel_clear" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let future = var_get_boxed(
+                    let future = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20669,8 +24311,14 @@ impl SimpleBackend {
                 }
                 "promise_set_result" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let future = var_get_boxed(
+                    let future = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20679,8 +24327,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Promise not found");
-                    let result = var_get_boxed(
+                    let result = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -20701,8 +24355,14 @@ impl SimpleBackend {
                 }
                 "promise_set_exception" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let future = var_get_boxed(
+                    let future = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20711,8 +24371,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Promise not found");
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -20733,8 +24399,14 @@ impl SimpleBackend {
                 }
                 "thread_submit" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let callable = var_get_boxed(
+                    let callable = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20743,8 +24415,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Callable not found");
-                    let call_args = var_get_boxed(
+                    let call_args = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -20753,8 +24431,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Args not found");
-                    let call_kwargs = var_get_boxed(
+                    let call_kwargs = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -20781,8 +24465,14 @@ impl SimpleBackend {
                 }
                 "task_register_token_owned" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let task = var_get_boxed(
+                    let task = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20791,8 +24481,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Task not found");
-                    let token = var_get_boxed(
+                    let token = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -20813,8 +24509,14 @@ impl SimpleBackend {
                 }
                 "cancel_token_is_cancelled" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let token = var_get_boxed(
+                    let token = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20839,8 +24541,14 @@ impl SimpleBackend {
                 }
                 "cancel_token_set_current" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let token = var_get_boxed(
+                    let token = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -20913,8 +24621,14 @@ impl SimpleBackend {
                         let delay_val = arg_names
                             .first()
                             .map(|name| {
-                                *var_get_boxed(
+                                *var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     name,
                                     &raw_primary_int,
@@ -20928,8 +24642,14 @@ impl SimpleBackend {
                         let result_val = arg_names
                             .get(1)
                             .map(|name| {
-                                *var_get_boxed(
+                                *var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     name,
                                     &raw_primary_int,
@@ -20987,8 +24707,14 @@ impl SimpleBackend {
                             && !arg_names.is_empty()
                         {
                             for (idx, arg_name) in arg_names.iter().enumerate() {
-                                let val = var_get_boxed(
+                                let val = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     arg_name,
                                     &raw_primary_int,
@@ -21190,8 +24916,14 @@ impl SimpleBackend {
                         .as_ref()
                         .and_then(|args| args.first())
                         .expect("func_new_closure expects closure arg");
-                    let closure_bits = *var_get_boxed(
+                    let closure_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         closure_name,
                         &raw_primary_int,
@@ -21300,8 +25032,14 @@ impl SimpleBackend {
                 }
                 "code_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let filename_bits = var_get_boxed(
+                    let filename_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -21310,8 +25048,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("filename not found");
-                    let name_bits = var_get_boxed(
+                    let name_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -21320,8 +25064,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("name not found");
-                    let firstlineno_bits = var_get_boxed(
+                    let firstlineno_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -21330,8 +25080,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("firstlineno not found");
-                    let linetable_bits = var_get_boxed(
+                    let linetable_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -21340,8 +25096,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("linetable not found");
-                    let varnames_bits = var_get_boxed(
+                    let varnames_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
                         &raw_primary_int,
@@ -21350,8 +25112,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("varnames not found");
-                    let argcount_bits = var_get_boxed(
+                    let argcount_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
                         &raw_primary_int,
@@ -21360,8 +25128,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("argcount not found");
-                    let posonlyargcount_bits = var_get_boxed(
+                    let posonlyargcount_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[6],
                         &raw_primary_int,
@@ -21370,8 +25144,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("posonly not found");
-                    let kwonlyargcount_bits = var_get_boxed(
+                    let kwonlyargcount_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[7],
                         &raw_primary_int,
@@ -21417,8 +25197,14 @@ impl SimpleBackend {
                 }
                 "code_slot_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let code_bits = var_get_boxed(
+                    let code_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -21441,8 +25227,14 @@ impl SimpleBackend {
                 }
                 "fn_ptr_code_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let code_bits = var_get_boxed(
+                    let code_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -21495,8 +25287,14 @@ impl SimpleBackend {
                 }
                 "asyncgen_locals_register" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let names_bits = var_get_boxed(
+                    let names_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -21505,8 +25303,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("names tuple not found");
-                    let offsets_bits = var_get_boxed(
+                    let offsets_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -21559,8 +25363,14 @@ impl SimpleBackend {
                 }
                 "gen_locals_register" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let names_bits = var_get_boxed(
+                    let names_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -21569,8 +25379,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("names tuple not found");
-                    let offsets_bits = var_get_boxed(
+                    let offsets_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -21673,8 +25489,14 @@ impl SimpleBackend {
                     let dict_bits = arg_names
                         .first()
                         .map(|name| {
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -21762,8 +25584,14 @@ impl SimpleBackend {
                                 // not var_get (current SSA Value). If the variable was
                                 // redefined, var_get returns the WRONG object.
                                 let val = entry_vars.get(&name).copied().or_else(|| {
-                                    var_get_boxed(
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
                                         &raw_primary_int,
@@ -21794,8 +25622,14 @@ impl SimpleBackend {
                             );
                             for name in cleanup {
                                 let val = entry_vars.get(&name).copied().or_else(|| {
-                                    var_get_boxed(
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
                                         &raw_primary_int,
@@ -21831,8 +25665,14 @@ impl SimpleBackend {
                 }
                 "function_closure_bits" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let func_bits = var_get_boxed(
+                    let func_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -21858,8 +25698,14 @@ impl SimpleBackend {
                 }
                 "bound_method_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let func_bits = var_get_boxed(
+                    let func_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -21868,8 +25714,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Func not found");
-                    let self_bits = var_get_boxed(
+                    let self_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -22010,8 +25862,14 @@ impl SimpleBackend {
                     if closure_functions.contains(target_name.as_str())
                         && let Some(func_obj_var) = local_closure_envs.get(target_name.as_str())
                     {
-                        let func_obj_bits = *var_get_boxed(
+                        let func_obj_bits = *var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             func_obj_var,
                             &raw_primary_int,
@@ -22292,8 +26150,14 @@ impl SimpleBackend {
                         // not var_get (current SSA Value). If the variable was
                         // redefined, var_get returns the WRONG object.
                         let val = entry_vars.get(name).copied().or_else(|| {
-                            var_get_boxed(
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -22313,8 +26177,14 @@ impl SimpleBackend {
                             continue;
                         }
                         let val = entry_vars.get(name).copied().or_else(|| {
-                            var_get_boxed(
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -22409,8 +26279,14 @@ impl SimpleBackend {
                     let mut args = Vec::new();
                     for name in args_names {
                         args.push(
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -22426,8 +26302,14 @@ impl SimpleBackend {
                     if closure_functions.contains(target_name.as_str())
                         && let Some(func_obj_var) = local_closure_envs.get(target_name.as_str())
                     {
-                        let func_obj_bits = *var_get_boxed(
+                        let func_obj_bits = *var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             func_obj_var,
                             &raw_primary_int,
@@ -22527,8 +26409,14 @@ impl SimpleBackend {
                         let src_name = args_names
                             .first()
                             .expect("inc_ref/borrow requires one source arg");
-                        let src = *var_get_boxed(
+                        let src = *var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             src_name,
                             &raw_primary_int,
@@ -22550,8 +26438,14 @@ impl SimpleBackend {
                         // alias of the input so downstream ops can read it.
                         let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                         let src_name = args_names.first().unwrap();
-                        let src = *var_get_boxed(
+                        let src = *var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             src_name,
                             &raw_primary_int,
@@ -22578,8 +26472,14 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
                         }
                     } else {
-                        let src = *var_get_boxed(
+                        let src = *var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             src_name,
                             &raw_primary_int,
@@ -22615,8 +26515,14 @@ impl SimpleBackend {
                     let src_name = args_names
                         .first()
                         .expect("conversion op requires one source arg");
-                    let src = *var_get_boxed(
+                    let src = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         src_name,
                         &raw_primary_int,
@@ -22654,8 +26560,14 @@ impl SimpleBackend {
                                 src_name,
                             )
                             .unwrap_or_else(|| {
-                                let boxed = var_get_boxed(
+                                let boxed = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     src_name,
                                     &raw_primary_int,
@@ -22673,8 +26585,14 @@ impl SimpleBackend {
                             }
                             raw_float_shadow_vals.insert(out_name.clone(), raw_f64);
                         } else {
-                            let src = *var_get_boxed(
+                            let src = *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 src_name,
                                 &raw_primary_int,
@@ -22694,8 +26612,14 @@ impl SimpleBackend {
                         continue;
                     };
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let callee_bits = var_get_boxed(
+                    let callee_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
                         &raw_primary_int,
@@ -22707,8 +26631,14 @@ impl SimpleBackend {
                     let mut args = Vec::new();
                     for name in &args_names[1..] {
                         args.push(
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -22724,8 +26654,14 @@ impl SimpleBackend {
                     if closure_functions.contains(target_name.as_str())
                         && let Some(func_obj_var) = local_closure_envs.get(target_name.as_str())
                     {
-                        let func_obj_bits = *var_get_boxed(
+                        let func_obj_bits = *var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             func_obj_var,
                             &raw_primary_int,
@@ -23043,8 +26979,14 @@ impl SimpleBackend {
                     // bound methods, arity mismatches; or molt_call_func_dispatch
                     // for >3 args or tracing.
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let func_bits = var_get_boxed(
+                    let func_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
                         &raw_primary_int,
@@ -23056,8 +26998,14 @@ impl SimpleBackend {
                     let mut args = Vec::new();
                     for name in &args_names[1..] {
                         args.push(
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -23304,8 +27252,14 @@ impl SimpleBackend {
                 }
                 "invoke_ffi" => {
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let func_bits = var_get_boxed(
+                    let func_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
                         &raw_primary_int,
@@ -23317,8 +27271,14 @@ impl SimpleBackend {
                     let mut args = Vec::new();
                     for name in &args_names[1..] {
                         args.push(
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -23397,8 +27357,14 @@ impl SimpleBackend {
                 }
                 "call_bind" | "call_indirect" => {
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let func_bits = var_get_boxed(
+                    let func_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
                         &raw_primary_int,
@@ -23407,8 +27373,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Func not found");
-                    let builder_ptr = var_get_boxed(
+                    let builder_ptr = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[1],
                         &raw_primary_int,
@@ -23431,8 +27403,14 @@ impl SimpleBackend {
                                 continue;
                             }
                             let val = entry_vars.get(&source_name).copied().or_else(|| {
-                                var_get_boxed(
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &source_name,
                                     &raw_primary_int,
@@ -23574,8 +27552,14 @@ impl SimpleBackend {
                 }
                 "call_method" => {
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let method_bits = var_get_boxed(
+                    let method_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
                         &raw_primary_int,
@@ -23587,8 +27571,14 @@ impl SimpleBackend {
                     let mut extra_args = Vec::new();
                     for name in &args_names[1..] {
                         extra_args.push(
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -23768,8 +27758,14 @@ impl SimpleBackend {
                 }
                 "module_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let name_bits = var_get_boxed(
+                    let name_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -23794,8 +27790,14 @@ impl SimpleBackend {
                 }
                 "class_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let name_bits = var_get_boxed(
+                    let name_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -23828,8 +27830,14 @@ impl SimpleBackend {
                     let layout_size: i64 = parts[2].parse().unwrap();
                     let layout_version: i64 = parts[3].parse().unwrap();
                     let flags: i64 = parts[4].parse().unwrap();
-                    let name_bits = var_get_boxed(
+                    let name_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -23845,8 +27853,14 @@ impl SimpleBackend {
                         3,
                     ));
                     for i in 0..nbases {
-                        let base = var_get_boxed(
+                        let base = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1 + i],
                             &raw_primary_int,
@@ -23866,8 +27880,14 @@ impl SimpleBackend {
                     ));
                     let attrs_base = 1 + nbases;
                     for i in 0..nattrs {
-                        let key = var_get_boxed(
+                        let key = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[attrs_base + i * 2],
                             &raw_primary_int,
@@ -23876,8 +27896,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("Attr key not found");
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[attrs_base + i * 2 + 1],
                             &raw_primary_int,
@@ -23936,8 +27962,14 @@ impl SimpleBackend {
                 }
                 "builtin_type" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let tag_bits = var_get_boxed(
+                    let tag_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -23962,8 +27994,14 @@ impl SimpleBackend {
                 }
                 "type_of" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj_bits = var_get_boxed(
+                    let obj_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -23988,8 +28026,14 @@ impl SimpleBackend {
                 }
                 "is_native_awaitable" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj_bits = var_get_boxed(
+                    let obj_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24014,8 +28058,14 @@ impl SimpleBackend {
                 }
                 "class_layout_version" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24040,8 +28090,14 @@ impl SimpleBackend {
                 }
                 "class_set_layout_version" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24050,8 +28106,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Class not found");
-                    let version_bits = var_get_boxed(
+                    let version_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24080,8 +28142,14 @@ impl SimpleBackend {
                 }
                 "class_merge_layout" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24090,8 +28158,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Class not found");
-                    let offsets_bits = var_get_boxed(
+                    let offsets_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24100,8 +28174,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Offsets not found");
-                    let size_bits = var_get_boxed(
+                    let size_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -24130,8 +28210,14 @@ impl SimpleBackend {
                 }
                 "isinstance" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj_bits = var_get_boxed(
+                    let obj_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24140,8 +28226,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Object not found");
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24166,8 +28258,14 @@ impl SimpleBackend {
                 }
                 "issubclass" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let sub_bits = var_get_boxed(
+                    let sub_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24176,8 +28274,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Subclass not found");
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24236,8 +28340,14 @@ impl SimpleBackend {
                     // unsized path remains for any hand-built
                     // SimpleIR that lacks the hint.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let cls_bits = var_get_boxed(
+                    let cls_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24301,8 +28411,14 @@ impl SimpleBackend {
                     // that size; codegen treats violations as compiler
                     // bugs rather than silently changing allocation mode.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let cls_bits = var_get_boxed(
+                    let cls_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24420,8 +28536,14 @@ impl SimpleBackend {
                 }
                 "class_set_base" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24430,8 +28552,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Class not found");
-                    let base_bits = var_get_boxed(
+                    let base_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24456,8 +28584,14 @@ impl SimpleBackend {
                 }
                 "class_apply_set_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24482,8 +28616,14 @@ impl SimpleBackend {
                 }
                 "super_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let type_bits = var_get_boxed(
+                    let type_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24492,8 +28632,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Type not found");
-                    let obj_bits = var_get_boxed(
+                    let obj_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24518,8 +28664,14 @@ impl SimpleBackend {
                 }
                 "classmethod_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let func_bits = var_get_boxed(
+                    let func_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24544,8 +28696,14 @@ impl SimpleBackend {
                 }
                 "staticmethod_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let func_bits = var_get_boxed(
+                    let func_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24570,8 +28728,14 @@ impl SimpleBackend {
                 }
                 "property_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let getter = var_get_boxed(
+                    let getter = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24580,8 +28744,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Getter not found");
-                    let setter = var_get_boxed(
+                    let setter = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24590,8 +28760,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Setter not found");
-                    let deleter = var_get_boxed(
+                    let deleter = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -24618,8 +28794,14 @@ impl SimpleBackend {
                 }
                 "object_set_class" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj_bits = var_get_boxed(
+                    let obj_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24629,8 +28811,14 @@ impl SimpleBackend {
                     )
                     .expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj_bits, &nbc);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24655,8 +28843,14 @@ impl SimpleBackend {
                 }
                 "module_cache_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let name_bits = var_get_boxed(
+                    let name_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24681,8 +28875,14 @@ impl SimpleBackend {
                 }
                 "module_import" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let name_bits = var_get_boxed(
+                    let name_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24711,8 +28911,14 @@ impl SimpleBackend {
                 }
                 "module_cache_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let name_bits = var_get_boxed(
+                    let name_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24721,8 +28927,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Module name not found");
-                    let module_bits = var_get_boxed(
+                    let module_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24745,8 +28957,14 @@ impl SimpleBackend {
                 }
                 "module_cache_del" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let name_bits = var_get_boxed(
+                    let name_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24767,8 +28985,14 @@ impl SimpleBackend {
                 }
                 "module_get_attr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let module_bits = var_get_boxed(
+                    let module_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24800,8 +29024,14 @@ impl SimpleBackend {
                     let attr_val = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
-                        *var_get_boxed(
+                        *var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -24832,8 +29062,14 @@ impl SimpleBackend {
                 }
                 "module_get_global" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let module_bits = var_get_boxed(
+                    let module_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24842,8 +29078,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Module not found");
-                    let attr_bits = *var_get_boxed(
+                    let attr_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24868,8 +29110,14 @@ impl SimpleBackend {
                 }
                 "module_del_global" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let module_bits = var_get_boxed(
+                    let module_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24878,8 +29126,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Module not found");
-                    let attr_bits = *var_get_boxed(
+                    let attr_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24906,8 +29160,14 @@ impl SimpleBackend {
                 }
                 "module_get_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let module_bits = var_get_boxed(
+                    let module_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24916,8 +29176,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Module not found");
-                    let attr_bits = *var_get_boxed(
+                    let attr_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -24942,8 +29208,14 @@ impl SimpleBackend {
                 }
                 "module_set_attr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let module_bits = var_get_boxed(
+                    let module_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -24955,8 +29227,14 @@ impl SimpleBackend {
                     let attr_bits = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
-                        *var_get_boxed(
+                        *var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -24966,8 +29244,14 @@ impl SimpleBackend {
                         )
                         .expect("Attr not found")
                     };
-                    let val_bits = var_get_boxed(
+                    let val_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -24995,8 +29279,14 @@ impl SimpleBackend {
                 }
                 "module_import_star" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let src_bits = var_get_boxed(
+                    let src_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25005,8 +29295,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Module not found");
-                    let dst_bits = var_get_boxed(
+                    let dst_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -25027,8 +29323,14 @@ impl SimpleBackend {
                 }
                 "context_null" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let payload = var_get_boxed(
+                    let payload = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25053,8 +29355,14 @@ impl SimpleBackend {
                 }
                 "context_enter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let ctx = var_get_boxed(
+                    let ctx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25079,8 +29387,14 @@ impl SimpleBackend {
                 }
                 "context_exit" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let ctx = var_get_boxed(
+                    let ctx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25089,8 +29403,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Context not found");
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -25115,8 +29435,14 @@ impl SimpleBackend {
                 }
                 "context_closing" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let payload = var_get_boxed(
+                    let payload = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25141,8 +29467,14 @@ impl SimpleBackend {
                 }
                 "context_unwind" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25182,8 +29514,14 @@ impl SimpleBackend {
                 }
                 "context_unwind_to" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let depth = var_get_boxed(
+                    let depth = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25192,8 +29530,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Depth not found");
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -25293,8 +29637,14 @@ impl SimpleBackend {
                 }
                 "exception_stack_exit" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let prev = var_get_boxed(
+                    let prev = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25321,8 +29671,14 @@ impl SimpleBackend {
                 }
                 "exception_stack_set_depth" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let depth = var_get_boxed(
+                    let depth = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25394,8 +29750,14 @@ impl SimpleBackend {
                 }
                 "exception_enter_handler" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let captured = var_get_boxed(
+                    let captured = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25420,8 +29782,14 @@ impl SimpleBackend {
                 }
                 "exception_resolve_captured" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let captured = var_get_boxed(
+                    let captured = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25461,8 +29829,14 @@ impl SimpleBackend {
                 }
                 "getframe" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let depth = var_get_boxed(
+                    let depth = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25502,8 +29876,14 @@ impl SimpleBackend {
                 }
                 "exception_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let kind = var_get_boxed(
+                    let kind = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25512,8 +29892,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Kind not found");
-                    let args_bits = var_get_boxed(
+                    let args_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -25538,8 +29924,14 @@ impl SimpleBackend {
                 }
                 "exception_new_from_class" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25548,8 +29940,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Class not found");
-                    let args_bits = var_get_boxed(
+                    let args_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -25574,8 +29972,14 @@ impl SimpleBackend {
                 }
                 "exceptiongroup_match" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25584,8 +29988,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Exception not found");
-                    let matcher = var_get_boxed(
+                    let matcher = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -25610,8 +30020,14 @@ impl SimpleBackend {
                 }
                 "exceptiongroup_combine" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let items = var_get_boxed(
+                    let items = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25651,8 +30067,14 @@ impl SimpleBackend {
                 }
                 "exception_kind" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25677,8 +30099,14 @@ impl SimpleBackend {
                 }
                 "exception_class" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let kind = var_get_boxed(
+                    let kind = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25703,8 +30131,14 @@ impl SimpleBackend {
                 }
                 "exception_message" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25729,8 +30163,14 @@ impl SimpleBackend {
                 }
                 "exception_set_cause" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25739,8 +30179,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Exception not found");
-                    let cause = var_get_boxed(
+                    let cause = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -25765,8 +30211,14 @@ impl SimpleBackend {
                 }
                 "exception_set_last" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25791,8 +30243,14 @@ impl SimpleBackend {
                 }
                 "exception_set_value" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25801,8 +30259,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Exception not found");
-                    let value = var_get_boxed(
+                    let value = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -25827,8 +30291,14 @@ impl SimpleBackend {
                 }
                 "exception_context_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25853,8 +30323,14 @@ impl SimpleBackend {
                 }
                 "raise" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let exc = var_get_boxed(
+                    let exc = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -25954,8 +30430,14 @@ impl SimpleBackend {
                         }
                         for name in cleanup {
                             let val = entry_vars.get(&name).copied().or_else(|| {
-                                var_get_boxed(
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &name,
                                     &raw_primary_int,
@@ -26005,8 +30487,14 @@ impl SimpleBackend {
                         }
                         for name in cleanup {
                             let val = entry_vars.get(&name).copied().or_else(|| {
-                                var_get_boxed(
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &name,
                                     &raw_primary_int,
@@ -26098,8 +30586,14 @@ impl SimpleBackend {
                 }
                 "file_open" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let path = var_get_boxed(
+                    let path = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -26108,8 +30602,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Path not found");
-                    let mode = var_get_boxed(
+                    let mode = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -26134,8 +30634,14 @@ impl SimpleBackend {
                 }
                 "file_read" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let handle = var_get_boxed(
+                    let handle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -26144,8 +30650,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Handle not found");
-                    let size = var_get_boxed(
+                    let size = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -26170,8 +30682,14 @@ impl SimpleBackend {
                 }
                 "file_write" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let handle = var_get_boxed(
+                    let handle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -26180,8 +30698,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Handle not found");
-                    let data = var_get_boxed(
+                    let data = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -26206,8 +30730,14 @@ impl SimpleBackend {
                 }
                 "file_close" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let handle = var_get_boxed(
+                    let handle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -26232,8 +30762,14 @@ impl SimpleBackend {
                 }
                 "file_flush" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let handle = var_get_boxed(
+                    let handle = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -26258,8 +30794,14 @@ impl SimpleBackend {
                 }
                 "bridge_unavailable" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let msg = var_get_boxed(
+                    let msg = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -26313,8 +30855,14 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_bool_lane(&op) {
                         // NaN-boxed bool: bit 0 is the boolean value.
-                        let cond = var_get_boxed(
+                        let cond = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -26336,8 +30884,14 @@ impl SimpleBackend {
                             &args[0],
                         )
                         .unwrap_or_else(|| {
-                            let cond = var_get_boxed(
+                            let cond = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -26350,8 +30904,14 @@ impl SimpleBackend {
                         });
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
-                        let cond = var_get_boxed(
+                        let cond = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -26655,8 +31215,14 @@ impl SimpleBackend {
                                 );
                             }
                             let init = if has_reaching_def {
-                                var_get_boxed(
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     name,
                                     &raw_primary_int,
@@ -26767,8 +31333,14 @@ impl SimpleBackend {
                         if !frame.phi_ops.is_empty() {
                             if frame.phi_params.is_empty() {
                                 for (_out, then_name, _else_name) in &frame.phi_ops {
-                                    let then_val = var_get_boxed(
+                                    let then_val = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         then_name,
                                         &raw_primary_int,
@@ -26784,8 +31356,14 @@ impl SimpleBackend {
                                 }
                             } else {
                                 for (_out, then_name, _else_name) in &frame.phi_ops {
-                                    let then_val = var_get_boxed(
+                                    let then_val = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         then_name,
                                         &raw_primary_int,
@@ -26800,8 +31378,14 @@ impl SimpleBackend {
                         }
                         if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
                             for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
-                                let val = var_get_boxed(
+                                let val = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     name,
                                     &raw_primary_int,
@@ -26975,8 +31559,14 @@ impl SimpleBackend {
                             if !frame.phi_ops.is_empty() {
                                 if frame.phi_params.is_empty() {
                                     for (_out, _then_name, else_name) in &frame.phi_ops {
-                                        let else_val = var_get_boxed(
+                                        let else_val = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
                                             &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &raw_int_shadow,
+                                            &raw_int_shadow_vals,
                                             &vars,
                                             else_name,
                                             &raw_primary_int,
@@ -26995,8 +31585,14 @@ impl SimpleBackend {
                                     }
                                 } else {
                                     for (_out, _then_name, else_name) in &frame.phi_ops {
-                                        let else_val = var_get_boxed(
+                                        let else_val = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
                                             &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &raw_int_shadow,
+                                            &raw_int_shadow_vals,
                                             &vars,
                                             else_name,
                                             &raw_primary_int,
@@ -27013,8 +31609,14 @@ impl SimpleBackend {
                             }
                             if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
                                 for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
-                                    let then_val = var_get_boxed(
+                                    let then_val = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         name,
                                         &raw_primary_int,
@@ -27147,8 +31749,14 @@ impl SimpleBackend {
                             if !frame.phi_ops.is_empty() {
                                 if frame.phi_params.is_empty() {
                                     for (_out, then_name, _else_name) in &frame.phi_ops {
-                                        let then_val = var_get_boxed(
+                                        let then_val = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
                                             &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &raw_int_shadow,
+                                            &raw_int_shadow_vals,
                                             &vars,
                                             then_name,
                                             &raw_primary_int,
@@ -27167,8 +31775,14 @@ impl SimpleBackend {
                                     }
                                 } else {
                                     for (_out, then_name, _else_name) in &frame.phi_ops {
-                                        let then_val = var_get_boxed(
+                                        let then_val = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
                                             &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &raw_int_shadow,
+                                            &raw_int_shadow_vals,
                                             &vars,
                                             then_name,
                                             &raw_primary_int,
@@ -27185,8 +31799,14 @@ impl SimpleBackend {
                             }
                             if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
                                 for name in &frame.merge_rebind_names {
-                                    let then_val = var_get_boxed(
+                                    let then_val = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         name,
                                         &raw_primary_int,
@@ -27326,8 +31946,14 @@ impl SimpleBackend {
                             if !frame.phi_ops.is_empty() {
                                 if frame.phi_params.is_empty() {
                                     for (_out, _then_name, else_name) in &frame.phi_ops {
-                                        let else_val = var_get_boxed(
+                                        let else_val = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
                                             &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &raw_int_shadow,
+                                            &raw_int_shadow_vals,
                                             &vars,
                                             else_name,
                                             &raw_primary_int,
@@ -27346,8 +31972,14 @@ impl SimpleBackend {
                                     }
                                 } else {
                                     for (_out, _then_name, else_name) in &frame.phi_ops {
-                                        let else_val = var_get_boxed(
+                                        let else_val = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
                                             &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &raw_int_shadow,
+                                            &raw_int_shadow_vals,
                                             &vars,
                                             else_name,
                                             &raw_primary_int,
@@ -27364,8 +31996,14 @@ impl SimpleBackend {
                             }
                             if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
                                 for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
-                                    let else_val = var_get_boxed(
+                                    let else_val = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         name,
                                         &raw_primary_int,
@@ -27769,8 +32407,14 @@ impl SimpleBackend {
                                 if list_int_data_cache.contains_key(list_name) {
                                     continue; // already cached from an outer scope
                                 }
-                                let Some(obj) = var_get_boxed(
+                                let Some(obj) = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     list_name,
                                     &raw_primary_int,
@@ -27810,8 +32454,14 @@ impl SimpleBackend {
                                 if list_data_cache.contains_key(list_name) {
                                     continue;
                                 }
-                                let Some(obj) = var_get_boxed(
+                                let Some(obj) = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     list_name,
                                     &raw_primary_int,
@@ -27988,8 +32638,14 @@ impl SimpleBackend {
                                     if b.kind == "load_var"
                                         && b.var.as_deref() == Some(an.as_str())
                                         && let Some(ref out) = b.out
-                                        && let Some(v) = var_get_boxed(
+                                        && let Some(v) = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
                                             &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &raw_int_shadow,
+                                            &raw_int_shadow_vals,
                                             &vars,
                                             out,
                                             &raw_primary_int,
@@ -28081,8 +32737,14 @@ impl SimpleBackend {
                         let body_block = builder.create_block();
                         let after_block = builder.create_block();
                         let start = phi_value.unwrap_or_else(|| {
-                            *var_get_boxed(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -28143,8 +32805,14 @@ impl SimpleBackend {
                                 if list_int_data_cache.contains_key(list_name) {
                                     continue;
                                 }
-                                let Some(obj) = var_get_boxed(
+                                let Some(obj) = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     list_name,
                                     &raw_primary_int,
@@ -28184,8 +32852,14 @@ impl SimpleBackend {
                                 if list_data_cache.contains_key(list_name) {
                                     continue;
                                 }
-                                let Some(obj) = var_get_boxed(
+                                let Some(obj) = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     list_name,
                                     &raw_primary_int,
@@ -28282,8 +32956,14 @@ impl SimpleBackend {
                                             .copied()
                                     });
                                     raw.unwrap_or_else(|| {
-                                        let boxed = var_get_boxed(
+                                        let boxed = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
                                             &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &raw_int_shadow,
+                                            &raw_int_shadow_vals,
                                             &vars,
                                             &reduction.acc_operand_name,
                                             &raw_primary_int,
@@ -28585,8 +33265,14 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else if cond_is_bool_typed {
                             // NaN-boxed bool: bit 0 is the boolean value.
-                            let cond = var_get_boxed(
+                            let cond = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -28612,8 +33298,14 @@ impl SimpleBackend {
                                 )
                             }
                             .unwrap_or_else(|| {
-                                let cond = var_get_boxed(
+                                let cond = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &args[0],
                                     &raw_primary_int,
@@ -28626,8 +33318,14 @@ impl SimpleBackend {
                             });
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
-                            let cond = var_get_boxed(
+                            let cond = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -28793,8 +33491,14 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else if cond_is_bool_typed {
                             // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
-                            let cond = var_get_boxed(
+                            let cond = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -28820,8 +33524,14 @@ impl SimpleBackend {
                                 )
                             }
                             .unwrap_or_else(|| {
-                                let cond = var_get_boxed(
+                                let cond = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &args[0],
                                     &raw_primary_int,
@@ -28834,8 +33544,14 @@ impl SimpleBackend {
                             });
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
-                            let cond = var_get_boxed(
+                            let cond = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -28967,8 +33683,14 @@ impl SimpleBackend {
                                 // not var_get (current SSA Value). If the variable was
                                 // redefined, var_get returns the WRONG object.
                                 let val = entry_vars.get(&name).copied().or_else(|| {
-                                    var_get_boxed(
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
                                         &raw_primary_int,
@@ -28995,8 +33717,14 @@ impl SimpleBackend {
                             );
                             for name in cleanup {
                                 let val = entry_vars.get(&name).copied().or_else(|| {
-                                    var_get_boxed(
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
                                         &raw_primary_int,
@@ -29020,8 +33748,14 @@ impl SimpleBackend {
                 }
                 "loop_index_next" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let next_idx = var_get_boxed(
+                    let next_idx = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29079,8 +33813,14 @@ impl SimpleBackend {
                                         if scan_op.var.as_deref() == Some(index_name.as_str())
                                             && let Some(src_name) =
                                                 scan_op.args.as_ref().and_then(|args| args.first())
-                                            && let Some(next_idx) = var_get_boxed(
+                                            && let Some(next_idx) = var_get_boxed_overflow_safe(
+                                                &mut self.module,
+                                                &mut self.import_ids,
                                                 &mut builder,
+                                                &mut import_refs,
+                                                &mut sealed_blocks,
+                                                &raw_int_shadow,
+                                                &raw_int_shadow_vals,
                                                 &vars,
                                                 src_name,
                                                 &raw_primary_int,
@@ -29120,8 +33860,14 @@ impl SimpleBackend {
                                 // not var_get (current SSA Value). If the variable was
                                 // redefined, var_get returns the WRONG object.
                                 let val = entry_vars.get(&name).copied().or_else(|| {
-                                    var_get_boxed(
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
                                         &raw_primary_int,
@@ -29148,8 +33894,14 @@ impl SimpleBackend {
                             );
                             for name in cleanup {
                                 let val = entry_vars.get(&name).copied().or_else(|| {
-                                    var_get_boxed(
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
                                         &raw_primary_int,
@@ -29178,8 +33930,14 @@ impl SimpleBackend {
                                 builder.def_var(shadow_var, next_raw);
                             }
                         } else if let Some(name) = frame.index_name.as_ref()
-                            && let Some(current) = var_get_boxed(
+                            && let Some(current) = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -29310,8 +34068,14 @@ impl SimpleBackend {
                 "alloc_class" => {
                     let size = op.value.unwrap_or(0);
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29340,8 +34104,14 @@ impl SimpleBackend {
                 "alloc_class_trusted" => {
                     let size = op.value.unwrap_or(0);
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29370,8 +34140,14 @@ impl SimpleBackend {
                 "alloc_class_static" => {
                     let size = op.value.unwrap_or(0);
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29442,8 +34218,14 @@ impl SimpleBackend {
                     let obj_ptr = unbox_ptr_value(&mut builder, obj, &nbc);
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {
-                            let arg_val = var_get_boxed(
+                            let arg_val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -29495,8 +34277,14 @@ impl SimpleBackend {
                 }
                 "store" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29505,8 +34293,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Object not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -29677,8 +34471,14 @@ impl SimpleBackend {
                 }
                 "store_init" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29687,8 +34487,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Object not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -29767,8 +34573,14 @@ impl SimpleBackend {
                 }
                 "load" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29797,8 +34609,14 @@ impl SimpleBackend {
                 }
                 "closure_load" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29826,8 +34644,14 @@ impl SimpleBackend {
                 }
                 "closure_store" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29836,8 +34660,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Object not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -29864,8 +34694,14 @@ impl SimpleBackend {
                 }
                 "guarded_load" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29889,8 +34725,14 @@ impl SimpleBackend {
                 }
                 "guarded_field_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29900,8 +34742,14 @@ impl SimpleBackend {
                     )
                     .expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -29910,8 +34758,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Class not found");
-                    let expected_version = var_get_boxed(
+                    let expected_version = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -29974,8 +34828,14 @@ impl SimpleBackend {
                 }
                 "guarded_field_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -29985,8 +34845,14 @@ impl SimpleBackend {
                     )
                     .expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -29995,8 +34861,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Class not found");
-                    let expected_version = var_get_boxed(
+                    let expected_version = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -30005,8 +34877,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Expected version not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -30072,8 +34950,14 @@ impl SimpleBackend {
                 }
                 "guarded_field_init" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30083,8 +34967,14 @@ impl SimpleBackend {
                     )
                     .expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -30093,8 +34983,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Class not found");
-                    let expected_version = var_get_boxed(
+                    let expected_version = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -30103,8 +34999,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Expected version not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
                         &raw_primary_int,
@@ -30197,8 +35099,14 @@ impl SimpleBackend {
                     {
                         // Static guard: int matches int.  No-op.
                     } else {
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -30207,8 +35115,14 @@ impl SimpleBackend {
                             box_int_tag_var,
                         )
                         .expect("Guard value not found");
-                        let expected = var_get_boxed(
+                        let expected = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
                             &raw_primary_int,
@@ -30230,8 +35144,14 @@ impl SimpleBackend {
                 }
                 "guard_layout" | "guard_dict_shape" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30241,8 +35161,14 @@ impl SimpleBackend {
                     )
                     .expect("Guard object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let class_bits = var_get_boxed(
+                    let class_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -30251,8 +35177,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Guard class not found");
-                    let expected_version = var_get_boxed(
+                    let expected_version = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -30279,8 +35211,14 @@ impl SimpleBackend {
                 }
                 "get_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30409,8 +35347,14 @@ impl SimpleBackend {
                 }
                 "get_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30469,8 +35413,14 @@ impl SimpleBackend {
                 }
                 "get_attr_special_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30520,8 +35470,14 @@ impl SimpleBackend {
                 }
                 "get_attr_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30532,8 +35488,14 @@ impl SimpleBackend {
                     .unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = var_get_boxed(
+                    let name = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -30562,8 +35524,14 @@ impl SimpleBackend {
                 }
                 "get_attr_name_default" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30574,8 +35542,14 @@ impl SimpleBackend {
                     .unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = var_get_boxed(
+                    let name = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -30584,8 +35558,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Attr name not found");
-                    let default = var_get_boxed(
+                    let default = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -30612,8 +35592,14 @@ impl SimpleBackend {
                 }
                 "has_attr_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30624,8 +35610,14 @@ impl SimpleBackend {
                     .unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = var_get_boxed(
+                    let name = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -30650,8 +35642,14 @@ impl SimpleBackend {
                 }
                 "set_attr_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30662,8 +35660,14 @@ impl SimpleBackend {
                     .unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = var_get_boxed(
+                    let name = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -30672,8 +35676,14 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Attr name not found");
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
                         &raw_primary_int,
@@ -30698,8 +35708,14 @@ impl SimpleBackend {
                 }
                 "set_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30711,8 +35727,14 @@ impl SimpleBackend {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -30758,8 +35780,14 @@ impl SimpleBackend {
                 }
                 "set_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30770,8 +35798,14 @@ impl SimpleBackend {
                     .unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let val = var_get_boxed(
+                    let val = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -30817,8 +35851,14 @@ impl SimpleBackend {
                 }
                 "del_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30867,8 +35907,14 @@ impl SimpleBackend {
                 }
                 "del_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30916,8 +35962,14 @@ impl SimpleBackend {
                 }
                 "del_attr_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed(
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
                         &raw_primary_int,
@@ -30928,8 +35980,14 @@ impl SimpleBackend {
                     .unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = var_get_boxed(
+                    let name = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
                         &raw_primary_int,
@@ -31047,8 +36105,14 @@ impl SimpleBackend {
                             ) {
                                 continue;
                             }
-                            if let Some(val) = var_get_boxed(
+                            if let Some(val) = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -31073,8 +36137,14 @@ impl SimpleBackend {
                             ) {
                                 continue;
                             }
-                            if let Some(val) = var_get_boxed(
+                            if let Some(val) = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -31148,8 +36218,14 @@ impl SimpleBackend {
                                     continue;
                                 }
                                 let val = entry_vars.get(&name).copied().or_else(|| {
-                                    var_get_boxed(
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
                                         &raw_primary_int,
@@ -31181,8 +36257,14 @@ impl SimpleBackend {
                                     continue;
                                 }
                                 let val = entry_vars.get(&name).copied().or_else(|| {
-                                    var_get_boxed(
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
                                         &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &raw_int_shadow,
+                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
                                         &raw_primary_int,
@@ -31216,8 +36298,14 @@ impl SimpleBackend {
                             continue;
                         }
                         let val = entry_vars.get(name).copied().or_else(|| {
-                            var_get_boxed(
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -31244,8 +36332,14 @@ impl SimpleBackend {
                             continue;
                         }
                         let val = entry_vars.get(name).copied().or_else(|| {
-                            var_get_boxed(
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
                                 &raw_primary_int,
@@ -31384,8 +36478,14 @@ impl SimpleBackend {
                             // not var_get (current SSA Value). If the variable was
                             // redefined, var_get returns the WRONG object.
                             let val = entry_vars.get(&name).copied().or_else(|| {
-                                var_get_boxed(
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &name,
                                     &raw_primary_int,
@@ -31418,8 +36518,14 @@ impl SimpleBackend {
                         );
                         for name in cleanup {
                             let val = entry_vars.get(&name).copied().or_else(|| {
-                                var_get_boxed(
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &name,
                                     &raw_primary_int,
@@ -31474,8 +36580,14 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if var_is_bool(cond_name) {
                         // NaN-boxed bool: bit 0 is the boolean value.
-                        let cond = var_get_boxed(
+                        let cond = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -31496,8 +36608,14 @@ impl SimpleBackend {
                             &args[0],
                         )
                         .unwrap_or_else(|| {
-                            let cond = var_get_boxed(
+                            let cond = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
                                 &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &raw_int_shadow,
+                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
                                 &raw_primary_int,
@@ -31510,8 +36628,14 @@ impl SimpleBackend {
                         });
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
-                        let cond = var_get_boxed(
+                        let cond = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -31904,8 +37028,14 @@ impl SimpleBackend {
                             )
                             .unwrap_or_else(|| {
                                 // Source is NaN-boxed -- extract f64 bits.
-                                let boxed = var_get_boxed(
+                                let boxed = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     &args[0],
                                     &raw_primary_int,
@@ -31927,8 +37057,14 @@ impl SimpleBackend {
                             continue;
                         }
                         // --- Slot-backed join slots ---
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -32062,8 +37198,14 @@ impl SimpleBackend {
                         // No destination variable name — still need to evaluate
                         // the source for side effects (should not happen in
                         // well-formed TIR, but defensive).
-                        let _val = var_get_boxed(
+                        let _val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -32171,8 +37313,14 @@ impl SimpleBackend {
                                 var_name,
                             )
                             .unwrap_or_else(|| {
-                                let boxed = var_get_boxed(
+                                let boxed = var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
                                     &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &raw_int_shadow,
+                                    &raw_int_shadow_vals,
                                     &vars,
                                     var_name,
                                     &raw_primary_int,
@@ -32192,8 +37340,14 @@ impl SimpleBackend {
                             raw_float_shadow_vals.insert(out_name.clone(), raw_f64);
                             continue;
                         }
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             var_name,
                             &raw_primary_int,
@@ -32333,8 +37487,14 @@ impl SimpleBackend {
                             raw_int_shadow_vals.insert(out_name.clone(), raw_val);
                             continue;
                         }
-                        let val = var_get_boxed(
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &raw_int_shadow,
+                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
                             &raw_primary_int,
@@ -32622,8 +37782,14 @@ impl SimpleBackend {
                             tracked_obj_vars.push(name.clone());
                         }
                     }
-                    if let Some(val) = var_get_boxed(
+                    if let Some(val) = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &raw_int_shadow,
+                        &raw_int_shadow_vals,
                         &vars,
                         name,
                         &raw_primary_int,
