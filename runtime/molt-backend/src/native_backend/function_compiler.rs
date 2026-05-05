@@ -1040,8 +1040,13 @@ fn float_value_for(
 /// a float value. This produces garbage (NaN) for int operands. Now we
 /// correctly convert ints to f64 via `fcvt_from_sint`.
 #[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
 fn float_value_for_mixed(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     raw_primary_float: &std::collections::BTreeSet<String>,
     raw_float_shadow: &BTreeMap<String, Variable>,
@@ -1082,16 +1087,23 @@ fn float_value_for_mixed(
         if let Some(raw_int_val) = raw_i {
             return builder.ins().fcvt_from_sint(types::F64, raw_int_val);
         }
-        // Fall back to unboxing the NaN-boxed int representation.
-        // Step 0.5 NOTE: this var_get_boxed call is reached only when `name`
-        // is NOT in `raw_primary_int` (the early-return at lines above fires
-        // otherwise), so the int-box branch of var_get_boxed never executes
-        // here — only the identity branch returning the already-NaN-boxed
-        // main Variable.  Inline-only boxing is therefore overflow-safe by
-        // exclusion at this site, and threading the import-ref machinery
-        // through float_value_for_mixed would be churn for no semantic gain.
-        let boxed = var_get_boxed(
+        // Phase 1d Step 0.6: this site is reached only when `name` is NOT in
+        // `raw_primary_int` (the early-return above fires otherwise), so the
+        // int-box branch of var_get_boxed_overflow_safe never executes here —
+        // only the identity branch returning the already-NaN-boxed main
+        // Variable.  Migrating to var_get_boxed_overflow_safe is an asymmetry
+        // fix per CLAUDE.md "asymmetric coverage of a structural fix" — Step 1
+        // (atomic Phase 1d) needs every var_get_boxed_overflow_safe call site
+        // to use the overflow-safe variant for forward-compat with the static
+        // int_primary_vars set including large IV accumulators.
+        let boxed = var_get_boxed_overflow_safe(
+            module,
+            import_ids,
             builder,
+            import_refs,
+            sealed_blocks,
+            raw_int_shadow,
+            raw_int_shadow_vals,
             vars,
             name,
             raw_primary_int,
@@ -1105,10 +1117,14 @@ fn float_value_for_mixed(
     }
 
     // 3. Not int — must be a NaN-boxed float without a shadow. Bitcast.
-    // Step 0.5 NOTE: same reasoning as the int-fallback site above —
-    // var_get_boxed's int-box branch is unreachable when name is not int.
-    let boxed = var_get_boxed(
+    let boxed = var_get_boxed_overflow_safe(
+        module,
+        import_ids,
         builder,
+        import_refs,
+        sealed_blocks,
+        raw_int_shadow,
+        raw_int_shadow_vals,
         vars,
         name,
         raw_primary_int,
@@ -4530,7 +4546,11 @@ impl SimpleBackend {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -4546,7 +4566,11 @@ impl SimpleBackend {
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -4896,7 +4920,11 @@ impl SimpleBackend {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -4912,7 +4940,11 @@ impl SimpleBackend {
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -6503,7 +6535,11 @@ impl SimpleBackend {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -6519,7 +6555,11 @@ impl SimpleBackend {
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -6814,7 +6854,11 @@ impl SimpleBackend {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -6830,7 +6874,11 @@ impl SimpleBackend {
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -7112,7 +7160,11 @@ impl SimpleBackend {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -7128,7 +7180,11 @@ impl SimpleBackend {
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -7415,7 +7471,11 @@ impl SimpleBackend {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -7431,7 +7491,11 @@ impl SimpleBackend {
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -8951,7 +9015,11 @@ impl SimpleBackend {
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o));
                         let lhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -8967,7 +9035,11 @@ impl SimpleBackend {
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -20525,7 +20597,11 @@ impl SimpleBackend {
                     {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -20541,7 +20617,11 @@ impl SimpleBackend {
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -20775,7 +20855,11 @@ impl SimpleBackend {
                     {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -20791,7 +20875,11 @@ impl SimpleBackend {
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -21030,7 +21118,11 @@ impl SimpleBackend {
                     {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -21046,7 +21138,11 @@ impl SimpleBackend {
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -21283,7 +21379,11 @@ impl SimpleBackend {
                     {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -21299,7 +21399,11 @@ impl SimpleBackend {
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -21542,7 +21646,11 @@ impl SimpleBackend {
                     {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -21558,7 +21666,11 @@ impl SimpleBackend {
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -21775,7 +21887,11 @@ impl SimpleBackend {
                     {
                         // Float shadows: both tiers safe inside loops (see add handler).
                         let lf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
@@ -21791,7 +21907,11 @@ impl SimpleBackend {
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &raw_primary_float,
                             &raw_float_shadow,
