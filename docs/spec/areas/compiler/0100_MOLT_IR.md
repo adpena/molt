@@ -26,6 +26,11 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
   are the only raw I64/bool/F64 authorities in the current native backend.
   Non-primary bool and float values are represented immediately in their main
   boxed I64 variable.
+- `LirRepr::Ref64` is a runtime reference-word lane for proven reference
+  values such as stack-eligible user-class allocations. It is physically an
+  `i64` on WASM and native pointer-sized backends, but it is not the semantic
+  `I64` scalar lane: object truthiness, dynamic signature boundaries, and
+  reference provenance must continue to use runtime-object semantics.
 
 ## Implementation layout
 - Keep Rust crate entrypoints (`lib.rs`) thin; implement runtime/backend subsystems in focused modules under `src/` and re-export from `lib.rs`.
