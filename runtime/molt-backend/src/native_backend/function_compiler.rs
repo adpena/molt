@@ -743,6 +743,61 @@ fn record_bool_shadow(
     raw_bool_values.insert(name.to_string(), raw_bool);
 }
 
+/// Read a raw 0/1 bool from the remaining bool shadow lane.
+#[cfg(feature = "native-backend")]
+#[inline]
+fn bool_raw_value(
+    builder: &mut FunctionBuilder<'_>,
+    raw_bool_shadow_vars: &BTreeMap<String, Variable>,
+    raw_bool_values: &BTreeMap<String, Value>,
+    name: &str,
+) -> Option<Value> {
+    shadow_lookup(builder, raw_bool_shadow_vars, raw_bool_values, name)
+}
+
+/// Propagate a raw bool shadow through copy/load/store edges.
+///
+/// When the source is Variable-tier, keep the destination Variable-tier as
+/// well so loop-carried bools remain phi-correct.  When the source is only
+/// Value-tier, use the normal same-block record path.
+#[cfg(feature = "native-backend")]
+fn propagate_bool_shadow(
+    builder: &mut FunctionBuilder<'_>,
+    raw_bool_values: &mut BTreeMap<String, Value>,
+    raw_bool_shadow_vars: &mut BTreeMap<String, Variable>,
+    src: &str,
+    dst: &str,
+) {
+    let src_shadow_var = raw_bool_shadow_vars.get(src).copied();
+    let raw_bool = src_shadow_var
+        .map(|var| builder.use_var(var))
+        .or_else(|| raw_bool_values.get(src).copied());
+    let Some(raw_bool) = raw_bool else {
+        return;
+    };
+
+    if src_shadow_var.is_some() {
+        let dst_shadow_var = if let Some(&var) = raw_bool_shadow_vars.get(dst) {
+            var
+        } else {
+            let var = builder.declare_var(types::I64);
+            builder.def_var(var, raw_bool);
+            raw_bool_shadow_vars.insert(dst.to_string(), var);
+            var
+        };
+        builder.def_var(dst_shadow_var, raw_bool);
+        raw_bool_values.remove(dst);
+    } else {
+        record_bool_shadow(
+            builder,
+            raw_bool_values,
+            raw_bool_shadow_vars,
+            dst,
+            raw_bool,
+        );
+    }
+}
+
 /// Produce a correctly NaN-boxed value for a variable in `int_primary_vars`
 /// whose raw i64 may exceed the 47-bit inline range.
 ///
@@ -871,14 +926,7 @@ fn ensure_boxed_bool_safe(
     nbc: &crate::NanBoxConsts,
     name: &str,
 ) -> Option<Value> {
-    let raw_val = raw_bool_values
-        .get(name)
-        .copied()
-        .or_else(|| {
-            raw_bool_shadow_vars
-                .get(name)
-                .map(|&var| builder.use_var(var))
-        })
+    let raw_val = bool_raw_value(builder, raw_bool_shadow_vars, raw_bool_values, name)
         .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
     if let Some(raw_val) = raw_val {
         return Some(box_bool_value(builder, raw_val, nbc));
@@ -14113,13 +14161,13 @@ impl SimpleBackend {
                                                 // Proven bool: raw_shadow is always 0/1.
                                                 // Store directly — consumers can branch
                                                 // with zero NaN-box overhead.
-                                                raw_bool_values
-                                                    .insert(out__.to_string(), raw_shadow);
-                                                if let Some(&bvar) =
-                                                    raw_bool_shadow_vars.get(out__.as_str())
-                                                {
-                                                    builder.def_var(bvar, raw_shadow);
-                                                }
+                                                record_bool_shadow(
+                                                    &mut builder,
+                                                    &mut raw_bool_values,
+                                                    &raw_bool_shadow_vars,
+                                                    out__,
+                                                    raw_shadow,
+                                                );
                                             } else {
                                                 // Unknown path: shadow is raw 0/1 when
                                                 // list is bool, NaN-boxed otherwise.
@@ -14525,7 +14573,7 @@ impl SimpleBackend {
                                 switch_to_block_materialized(&mut builder, bool_store_bce);
                                 seal_block_once(&mut builder, &mut sealed_blocks, bool_store_bce);
                                 let baddr = builder.ins().iadd(data_ptr, raw_idx);
-                                let bv = if let Some(rb) = shadow_lookup(
+                                let bv = if let Some(rb) = bool_raw_value(
                                     &mut builder,
                                     &raw_bool_shadow_vars,
                                     &raw_bool_values,
@@ -14597,7 +14645,7 @@ impl SimpleBackend {
                                         bool_store_block,
                                     );
                                     let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
-                                    let byte_val = if let Some(raw_val) = shadow_lookup(
+                                    let byte_val = if let Some(raw_val) = bool_raw_value(
                                         &mut builder,
                                         &raw_bool_shadow_vars,
                                         &raw_bool_values,
@@ -20614,7 +20662,7 @@ impl SimpleBackend {
                 }
                 "not" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let res = if let Some(raw_val) = shadow_lookup(
+                    let res = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -21031,7 +21079,7 @@ impl SimpleBackend {
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let mut bool_raw: Option<Value> = None;
-                    let res = if let Some(raw_val) = shadow_lookup(
+                    let res = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -21161,7 +21209,7 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("RHS not found");
-                    let cond = if let Some(raw_val) = shadow_lookup(
+                    let cond = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -21235,7 +21283,7 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("RHS not found");
-                    let cond = if let Some(raw_val) = shadow_lookup(
+                    let cond = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -28844,7 +28892,7 @@ impl SimpleBackend {
                     raw_float_shadow_vals.clear();
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Inline truthiness for bool/int types to avoid function call overhead.
-                    let cond_bool = if let Some(raw_val) = shadow_lookup(
+                    let cond_bool = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -31154,7 +31202,7 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if let Some(raw_val) = shadow_lookup(
+                        let cond_bool = if let Some(raw_val) = bool_raw_value(
                             &mut builder,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
@@ -31363,7 +31411,7 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if let Some(raw_val) = shadow_lookup(
+                        let cond_bool = if let Some(raw_val) = bool_raw_value(
                             &mut builder,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
@@ -34631,7 +34679,7 @@ impl SimpleBackend {
                     // cond is NaN-boxed — dispatch based on type hint to avoid
                     // unnecessary GIL-wrapped molt_is_truthy calls.
                     let cond_name = &args[0];
-                    let cond_bool = if let Some(raw_val) = shadow_lookup(
+                    let cond_bool = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -35134,7 +35182,7 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, name, *val);
                         // Propagate raw_bool_shadow through store_var:
                         // Same two-tier pattern as other non-int shadows.
-                        if let Some(raw_val) = shadow_lookup(
+                        if let Some(raw_val) = bool_raw_value(
                             &mut builder,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
@@ -35287,35 +35335,13 @@ impl SimpleBackend {
                         .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            // Propagate bool shadow: same two-tier pattern.
-                            let src_bool_var = raw_bool_shadow_vars.get(var_name.as_str()).copied();
-                            let raw_bool_val = src_bool_var
-                                .map(|v| builder.use_var(v))
-                                .or_else(|| raw_bool_values.get(var_name.as_str()).copied());
-                            if let Some(raw_bv) = raw_bool_val {
-                                if src_bool_var.is_some() {
-                                    let dst_bvar = if let Some(&dst_var) =
-                                        raw_bool_shadow_vars.get(out_name.as_str())
-                                    {
-                                        dst_var
-                                    } else {
-                                        let dst_var = builder.declare_var(types::I64);
-                                        builder.def_var(dst_var, raw_bv);
-                                        raw_bool_shadow_vars.insert(out_name.clone(), dst_var);
-                                        dst_var
-                                    };
-                                    builder.def_var(dst_bvar, raw_bv);
-                                    raw_bool_values.remove(out_name);
-                                } else {
-                                    record_bool_shadow(
-                                        &mut builder,
-                                        &mut raw_bool_values,
-                                        &raw_bool_shadow_vars,
-                                        out_name,
-                                        raw_bv,
-                                    );
-                                }
-                            }
+                            propagate_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &mut raw_bool_shadow_vars,
+                                var_name,
+                                out_name,
+                            );
                             // Propagate float shadow: same two-tier pattern.
                             let src_float_var = raw_float_shadow.get(var_name.as_str()).copied();
                             let raw_float_val = src_float_var
@@ -35397,35 +35423,13 @@ impl SimpleBackend {
                         .expect("copy_var: src not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            // Propagate bool shadow: same two-tier pattern.
-                            let src_bool_var = raw_bool_shadow_vars.get(&args[0]).copied();
-                            let raw_bool_val = src_bool_var
-                                .map(|v| builder.use_var(v))
-                                .or_else(|| raw_bool_values.get(&args[0]).copied());
-                            if let Some(raw_bv) = raw_bool_val {
-                                if src_bool_var.is_some() {
-                                    let dst_bvar = if let Some(&dst_var) =
-                                        raw_bool_shadow_vars.get(out_name.as_str())
-                                    {
-                                        dst_var
-                                    } else {
-                                        let dst_var = builder.declare_var(types::I64);
-                                        builder.def_var(dst_var, raw_bv);
-                                        raw_bool_shadow_vars.insert(out_name.clone(), dst_var);
-                                        dst_var
-                                    };
-                                    builder.def_var(dst_bvar, raw_bv);
-                                    raw_bool_values.remove(out_name);
-                                } else {
-                                    record_bool_shadow(
-                                        &mut builder,
-                                        &mut raw_bool_values,
-                                        &raw_bool_shadow_vars,
-                                        out_name,
-                                        raw_bv,
-                                    );
-                                }
-                            }
+                            propagate_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &mut raw_bool_shadow_vars,
+                                &args[0],
+                                out_name,
+                            );
                             // Propagate float shadow: same two-tier pattern.
                             let src_float_var = raw_float_shadow.get(&args[0]).copied();
                             let raw_float_val = src_float_var
