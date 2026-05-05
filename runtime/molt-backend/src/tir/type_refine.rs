@@ -956,6 +956,17 @@ fn infer_result_type_with_attrs(
     operand_types: &[TirType],
     attrs: Option<&super::ops::AttrDict>,
 ) -> Option<TirType> {
+    // Class allocation is the one `_type_hint` producer that carries structural
+    // identity: the frontend writes the allocated class id on the result.
+    // Scalar/call `_type_hint` remains non-authoritative transport metadata.
+    if matches!(opcode, OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack)
+        && let Some(attrs) = attrs
+        && let Some(AttrValue::Str(name)) = attrs.get("_type_hint")
+        && let class_ty @ TirType::UserClass(_) = TirType::from_type_hint(name)
+    {
+        return Some(class_ty);
+    }
+
     // Frontend-provided structural return type takes precedence for opaque
     // call-like opcodes. Legacy `_type_hint` is deliberately ignored here:
     // it is semantic transport metadata preserved for compatibility consumers,
@@ -2265,6 +2276,29 @@ mod tests {
         assert_eq!(parse_return_type_str("Func:foo"), None);
         assert_eq!(parse_return_type_str("BoundMethod:list:append"), None);
         assert_eq!(parse_return_type_str("list[int]"), None);
+    }
+
+    #[test]
+    fn object_new_bound_type_hint_is_structural_class_result_type() {
+        let result = ValueId(0);
+        let mut attrs = AttrDict::new();
+        attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
+        let mut func = single_block_func(
+            vec![make_op(OpCode::ObjectNewBound, vec![], vec![result], attrs)],
+            1,
+        );
+        func.blocks.get_mut(&BlockId(0)).unwrap().terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(
+            type_map.get(&result),
+            Some(&TirType::UserClass("Point".into())),
+            "object_new_bound _type_hint is the structural class-id contract, not legacy scalar transport",
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@
 //! - branch arguments match the target block parameters in semantic type and
 //!   low-level representation;
 //! - conditional branches consume `Bool1`;
-//! - return values match the declared function return arity and representation.
+//! - return values match the declared function return arity and a valid
+//!   representation for the declared semantic type.
 
 use std::collections::{HashMap, HashSet};
 
@@ -131,7 +132,7 @@ fn verify_entry_block_signature(func: &LirFunction, errors: &mut Vec<LirVerifyEr
         .enumerate()
     {
         let expected_repr = LirRepr::for_type(expected_ty);
-        if expected_repr != LirRepr::DynBox && actual.ty != *expected_ty {
+        if !signature_value_accepts_type(expected_ty, actual) {
             errors.push(LirVerifyError::block(
                 func.entry_block,
                 format!(
@@ -140,7 +141,7 @@ fn verify_entry_block_signature(func: &LirFunction, errors: &mut Vec<LirVerifyEr
                 ),
             ));
         }
-        if actual.repr != expected_repr {
+        if !signature_value_accepts_repr(expected_ty, actual) {
             errors.push(LirVerifyError::block(
                 func.entry_block,
                 format!(
@@ -150,6 +151,45 @@ fn verify_entry_block_signature(func: &LirFunction, errors: &mut Vec<LirVerifyEr
             ));
         }
     }
+}
+
+fn signature_value_accepts_type(expected_ty: &TirType, actual: &LirValue) -> bool {
+    signature_type_accepts_type(expected_ty, &actual.ty)
+}
+
+fn signature_type_accepts_type(expected_ty: &TirType, actual_ty: &TirType) -> bool {
+    if expected_ty == actual_ty {
+        return true;
+    }
+    if LirRepr::for_type(expected_ty) == LirRepr::DynBox && matches!(actual_ty, TirType::DynBox) {
+        return true;
+    }
+    match expected_ty {
+        TirType::DynBox => true,
+        TirType::Union(members) => members
+            .iter()
+            .any(|member| signature_type_accepts_type(member, actual_ty)),
+        _ => actual_ty == expected_ty,
+    }
+}
+
+fn signature_value_accepts_repr(expected_ty: &TirType, actual: &LirValue) -> bool {
+    let expected_repr = LirRepr::for_type(expected_ty);
+    if actual.repr == expected_repr {
+        return true;
+    }
+    if matches!(expected_ty, TirType::DynBox)
+        && actual.repr == LirRepr::Ref64
+        && matches!(actual.ty, TirType::UserClass(_))
+    {
+        return true;
+    }
+    matches!(
+        (expected_ty, &actual.ty, actual.repr),
+        (TirType::UserClass(expected), TirType::UserClass(actual), LirRepr::DynBox)
+        | (TirType::UserClass(expected), TirType::UserClass(actual), LirRepr::Ref64)
+            if expected == actual
+    )
 }
 
 fn build_value_table(
@@ -766,7 +806,7 @@ fn verify_terminators(
                     );
                     let expected_repr = LirRepr::for_type(expected_ty);
                     if let Some(def) = values.get(value_id) {
-                        if expected_repr != LirRepr::DynBox && def.value.ty != *expected_ty {
+                        if !signature_value_accepts_type(expected_ty, &def.value) {
                             errors.push(LirVerifyError::block(
                                 *bid,
                                 format!(
@@ -775,7 +815,7 @@ fn verify_terminators(
                                 ),
                             ));
                         }
-                        if def.value.repr != expected_repr {
+                        if !signature_value_accepts_repr(expected_ty, &def.value) {
                             errors.push(LirVerifyError::block(
                                 *bid,
                                 format!(
@@ -865,7 +905,7 @@ fn verify_branch_args(
             "branch argument",
         );
         if let Some(actual) = values.get(arg_id) {
-            if expected.repr != LirRepr::DynBox && actual.value.ty != expected.ty {
+            if !signature_type_accepts_type(&expected.ty, &actual.value.ty) {
                 errors.push(LirVerifyError::block(
                     source,
                     format!(
@@ -964,5 +1004,217 @@ mod tests {
             label_id_map: HashMap::new(),
         };
         assert!(verify_lir_function(&func).is_ok());
+    }
+
+    #[test]
+    fn dynbox_return_accepts_ref64_class_handle() {
+        let entry = LirBlock {
+            id: BlockId(0),
+            args: vec![value(
+                0,
+                TirType::UserClass("Point".to_string()),
+                LirRepr::Ref64,
+            )],
+            ops: vec![],
+            terminator: LirTerminator::Return {
+                values: vec![ValueId(0)],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(BlockId(0), entry);
+        let func = LirFunction {
+            name: "dynbox_ref64_return".to_string(),
+            param_names: vec!["obj".to_string()],
+            param_types: vec![TirType::UserClass("Point".to_string())],
+            return_types: vec![TirType::DynBox],
+            blocks,
+            entry_block: BlockId(0),
+            label_id_map: HashMap::new(),
+        };
+        assert!(verify_lir_function(&func).is_ok());
+    }
+
+    #[test]
+    fn dynbox_return_rejects_ref64_non_reference_value() {
+        let entry = LirBlock {
+            id: BlockId(0),
+            args: vec![value(0, TirType::I64, LirRepr::Ref64)],
+            ops: vec![],
+            terminator: LirTerminator::Return {
+                values: vec![ValueId(0)],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(BlockId(0), entry);
+        let func = LirFunction {
+            name: "dynbox_bad_ref64_return".to_string(),
+            param_names: vec!["bits".to_string()],
+            param_types: vec![TirType::I64],
+            return_types: vec![TirType::DynBox],
+            blocks,
+            entry_block: BlockId(0),
+            label_id_map: HashMap::new(),
+        };
+        let errors = verify_lir_function(&func).expect_err("non-reference Ref64 must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("representation mismatch")),
+            "expected representation mismatch, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn user_class_return_requires_matching_class_identity_for_ref64() {
+        let entry = LirBlock {
+            id: BlockId(0),
+            args: vec![value(
+                0,
+                TirType::UserClass("Point".to_string()),
+                LirRepr::Ref64,
+            )],
+            ops: vec![],
+            terminator: LirTerminator::Return {
+                values: vec![ValueId(0)],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(BlockId(0), entry);
+        let func = LirFunction {
+            name: "wrong_class_ref64_return".to_string(),
+            param_names: vec!["obj".to_string()],
+            param_types: vec![TirType::UserClass("Point".to_string())],
+            return_types: vec![TirType::UserClass("Other".to_string())],
+            blocks,
+            entry_block: BlockId(0),
+            label_id_map: HashMap::new(),
+        };
+        let errors = verify_lir_function(&func).expect_err("mismatched class return must fail");
+        assert!(
+            errors.iter().any(|err| err.message.contains("type mismatch")),
+            "expected class identity type mismatch, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn user_class_return_accepts_dynbox_when_class_proof_is_unavailable() {
+        let entry = LirBlock {
+            id: BlockId(0),
+            args: vec![value(0, TirType::DynBox, LirRepr::DynBox)],
+            ops: vec![],
+            terminator: LirTerminator::Return {
+                values: vec![ValueId(0)],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(BlockId(0), entry);
+        let func = LirFunction {
+            name: "boxed_frozenset_return".to_string(),
+            param_names: vec!["value".to_string()],
+            param_types: vec![TirType::DynBox],
+            return_types: vec![TirType::UserClass("frozenset".to_string())],
+            blocks,
+            entry_block: BlockId(0),
+            label_id_map: HashMap::new(),
+        };
+        assert!(verify_lir_function(&func).is_ok());
+    }
+
+    #[test]
+    fn union_return_accepts_concrete_member_type() {
+        let entry = LirBlock {
+            id: BlockId(0),
+            args: vec![value(0, TirType::None, LirRepr::DynBox)],
+            ops: vec![],
+            terminator: LirTerminator::Return {
+                values: vec![ValueId(0)],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(BlockId(0), entry);
+        let func = LirFunction {
+            name: "union_none_return".to_string(),
+            param_names: vec!["obj".to_string()],
+            param_types: vec![TirType::None],
+            return_types: vec![TirType::Union(vec![TirType::Bool, TirType::None])],
+            blocks,
+            entry_block: BlockId(0),
+            label_id_map: HashMap::new(),
+        };
+        assert!(verify_lir_function(&func).is_ok());
+    }
+
+    #[test]
+    fn union_return_accepts_identical_union_type() {
+        let union_ty = TirType::Union(vec![TirType::Bool, TirType::None]);
+        let entry = LirBlock {
+            id: BlockId(0),
+            args: vec![value(0, union_ty.clone(), LirRepr::DynBox)],
+            ops: vec![],
+            terminator: LirTerminator::Return {
+                values: vec![ValueId(0)],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(BlockId(0), entry);
+        let func = LirFunction {
+            name: "union_identity_return".to_string(),
+            param_names: vec!["value".to_string()],
+            param_types: vec![union_ty.clone()],
+            return_types: vec![union_ty],
+            blocks,
+            entry_block: BlockId(0),
+            label_id_map: HashMap::new(),
+        };
+        assert!(verify_lir_function(&func).is_ok());
+    }
+
+    #[test]
+    fn branch_args_enforce_user_class_identity_when_boxed() {
+        let entry_id = BlockId(0);
+        let target_id = BlockId(1);
+        let entry = LirBlock {
+            id: entry_id,
+            args: vec![value(
+                0,
+                TirType::UserClass("Other".to_string()),
+                LirRepr::DynBox,
+            )],
+            ops: vec![],
+            terminator: LirTerminator::Branch {
+                target: target_id,
+                args: vec![ValueId(0)],
+            },
+        };
+        let target = LirBlock {
+            id: target_id,
+            args: vec![value(
+                1,
+                TirType::UserClass("Point".to_string()),
+                LirRepr::DynBox,
+            )],
+            ops: vec![],
+            terminator: LirTerminator::Return { values: vec![] },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(entry_id, entry);
+        blocks.insert(target_id, target);
+        let func = LirFunction {
+            name: "boxed_class_branch_mismatch".to_string(),
+            param_names: vec!["obj".to_string()],
+            param_types: vec![TirType::UserClass("Other".to_string())],
+            return_types: vec![],
+            blocks,
+            entry_block: entry_id,
+            label_id_map: HashMap::new(),
+        };
+        let errors =
+            verify_lir_function(&func).expect_err("boxed branch class identity mismatch must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("branch type mismatch")),
+            "expected branch type mismatch, got {errors:?}"
+        );
     }
 }

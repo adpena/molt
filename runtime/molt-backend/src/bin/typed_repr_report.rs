@@ -7,8 +7,8 @@ use molt_backend::tir::lir::{LirFunction, LirRepr};
 use molt_backend::tir::ops::{AttrValue, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::ValueId;
-use molt_backend::{rewrite_annotate_stubs, SimpleIR};
-use serde_json::{json, Value};
+use molt_backend::{SimpleIR, rewrite_annotate_stubs};
+use serde_json::{Value, json};
 
 #[derive(Default)]
 struct OpcodeStats {
@@ -306,6 +306,7 @@ fn merge_opcode_maps(target: &mut BTreeMap<String, OpcodeStats>, value: &Value) 
 fn repr_name(repr: LirRepr) -> &'static str {
     match repr {
         LirRepr::DynBox => "dynbox",
+        LirRepr::Ref64 => "ref64",
         LirRepr::I64 => "i64",
         LirRepr::F64 => "f64",
         LirRepr::Bool1 => "bool1",
