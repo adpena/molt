@@ -1,5 +1,6 @@
 import argparse
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
@@ -146,6 +147,23 @@ class _RunResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+
+
+@dataclass(frozen=True)
+class RunSample:
+    elapsed_s: float
+    stdout: str
+    stderr: str
+
+
+@dataclass(frozen=True)
+class SampleBatch:
+    samples: list[RunSample]
+    ok: bool
+
+    @property
+    def times_s(self) -> list[float]:
+        return [sample.elapsed_s for sample in self.samples] if self.ok else []
 
 
 def _enable_line_buffering() -> None:
@@ -394,7 +412,7 @@ def measure_runtime(
     run_args=None,
     timeout_s: float | None = None,
     label: str | None = None,
-):
+) -> RunSample | None:
     start = time.perf_counter()
     full_cmd = cmd_args + ([script] if script else [])
     if run_args:
@@ -415,7 +433,7 @@ def measure_runtime(
     end = time.perf_counter()
     if res.returncode != 0:
         return None
-    return end - start
+    return RunSample(end - start, res.stdout, res.stderr)
 
 
 def _resolve_molt_output(payload: dict) -> Path | None:
@@ -555,7 +573,7 @@ def measure_molt_run(
     label: str | None = None,
     run_args: list[str] | None = None,
     timeout_s: float | None = None,
-) -> float | None:
+) -> RunSample | None:
     start = time.perf_counter()
     cmd = [str(binary)]
     if run_args:
@@ -582,16 +600,20 @@ def measure_molt_run(
             prefix = f"Molt run failed for {label}: " if label else "Molt run failed: "
             print(f"{prefix}{err}", file=sys.stderr)
         return None
-    return end - start
+    return RunSample(end - start, res.stdout, res.stderr)
 
 
-def collect_samples(measure_fn, samples, warmup=0):
+def collect_samples(measure_fn, samples, warmup=0) -> SampleBatch:
     for _ in range(warmup):
         if measure_fn() is None:
-            return [], False
-    times = [measure_fn() for _ in range(samples)]
-    valid_times = [t for t in times if t is not None]
-    return valid_times, bool(valid_times)
+            return SampleBatch([], False)
+    measured: list[RunSample] = []
+    for _ in range(samples):
+        sample = measure_fn()
+        if sample is None:
+            return SampleBatch(measured, False)
+        measured.append(sample)
+    return SampleBatch(measured, bool(measured))
 
 
 def summarize_samples(samples: list[float]) -> dict[str, float | list[float]]:
@@ -609,6 +631,117 @@ def summarize_samples(samples: list[float]) -> dict[str, float | list[float]]:
         "max_s": max_s,
         "samples_s": list(samples),
     }
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _stable_output(batch: SampleBatch) -> tuple[str, str] | None:
+    if not batch.ok or not batch.samples:
+        return None
+    first = batch.samples[0]
+    expected = (first.stdout, first.stderr)
+    if all((sample.stdout, sample.stderr) == expected for sample in batch.samples):
+        return expected
+    return None
+
+
+def _output_parity_evidence(
+    reference_batch: SampleBatch | None,
+    molt_batch: SampleBatch,
+) -> dict[str, object]:
+    empty_hashes = {
+        "reference_stdout_sha256": None,
+        "molt_stdout_sha256": None,
+        "reference_stderr_sha256": None,
+        "molt_stderr_sha256": None,
+    }
+    if reference_batch is None or not reference_batch.ok:
+        return {
+            "checked": False,
+            "ok": None,
+            "reference_runtime": "cpython",
+            "reason": "reference_unavailable",
+            "stdout_match": None,
+            "stderr_match": None,
+            **empty_hashes,
+        }
+
+    reference_output = _stable_output(reference_batch)
+    if reference_output is None:
+        return {
+            "checked": True,
+            "ok": False,
+            "reference_runtime": "cpython",
+            "reason": "reference_unstable",
+            "stdout_match": None,
+            "stderr_match": None,
+            **empty_hashes,
+        }
+
+    if not molt_batch.ok:
+        reference_stdout, reference_stderr = reference_output
+        return {
+            "checked": True,
+            "ok": False,
+            "reference_runtime": "cpython",
+            "reason": "molt_unavailable",
+            "stdout_match": None,
+            "stderr_match": None,
+            "reference_stdout_sha256": _sha256_text(reference_stdout),
+            "molt_stdout_sha256": None,
+            "reference_stderr_sha256": _sha256_text(reference_stderr),
+            "molt_stderr_sha256": None,
+        }
+
+    molt_output = _stable_output(molt_batch)
+    if molt_output is None:
+        reference_stdout, reference_stderr = reference_output
+        return {
+            "checked": True,
+            "ok": False,
+            "reference_runtime": "cpython",
+            "reason": "molt_unstable",
+            "stdout_match": None,
+            "stderr_match": None,
+            "reference_stdout_sha256": _sha256_text(reference_stdout),
+            "molt_stdout_sha256": None,
+            "reference_stderr_sha256": _sha256_text(reference_stderr),
+            "molt_stderr_sha256": None,
+        }
+
+    reference_stdout, reference_stderr = reference_output
+    molt_stdout, molt_stderr = molt_output
+    stdout_match = reference_stdout == molt_stdout
+    stderr_match = reference_stderr == molt_stderr
+    ok = stdout_match and stderr_match
+    if ok:
+        reason = "match"
+    elif not stdout_match:
+        reason = "stdout_mismatch"
+    else:
+        reason = "stderr_mismatch"
+    return {
+        "checked": True,
+        "ok": ok,
+        "reference_runtime": "cpython",
+        "reason": reason,
+        "stdout_match": stdout_match,
+        "stderr_match": stderr_match,
+        "reference_stdout_sha256": _sha256_text(reference_stdout),
+        "molt_stdout_sha256": _sha256_text(molt_stdout),
+        "reference_stderr_sha256": _sha256_text(reference_stderr),
+        "molt_stderr_sha256": _sha256_text(molt_stderr),
+    }
+
+
+def _has_native_output_parity_failures(payload: dict) -> bool:
+    for stats in payload.get("benchmarks", {}).values():
+        parity = stats.get("molt_output_parity")
+        if isinstance(parity, dict) and parity.get("checked") and parity.get("ok") is False:
+            return True
+    return False
 
 
 def _module_available(name: str) -> bool:
@@ -837,9 +970,10 @@ def bench_results(
         run_args = resolve_benchmark_run_args(script)
         results = {}
         runtime_ok = {}
+        runtime_batches: dict[str, SampleBatch] = {}
         stats = {}
         for rt_name, cmd in runtimes.items():
-            samples_list, ok = collect_samples(
+            batch = collect_samples(
                 lambda: measure_runtime(
                     cmd,
                     script,
@@ -851,21 +985,24 @@ def bench_results(
                 samples,
                 warmup=warmup,
             )
-            results[rt_name] = statistics.mean(samples_list) if ok else None
-            runtime_ok[rt_name] = ok
-            if super_run and ok:
-                stats[rt_name] = summarize_samples(samples_list)
+            runtime_batches[rt_name] = batch
+            sample_times = batch.times_s
+            results[rt_name] = statistics.mean(sample_times) if batch.ok else None
+            runtime_ok[rt_name] = batch.ok
+            if super_run and batch.ok:
+                stats[rt_name] = summarize_samples(sample_times)
 
         codon_time: float | None = None
         codon_build: float | None = None
         codon_size: float | None = None
         codon_ok = False
+        codon_batch: SampleBatch | None = None
         if use_codon:
             runner = _prepare_codon_runner(Path(script), codon_root, base_env, tty=tty)
             if runner is not None:
                 codon_build = runner.build_s
                 codon_size = runner.size_kb
-                codon_samples, codon_ok = collect_samples(
+                codon_batch = collect_samples(
                     lambda: measure_runtime(
                         runner.cmd,
                         runner.script,
@@ -877,7 +1014,9 @@ def bench_results(
                     samples,
                     warmup=warmup,
                 )
+                codon_ok = codon_batch.ok
                 if codon_ok:
+                    codon_samples = codon_batch.times_s
                     codon_time = statistics.mean(codon_samples)
                     if super_run:
                         stats["codon"] = summarize_samples(codon_samples)
@@ -888,6 +1027,7 @@ def bench_results(
         nuitka_build: float | None = None
         nuitka_size: float | None = None
         nuitka_ok = False
+        nuitka_batch: SampleBatch | None = None
         if use_nuitka:
             runner = _prepare_nuitka_runner(
                 Path(script),
@@ -899,7 +1039,7 @@ def bench_results(
             if runner is not None:
                 nuitka_build = runner.build_s
                 nuitka_size = runner.size_kb
-                nuitka_samples, nuitka_ok = collect_samples(
+                nuitka_batch = collect_samples(
                     lambda: measure_runtime(
                         runner.cmd,
                         runner.script,
@@ -911,7 +1051,9 @@ def bench_results(
                     samples,
                     warmup=warmup,
                 )
+                nuitka_ok = nuitka_batch.ok
                 if nuitka_ok:
+                    nuitka_samples = nuitka_batch.times_s
                     nuitka_time = statistics.mean(nuitka_samples)
                     if super_run:
                         stats["nuitka"] = summarize_samples(nuitka_samples)
@@ -922,12 +1064,13 @@ def bench_results(
         pyodide_build: float | None = None
         pyodide_size: float | None = None
         pyodide_ok = False
+        pyodide_batch: SampleBatch | None = None
         if use_pyodide:
             runner = _prepare_pyodide_runner(
                 Path(script), base_env, pyodide_cmd=resolved_pyodide_cmd
             )
             if runner is not None:
-                pyodide_samples, pyodide_ok = collect_samples(
+                pyodide_batch = collect_samples(
                     lambda: measure_runtime(
                         runner.cmd,
                         runner.script,
@@ -939,7 +1082,9 @@ def bench_results(
                     samples,
                     warmup=warmup,
                 )
+                pyodide_ok = pyodide_batch.ok
                 if pyodide_ok:
+                    pyodide_samples = pyodide_batch.times_s
                     pyodide_time = statistics.mean(pyodide_samples)
                     if super_run:
                         stats["pyodide"] = summarize_samples(pyodide_samples)
@@ -951,7 +1096,7 @@ def bench_results(
         molt_build: float | None = None
         molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
         molt_ok = False
-        molt_samples: list[float] = []
+        molt_batch = SampleBatch([], False)
         molt_runner = prepare_molt_binary(
             script,
             molt_args,
@@ -960,7 +1105,7 @@ def bench_results(
         )
         if molt_runner is not None:
             try:
-                molt_samples, molt_ok = collect_samples(
+                molt_batch = collect_samples(
                     lambda: measure_molt_run(
                         molt_runner.path,
                         env=base_env,
@@ -971,7 +1116,9 @@ def bench_results(
                     samples,
                     warmup=warmup,
                 )
+                molt_ok = molt_batch.ok
                 if molt_ok:
+                    molt_samples = molt_batch.times_s
                     molt_time = statistics.mean(molt_samples)
                     if super_run:
                         stats["molt"] = summarize_samples(molt_samples)
@@ -985,6 +1132,13 @@ def bench_results(
         cpython_time = (
             results.get("cpython") if runtime_ok.get("cpython", False) else None
         )
+        output_parity = _output_parity_evidence(
+            runtime_batches.get("cpython"),
+            molt_batch,
+        )
+        if output_parity["checked"] and not output_parity["ok"]:
+            molt_ok = False
+            molt_time = None
         pypy_time = results.get("pypy") if runtime_ok.get("pypy", False) else None
         speedup = (
             (cpython_time / molt_time)
@@ -1051,19 +1205,32 @@ def bench_results(
             f"{codon_ratio_cell} | {nuitka_ratio_cell} | {pyodide_ratio_cell}"
         )
 
+        def _runtime_samples(rt_name: str) -> list[float] | None:
+            batch = runtime_batches.get(rt_name)
+            return batch.times_s if batch is not None else None
+
+        def _optional_samples(batch: SampleBatch | None) -> list[float] | None:
+            return batch.times_s if batch is not None else None
+
         data[name] = {
             "cpython_time_s": cpython_time,
+            "cpython_samples_s": _runtime_samples("cpython"),
             "pypy_time_s": pypy_time,
+            "pypy_samples_s": _runtime_samples("pypy"),
             "codon_time_s": codon_time,
+            "codon_samples_s": _optional_samples(codon_batch),
             "codon_build_s": codon_build,
             "codon_size_kb": codon_size,
             "nuitka_time_s": nuitka_time,
+            "nuitka_samples_s": _optional_samples(nuitka_batch),
             "nuitka_build_s": nuitka_build,
             "nuitka_size_kb": nuitka_size,
             "pyodide_time_s": pyodide_time,
+            "pyodide_samples_s": _optional_samples(pyodide_batch),
             "pyodide_build_s": pyodide_build,
             "pyodide_size_kb": pyodide_size,
             "molt_time_s": molt_time,
+            "molt_samples_s": molt_batch.times_s,
             "molt_build_s": molt_build,
             "molt_size_kb": molt_size,
             "molt_speedup": speedup,
@@ -1073,6 +1240,7 @@ def bench_results(
             "molt_nuitka_ratio": nuitka_ratio,
             "molt_pyodide_ratio": pyodide_ratio,
             "molt_ok": molt_ok,
+            "molt_output_parity": output_parity,
             "pypy_ok": runtime_ok.get("pypy", False),
             "molt_args": molt_args,
             "run_args": run_args,
@@ -1280,6 +1448,13 @@ def main():
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
         json_out = BENCH_RESULTS_DIR / f"bench_{timestamp}.json"
     write_json(json_out, payload)
+
+    if _has_native_output_parity_failures(payload):
+        print(
+            f"Native Molt output parity failed; evidence written to {json_out}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
     baseline_path = args.baseline
     if args.update_baseline:

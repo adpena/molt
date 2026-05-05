@@ -169,6 +169,15 @@ paying the CPython runtime cost.
 Use `--runtime-timeout-sec <seconds>` to cap per-process runtime for long suites
 and keep partial runs bounded/reproducible.
 
+Native benchmark JSON keeps raw timing arrays (`*_samples_s`) alongside the
+existing mean fields. A lane only contributes samples when every measured run
+succeeds; partial failures leave the mean null and the sample array empty for
+that attempted lane. When CPython is enabled, Molt native timings are also gated
+by exact stdout/stderr parity against the stable CPython sample output. The
+artifact records hash-only `molt_output_parity` evidence rather than raw output,
+sets `molt_ok=false`, nulls Molt speedup/ratio fields on mismatch, writes the
+JSON evidence, and exits nonzero before any baseline update.
+
 ## Combined Native + WASM Report
 
 After writing the benchmark JSON artifacts, generate the canonical combined
