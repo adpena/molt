@@ -17,6 +17,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "tools"))
 from luau_physics_to_ir import (  # noqa: E402
+    OpIR,
     SimpleIR,
     parse_luau_file,
     tokenize,
@@ -82,6 +83,20 @@ class TestIRContract:
         assert parsed["ir_contract_name"] == "molt.simple_ir"
         assert len(parsed["functions"]) == 1
         assert parsed["functions"][0]["name"] == "Trajectory_applyDrag"
+
+    def test_op_model_does_not_serialize_legacy_raw_int_transport(self):
+        """The Luau emitter's OpIR model tracks the current SimpleIR transport."""
+        op = OpIR(kind="const", out="x", value=1)
+        assert op.to_dict() == {"kind": "const", "value": 1, "out": "x"}
+
+    def test_generated_ops_do_not_emit_legacy_raw_int_transport(self):
+        """Luau physics JSON must not reintroduce removed OpIR transport fields."""
+        if not TRAJECTORY_LUAU.exists():
+            pytest.skip("Vertigo physics source not found")
+        ir = parse_luau_file(TRAJECTORY_LUAU)
+        for func in ir.to_dict()["functions"]:
+            for op in func["ops"]:
+                assert "raw_int" not in op
 
 
 # ---------------------------------------------------------------------------

@@ -54,7 +54,6 @@ class OpIR:
     task_kind: str | None = None
     container_type: str | None = None
     stack_eligible: bool | None = None
-    raw_int: int | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"kind": self.kind}
@@ -72,7 +71,6 @@ class OpIR:
             "task_kind",
             "container_type",
             "stack_eligible",
-            "raw_int",
         ):
             v = getattr(self, fld)
             if v is not None:
