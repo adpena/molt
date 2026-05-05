@@ -62,10 +62,10 @@ It is current-state only. For forward-looking priorities, use
   runpy dynamic execution remains documented rather than tracked through an
   active expected-failure entry.
 - The current backend entry path still carries a stringly `SimpleIR` transport
-  for legacy consumers, but scalar `fast_int` / `fast_float` / `raw_int` /
-  `type_hint` metadata is not backend-authoritative. The TIR-to-SimpleIR
-  lowerer no longer accepts an external type-map channel, and opaque call
-  returns refine only through structural TIR `return_type` metadata.
+  for legacy consumers, but scalar `fast_int` / `fast_float` / `type_hint`
+  metadata is not backend-authoritative. The TIR-to-SimpleIR lowerer no longer
+  accepts an external type-map channel, and opaque call returns refine only
+  through structural TIR `return_type` metadata.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   Native float-primary lowering likewise uses static `float_primary_vars` as
