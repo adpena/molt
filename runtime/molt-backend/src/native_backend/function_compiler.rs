@@ -1056,6 +1056,53 @@ fn box_raw_bool_value(
     box_bool_value(builder, cond, nbc)
 }
 
+/// Truthiness carrier for an unknown-list getitem whose source list has a
+/// cached runtime `TYPE_ID_LIST_BOOL` check.
+///
+/// `payload` is raw 0/1 only when `list_name` is a list_bool at runtime; when
+/// the list is a regular list, the same payload is the NaN-boxed element and
+/// consumers must continue through the normal tag/runtime truthiness path.
+#[cfg(feature = "native-backend")]
+#[derive(Clone)]
+struct ConditionalListBoolShadow {
+    list_name: String,
+    payload: Value,
+}
+
+#[cfg(feature = "native-backend")]
+fn emit_conditional_list_bool_truthiness(
+    builder: &mut FunctionBuilder<'_>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    list_is_bool_cache: &BTreeMap<String, Variable>,
+    shadow: Option<&ConditionalListBoolShadow>,
+    truthy_merge: Block,
+) -> bool {
+    let Some(shadow) = shadow else {
+        return false;
+    };
+    let Some(&ibvar) = list_is_bool_cache.get(&shadow.list_name) else {
+        return false;
+    };
+
+    let ib = builder.use_var(ibvar);
+    let zero_i8 = builder.ins().iconst(types::I8, 0);
+    let is_bool_check = builder.ins().icmp(IntCC::NotEqual, ib, zero_i8);
+    let raw_bool_block = builder.create_block();
+    let speculative_block = builder.create_block();
+    builder
+        .ins()
+        .brif(is_bool_check, raw_bool_block, &[], speculative_block, &[]);
+
+    switch_to_block_materialized(builder, raw_bool_block);
+    seal_block_once(builder, sealed_blocks, raw_bool_block);
+    let raw_truthy = builder.ins().icmp_imm(IntCC::NotEqual, shadow.payload, 0);
+    jump_block(builder, truthy_merge, &[raw_truthy]);
+
+    switch_to_block_materialized(builder, speculative_block);
+    seal_block_once(builder, sealed_blocks, speculative_block);
+    true
+}
+
 #[cfg(feature = "native-backend")]
 fn ensure_boxed_bool_safe(
     builder: &mut FunctionBuilder<'_>,
@@ -3312,11 +3359,12 @@ impl SimpleBackend {
         // Used by the fast-path element access to pick u8-load+NaN-box vs u64-load.
         let mut list_is_bool_cache: std::collections::BTreeMap<String, Variable> =
             std::collections::BTreeMap::new();
-        // Raw-bool shadow for inline list getitem with unknown element type.
+        // Conditional list-bool truthiness carrier for inline list getitem with
+        // unknown element type.
         // When the list has a cached is_bool flag (list_is_bool_cache), the
         // getitem merge block carries a second parameter: the raw bool value
         // (byte_ext 0/1) when the list IS list_bool, or the NaN-boxed element
-        // when it is a regular list.  This map stores (source_list_name, shadow_Value)
+        // when it is a regular list.  This map stores that conditional carrier
         // keyed by the getitem output variable name.
         //
         // At the `if`/`br_if` consumer, we check the list's is_bool flag at
@@ -3327,8 +3375,10 @@ impl SimpleBackend {
         //
         // This map is NOT cleared at `if` boundaries (unlike raw_int_shadow_vals)
         // because the shadow Value from the getitem merge dominates the `if` op.
-        let mut list_bool_raw_shadow: std::collections::BTreeMap<String, (String, Value)> =
-            std::collections::BTreeMap::new();
+        let mut conditional_list_bool_shadows: std::collections::BTreeMap<
+            String,
+            ConditionalListBoolShadow,
+        > = std::collections::BTreeMap::new();
         // Non-primary raw bool values from proven list_bool getitem or const_bool.
         // Bool-primary names keep the raw 0/1 value in their main Variable.
         // Stores the raw 0/1 as an I64 Value so downstream `if`/`br_if`/
@@ -14498,9 +14548,12 @@ impl SimpleBackend {
                                                 def_var_named(&mut builder, &vars, out__, merged);
                                                 // Unknown path: shadow is raw 0/1 when
                                                 // list is bool, NaN-boxed otherwise.
-                                                list_bool_raw_shadow.insert(
+                                                conditional_list_bool_shadows.insert(
                                                     out__.to_string(),
-                                                    (args[0].clone(), raw_shadow),
+                                                    ConditionalListBoolShadow {
+                                                        list_name: args[0].clone(),
+                                                        payload: raw_shadow,
+                                                    },
                                                 );
                                             }
                                         } else {
@@ -29334,38 +29387,16 @@ impl SimpleBackend {
                         let truthy_merge = builder.create_block();
                         builder.append_block_param(truthy_merge, types::I8);
 
-                        // Peephole: if the condition came from a list getitem with
-                        // a raw-bool shadow, check the list's is_bool flag first.
-                        // When the list IS list_bool the shadow is the raw boolean
-                        // (0 or 1) and we skip the NaN-box tag extraction entirely.
-                        let raw_shadow_info = list_bool_raw_shadow.get(&args[0]).cloned();
-                        if let Some((ref list_var, raw_shadow)) = raw_shadow_info
-                            && let Some(&ibvar) = list_is_bool_cache.get(list_var)
-                        {
-                            let ib = builder.use_var(ibvar);
-                            let zero_i8 = builder.ins().iconst(types::I8, 0);
-                            let is_bool_check = builder.ins().icmp(IntCC::NotEqual, ib, zero_i8);
-                            let raw_bool_block = builder.create_block();
-                            let speculative_block = builder.create_block();
-                            builder.ins().brif(
-                                is_bool_check,
-                                raw_bool_block,
-                                &[],
-                                speculative_block,
-                                &[],
-                            );
-
-                            // Fast path: list IS list_bool — shadow is raw 0/1.
-                            switch_to_block_materialized(&mut builder, raw_bool_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, raw_bool_block);
-                            let raw_truthy = builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0);
-                            jump_block(&mut builder, truthy_merge, &[raw_truthy]);
-
-                            // Continue with speculative tag check in the
-                            // fallback block (not list_bool).
-                            switch_to_block_materialized(&mut builder, speculative_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, speculative_block);
-                        }
+                        // Conditional list-bool carrier: when the source list
+                        // is list_bool, branch directly on the raw 0/1 payload;
+                        // otherwise continue into the normal NaN-box path.
+                        emit_conditional_list_bool_truthiness(
+                            &mut builder,
+                            &mut sealed_blocks,
+                            &list_is_bool_cache,
+                            conditional_list_bool_shadows.get(&args[0]),
+                            truthy_merge,
+                        );
 
                         let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
                         let masked = builder.ins().band(*cond, mask);
@@ -35148,32 +35179,16 @@ impl SimpleBackend {
                         let brif_truthy_merge = builder.create_block();
                         builder.append_block_param(brif_truthy_merge, types::I8);
 
-                        // Peephole: raw-bool shadow from list getitem.
-                        let raw_shadow_info = list_bool_raw_shadow.get(cond_name).cloned();
-                        if let Some((ref list_var, raw_shadow)) = raw_shadow_info
-                            && let Some(&ibvar) = list_is_bool_cache.get(list_var)
-                        {
-                            let ib = builder.use_var(ibvar);
-                            let zero_i8 = builder.ins().iconst(types::I8, 0);
-                            let is_bool_check = builder.ins().icmp(IntCC::NotEqual, ib, zero_i8);
-                            let raw_bool_block = builder.create_block();
-                            let speculative_block = builder.create_block();
-                            builder.ins().brif(
-                                is_bool_check,
-                                raw_bool_block,
-                                &[],
-                                speculative_block,
-                                &[],
-                            );
-
-                            switch_to_block_materialized(&mut builder, raw_bool_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, raw_bool_block);
-                            let raw_truthy = builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0);
-                            jump_block(&mut builder, brif_truthy_merge, &[raw_truthy]);
-
-                            switch_to_block_materialized(&mut builder, speculative_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, speculative_block);
-                        }
+                        // Conditional list-bool carrier: when the source list
+                        // is list_bool, branch directly on the raw 0/1 payload;
+                        // otherwise continue into the normal NaN-box path.
+                        emit_conditional_list_bool_truthiness(
+                            &mut builder,
+                            &mut sealed_blocks,
+                            &list_is_bool_cache,
+                            conditional_list_bool_shadows.get(cond_name),
+                            brif_truthy_merge,
+                        );
 
                         let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
                         let masked = builder.ins().band(*cond, mask);
