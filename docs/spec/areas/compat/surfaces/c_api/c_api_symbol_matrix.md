@@ -177,7 +177,7 @@ surface:
 - Handle lifetime: `molt_handle_incref`, `molt_handle_decref`.
 - Scalar constructors/accessors: `molt_none`, `molt_bool_from_i32`,
   `molt_int_from_i64`, `molt_int_as_i64`, `molt_float_from_f64`,
-  `molt_float_as_f64`.
+  `molt_float_as_f64` (including heap-backed NaN float extraction).
 - Errors: `molt_err_set`, `molt_err_format`, `molt_err_clear`,
   `molt_err_pending`, `molt_err_peek`, `molt_err_fetch`,
   `molt_err_restore`, `molt_err_matches`.

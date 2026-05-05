@@ -78,29 +78,32 @@ module/function/variable to type strings with trust levels (`advisory`,
 `guarded`, `trusted`). The type system is entirely optional and advisory by
 default.
 
-**Current transport-level specialization mechanism**: The frontend sets
-`fast_int: true` on arithmetic ops when it can prove both operands are integers
-(via type hints, literal analysis, or loop induction variables). This is the
-main specialization hook visible on the current backend transport.
+**Current transport-level specialization mechanism**: Legacy `fast_int` /
+`fast_float` / `raw_int` / `type_hint` fields may still appear on the SimpleIR
+transport, but native scalar representation is not allowed to recover its
+authority from those fields. The native backend now uses static raw-primary
+sets for int and float variables; `float_primary_vars` is the only raw-F64
+authority, and non-primary float results are boxed immediately in their main
+I64 variables instead of being tracked through a side-channel shadow map.
 
 This is an implementation compromise, not the desired endpoint. Upstream TIR
 type refinement and type facts can prove richer representation facts than a
 single `fast_int` bit, but the current lowering path often compresses those
 facts before native codegen.
 
-**How `fast_int` works** (backend lib.rs lines 2102-2190 for `add`):
-- `fast_int=true`: Skip the tag check; directly unbox both operands as ints,
-  compute inline `iadd`, check overflow, fall back to `molt_add` runtime call
-  on overflow. Saves ~3-5ns per operation.
-- `fast_int=false` (default): Emit tag checks (`is_int_tag`) for both operands,
-  branch to fast inline path if both are ints, else call `molt_add`.
+**How native raw-primary lowering works**:
+- `int_primary_vars` names carry raw i64 in their main Cranelift Variable.
+  Boxing happens at explicit escape points, with overflow-safe BigInt handling.
+- `float_primary_vars` names carry raw f64 in their main Cranelift Variable.
+  Non-primary floats stay boxed in their main I64 Variable and recover raw f64
+  by bitcast only at proven float use sites.
 
 **Bottlenecks and opportunities**:
 
 | Issue | Location | Impact | Effort |
 |-------|----------|--------|--------|
-| **Specialization is hint-driven instead of representation-driven**. The backend mostly sees `fast_int`/`fast_float`/`raw_int` flags rather than first-class representation lanes carried through SSA values and block params. This leaves performance on the table and encourages backend-local complexity. | Frontend type refinement, `lower_to_simple.rs`, backend lowering | High | High |
-| **No float specialization**. There is no `fast_float` path. Float arithmetic always dispatches through `molt_add`/`molt_mul`/etc even when both operands are known floats. The NaN-boxing makes this especially wasteful since float values are the "naked" representation — no tag extraction needed. | All arithmetic ops in lib.rs | **High** — scientific/numerical code takes a ~2-3x penalty vs C for pure float loops | Medium |
+| **Specialization still crosses a legacy SimpleIR transport**. Native int and float lanes no longer use raw scalar shadow maps, but the TIR/LIR representation plan is still lowered through SimpleIR before native codegen. This leaves duplicated representation recovery logic in native. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
+| **Float specialization is native-only and set-driven**. Float arithmetic has raw-F64 primary lowering, but the final architecture is a shared LIR representation plan consumed by every backend rather than native-local `float_primary_vars`. | TIR/LIR bridge, native backend lowering, wasm/llvm/luau parity | High | High |
 | **No container element type specialization**. `container_elem_hints` and `dict_key_hints` are tracked (frontend line 963-965) but not used for specialization. A list known to contain only ints could use a packed representation. | Frontend type tracking, backend container ops | Medium-High for numeric workloads | High |
 | **No return type propagation across calls**. If `def foo() -> int` is annotated, callers of `foo()` don't get `fast_int` on the result. The type facts system supports this but it's not wired to the call site specialization. | `FunctionFacts.returns` (type_facts.py:24), call lowering in frontend | Medium | Medium |
 | **Loop induction variable analysis is limited**. `_analyze_loop_bound_facts` and `_analyze_affine_loop_compare_truth` (frontend line 31852-31853) analyze simple `range()` loops, but don't propagate int types through loop body operations. | SCCP, `LoopBoundFact` dataclass (line 61) | Medium — loop-heavy code misses specialization | Medium |
