@@ -60,7 +60,9 @@ This file is forward-looking only.
   architectural center of backend optimization. TIR-to-SimpleIR lowering no
   longer accepts an external type map for scalar hint reseeding; remaining
   performance work must flow through shared representation-aware TIR/LIR
-  contracts.
+  contracts. Native int codegen has retired the raw-int shadow transport in
+  favor of `int_primary_vars`; finish the same structural cleanup for remaining
+  bool/float shadow lanes instead of adding per-op fallback hints.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 
