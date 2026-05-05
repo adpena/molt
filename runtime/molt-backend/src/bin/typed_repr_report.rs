@@ -24,6 +24,7 @@ struct FunctionStats {
     values_by_type: BTreeMap<String, usize>,
     opcodes: BTreeMap<String, OpcodeStats>,
     scalar_values: usize,
+    reference_values: usize,
     boxed_values: usize,
 }
 
@@ -226,10 +227,13 @@ fn record_value(
         .entry(repr_name(repr).to_string())
         .or_insert(0) += 1;
     *stats.values_by_type.entry(type_name(ty)).or_insert(0) += 1;
-    if repr == LirRepr::DynBox {
-        stats.boxed_values += 1;
-    } else {
-        stats.scalar_values += 1;
+    match repr {
+        LirRepr::I64 | LirRepr::F64 | LirRepr::Bool1 => stats.scalar_values += 1,
+        LirRepr::Ref64 => stats.reference_values += 1,
+        LirRepr::DynBox => {
+            stats.reference_values += 1;
+            stats.boxed_values += 1;
+        }
     }
 }
 
@@ -238,6 +242,7 @@ fn function_stats_json(stats: &FunctionStats) -> Value {
         "values_by_repr": stats.values_by_repr,
         "values_by_type": stats.values_by_type,
         "scalar_values": stats.scalar_values,
+        "reference_values": stats.reference_values,
         "boxed_values": stats.boxed_values,
         "opcodes": stats.opcodes.iter().map(|(name, opcode)| {
             (name.clone(), json!({
@@ -260,6 +265,7 @@ fn aggregate_functions(functions: &[Value]) -> Value {
         merge_count_map(&mut stats.values_by_repr, &function_stats["values_by_repr"]);
         merge_count_map(&mut stats.values_by_type, &function_stats["values_by_type"]);
         stats.scalar_values += function_stats["scalar_values"].as_u64().unwrap_or(0) as usize;
+        stats.reference_values += function_stats["reference_values"].as_u64().unwrap_or(0) as usize;
         stats.boxed_values += function_stats["boxed_values"].as_u64().unwrap_or(0) as usize;
         merge_opcode_maps(&mut stats.opcodes, &function_stats["opcodes"]);
 
@@ -411,9 +417,64 @@ mod tests {
         let stats = collect_function_stats(&lir_func);
 
         assert_eq!(stats.scalar_values, 3);
+        assert_eq!(stats.reference_values, 0);
         assert_eq!(stats.values_by_repr.get("i64").copied(), Some(3));
         assert_eq!(stats.opcodes["Add"].operand_repr_tuples["i64,i64"], 1);
         assert_eq!(stats.opcodes["Add"].result_reprs["i64"], 1);
+    }
+
+    #[test]
+    fn counts_ref64_as_reference_not_semantic_scalar() {
+        let entry = BlockId(0);
+        let mut attrs = AttrDict::new();
+        attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
+        attrs.insert("value".into(), AttrValue::Int(24));
+        let mut blocks = HashMap::new();
+        blocks.insert(
+            entry,
+            LirBlock {
+                id: entry,
+                args: vec![],
+                ops: vec![LirOp {
+                    tir_op: TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ObjectNewBoundStack,
+                        operands: vec![],
+                        results: vec![ValueId(0)],
+                        attrs,
+                        source_span: None,
+                    },
+                    result_values: vec![LirValue {
+                        id: ValueId(0),
+                        ty: TirType::UserClass("Point".into()),
+                        repr: LirRepr::Ref64,
+                    }],
+                }],
+                terminator: LirTerminator::Return {
+                    values: vec![ValueId(0)],
+                },
+            },
+        );
+        let lir_func = LirFunction {
+            name: "alloc_point".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_types: vec![TirType::UserClass("Point".into())],
+            blocks,
+            entry_block: entry,
+            label_id_map: HashMap::new(),
+        };
+
+        let stats = collect_function_stats(&lir_func);
+
+        assert_eq!(stats.scalar_values, 0);
+        assert_eq!(stats.reference_values, 1);
+        assert_eq!(stats.boxed_values, 0);
+        assert_eq!(stats.values_by_repr.get("ref64").copied(), Some(1));
+        assert_eq!(
+            stats.opcodes["ObjectNewBoundStack"].result_reprs["ref64"],
+            1
+        );
     }
 
     #[test]
@@ -495,6 +556,7 @@ mod tests {
                     "values_by_repr": {"i64": 1},
                     "values_by_type": {"i64": 1},
                     "scalar_values": 1,
+                    "reference_values": 0,
                     "boxed_values": 0,
                     "opcodes": {
                         "ConstInt": {
@@ -511,6 +573,7 @@ mod tests {
 
         assert_eq!(aggregate["functions"], 1);
         assert_eq!(aggregate["scalar_values"], 1);
+        assert_eq!(aggregate["reference_values"], 0);
         assert_eq!(aggregate["opcodes"]["ConstInt"]["result_reprs"]["i64"], 1);
     }
 }
