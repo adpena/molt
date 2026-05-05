@@ -88,9 +88,9 @@ It is current-state only. For forward-looking priorities, use
   discovery is shared across int, float, bool, and str lanes with the same
   all-sources rule; float-primary eligibility is definition-scoped, so
   unsupported producers such as `pow` keep their own outputs boxed without
-  disabling unrelated proven-float locals in the same function. Residual
-  non-primary bool shadows are limited to boxed-variable cases that still
-  require explicit raw side channels.
+  disabling unrelated proven-float locals in the same function. The raw-bool
+  shadow lane has been removed: `bool_primary_vars` is the only raw-bool
+  authority, and non-primary bools stay boxed in their main I64 variables.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.

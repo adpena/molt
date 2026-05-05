@@ -915,73 +915,21 @@ fn def_inline_int_value(
     }
 }
 
-/// Generic two-tier shadow lookup, retained for the bool and float shadow
-/// systems that have not yet been migrated to the typed-IR Phase 1d
-/// static-set approach (Phase 2 = bool, Phase 3 = float).
-#[cfg(feature = "native-backend")]
-#[inline]
-fn shadow_lookup(
-    builder: &mut FunctionBuilder<'_>,
-    shadow_vars: &BTreeMap<String, Variable>,
-    shadow_vals: &BTreeMap<String, Value>,
-    name: &str,
-) -> Option<Value> {
-    shadow_vals
-        .get(name)
-        .copied()
-        .or_else(|| shadow_vars.get(name).map(|&var| builder.use_var(var)))
-}
-
-/// Record a raw 0/1 bool value in the remaining bool shadow lane.
-///
-/// The Value tier serves same-block consumers; the optional Variable tier is
-/// predeclared for loop-carried/store-backed bool values so Cranelift can form
-/// the required phis.
-#[cfg(feature = "native-backend")]
-fn record_bool_shadow(
-    builder: &mut FunctionBuilder<'_>,
-    vars: &BTreeMap<String, Variable>,
-    bool_primary_vars: &BTreeSet<String>,
-    raw_bool_values: &mut BTreeMap<String, Value>,
-    raw_bool_shadow_vars: &BTreeMap<String, Variable>,
-    name: &str,
-    raw_bool: Value,
-) {
-    if bool_primary_vars.contains(name) {
-        def_var_named(builder, vars, name, raw_bool);
-        raw_bool_values.remove(name);
-        return;
-    }
-    if let Some(&shadow_var) = raw_bool_shadow_vars.get(name) {
-        builder.def_var(shadow_var, raw_bool);
-    }
-    raw_bool_values.insert(name.to_string(), raw_bool);
-}
-
 #[cfg(feature = "native-backend")]
 fn def_bool_result(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     bool_primary_vars: &BTreeSet<String>,
-    raw_bool_values: &mut BTreeMap<String, Value>,
-    raw_bool_shadow_vars: &BTreeMap<String, Variable>,
     out: &str,
     boxed_bool: Value,
     raw_bool: Option<Value>,
 ) {
     let raw_bool = raw_bool.unwrap_or_else(|| builder.ins().band_imm(boxed_bool, 1));
-    if !bool_primary_vars.contains(out) {
+    if bool_primary_vars.contains(out) {
+        def_var_named(builder, vars, out, raw_bool);
+    } else {
         def_var_named(builder, vars, out, boxed_bool);
     }
-    record_bool_shadow(
-        builder,
-        vars,
-        bool_primary_vars,
-        raw_bool_values,
-        raw_bool_shadow_vars,
-        out,
-        raw_bool,
-    );
 }
 
 #[cfg(feature = "native-backend")]
@@ -989,22 +937,12 @@ fn def_raw_bool_value(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     bool_primary_vars: &BTreeSet<String>,
-    raw_bool_values: &mut BTreeMap<String, Value>,
-    raw_bool_shadow_vars: &BTreeMap<String, Variable>,
     out: &str,
     raw_bool: Value,
     nbc: &crate::NanBoxConsts,
 ) {
     if bool_primary_vars.contains(out) {
-        record_bool_shadow(
-            builder,
-            vars,
-            bool_primary_vars,
-            raw_bool_values,
-            raw_bool_shadow_vars,
-            out,
-            raw_bool,
-        );
+        def_var_named(builder, vars, out, raw_bool);
         return;
     }
     let boxed = box_raw_bool_value(builder, raw_bool, nbc);
@@ -1012,23 +950,19 @@ fn def_raw_bool_value(
         builder,
         vars,
         bool_primary_vars,
-        raw_bool_values,
-        raw_bool_shadow_vars,
         out,
         boxed,
         Some(raw_bool),
     );
 }
 
-/// Read a raw 0/1 bool from the remaining bool shadow lane.
+/// Read a raw 0/1 bool only from a bool-primary Variable.
 #[cfg(feature = "native-backend")]
 #[inline]
 fn bool_raw_value(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     bool_primary_vars: &BTreeSet<String>,
-    raw_bool_shadow_vars: &BTreeMap<String, Variable>,
-    raw_bool_values: &BTreeMap<String, Value>,
     name: &str,
 ) -> Option<Value> {
     if bool_primary_vars.contains(name)
@@ -1036,69 +970,7 @@ fn bool_raw_value(
     {
         return Some(builder.use_var(var));
     }
-    shadow_lookup(builder, raw_bool_shadow_vars, raw_bool_values, name)
-}
-
-/// Propagate a raw bool shadow through copy/load/store edges.
-///
-/// When the source is Variable-tier, keep the destination Variable-tier as
-/// well so loop-carried bools remain phi-correct.  When the source is only
-/// Value-tier, use the normal same-block record path.
-#[cfg(feature = "native-backend")]
-fn propagate_bool_shadow(
-    builder: &mut FunctionBuilder<'_>,
-    vars: &BTreeMap<String, Variable>,
-    bool_primary_vars: &BTreeSet<String>,
-    raw_bool_values: &mut BTreeMap<String, Value>,
-    raw_bool_shadow_vars: &mut BTreeMap<String, Variable>,
-    src: &str,
-    dst: &str,
-) {
-    if bool_primary_vars.contains(src)
-        && let Some(&src_var) = vars.get(src)
-    {
-        let raw_bool = builder.use_var(src_var);
-        record_bool_shadow(
-            builder,
-            vars,
-            bool_primary_vars,
-            raw_bool_values,
-            raw_bool_shadow_vars,
-            dst,
-            raw_bool,
-        );
-        return;
-    }
-    let src_shadow_var = raw_bool_shadow_vars.get(src).copied();
-    let raw_bool = src_shadow_var
-        .map(|var| builder.use_var(var))
-        .or_else(|| raw_bool_values.get(src).copied());
-    let Some(raw_bool) = raw_bool else {
-        return;
-    };
-
-    if src_shadow_var.is_some() {
-        let dst_shadow_var = if let Some(&var) = raw_bool_shadow_vars.get(dst) {
-            var
-        } else {
-            let var = builder.declare_var(types::I64);
-            builder.def_var(var, raw_bool);
-            raw_bool_shadow_vars.insert(dst.to_string(), var);
-            var
-        };
-        builder.def_var(dst_shadow_var, raw_bool);
-        raw_bool_values.remove(dst);
-    } else {
-        record_bool_shadow(
-            builder,
-            vars,
-            bool_primary_vars,
-            raw_bool_values,
-            raw_bool_shadow_vars,
-            dst,
-            raw_bool,
-        );
-    }
+    None
 }
 
 /// Produce a correctly NaN-boxed value for a variable in `int_primary_vars`
@@ -1217,8 +1089,7 @@ fn var_get_boxed_overflow_safe_base(
 /// Box a known-bool variable's raw 0/1 value into a TAG_BOOL NaN-box.
 ///
 /// Bool-primary variables carry raw 0/1 in their main Cranelift Variable.
-/// Remaining bool-typed variables use `raw_bool_values` /
-/// `raw_bool_shadow_vars`.
+/// Non-primary bool-typed variables carry boxed TAG_BOOL values.
 #[cfg(feature = "native-backend")]
 #[inline]
 fn box_raw_bool_value(
@@ -1280,8 +1151,6 @@ fn emit_conditional_list_bool_truthiness(
 #[cfg(feature = "native-backend")]
 fn ensure_boxed_bool_safe(
     builder: &mut FunctionBuilder<'_>,
-    raw_bool_values: &std::collections::BTreeMap<String, Value>,
-    raw_bool_shadow_vars: &std::collections::BTreeMap<String, Variable>,
     vars: &BTreeMap<String, Variable>,
     bool_primary_vars: &BTreeSet<String>,
     int_primary_vars: &BTreeSet<String>,
@@ -1292,8 +1161,6 @@ fn ensure_boxed_bool_safe(
         builder,
         vars,
         bool_primary_vars,
-        raw_bool_shadow_vars,
-        raw_bool_values,
         name,
     )
     .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
@@ -1311,8 +1178,6 @@ fn ensure_boxed_primitive_safe(
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
-    raw_bool_values: &std::collections::BTreeMap<String, Value>,
-    raw_bool_shadow_vars: &std::collections::BTreeMap<String, Variable>,
     bool_like_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     vars: &BTreeMap<String, Variable>,
@@ -1341,8 +1206,6 @@ fn ensure_boxed_primitive_safe(
     } else if bool_like_vars.contains(name) {
         ensure_boxed_bool_safe(
             builder,
-            raw_bool_values,
-            raw_bool_shadow_vars,
             vars,
             bool_primary_vars,
             int_primary_vars,
@@ -3373,21 +3236,6 @@ impl SimpleBackend {
             String,
             ConditionalListBoolShadow,
         > = std::collections::BTreeMap::new();
-        // Non-primary raw bool values from proven list_bool getitem or const_bool.
-        // Bool-primary names keep the raw 0/1 value in their main Variable.
-        // Stores the raw 0/1 as an I64 Value so downstream `if`/`br_if`/
-        // `loop_break_if_{true,false}` can branch directly on the raw value
-        // without NaN-box extraction (band + icmp → just icmp).
-        // Also used by proven-bool setitem to skip NaN-box → u8 extraction.
-        // NOT cleared at block boundaries — the Value from a merge block
-        // parameter dominates all downstream consumers in the same linear
-        // scope.  For loop-carried values, prefer raw_bool_shadow_vars.
-        let mut raw_bool_values: std::collections::BTreeMap<String, Value> =
-            std::collections::BTreeMap::new();
-        // Variable-tier raw bool shadows for non-primary loop-carried phi
-        // correctness. Bool-primary names use their main Variable instead.
-        let mut raw_bool_shadow_vars: std::collections::BTreeMap<String, Variable> =
-            std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
         let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
         let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
@@ -3491,34 +3339,10 @@ impl SimpleBackend {
             {
                 eprintln!("INT_STORE_TARGETS {} {:?}", func_ir.name, int_store_targets);
             }
-            // Bool store targets outside bool_primary_vars keep shadow I64
-            // Variables. Bool-primary names carry raw 0/1 in their main
-            // Variable, so a parallel shadow would be a second source of truth.
-            let bool_store_targets = scalar_lane_store_target_names(
-                &func_ir,
-                ScalarLane::Bool,
-                &int_like_vars,
-                &bool_like_vars,
-                &float_like_vars,
-                &str_like_vars,
-            );
-            let zero_b = builder.ins().iconst(types::I64, 0);
-            for name in bool_store_targets
-                .iter()
-                .filter(|name| !bool_primary_vars.contains(*name))
-            {
-                let v = builder.declare_var(types::I64);
-                builder.def_var(v, zero_b);
-                raw_bool_shadow_vars.insert(name.clone(), v);
-            }
-
             int_store_targets
         } else {
             BTreeSet::new()
         };
-        // Bool store target names for retain-at-loop-start filtering.
-        let bool_store_target_names: BTreeSet<String> =
-            raw_bool_shadow_vars.keys().cloned().collect();
         // Only explicit store-backed join carriers and exception-fragile names
         // use stack slots. Structured phi joins must stay on the SSA path.
         // Proven-int join slots that have raw_int_shadow Variables are excluded:
@@ -4467,8 +4291,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             out__,
                             iconst,
                             Some(raw),
@@ -10802,8 +10624,6 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_bool_values,
-                        &raw_bool_shadow_vars,
                         &bool_like_vars,
                         &bool_primary_vars,
                         &vars,
@@ -13991,8 +13811,6 @@ impl SimpleBackend {
                                             &mut builder,
                                             &vars,
                                             &bool_primary_vars,
-                                            &mut raw_bool_values,
-                                            &raw_bool_shadow_vars,
                                             out__,
                                             bool_elem,
                                             Some(byte_ext),
@@ -14038,20 +13856,20 @@ impl SimpleBackend {
                                     //   - unknown → branch on cached is_bool flag
                                     switch_to_block_materialized(&mut builder, fast_block);
                                     seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                                    // Carry a raw-bool shadow through the merge block.
+                                    // Carry a conditional bool payload through the merge block.
                                     // For the "unknown" path: when the list IS list_bool,
                                     // this shadow holds the raw byte (0 or 1) which lets
                                     // downstream `if`/`br_if` consumers skip NaN-box tag
                                     // extraction.
                                     // For the "proven bool" path: the shadow is always the
                                     // raw byte, enabling ZERO NaN-box overhead at consumers.
-                                    let has_raw_bool_shadow_unknown = !out_is_bool
+                                    let has_raw_bool_carrier_unknown = !out_is_bool
                                         && !out_is_non_bool
                                         && list_is_bool_cache.contains_key(&args[0]);
-                                    let has_raw_bool_shadow =
-                                        out_is_bool || has_raw_bool_shadow_unknown;
-                                    if has_raw_bool_shadow {
-                                        builder.append_block_param(merge_block, types::I64); // raw bool shadow
+                                    let has_raw_bool_carrier =
+                                        out_is_bool || has_raw_bool_carrier_unknown;
+                                    if has_raw_bool_carrier {
+                                        builder.append_block_param(merge_block, types::I64); // raw bool result
                                     }
                                     if out_is_bool {
                                         // Proven bool list — emit u8-load directly, no branch.
@@ -14127,7 +13945,7 @@ impl SimpleBackend {
                                         let bool_tag =
                                             builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
                                         let bool_elem = builder.ins().bor(bool_tag, byte_ext);
-                                        if has_raw_bool_shadow {
+                                        if has_raw_bool_carrier {
                                             // Shadow carries raw 0/1 for downstream truthiness.
                                             jump_block(
                                                 &mut builder,
@@ -14159,7 +13977,7 @@ impl SimpleBackend {
                                             local_inc_ref_obj,
                                             &nbc,
                                         );
-                                        if has_raw_bool_shadow {
+                                        if has_raw_bool_carrier {
                                             // Non-bool path: shadow = NaN-boxed element (not a raw bool).
                                             jump_block(&mut builder, merge_block, &[elem, elem]);
                                         } else {
@@ -14181,7 +13999,7 @@ impl SimpleBackend {
                                         self.module.declare_func_in_func(callee, builder.func);
                                     let call = builder.ins().call(local_callee, &[*obj, *idx]);
                                     let slow_res = builder.inst_results(call)[0];
-                                    if has_raw_bool_shadow {
+                                    if has_raw_bool_carrier {
                                         if out_is_bool {
                                             // Proven bool: extract raw 0/1 from NaN-boxed bool.
                                             let raw_bit = builder.ins().band_imm(slow_res, 1);
@@ -14207,23 +14025,21 @@ impl SimpleBackend {
                                     seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                                     let merged = builder.block_params(merge_block)[0];
                                     if let Some(ref out__) = op.out {
-                                        // Store raw-bool shadow so downstream `if`/`br_if`
+                                        // Store conditional bool payload so downstream `if`/`br_if`
                                         // can skip NaN-box tag extraction for list_bool elements.
-                                        if has_raw_bool_shadow {
-                                            let raw_shadow = builder.block_params(merge_block)[1];
+                                        if has_raw_bool_carrier {
+                                            let raw_carrier = builder.block_params(merge_block)[1];
                                             if out_is_bool {
-                                                // Proven bool: raw_shadow is always 0/1.
+                                                // Proven bool: raw_carrier is always 0/1.
                                                 // Store directly — consumers can branch
                                                 // with zero NaN-box overhead.
                                                 def_bool_result(
                                                     &mut builder,
                                                     &vars,
                                                     &bool_primary_vars,
-                                                    &mut raw_bool_values,
-                                                    &raw_bool_shadow_vars,
                                                     out__,
                                                     merged,
-                                                    Some(raw_shadow),
+                                                    Some(raw_carrier),
                                                 );
                                             } else {
                                                 def_var_named(&mut builder, &vars, out__, merged);
@@ -14233,7 +14049,7 @@ impl SimpleBackend {
                                                     out__.to_string(),
                                                     ConditionalListBoolShadow {
                                                         list_name: args[0].clone(),
-                                                        payload: raw_shadow,
+                                                        payload: raw_carrier,
                                                     },
                                                 );
                                             }
@@ -14640,8 +14456,6 @@ impl SimpleBackend {
                                     &mut builder,
                                     &vars,
                                     &bool_primary_vars,
-                                    &raw_bool_shadow_vars,
-                                    &raw_bool_values,
                                     &args[2],
                                 ) {
                                     builder.ins().ireduce(types::I8, rb)
@@ -14714,11 +14528,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &vars,
                                         &bool_primary_vars,
-                                        &raw_bool_shadow_vars,
-                                        &raw_bool_values,
                                         &args[2],
                                     ) {
-                                        // Raw bool shadow available — skip NaN-box extraction.
+                                        // Raw bool primary available — skip NaN-box extraction.
                                         builder.ins().ireduce(types::I8, raw_val)
                                     } else {
                                         // Extract low bit from NaN-boxed bool.
@@ -14856,8 +14668,6 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_bool_values,
-                            &raw_bool_shadow_vars,
                             &bool_like_vars,
                             &bool_primary_vars,
                             &vars,
@@ -19267,7 +19077,7 @@ impl SimpleBackend {
                     } else {
                         int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     };
-                    // Helper: propagate raw bool shadow from a Cranelift icmp/fcmp
+                    // Helper: propagate raw bool result from a Cranelift icmp/fcmp
                     // result (i8) so downstream loop_break_if_true/false and `if`
                     // ops branch directly on the raw value, eliminating NaN-box
                     // round-trips (box_bool_value + band+icmp extraction).
@@ -19480,8 +19290,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             out__,
                             res,
                             lt_raw_bool,
@@ -19715,8 +19523,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             out__,
                             res,
                             le_raw_bool,
@@ -19949,8 +19755,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             out__,
                             res,
                             gt_raw_bool,
@@ -20187,8 +19991,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             out__,
                             res,
                             ge_raw_bool,
@@ -20402,8 +20204,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             out__,
                             res,
                             eq_raw_bool,
@@ -20616,8 +20416,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             out__,
                             res,
                             ne_raw_bool,
@@ -20670,8 +20468,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             &out__,
                             res,
                             None,
@@ -20723,8 +20519,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             &out__,
                             res,
                             None,
@@ -20738,8 +20532,6 @@ impl SimpleBackend {
                         &mut builder,
                         &vars,
                         &bool_primary_vars,
-                        &raw_bool_shadow_vars,
-                        &raw_bool_values,
                         &args[0],
                     ) {
                         // Raw bool: not(x) = bool(x == 0). Skip runtime call.
@@ -20802,8 +20594,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             &out__,
                             res,
                             not_raw,
@@ -21142,8 +20932,6 @@ impl SimpleBackend {
                         &mut builder,
                         &vars,
                         &bool_primary_vars,
-                        &raw_bool_shadow_vars,
-                        &raw_bool_values,
                         &args[0],
                     ) {
                         // Raw bool from proven list_bool getitem or const_bool.
@@ -21236,8 +21024,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &mut raw_bool_values,
-                            &raw_bool_shadow_vars,
                             out__,
                             res,
                             bool_raw,
@@ -21278,8 +21064,6 @@ impl SimpleBackend {
                         &mut builder,
                         &vars,
                         &bool_primary_vars,
-                        &raw_bool_shadow_vars,
-                        &raw_bool_values,
                         &args[0],
                     ) {
                         // Raw bool from proven list_bool getitem or const_bool.
@@ -21354,8 +21138,6 @@ impl SimpleBackend {
                         &mut builder,
                         &vars,
                         &bool_primary_vars,
-                        &raw_bool_shadow_vars,
-                        &raw_bool_values,
                         &args[0],
                     ) {
                         // Raw bool from proven list_bool getitem or const_bool.
@@ -24234,8 +24016,6 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_bool_values,
-                            &raw_bool_shadow_vars,
                             &bool_like_vars,
                             &bool_primary_vars,
                             &vars,
@@ -28951,8 +28731,6 @@ impl SimpleBackend {
                         &mut builder,
                         &vars,
                         &bool_primary_vars,
-                        &raw_bool_shadow_vars,
-                        &raw_bool_values,
                         &args[0],
                     ) {
                         // Raw bool from proven list_bool getitem or const_bool.
@@ -30274,8 +30052,6 @@ impl SimpleBackend {
                                             &mut builder,
                                             &vars,
                                             &bool_primary_vars,
-                                            &mut raw_bool_values,
-                                            &raw_bool_shadow_vars,
                                             join_name,
                                             raw_bool,
                                             &nbc,
@@ -30328,18 +30104,6 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    // Clear Value-based shadows (stale across blocks) and
-                    // load_var aliases.  Keep Variable entries for store_var
-                    // targets — their Variables are phi-correct across
-                    // back-edges.  Re-populate from use_var so the first
-                    // iteration sees the pre-loop value, not the init zero.
-                    // Value-tier raw bools are stale across loop back-edges.
-                    raw_bool_values.clear();
-                    // Remove aliases (entries that share a Variable with a store target)
-                    // by keeping only entries that were in the original pre-declaration.
-                    // The simplest correct approach: clear aliases, keep store targets.
-                    raw_bool_shadow_vars.retain(|k, _| bool_store_target_names.contains(k));
-
                     // Demote phi join slots from int_primary_vars/float at
                     // loop entry.  A phi variable initialized as raw before
                     // the loop may be reassigned with a NaN-boxed value on
@@ -31243,8 +31007,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &raw_bool_shadow_vars,
-                            &raw_bool_values,
                             cond_name,
                         ) {
                             // Raw bool from proven list_bool getitem or const_bool.
@@ -31454,8 +31216,6 @@ impl SimpleBackend {
                             &mut builder,
                             &vars,
                             &bool_primary_vars,
-                            &raw_bool_shadow_vars,
-                            &raw_bool_values,
                             cond_name,
                         ) {
                             // Raw bool from proven list_bool getitem or const_bool.
@@ -34349,8 +34109,6 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_bool_values,
-                        &raw_bool_shadow_vars,
                         &bool_like_vars,
                         &bool_primary_vars,
                         &vars,
@@ -34733,8 +34491,6 @@ impl SimpleBackend {
                         &mut builder,
                         &vars,
                         &bool_primary_vars,
-                        &raw_bool_shadow_vars,
-                        &raw_bool_values,
                         cond_name,
                     ) {
                         // Raw bool from proven list_bool getitem or const_bool.
@@ -35152,8 +34908,6 @@ impl SimpleBackend {
                                 &mut builder,
                                 &vars,
                                 &bool_primary_vars,
-                                &raw_bool_shadow_vars,
-                                &raw_bool_values,
                                 &args[0],
                             )
                             .unwrap_or_else(|| {
@@ -35163,8 +34917,6 @@ impl SimpleBackend {
                                 &mut builder,
                                 &vars,
                                 &bool_primary_vars,
-                                &mut raw_bool_values,
-                                &raw_bool_shadow_vars,
                                 name,
                                 raw_bool,
                                 &nbc,
@@ -35242,26 +34994,6 @@ impl SimpleBackend {
                             builder.ins().call(inc_local, &[*val]);
                         }
                         def_var_named(&mut builder, &vars, name, *val);
-                        // Propagate raw_bool_shadow through store_var:
-                        // Same two-tier pattern as other non-int shadows.
-                        if let Some(raw_val) = bool_raw_value(
-                            &mut builder,
-                            &vars,
-                            &bool_primary_vars,
-                            &raw_bool_shadow_vars,
-                            &raw_bool_values,
-                            &args[0],
-                        ) {
-                            record_bool_shadow(
-                                &mut builder,
-                                &vars,
-                                &bool_primary_vars,
-                                &mut raw_bool_values,
-                                &raw_bool_shadow_vars,
-                                name,
-                                raw_val,
-                            );
-                        }
                     } else {
                         // No destination variable name — still need to evaluate
                         // the source for side effects (should not happen in
@@ -35366,8 +35098,6 @@ impl SimpleBackend {
                                 &mut builder,
                                 &vars,
                                 &bool_primary_vars,
-                                &raw_bool_shadow_vars,
-                                &raw_bool_values,
                                 var_name,
                             )
                             .unwrap_or_else(|| {
@@ -35378,8 +35108,6 @@ impl SimpleBackend {
                                 &mut builder,
                                 &vars,
                                 &bool_primary_vars,
-                                &mut raw_bool_values,
-                                &raw_bool_shadow_vars,
                                 out_name,
                                 raw_bool,
                                 &nbc,
@@ -35402,15 +35130,6 @@ impl SimpleBackend {
                         .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            propagate_bool_shadow(
-                                &mut builder,
-                                &vars,
-                                &bool_primary_vars,
-                                &mut raw_bool_values,
-                                &mut raw_bool_shadow_vars,
-                                var_name,
-                                out_name,
-                            );
                         }
                     } else if let Some(ref args) = op.args
                         && !args.is_empty()
@@ -35452,8 +35171,6 @@ impl SimpleBackend {
                                 &mut builder,
                                 &vars,
                                 &bool_primary_vars,
-                                &raw_bool_shadow_vars,
-                                &raw_bool_values,
                                 &args[0],
                             )
                             .unwrap_or_else(|| {
@@ -35464,8 +35181,6 @@ impl SimpleBackend {
                                 &mut builder,
                                 &vars,
                                 &bool_primary_vars,
-                                &mut raw_bool_values,
-                                &raw_bool_shadow_vars,
                                 out_name,
                                 raw_bool,
                                 &nbc,
@@ -35488,15 +35203,6 @@ impl SimpleBackend {
                         .expect("copy_var: src not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            propagate_bool_shadow(
-                                &mut builder,
-                                &vars,
-                                &bool_primary_vars,
-                                &mut raw_bool_values,
-                                &mut raw_bool_shadow_vars,
-                                &args[0],
-                                out_name,
-                            );
                         }
                     }
                 }
