@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Report backend-proven TIR/LIR representation coverage.
+
+The report compiles source to SimpleIR, delegates representation accounting to
+the `molt-backend` `typed_repr_report` binary, and fails if backend lowering or
+LIR representation verification fails. It does not count legacy frontend
+transport hints such as `fast_int`, `raw_int`, or `type_hint` as optimization
+evidence.
+
+Example:
+  python3 tools/representation_report.py examples/hello.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from molt.frontend import compile_to_tir
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_SCHEMA = "molt.typed_repr_report.v1"
+
+
+class BackendReportError(RuntimeError):
+    """Raised when backend representation evidence cannot be produced."""
+
+
+@dataclass(frozen=True)
+class FileReport:
+    path: Path
+    report: dict[str, Any]
+
+
+def _canonical_env() -> dict[str, str]:
+    env = os.environ.copy()
+    defaults = {
+        "MOLT_EXT_ROOT": str(REPO_ROOT),
+        "CARGO_TARGET_DIR": str(REPO_ROOT / "target"),
+        "MOLT_CACHE": str(REPO_ROOT / ".molt_cache"),
+        "MOLT_DIFF_ROOT": str(REPO_ROOT / "tmp" / "diff"),
+        "MOLT_DIFF_TMPDIR": str(REPO_ROOT / "tmp"),
+        "UV_CACHE_DIR": str(REPO_ROOT / ".uv-cache"),
+        "TMPDIR": str(REPO_ROOT / "tmp"),
+    }
+    for key, value in defaults.items():
+        env.setdefault(key, value)
+    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
+    env.setdefault("MOLT_SESSION_ID", "representation-report")
+    return env
+
+
+def backend_report_command() -> list[str]:
+    return [
+        "cargo",
+        "run",
+        "--quiet",
+        "--profile",
+        "release-fast",
+        "-p",
+        "molt-backend",
+        "--bin",
+        "typed_repr_report",
+        "--",
+        "--stdin",
+        "--json",
+    ]
+
+
+def run_backend_report(ir: dict[str, Any]) -> dict[str, Any]:
+    payload = json.dumps(ir, sort_keys=True, separators=(",", ":"))
+    completed = subprocess.run(
+        backend_report_command(),
+        input=payload,
+        text=True,
+        capture_output=True,
+        cwd=REPO_ROOT,
+        env=_canonical_env(),
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise BackendReportError(
+            f"typed_repr_report failed with exit code {completed.returncode}: {detail}"
+        )
+    try:
+        report = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise BackendReportError(
+            f"typed_repr_report emitted invalid JSON: {exc}"
+        ) from exc
+    if report.get("schema") != BACKEND_SCHEMA:
+        raise BackendReportError(
+            f"typed_repr_report schema mismatch: {report.get('schema')!r}"
+        )
+    if report.get("verified") is not True:
+        raise BackendReportError("typed_repr_report returned unverified LIR")
+    return report
+
+
+def analyze_file(path: Path, type_hints: str) -> FileReport:
+    source = path.read_text(encoding="utf-8")
+    ir = compile_to_tir(source, type_hint_policy=type_hints)
+    return FileReport(path=path, report=run_backend_report(ir))
+
+
+def _counter_from_json(value: object) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    if isinstance(value, dict):
+        for key, raw_count in value.items():
+            if isinstance(raw_count, int):
+                counter[str(key)] += raw_count
+    return counter
+
+
+def aggregate_reports(file_reports: list[FileReport]) -> dict[str, Any]:
+    values_by_repr: Counter[str] = Counter()
+    values_by_type: Counter[str] = Counter()
+    opcodes: dict[str, dict[str, Any]] = {}
+    scalar_values = 0
+    boxed_values = 0
+    lir_errors = 0
+    repr_violations = 0
+    functions = 0
+
+    for file_report in file_reports:
+        aggregate = file_report.report["aggregate"]
+        functions += int(aggregate.get("functions", 0))
+        scalar_values += int(aggregate.get("scalar_values", 0))
+        boxed_values += int(aggregate.get("boxed_values", 0))
+        lir_errors += int(aggregate.get("lir_errors", 0))
+        repr_violations += int(aggregate.get("repr_violations", 0))
+        values_by_repr.update(_counter_from_json(aggregate.get("values_by_repr")))
+        values_by_type.update(_counter_from_json(aggregate.get("values_by_type")))
+
+        for opcode, raw_stats in aggregate.get("opcodes", {}).items():
+            if not isinstance(raw_stats, dict):
+                continue
+            stats = opcodes.setdefault(
+                str(opcode),
+                {
+                    "total": 0,
+                    "result_reprs": Counter(),
+                    "operand_repr_tuples": Counter(),
+                    "boxed_result_values": 0,
+                },
+            )
+            stats["total"] += int(raw_stats.get("total", 0))
+            stats["boxed_result_values"] += int(raw_stats.get("boxed_result_values", 0))
+            stats["result_reprs"].update(
+                _counter_from_json(raw_stats.get("result_reprs"))
+            )
+            stats["operand_repr_tuples"].update(
+                _counter_from_json(raw_stats.get("operand_repr_tuples"))
+            )
+
+    return {
+        "functions": functions,
+        "values_by_repr": dict(sorted(values_by_repr.items())),
+        "values_by_type": dict(sorted(values_by_type.items())),
+        "scalar_values": scalar_values,
+        "boxed_values": boxed_values,
+        "lir_errors": lir_errors,
+        "repr_violations": repr_violations,
+        "opcodes": {
+            opcode: {
+                "total": stats["total"],
+                "result_reprs": dict(sorted(stats["result_reprs"].items())),
+                "operand_repr_tuples": dict(
+                    sorted(stats["operand_repr_tuples"].items())
+                ),
+                "boxed_result_values": stats["boxed_result_values"],
+            }
+            for opcode, stats in sorted(opcodes.items())
+        },
+    }
+
+
+def report_payload(file_reports: list[FileReport], type_hints: str) -> dict[str, Any]:
+    return {
+        "schema": BACKEND_SCHEMA,
+        "type_hints": type_hints,
+        "files": {
+            str(file_report.path): file_report.report for file_report in file_reports
+        },
+        "aggregate": aggregate_reports(file_reports),
+    }
+
+
+def _format_count_map(title: str, counts: dict[str, int]) -> list[str]:
+    lines = [title]
+    if not counts:
+        return lines + ["  none"]
+    width = max(len(key) for key in counts)
+    return lines + [f"  {key:<{width}} {count:6d}" for key, count in counts.items()]
+
+
+def format_report(payload: dict[str, Any]) -> str:
+    aggregate = payload["aggregate"]
+    lines = [
+        f"type_hints={payload['type_hints']}",
+        "== Backend LIR Representation Coverage ==",
+        f"functions={aggregate['functions']}",
+        f"scalar_values={aggregate['scalar_values']}",
+        f"boxed_values={aggregate['boxed_values']}",
+        f"lir_errors={aggregate['lir_errors']}",
+        f"repr_violations={aggregate['repr_violations']}",
+        "",
+    ]
+    lines.extend(_format_count_map("== Values By Repr ==", aggregate["values_by_repr"]))
+    lines.append("")
+    lines.extend(_format_count_map("== Values By Type ==", aggregate["values_by_type"]))
+    lines.append("")
+    lines.append("== Opcode Result Reprs ==")
+    if not aggregate["opcodes"]:
+        lines.append("  none")
+    for opcode, stats in aggregate["opcodes"].items():
+        result_reprs = ", ".join(
+            f"{repr_name}:{count}" for repr_name, count in stats["result_reprs"].items()
+        )
+        lines.append(
+            f"  {opcode:<22} total={stats['total']:5d} "
+            f"boxed_results={stats['boxed_result_values']:5d} "
+            f"results=[{result_reprs}]"
+        )
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paths", nargs="+", type=Path, help="Python source files")
+    parser.add_argument(
+        "--type-hints",
+        choices=("ignore", "trust", "check"),
+        default="check",
+        help="Frontend type hint policy (default: check)",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit JSON report")
+    args = parser.parse_args(argv)
+
+    file_reports = [analyze_file(path, args.type_hints) for path in args.paths]
+    payload = report_payload(file_reports, args.type_hints)
+    if args.json:
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+        print()
+    else:
+        print(format_report(payload))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
