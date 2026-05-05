@@ -146,6 +146,12 @@ fn lower_op(
     if op.opcode == OpCode::UnboxVal {
         return lower_unbox_op(op, type_map);
     }
+    if matches!(
+        op.opcode,
+        OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack
+    ) {
+        return lower_object_new_bound_op(op, type_map);
+    }
 
     LirOp {
         tir_op: op.clone(),
@@ -196,6 +202,30 @@ fn lower_checked_i64_arithmetic(
     LirOp {
         tir_op,
         result_values,
+    }
+}
+
+fn lower_object_new_bound_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
+    let stack_ref_eligible = op.opcode == OpCode::ObjectNewBoundStack;
+    LirOp {
+        tir_op: op.clone(),
+        result_values: op
+            .results
+            .iter()
+            .map(|result_id| {
+                let ty = type_map.get(result_id).cloned().unwrap_or(TirType::DynBox);
+                let repr = if stack_ref_eligible && matches!(ty, TirType::UserClass(_)) {
+                    LirRepr::Ref64
+                } else {
+                    LirRepr::DynBox
+                };
+                LirValue {
+                    id: *result_id,
+                    ty,
+                    repr,
+                }
+            })
+            .collect(),
     }
 }
 
@@ -480,6 +510,22 @@ mod tests {
         }
     }
 
+    fn make_op_with_attrs(
+        opcode: OpCode,
+        operands: Vec<ValueId>,
+        results: Vec<ValueId>,
+        attrs: AttrDict,
+    ) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results,
+            attrs,
+            source_span: None,
+        }
+    }
+
     #[test]
     fn lowers_checked_i64_add_with_overflow_side_channels() {
         let entry = BlockId(0);
@@ -565,6 +611,115 @@ mod tests {
             LirTerminator::Return { values } => assert_eq!(values.len(), 1),
             other => panic!("expected return terminator, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn heap_user_class_allocation_stays_boxed() {
+        let entry = BlockId(0);
+        let class_ref = ValueId(0);
+        let instance = ValueId(1);
+        let mut attrs = AttrDict::new();
+        attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
+        let mut blocks = HashMap::new();
+        blocks.insert(
+            entry,
+            TirBlock {
+                id: entry,
+                args: vec![TirValue {
+                    id: class_ref,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![make_op_with_attrs(
+                    OpCode::ObjectNewBound,
+                    vec![class_ref],
+                    vec![instance],
+                    attrs,
+                )],
+                terminator: Terminator::Return {
+                    values: vec![instance],
+                },
+            },
+        );
+        let func = TirFunction {
+            name: "alloc_point".into(),
+            param_names: vec!["cls".into()],
+            param_types: vec![TirType::DynBox],
+            return_type: TirType::UserClass("Point".into()),
+            blocks,
+            entry_block: entry,
+            next_value: 2,
+            next_block: 1,
+            attrs: AttrDict::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        let lir = lower_function_to_lir(&func);
+        let alloc = &lir.blocks[&entry].ops[0];
+        assert_eq!(
+            alloc.result_values[0].ty,
+            TirType::UserClass("Point".into())
+        );
+        assert_eq!(alloc.result_values[0].repr, LirRepr::DynBox);
+    }
+
+    #[test]
+    fn stack_user_class_allocation_lowers_to_ref64() {
+        let entry = BlockId(0);
+        let class_ref = ValueId(0);
+        let instance = ValueId(1);
+        let mut attrs = AttrDict::new();
+        attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
+        attrs.insert("value".into(), AttrValue::Int(16));
+        let mut blocks = HashMap::new();
+        blocks.insert(
+            entry,
+            TirBlock {
+                id: entry,
+                args: vec![TirValue {
+                    id: class_ref,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![make_op_with_attrs(
+                    OpCode::ObjectNewBoundStack,
+                    vec![class_ref],
+                    vec![instance],
+                    attrs,
+                )],
+                terminator: Terminator::Return {
+                    values: vec![instance],
+                },
+            },
+        );
+        let func = TirFunction {
+            name: "stack_alloc_point".into(),
+            param_names: vec!["cls".into()],
+            param_types: vec![TirType::DynBox],
+            return_type: TirType::UserClass("Point".into()),
+            blocks,
+            entry_block: entry,
+            next_value: 2,
+            next_block: 1,
+            attrs: AttrDict::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        let lir = lower_function_to_lir(&func);
+        let alloc = &lir.blocks[&entry].ops[0];
+        assert_eq!(
+            alloc.result_values[0].ty,
+            TirType::UserClass("Point".into())
+        );
+        assert_eq!(alloc.result_values[0].repr, LirRepr::Ref64);
     }
 
     #[test]

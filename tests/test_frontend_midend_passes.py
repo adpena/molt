@@ -1454,6 +1454,23 @@ for i in range(3):
     assert _module_attr_reads_named(ops, "Point") == []
 
 
+def test_static_class_allocation_carries_result_class_type() -> None:
+    source = """
+class Point:
+    def __init__(self, x):
+        self.x = x
+
+value = Point(3)
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    alloc = next(op for op in ops if op.get("kind") == "object_new_bound")
+    assert alloc.get("type_hint") == "Point"
+
+
 def test_rebound_same_module_class_call_keeps_runtime_lookup() -> None:
     source = """
 class Point:
