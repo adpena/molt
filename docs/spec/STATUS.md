@@ -71,7 +71,11 @@ It is current-state only. For forward-looking priorities, use
   Native float-primary lowering likewise uses static `float_primary_vars` as
   the only authority for F64-primary Cranelift variables; the raw-f64 shadow
   lane has been removed, and non-primary float values are boxed immediately in
-  their main I64 variables. Native bool lowering now has a raw-closed
+  their main I64 variables. Liveness cleanup and exception-check scrubbing are
+  representation-aware: dead F64-primary slots are poisoned with an F64 zero,
+  while boxed slots keep the boxed `None`/zero sentinel, so cleanup cannot
+  violate Cranelift variable typing after raw-f64 shadow deletion. Native bool
+  lowering now has a raw-closed
   `bool_primary_vars` subset for constants, alias/store propagation,
   comparisons, identity checks, and truthiness casts. Bool-primary escape
   boxing uses an explicit raw-bool `0/1` carrier conversion before NaN-boxing,

@@ -1246,6 +1246,19 @@ fn float_value_for(
 }
 
 #[cfg(feature = "native-backend")]
+fn dead_scrub_value_for_var(
+    builder: &mut FunctionBuilder<'_>,
+    float_primary_vars: &std::collections::BTreeSet<String>,
+    name: &str,
+) -> Value {
+    if float_primary_vars.contains(name) {
+        builder.ins().f64const(0.0)
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    }
+}
+
+#[cfg(feature = "native-backend")]
 fn float_value_from_boxed_extended(
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -28327,7 +28340,6 @@ impl SimpleBackend {
                     let mut scrubbed_names: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
                     if !carry_obj.is_empty() {
-                        let none_val = builder.ins().iconst(types::I64, 0);
                         let cleanup = drain_cleanup_tracked_dedup(
                             &mut carry_obj,
                             &last_use,
@@ -28376,13 +28388,17 @@ impl SimpleBackend {
                             builder.ins().call(local_dec_ref_obj, &[val]);
                             entry_vars.remove(&name);
                             if let Some(var) = vars.get(&name) {
-                                builder.def_var(*var, none_val);
+                                let scrub = dead_scrub_value_for_var(
+                                    &mut builder,
+                                    &float_primary_vars,
+                                    &name,
+                                );
+                                builder.def_var(*var, scrub);
                             }
                             scrubbed_names.insert(name);
                         }
                     }
                     if !carry_ptr.is_empty() {
-                        let none_val = builder.ins().iconst(types::I64, 0);
                         let cleanup = drain_cleanup_tracked_dedup(
                             &mut carry_ptr,
                             &last_use,
@@ -28431,7 +28447,12 @@ impl SimpleBackend {
                             builder.ins().call(local_dec_ref_obj, &[val]);
                             entry_vars.remove(&name);
                             if let Some(var) = vars.get(&name) {
-                                builder.def_var(*var, none_val);
+                                let scrub = dead_scrub_value_for_var(
+                                    &mut builder,
+                                    &float_primary_vars,
+                                    &name,
+                                );
+                                builder.def_var(*var, scrub);
                             }
                             scrubbed_names.insert(name);
                         }
@@ -35806,7 +35827,7 @@ mod tests {
         protect_cleanup_names, scalar_lane_store_target_names, scan_loop_int_sum_reduction,
         switch_to_block_materialized, switch_to_block_with_rebind,
     };
-    use crate::{FunctionIR, OpIR};
+    use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
     use cranelift_codegen::isa::CallConv;
     use cranelift_codegen::{
         ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types},
@@ -36347,6 +36368,99 @@ mod tests {
         assert!(primary.contains("f_seed"));
         assert!(primary.contains("float_slot"));
         assert!(!primary.contains("mixed_slot"));
+    }
+
+    #[test]
+    fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "float_primary_tuple_cleanup".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("src_a".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "float_from_obj".to_string(),
+                        out: Some("flt_a".to_string()),
+                        args: Some(vec!["src_a".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("src_b".to_string()),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "float_from_obj".to_string(),
+                        out: Some("flt_b".to_string()),
+                        args: Some(vec!["src_b".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("src_c".to_string()),
+                        value: Some(3),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "float_from_obj".to_string(),
+                        out: Some("flt_c".to_string()),
+                        args: Some(vec!["src_c".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "tuple_new".to_string(),
+                        out: Some("loads".to_string()),
+                        args: Some(vec![
+                            "flt_a".to_string(),
+                            "flt_b".to_string(),
+                            "flt_c".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("loads".to_string()),
+                        args: Some(vec!["loads".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "label".to_string(),
+                        value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("none_ret".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("none_ret".to_string()),
+                        args: Some(vec!["none_ret".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let output = SimpleBackend::new().compile(ir);
+
+        assert!(!output.bytes.is_empty());
     }
 
     #[test]
