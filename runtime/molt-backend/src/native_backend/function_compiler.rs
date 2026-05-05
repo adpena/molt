@@ -641,6 +641,7 @@ fn infer_scalar_lane(
         "const_bool" => Some(ScalarLane::Bool),
         "const_float" => Some(ScalarLane::Float),
         "const_str" => Some(ScalarLane::Str),
+        "float_from_obj" => Some(ScalarLane::Float),
         "copy" | "copy_var" | "load_var" | "identity_alias" => first_source().and_then(|src| {
             if int_like_vars.contains(src) {
                 Some(ScalarLane::Int)
@@ -719,10 +720,9 @@ fn infer_scalar_lane(
             }
         }
         // Python true division (`/`) always returns float.  For the codegen
-        // fast-path we return Float only when both operands are already proven
-        // float (so the handler can use raw f64 shadows directly).  When
-        // operands are int the handler takes the int→f64 conversion path
-        // instead, which is also correct but uses a different code sequence.
+        // fast-path we return Float when operands can be represented directly
+        // as F64 in the handler. Non-primary float operands recover F64 from
+        // their main boxed I64 value.
         "div" => {
             if args_all(&is_float)
                 || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
@@ -808,6 +808,7 @@ fn compute_float_primary_vars(
                         | "load_var"
                         | "identity_alias"
                         | "store_var"
+                        | "float_from_obj"
                 );
                 if !is_safe_float_op && float_like_vars.contains(out) {
                     unsafe_set.insert(out.clone());
@@ -1365,110 +1366,41 @@ fn ensure_boxed_primitive_safe(
     }
 }
 
-// --- Raw f64 shadow lookup functions (Phase 3 will mirror Phase 1d for float) ---
-
-#[cfg(feature = "native-backend")]
-#[inline]
-fn shadow_float_for(
-    builder: &mut FunctionBuilder<'_>,
-    raw_float_shadow: &BTreeMap<String, Variable>,
-    raw_float_shadow_vals: &BTreeMap<String, Value>,
-    name: &str,
-) -> Option<Value> {
-    raw_float_shadow_vals
-        .get(name)
-        .copied()
-        .or_else(|| raw_float_shadow.get(name).map(|&var| builder.use_var(var)))
-}
-
-/// Record a raw f64 shadow only for non-primary float variables.
-///
-/// `float_primary_vars` names already store raw f64 in their main Cranelift
-/// Variable, so writing them into the shadow maps would reintroduce a second
-/// authority for the same representation fact.
-#[cfg(feature = "native-backend")]
-fn record_float_shadow_if_needed(
-    builder: &mut FunctionBuilder<'_>,
-    float_primary_vars: &BTreeSet<String>,
-    raw_float_shadow: &BTreeMap<String, Variable>,
-    raw_float_shadow_vals: &mut BTreeMap<String, Value>,
-    name: &str,
-    raw_f64: Value,
-) {
-    if float_primary_vars.contains(name) {
-        raw_float_shadow_vals.remove(name);
-        return;
-    }
-    if let Some(&shadow_var) = raw_float_shadow.get(name) {
-        builder.def_var(shadow_var, raw_f64);
-    }
-    raw_float_shadow_vals.insert(name.to_string(), raw_f64);
-}
-
-/// Propagate a raw f64 shadow through copy/load edges for non-primary float
-/// variables. `float_primary_vars` names already carry raw f64 in their main
-/// Variable, so they never receive shadow entries here.
-#[cfg(feature = "native-backend")]
-fn propagate_float_shadow_if_needed(
-    builder: &mut FunctionBuilder<'_>,
-    float_primary_vars: &BTreeSet<String>,
-    raw_float_shadow: &mut BTreeMap<String, Variable>,
-    raw_float_shadow_vals: &mut BTreeMap<String, Value>,
-    src: &str,
-    dst: &str,
-) {
-    let src_shadow_var = raw_float_shadow.get(src).copied();
-    let raw_float = src_shadow_var
-        .map(|var| builder.use_var(var))
-        .or_else(|| raw_float_shadow_vals.get(src).copied());
-    let Some(raw_float) = raw_float else {
-        return;
-    };
-
-    if src_shadow_var.is_some() {
-        if !float_primary_vars.contains(dst) {
-            let dst_shadow_var = if let Some(&var) = raw_float_shadow.get(dst) {
-                var
-            } else {
-                let var = builder.declare_var(types::F64);
-                builder.def_var(var, raw_float);
-                raw_float_shadow.insert(dst.to_string(), var);
-                var
-            };
-            builder.def_var(dst_shadow_var, raw_float);
-        }
-        raw_float_shadow_vals.remove(dst);
-    } else {
-        record_float_shadow_if_needed(
-            builder,
-            float_primary_vars,
-            raw_float_shadow,
-            raw_float_shadow_vals,
-            dst,
-            raw_float,
-        );
-    }
-}
-
 /// Get a raw f64 value from a variable, checking float-primary Variables
-/// first (no bitcast needed), then falling back to the shadow system.
-/// This eliminates redundant bitcast(F64→I64)→bitcast(I64→F64) round-trips
-/// for variables whose Cranelift Variable is declared as F64.
+/// only. Non-primary float values live in their main boxed I64 Variable and
+/// are recovered through the runtime's extended float extractor at use sites.
 #[cfg(feature = "native-backend")]
 fn float_value_for(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     float_primary_vars: &std::collections::BTreeSet<String>,
-    raw_float_shadow: &BTreeMap<String, Variable>,
-    raw_float_shadow_vals: &BTreeMap<String, Value>,
     name: &str,
 ) -> Option<Value> {
-    // Float-primary: Variable is F64, use_var yields raw f64 directly.
     if float_primary_vars.contains(name) {
         return vars.get(name).map(|&var| builder.use_var(var));
     }
-    // Fall back to two-tier shadow system.
-    shadow_float_for(builder, raw_float_shadow, raw_float_shadow_vals, name)
+    None
+}
+
+#[cfg(feature = "native-backend")]
+fn float_value_from_boxed_extended(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    boxed: Value,
+) -> Value {
+    let as_float = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_float_as_f64",
+        &[types::I64],
+        &[types::F64],
+    );
+    let call = builder.ins().call(as_float, &[boxed]);
+    builder.inst_results(call)[0]
 }
 
 /// Get a raw f64 value for an operand in a mixed float/int arithmetic context.
@@ -1477,11 +1409,10 @@ fn float_value_for(
 /// operand (e.g. `2.0 * x` where x is int). The resolution order is:
 ///
 ///   1. Float-primary Variable (use_var yields f64 directly)
-///   2. Float shadow (Variable or Value tier)
-///   3. Int shadow → `fcvt_from_sint` (int-to-float conversion)
-///   4. Raw primary int → `fcvt_from_sint`
-///   5. NaN-boxed fallback → `unbox_int` + `fcvt_from_sint` for int-like
-///      names, `bitcast(F64)` for confirmed floats
+///   2. Int shadow → `fcvt_from_sint` (int-to-float conversion)
+///   3. Raw primary int → `fcvt_from_sint`
+///   4. NaN-boxed fallback → `unbox_int` + `fcvt_from_sint` for int-like
+///      names, runtime extended-float extraction for confirmed floats
 ///
 /// **Critical correctness fix**: earlier code did a raw `bitcast(F64)` for
 /// ALL NaN-boxed fallback paths, which reinterprets the NaN-box tag bits as
@@ -1497,8 +1428,6 @@ fn float_value_for_mixed(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     float_primary_vars: &std::collections::BTreeSet<String>,
-    raw_float_shadow: &BTreeMap<String, Variable>,
-    raw_float_shadow_vals: &BTreeMap<String, Value>,
     int_primary_vars: &std::collections::BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
@@ -1507,15 +1436,8 @@ fn float_value_for_mixed(
     box_int_tag_var: Variable,
     name: &str,
 ) -> Value {
-    // 1. Try float path first (float-primary or float shadow).
-    if let Some(f_val) = float_value_for(
-        builder,
-        vars,
-        float_primary_vars,
-        raw_float_shadow,
-        raw_float_shadow_vals,
-        name,
-    ) {
+    // 1. Try float-primary path first.
+    if let Some(f_val) = float_value_for(builder, vars, float_primary_vars, name) {
         return f_val;
     }
 
@@ -1527,9 +1449,8 @@ fn float_value_for_mixed(
             return builder.ins().fcvt_from_sint(types::F64, raw_int_val);
         }
         // Fallback: name is int-typed but not in int_primary_vars → vars[name]
-        // holds the already-NaN-boxed value.  Use overflow-safe boxing for
-        // forward-compat (the int-box branch is reached only when name IS in
-        // int_primary_vars, but we keep the call symmetric for safety).
+        // holds the already-NaN-boxed value. Use overflow-safe boxing so this
+        // helper observes the same representation contract as generic reads.
         let boxed = var_get_boxed_overflow_safe_base(
             module,
             import_ids,
@@ -1548,7 +1469,9 @@ fn float_value_for_mixed(
         return builder.ins().fcvt_from_sint(types::F64, raw_int_val);
     }
 
-    // 3. Not int — must be a NaN-boxed float without a shadow. Bitcast.
+    // 3. Not int — must be a boxed float. Use the runtime's extended float
+    // extractor so heap-allocated NaN floats recover their IEEE payload rather
+    // than being reinterpreted as pointer-tagged bits.
     let boxed = var_get_boxed_overflow_safe_base(
         module,
         import_ids,
@@ -1563,7 +1486,7 @@ fn float_value_for_mixed(
         box_int_tag_var,
     )
     .expect("Float operand not found");
-    builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+    float_value_from_boxed_extended(module, import_ids, builder, import_refs, *boxed)
 }
 
 #[cfg(feature = "native-backend")]
@@ -2521,7 +2444,7 @@ fn preanalyze_function_ir(
                 | "floordiv" | "mod" | "inplace_floordiv" | "inplace_mod" | "bit_and"
                 | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
                 | "inplace_bit_xor" | "lshift" | "rshift" | "shl" | "shr" | "neg" | "abs"
-                | "invert" | "builtin_abs" | "pow" => {
+                | "invert" | "builtin_abs" | "pow" | "float_from_obj" => {
                     match infer_scalar_lane(
                         op,
                         &int_like_vars,
@@ -3406,28 +3329,12 @@ impl SimpleBackend {
         // `int_raw_value(builder, vars, int_primary_vars, name)` returns the
         // raw i64 directly when name is a static member.
 
-        // Raw float shadow: two-tier unboxed f64 tracking (Phase 3 will mirror Phase 1d).
-        //
-        // Tier 1 (Variable-backed): named variables that cross block boundaries
-        // (loop induction variables via store_var/load_var).  Pre-declared at
-        // entry; Cranelift inserts phis at loop headers automatically.
-        //
-        // Tier 2 (Value-based): SSA intermediates within a single basic block
-        // (const_float → fadd → fcmp chains).  Cheap, no pre-declaration needed.
-        // Cleared at block boundaries (label, if, else, end_if).
-        //
-        // Read order: try Tier 2 first (no function call), fall back to Tier 1
-        // (use_var).  Write order: write to both tiers on every def.
-        let mut raw_float_shadow: std::collections::BTreeMap<String, Variable> =
-            std::collections::BTreeMap::new();
-        let mut raw_float_shadow_vals: std::collections::BTreeMap<String, Value> =
-            std::collections::BTreeMap::new();
         // Phase 1d: int_primary_vars (declared above ~line 2665 via the
         // operand-recursive fixpoint) is the immutable source of truth for
         // "vars[name] holds raw i64". Float primary lowering follows the
         // same static-set rule for the F64-primary subset.
         // `float_primary_vars` is the immutable source of truth for F64-primary Variables.
-        // Non-primary float values continue to use the explicit shadow maps below.
+        // Non-primary float values are boxed immediately in their main I64 Variable.
         // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
         // Valid only while the list is not resized (no append/insert inside the loop).
@@ -3584,28 +3491,6 @@ impl SimpleBackend {
             {
                 eprintln!("INT_STORE_TARGETS {} {:?}", func_ir.name, int_store_targets);
             }
-            // Float store targets: pre-declare shadow F64 Variables for store_var
-            // targets whose source is proven float.  Uses the same scalar
-            // store-target contract as int/bool so lane-specific shadows
-            // cannot drift apart.
-            let float_store_targets = scalar_lane_store_target_names(
-                &func_ir,
-                ScalarLane::Float,
-                &int_like_vars,
-                &bool_like_vars,
-                &float_like_vars,
-                &str_like_vars,
-            );
-            let zero_f = builder.ins().f64const(0.0);
-            for name in float_store_targets
-                .iter()
-                .filter(|name| !float_primary_vars.contains(*name))
-            {
-                let v = builder.declare_var(types::F64);
-                builder.def_var(v, zero_f);
-                raw_float_shadow.insert(name.clone(), v);
-            }
-
             // Bool store targets outside bool_primary_vars keep shadow I64
             // Variables. Bool-primary names carry raw 0/1 in their main
             // Variable, so a parallel shadow would be a second source of truth.
@@ -3631,8 +3516,6 @@ impl SimpleBackend {
         } else {
             BTreeSet::new()
         };
-        // Float store target names for retain-at-loop-start filtering.
-        let float_store_target_names: BTreeSet<String> = raw_float_shadow.keys().cloned().collect();
         // Bool store target names for retain-at-loop-start filtering.
         let bool_store_target_names: BTreeSet<String> =
             raw_bool_shadow_vars.keys().cloned().collect();
@@ -4632,7 +4515,7 @@ impl SimpleBackend {
                     let val = op.f_value.expect("Float value not found");
                     let raw_f64 = builder.ins().f64const(val);
                     if let Some(ref out__) = op.out {
-                        if float_primary_vars.contains(out__) {
+                        if float_primary_vars.contains(out__.as_str()) {
                             // Float-primary: store raw f64 directly in the F64
                             // Variable.  Boxing deferred to escape points via
                             // var_get_boxed.
@@ -4642,16 +4525,6 @@ impl SimpleBackend {
                             let iconst = builder.ins().iconst(types::I64, boxed);
                             def_var_named(&mut builder, &vars, out__, iconst);
                         }
-                        // Seed raw f64 shadow so downstream float ops chain
-                        // without NaN-box round-trips.
-                        record_float_shadow_if_needed(
-                            &mut builder,
-                            &float_primary_vars,
-                            &raw_float_shadow,
-                            &mut raw_float_shadow_vals,
-                            out__,
-                            raw_f64,
-                        );
                     }
                 }
                 "const_str" => {
@@ -4809,13 +4682,9 @@ impl SimpleBackend {
                         builder.inst_results(call)[0]
                     } else if op_prefers_float_lane(&op) {
                         // Both operands known to be f64 — direct float arithmetic.
-                        // Defer var_get past shadow check so Cranelift DCE can
-                        // eliminate upstream NaN-boxing when shadow is available.
-                        // Float shadows use both tiers even inside loops:
-                        // raw_float_shadow_vals is cleared at loop_start, so any
-                        // entries present were created this iteration.  Float
-                        // arithmetic has no overflow-guard branches that could
-                        // invalidate Value-tier entries within a basic block.
+                        // Float-primary operands are read as raw F64; other
+                        // float-like operands recover F64 by bitcasting their
+                        // main boxed I64 value.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
@@ -4826,8 +4695,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -4844,8 +4711,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -4855,16 +4720,6 @@ impl SimpleBackend {
                             rhs_name,
                         );
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
-                        if let Some(ref out__) = op.out {
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                out__,
-                                result_f,
-                            );
-                        }
                         if op
                             .out
                             .as_ref()
@@ -5142,7 +4997,7 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     } else if op_prefers_float_lane(&op) {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
@@ -5153,8 +5008,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -5171,8 +5024,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -5182,16 +5033,6 @@ impl SimpleBackend {
                             rhs_name,
                         );
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
-                        if let Some(ref out__) = op.out {
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                out__,
-                                result_f,
-                            );
-                        }
                         if op
                             .out
                             .as_ref()
@@ -6610,7 +6451,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
@@ -6621,8 +6462,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -6639,8 +6478,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -6650,16 +6487,6 @@ impl SimpleBackend {
                             rhs_name,
                         );
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
-                        if let Some(ref out__) = op.out {
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                out__,
-                                result_f,
-                            );
-                        }
                         if op
                             .out
                             .as_ref()
@@ -6898,7 +6725,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
@@ -6909,8 +6736,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -6927,8 +6752,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -6938,16 +6761,6 @@ impl SimpleBackend {
                             rhs_name,
                         );
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
-                        if let Some(ref out__) = op.out {
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                out__,
-                                result_f,
-                            );
-                        }
                         if op
                             .out
                             .as_ref()
@@ -7171,7 +6984,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
@@ -7182,8 +6995,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -7200,8 +7011,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -7211,16 +7020,6 @@ impl SimpleBackend {
                             rhs_name,
                         );
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
-                        if let Some(ref out__) = op.out {
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                out__,
-                                result_f,
-                            );
-                        }
                         if op
                             .out
                             .as_ref()
@@ -7451,7 +7250,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.
                     let res = if op_prefers_float_lane(&op) {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_f = float_value_for_mixed(
@@ -7462,8 +7261,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -7480,8 +7277,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -7491,16 +7286,6 @@ impl SimpleBackend {
                             rhs_name,
                         );
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
-                        if let Some(ref out__) = op.out {
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                out__,
-                                result_f,
-                            );
-                        }
                         if op
                             .out
                             .as_ref()
@@ -8835,7 +8620,7 @@ impl SimpleBackend {
                         // ZeroDivisionError for float division by zero, so
                         // we must check before using fdiv (which produces
                         // IEEE infinity/NaN instead of an exception).
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let out_is_float_primary = op
@@ -8850,8 +8635,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -8868,8 +8651,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -8886,8 +8667,9 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         if !out_is_float_primary {
                             builder.append_block_param(merge_block, types::I64);
+                        } else {
+                            builder.append_block_param(merge_block, types::F64);
                         }
-                        builder.append_block_param(merge_block, types::F64); // raw f64 shadow
                         builder.ins().brif(is_zero, zero_block, &[], ok_block, &[]);
                         // Zero divisor -> call runtime for ZeroDivisionError.
                         // Defer var_get to cold path -- only needed for runtime call.
@@ -8935,7 +8717,7 @@ impl SimpleBackend {
                         if out_is_float_primary {
                             jump_block(&mut builder, merge_block, &[slow_f]);
                         } else {
-                            jump_block(&mut builder, merge_block, &[slow_res, slow_f]);
+                            jump_block(&mut builder, merge_block, &[slow_res]);
                         }
                         // Non-zero -> fast fdiv.
                         switch_to_block_materialized(&mut builder, ok_block);
@@ -8945,35 +8727,14 @@ impl SimpleBackend {
                             jump_block(&mut builder, merge_block, &[result_f]);
                         } else {
                             let fast_res = box_float_value_unchecked(&mut builder, result_f);
-                            jump_block(&mut builder, merge_block, &[fast_res, result_f]);
+                            jump_block(&mut builder, merge_block, &[fast_res]);
                         }
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         if out_is_float_primary {
                             let merged_raw_f = builder.block_params(merge_block)[0];
-                            if let Some(ref out__) = op.out {
-                                record_float_shadow_if_needed(
-                                    &mut builder,
-                                    &float_primary_vars,
-                                    &raw_float_shadow,
-                                    &mut raw_float_shadow_vals,
-                                    out__,
-                                    merged_raw_f,
-                                );
-                            }
                             merged_raw_f
                         } else {
-                            let merged_raw_f = builder.block_params(merge_block)[1];
-                            if let Some(ref out__) = op.out {
-                                record_float_shadow_if_needed(
-                                    &mut builder,
-                                    &float_primary_vars,
-                                    &raw_float_shadow,
-                                    &mut raw_float_shadow_vals,
-                                    out__,
-                                    merged_raw_f,
-                                );
-                            }
                             builder.block_params(merge_block)[0]
                         }
                     } else if op_prefers_int_lane(&op) {
@@ -9025,8 +8786,9 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         if !div_out_is_float_primary {
                             builder.append_block_param(merge_block, types::I64);
+                        } else {
+                            builder.append_block_param(merge_block, types::F64);
                         }
-                        builder.append_block_param(merge_block, types::F64); // raw f64 shadow
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -9048,7 +8810,7 @@ impl SimpleBackend {
                             jump_block(&mut builder, merge_block, &[result_f]);
                         } else {
                             let fast_res = box_float_value(&mut builder, result_f, &nbc);
-                            jump_block(&mut builder, merge_block, &[fast_res, result_f]);
+                            jump_block(&mut builder, merge_block, &[fast_res]);
                         }
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -9059,36 +8821,15 @@ impl SimpleBackend {
                         if div_out_is_float_primary {
                             jump_block(&mut builder, merge_block, &[slow_f]);
                         } else {
-                            jump_block(&mut builder, merge_block, &[slow_res, slow_f]);
+                            jump_block(&mut builder, merge_block, &[slow_res]);
                         }
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         if div_out_is_float_primary {
                             let merged_raw_f = builder.block_params(merge_block)[0];
-                            if let Some(ref out__) = op.out {
-                                record_float_shadow_if_needed(
-                                    &mut builder,
-                                    &float_primary_vars,
-                                    &raw_float_shadow,
-                                    &mut raw_float_shadow_vals,
-                                    out__,
-                                    merged_raw_f,
-                                );
-                            }
                             merged_raw_f
                         } else {
-                            let merged_raw_f = builder.block_params(merge_block)[1];
-                            if let Some(ref out__) = op.out {
-                                record_float_shadow_if_needed(
-                                    &mut builder,
-                                    &float_primary_vars,
-                                    &raw_float_shadow,
-                                    &mut raw_float_shadow_vals,
-                                    out__,
-                                    merged_raw_f,
-                                );
-                            }
                             builder.block_params(merge_block)[0]
                         }
                     } else {
@@ -9144,8 +8885,9 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         if !gen_div_out_fp {
                             builder.append_block_param(merge_block, types::I64);
+                        } else {
+                            builder.append_block_param(merge_block, types::F64);
                         }
-                        builder.append_block_param(merge_block, types::F64); // raw f64 shadow
                         builder
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
@@ -9169,7 +8911,7 @@ impl SimpleBackend {
                             jump_block(&mut builder, merge_block, &[result_f]);
                         } else {
                             let fast_res = box_float_value(&mut builder, result_f, &nbc);
-                            jump_block(&mut builder, merge_block, &[fast_res, result_f]);
+                            jump_block(&mut builder, merge_block, &[fast_res]);
                         }
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -9192,7 +8934,7 @@ impl SimpleBackend {
                             jump_block(&mut builder, merge_block, &[flt_quot]);
                         } else {
                             let flt_res = box_float_value(&mut builder, flt_quot, &nbc);
-                            jump_block(&mut builder, merge_block, &[flt_res, flt_quot]);
+                            jump_block(&mut builder, merge_block, &[flt_res]);
                         }
 
                         switch_to_block_materialized(&mut builder, call_block);
@@ -9203,36 +8945,15 @@ impl SimpleBackend {
                         if gen_div_out_fp {
                             jump_block(&mut builder, merge_block, &[slow_f]);
                         } else {
-                            jump_block(&mut builder, merge_block, &[slow_res, slow_f]);
+                            jump_block(&mut builder, merge_block, &[slow_res]);
                         }
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         if gen_div_out_fp {
                             let merged_raw_f = builder.block_params(merge_block)[0];
-                            if let Some(ref out__) = op.out {
-                                record_float_shadow_if_needed(
-                                    &mut builder,
-                                    &float_primary_vars,
-                                    &raw_float_shadow,
-                                    &mut raw_float_shadow_vals,
-                                    out__,
-                                    merged_raw_f,
-                                );
-                            }
                             merged_raw_f
                         } else {
-                            let merged_raw_f = builder.block_params(merge_block)[1];
-                            if let Some(ref out__) = op.out {
-                                record_float_shadow_if_needed(
-                                    &mut builder,
-                                    &float_primary_vars,
-                                    &raw_float_shadow,
-                                    &mut raw_float_shadow_vals,
-                                    out__,
-                                    merged_raw_f,
-                                );
-                            }
                             builder.block_params(merge_block)[0]
                         }
                     };
@@ -18695,7 +18416,18 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
+                        if float_primary_vars.contains(out__.as_str()) {
+                            let raw_f64 = float_value_from_boxed_extended(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                res,
+                            );
+                            def_var_named(&mut builder, &vars, out__, raw_f64);
+                        } else {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                 }
                 "int_from_obj" => {
@@ -19587,7 +19319,7 @@ impl SimpleBackend {
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
                     {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lf = float_value_for_mixed(
                             &mut self.module,
                             &mut self.import_ids,
@@ -19596,8 +19328,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -19614,8 +19344,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -19820,7 +19548,7 @@ impl SimpleBackend {
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
                     {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lf = float_value_for_mixed(
                             &mut self.module,
                             &mut self.import_ids,
@@ -19829,8 +19557,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -19847,8 +19573,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -20060,7 +19784,7 @@ impl SimpleBackend {
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
                     {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lf = float_value_for_mixed(
                             &mut self.module,
                             &mut self.import_ids,
@@ -20069,8 +19793,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -20087,8 +19809,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -20298,7 +20018,7 @@ impl SimpleBackend {
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
                     {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lf = float_value_for_mixed(
                             &mut self.module,
                             &mut self.import_ids,
@@ -20307,8 +20027,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -20325,8 +20043,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -20542,7 +20258,7 @@ impl SimpleBackend {
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
                     {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lf = float_value_for_mixed(
                             &mut self.module,
                             &mut self.import_ids,
@@ -20551,8 +20267,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -20569,8 +20283,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -20760,7 +20472,7 @@ impl SimpleBackend {
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
                     {
-                        // Float shadows: both tiers safe inside loops (see add handler).
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                         let lf = float_value_for_mixed(
                             &mut self.module,
                             &mut self.import_ids,
@@ -20769,8 +20481,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -20787,8 +20497,6 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
@@ -21105,43 +20813,27 @@ impl SimpleBackend {
                 "neg" | "unary_neg" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if op_prefers_float_lane(&op) {
-                        // Float shadows: both tiers safe inside loops (see add handler).
-                        let src_f = float_value_for(
-                            &mut builder,
-                            &vars,
-                            &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap_or_else(|| {
-                            let val = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[0],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("Value not found");
-                            builder.ins().bitcast(types::F64, MemFlags::new(), *val)
-                        });
+                        // Float-primary operands are raw f64; boxed floats are extracted explicitly.
+                        let src_f =
+                            float_value_for(&mut builder, &vars, &float_primary_vars, &args[0])
+                                .unwrap_or_else(|| {
+                                    let val = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &args[0],
+                                        &int_primary_vars,
+                                        &float_primary_vars,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .expect("Value not found");
+                                    builder.ins().bitcast(types::F64, MemFlags::new(), *val)
+                                });
                         let neg_f = builder.ins().fneg(src_f);
-                        if let Some(ref out__) = op.out {
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                out__,
-                                neg_f,
-                            );
-                        }
                         if op
                             .out
                             .as_ref()
@@ -25284,40 +24976,26 @@ impl SimpleBackend {
                     {
                         if float_primary_vars.contains(out_name) {
                             // Float-primary: transfer raw f64 directly.
-                            let raw_f64 = float_value_for(
-                                &mut builder,
-                                &vars,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &raw_float_shadow_vals,
-                                src_name,
-                            )
-                            .unwrap_or_else(|| {
-                                let boxed = var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    src_name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .expect("identity_alias source not found");
-                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
-                            });
+                            let raw_f64 =
+                                float_value_for(&mut builder, &vars, &float_primary_vars, src_name)
+                                    .unwrap_or_else(|| {
+                                        let boxed = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &vars,
+                                            src_name,
+                                            &int_primary_vars,
+                                            &float_primary_vars,
+                                            box_int_mask_var,
+                                            box_int_tag_var,
+                                        )
+                                        .expect("identity_alias source not found");
+                                        builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                                    });
                             def_var_named(&mut builder, &vars, out_name.clone(), raw_f64);
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                out_name,
-                                raw_f64,
-                            );
                         } else {
                             let src = *var_get_boxed_overflow_safe(
                                 &mut self.module,
@@ -29267,7 +28945,6 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, dead);
                         is_block_filled = false;
                     }
-                    raw_float_shadow_vals.clear();
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Inline truthiness for bool/int types to avoid function call overhead.
                     let cond_bool = if let Some(raw_val) = bool_raw_value(
@@ -29687,7 +29364,6 @@ impl SimpleBackend {
                 "else" => {
                     // Variable-backed shadows are phi-correct; value-tier raw
                     // snapshots must be cleared when switching branch blocks.
-                    raw_float_shadow_vals.clear();
                     let frame = if_stack.last_mut().expect("No if on stack");
                     frame.then_terminal = is_block_filled;
                     if frame.phi_ops.is_empty() {
@@ -29907,7 +29583,6 @@ impl SimpleBackend {
                 "end_if" => {
                     // Variable-backed shadows are phi-correct; value-tier raw
                     // snapshots must not survive the branch merge.
-                    raw_float_shadow_vals.clear();
                     let mut frame = if_stack.pop().expect("No if on stack");
                     if frame.phi_ops.is_empty() {
                         let mut phi_ops: Vec<(String, String, String)> = Vec::new();
@@ -30589,14 +30264,6 @@ impl SimpleBackend {
                                     let f64_val =
                                         builder.ins().bitcast(types::F64, MemFlags::new(), param);
                                     def_var_named(&mut builder, &vars, out, f64_val);
-                                    record_float_shadow_if_needed(
-                                        &mut builder,
-                                        &float_primary_vars,
-                                        &raw_float_shadow,
-                                        &mut raw_float_shadow_vals,
-                                        out.as_str(),
-                                        f64_val,
-                                    );
                                 } else {
                                     def_var_named(&mut builder, &vars, out, param);
                                 }
@@ -30666,13 +30333,11 @@ impl SimpleBackend {
                     // targets — their Variables are phi-correct across
                     // back-edges.  Re-populate from use_var so the first
                     // iteration sees the pre-loop value, not the init zero.
-                    raw_float_shadow_vals.clear();
                     // Value-tier raw bools are stale across loop back-edges.
                     raw_bool_values.clear();
                     // Remove aliases (entries that share a Variable with a store target)
                     // by keeping only entries that were in the original pre-declaration.
                     // The simplest correct approach: clear aliases, keep store targets.
-                    raw_float_shadow.retain(|k, _| float_store_target_names.contains(k));
                     raw_bool_shadow_vars.retain(|k, _| bool_store_target_names.contains(k));
 
                     // Demote phi join slots from int_primary_vars/float at
@@ -35450,32 +35115,26 @@ impl SimpleBackend {
                             && scalar_fast_paths_enabled
                             && !slot_backed_join_slots.contains_key(name)
                         {
-                            let raw_f64 = float_value_for(
-                                &mut builder,
-                                &vars,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &raw_float_shadow_vals,
-                                &args[0],
-                            )
-                            .unwrap_or_else(|| {
-                                // Source is NaN-boxed -- extract f64 bits.
-                                let boxed = var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    &args[0],
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .expect("store_var: float src not found");
-                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
-                            });
+                            let raw_f64 =
+                                float_value_for(&mut builder, &vars, &float_primary_vars, &args[0])
+                                    .unwrap_or_else(|| {
+                                        // Source is NaN-boxed -- extract f64 bits.
+                                        let boxed = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &vars,
+                                            &args[0],
+                                            &int_primary_vars,
+                                            &float_primary_vars,
+                                            box_int_mask_var,
+                                            box_int_tag_var,
+                                        )
+                                        .expect("store_var: float src not found");
+                                        builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                                    });
                             def_var_named(&mut builder, &vars, name, raw_f64);
                             // No refcount ops needed -- raw f64 is not a heap pointer.
                             continue;
@@ -35533,7 +35192,6 @@ impl SimpleBackend {
                             emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
                             builder.ins().stack_store(*val, slot, 0);
                             builder.ins().call(local_dec_ref_obj, &[old]);
-                            raw_float_shadow_vals.remove(name);
                             continue;
                         }
                         // Check if this store_var is inside a back-edge loop.
@@ -35604,25 +35262,6 @@ impl SimpleBackend {
                                 raw_val,
                             );
                         }
-                        // Propagate raw_float_shadow through store_var:
-                        // Same two-tier pattern as int shadows.
-                        if let Some(raw_val) = float_value_for(
-                            &mut builder,
-                            &vars,
-                            &float_primary_vars,
-                            &raw_float_shadow,
-                            &raw_float_shadow_vals,
-                            &args[0],
-                        ) {
-                            record_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                name,
-                                raw_val,
-                            );
-                        }
                     } else {
                         // No destination variable name — still need to evaluate
                         // the source for side effects (should not happen in
@@ -35661,9 +35300,6 @@ impl SimpleBackend {
                                 } else {
                                     def_var_named(&mut builder, &vars, out_name, val);
                                 }
-                                if !float_primary_vars.contains(out_name) {
-                                    raw_float_shadow_vals.remove(out_name);
-                                }
                             }
                             continue;
                         }
@@ -35698,31 +35334,25 @@ impl SimpleBackend {
                             .is_some_and(|o| float_primary_vars.contains(o))
                             && scalar_fast_paths_enabled
                         {
-                            let raw_f64 = float_value_for(
-                                &mut builder,
-                                &vars,
-                                &float_primary_vars,
-                                &raw_float_shadow,
-                                &raw_float_shadow_vals,
-                                var_name,
-                            )
-                            .unwrap_or_else(|| {
-                                let boxed = var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    var_name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .expect("load_var: float src not found");
-                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
-                            });
+                            let raw_f64 =
+                                float_value_for(&mut builder, &vars, &float_primary_vars, var_name)
+                                    .unwrap_or_else(|| {
+                                        let boxed = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &vars,
+                                            var_name,
+                                            &int_primary_vars,
+                                            &float_primary_vars,
+                                            box_int_mask_var,
+                                            box_int_tag_var,
+                                        )
+                                        .expect("load_var: float src not found");
+                                        builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                                    });
                             let out_name = op.out.as_ref().unwrap();
                             def_var_named(&mut builder, &vars, out_name, raw_f64);
                             continue;
@@ -35781,14 +35411,6 @@ impl SimpleBackend {
                                 var_name,
                                 out_name,
                             );
-                            propagate_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &mut raw_float_shadow,
-                                &mut raw_float_shadow_vals,
-                                var_name,
-                                out_name,
-                            );
                         }
                     } else if let Some(ref args) = op.args
                         && !args.is_empty()
@@ -35798,7 +35420,6 @@ impl SimpleBackend {
                             emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
                             if let Some(ref out_name) = op.out {
                                 def_var_named(&mut builder, &vars, out_name, val);
-                                raw_float_shadow_vals.remove(out_name);
                             }
                             continue;
                         }
@@ -35873,14 +35494,6 @@ impl SimpleBackend {
                                 &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &mut raw_bool_shadow_vars,
-                                &args[0],
-                                out_name,
-                            );
-                            propagate_float_shadow_if_needed(
-                                &mut builder,
-                                &float_primary_vars,
-                                &mut raw_float_shadow,
-                                &mut raw_float_shadow_vals,
                                 &args[0],
                                 out_name,
                             );
@@ -36958,6 +36571,67 @@ mod tests {
         assert!(!primary.contains("pow_result"));
         assert!(!primary.contains("p"));
         assert!(primary.contains("param_copy"));
+    }
+
+    #[test]
+    fn float_primary_store_targets_require_all_sources_after_shadow_deletion() {
+        let func = FunctionIR {
+            name: "float_primary_store_sources".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_float".to_string(),
+                    out: Some("f_seed".to_string()),
+                    f_value: Some(1.5),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("float_slot".to_string()),
+                    args: Some(vec!["f_seed".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("i_seed".to_string()),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("mixed_slot".to_string()),
+                    args: Some(vec!["f_seed".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("mixed_slot".to_string()),
+                    args: Some(vec!["i_seed".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let float_like_vars = BTreeSet::from([
+            "f_seed".to_string(),
+            "float_slot".to_string(),
+            "mixed_slot".to_string(),
+        ]);
+        let int_like_vars = BTreeSet::from(["i_seed".to_string()]);
+
+        let primary = compute_float_primary_vars(
+            &func,
+            &int_like_vars,
+            &BTreeSet::new(),
+            &float_like_vars,
+            &BTreeSet::new(),
+        );
+
+        assert!(primary.contains("f_seed"));
+        assert!(primary.contains("float_slot"));
+        assert!(!primary.contains("mixed_slot"));
     }
 
     #[test]

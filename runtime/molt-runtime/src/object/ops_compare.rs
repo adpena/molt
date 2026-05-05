@@ -815,6 +815,14 @@ pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
         if a == ellipsis || b == ellipsis {
             return MoltObject::from_bool(a == b).bits();
         }
+        match compare_objects_builtin(_py, lhs, rhs) {
+            CompareOutcome::Ordered(ordering) => {
+                return MoltObject::from_bool(ordering == Ordering::Equal).bits();
+            }
+            CompareOutcome::Unordered => return MoltObject::from_bool(false).bits(),
+            CompareOutcome::Error => return MoltObject::none().bits(),
+            CompareOutcome::NotComparable => {}
+        }
         let eq_name_bits = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
         match rich_compare_value(_py, lhs, rhs, eq_name_bits, eq_name_bits) {
             CompareValueOutcome::Value(bits) => return bits,

@@ -73,14 +73,15 @@ This file is forward-looking only.
   enters the same bool-primary contract when the index operand is raw-primary,
   keeping the existing index-fast-path selection separate from output
   representation. Unknown-list getitem truthiness uses an explicit conditional
-  list-bool carrier for the runtime list/list_bool split; finish the residual
-  non-primary float shadow lane instead of adding per-op fallback hints. Float
-  primary eligibility is now definition-scoped: unsupported producers such as
-  `pow` keep only their own outputs boxed and cannot disable unrelated proven
-  float locals in the same function. Native scalar store-target discovery is now
-  shared across int, float, bool, and str lanes, preserving the all-sources rule
-  so non-primary float shadows cannot drift from the scalar lane contract used
-  by the other raw carriers.
+  list-bool carrier for the runtime list/list_bool split. Float primary
+  eligibility is now definition-scoped: unsupported producers such as `pow`
+  keep only their own outputs boxed and cannot disable unrelated proven float
+  locals in the same function. The native raw-f64 shadow lane is retired:
+  `float_primary_vars` is the only raw-F64 authority, and non-primary floats
+  are boxed immediately in their main I64 variable. Native scalar store-target
+  discovery is now shared across int, float, bool, and str lanes, preserving
+  the all-sources rule so remaining non-primary bool shadows cannot drift from
+  the scalar lane contract used by the other raw carriers.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 

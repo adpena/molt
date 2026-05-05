@@ -69,9 +69,9 @@ It is current-state only. For forward-looking priorities, use
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   Native float-primary lowering likewise uses static `float_primary_vars` as
-  the only authority for F64-primary Cranelift variables; float shadow maps are
-  restricted to non-primary boxed-variable lanes that still require explicit
-  loop-carried raw-f64 tracking. Native bool lowering now has a raw-closed
+  the only authority for F64-primary Cranelift variables; the raw-f64 shadow
+  lane has been removed, and non-primary float values are boxed immediately in
+  their main I64 variables. Native bool lowering now has a raw-closed
   `bool_primary_vars` subset for constants, alias/store propagation,
   comparisons, identity checks, and truthiness casts. Bool-primary escape
   boxing uses an explicit raw-bool `0/1` carrier conversion before NaN-boxing,
@@ -88,9 +88,9 @@ It is current-state only. For forward-looking priorities, use
   discovery is shared across int, float, bool, and str lanes with the same
   all-sources rule; float-primary eligibility is definition-scoped, so
   unsupported producers such as `pow` keep their own outputs boxed without
-  disabling unrelated proven-float locals in the same function. Non-primary
-  float shadows and residual non-primary bool shadows are limited to
-  boxed-variable cases that still require explicit raw side channels.
+  disabling unrelated proven-float locals in the same function. Residual
+  non-primary bool shadows are limited to boxed-variable cases that still
+  require explicit raw side channels.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.

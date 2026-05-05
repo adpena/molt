@@ -53,6 +53,11 @@ performance-first C-extension compatibility without embedding CPython.
 - `molt_int_from_i64`, `molt_int_as_i64`
 - `molt_float_from_f64`, `molt_float_as_f64`
 
+`molt_float_as_f64` is the native scalar extraction contract for compiled code:
+it accepts inline floats, heap-backed NaN floats, and integer-compatible values.
+Heap-backed NaN floats must round-trip as IEEE NaN values; pointer identity is
+not observable through this accessor.
+
 ### 4.4 Object Protocol
 - `molt_object_getattr`, `molt_object_setattr`, `molt_object_hasattr`
 - `molt_object_getattr_bytes`, `molt_object_setattr_bytes`
