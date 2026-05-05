@@ -449,6 +449,79 @@ fn propagate_store_var_targets_in(
     changed
 }
 
+#[cfg(feature = "native-backend")]
+fn scalar_lane_store_target_names(
+    func_ir: &FunctionIR,
+    lane: ScalarLane,
+    int_like_vars: &BTreeSet<String>,
+    bool_like_vars: &BTreeSet<String>,
+    float_like_vars: &BTreeSet<String>,
+    str_like_vars: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut lane_outputs = BTreeSet::new();
+    let mut changed = true;
+    while changed {
+        changed = propagate_store_var_targets_in(func_ir, &mut lane_outputs);
+        for op in &func_ir.ops {
+            if op.kind == "store_var" {
+                continue;
+            }
+            let Some(out) = op.out.as_ref() else {
+                continue;
+            };
+            let inferred_lane = match lane {
+                ScalarLane::Int => infer_scalar_lane(
+                    op,
+                    &lane_outputs,
+                    bool_like_vars,
+                    float_like_vars,
+                    str_like_vars,
+                ),
+                ScalarLane::Bool => infer_scalar_lane(
+                    op,
+                    int_like_vars,
+                    &lane_outputs,
+                    float_like_vars,
+                    str_like_vars,
+                ),
+                ScalarLane::Float => infer_scalar_lane(
+                    op,
+                    int_like_vars,
+                    bool_like_vars,
+                    &lane_outputs,
+                    str_like_vars,
+                ),
+                ScalarLane::Str => infer_scalar_lane(
+                    op,
+                    int_like_vars,
+                    bool_like_vars,
+                    float_like_vars,
+                    &lane_outputs,
+                ),
+            };
+            let first_arg_is_lane = op
+                .args
+                .as_ref()
+                .and_then(|args| args.first())
+                .is_some_and(|src| lane_outputs.contains(src));
+            let var_source_is_lane = op
+                .var
+                .as_ref()
+                .is_some_and(|src| lane_outputs.contains(src));
+            let is_lane_alias = matches!(
+                op.kind.as_str(),
+                "copy_var" | "copy" | "load_var" | "identity_alias"
+            ) && first_arg_is_lane
+                || matches!(op.kind.as_str(), "copy_var" | "load_var") && var_source_is_lane;
+
+            if (inferred_lane == Some(lane) || is_lane_alias) && lane_outputs.insert(out.clone()) {
+                changed = true;
+            }
+        }
+    }
+    store_var_targets_all_sources_in(func_ir, &lane_outputs)
+}
+
 /// Phase 1d Step 0: predicate for the operand-recursive `int_primary_vars`
 /// fixpoint.  Returns `true` when this op's codegen WILL `def_var` a raw i64
 /// value into `vars[op.out]` given that `candidates` already contains every
@@ -3485,117 +3558,30 @@ impl SimpleBackend {
         // causing arithmetic operators to take the fast-int path and produce
         // garbage (e.g., set subtraction returning an int).
         let int_store_target_names = if scalar_fast_paths_enabled {
-            // First pass: collect variable names whose source is int-typed.
-            let mut int_store_targets: std::collections::BTreeSet<String> =
-                std::collections::BTreeSet::new();
-            // Build a set of output names that produce int values.
-            let mut int_valued_outputs: std::collections::BTreeSet<String> =
-                std::collections::BTreeSet::new();
-            let mut changed = true;
-            while changed {
-                changed = false;
-                if propagate_store_var_targets_in(&func_ir, &mut int_valued_outputs) {
-                    changed = true;
-                }
-                for op in &func_ir.ops {
-                    // Propagate int-valued classification through store_var:
-                    // when a store_var writes an int-valued source into a
-                    // variable, that variable becomes int-valued.  This is
-                    // essential for loop phi variables (e.g. _bb1_arg0) that
-                    // are only written via store_var and read via load_var.
-                    if op.kind == "store_var" {
-                        continue;
-                    }
-                    let Some(ref out) = op.out else {
-                        continue;
-                    };
-                    let is_seed_int = matches!(
-                        infer_scalar_lane(
-                            op,
-                            &int_valued_outputs,
-                            &bool_like_vars,
-                            &float_like_vars,
-                            &str_like_vars,
-                        ),
-                        Some(ScalarLane::Int)
-                    );
-                    let is_alias_of_int = matches!(
-                        op.kind.as_str(),
-                        "copy_var" | "copy" | "load_var" | "loop_index_start" | "identity_alias"
-                    ) && op
-                        .args
-                        .as_ref()
-                        .and_then(|args| args.first())
-                        .is_some_and(|src| int_valued_outputs.contains(src))
-                        || matches!(op.kind.as_str(), "copy_var" | "load_var")
-                            && op
-                                .var
-                                .as_ref()
-                                .is_some_and(|src| int_valued_outputs.contains(src));
-                    if (is_seed_int || is_alias_of_int) && int_valued_outputs.insert(out.clone()) {
-                        changed = true;
-                    }
-                }
-            }
-            int_store_targets.extend(store_var_targets_all_sources_in(
+            let int_store_targets = scalar_lane_store_target_names(
                 &func_ir,
-                &int_valued_outputs,
-            ));
+                ScalarLane::Int,
+                &int_like_vars,
+                &bool_like_vars,
+                &float_like_vars,
+                &str_like_vars,
+            );
             if std::env::var("MOLT_DUMP_INT_STORE_TARGETS").as_deref() == Ok(func_ir.name.as_str())
             {
                 eprintln!("INT_STORE_TARGETS {} {:?}", func_ir.name, int_store_targets);
             }
             // Float store targets: pre-declare shadow F64 Variables for store_var
-            // targets whose source is proven float.  Same pattern as int shadows.
-            let mut float_valued_outputs: std::collections::BTreeSet<String> =
-                std::collections::BTreeSet::new();
-            let mut flt_changed = true;
-            while flt_changed {
-                flt_changed = false;
-                if propagate_store_var_targets_in(&func_ir, &mut float_valued_outputs) {
-                    flt_changed = true;
-                }
-                for op in &func_ir.ops {
-                    if op.kind == "store_var" {
-                        continue;
-                    }
-                    let Some(ref out) = op.out else { continue };
-                    let is_seed_float = matches!(
-                        infer_scalar_lane(
-                            op,
-                            &int_like_vars,
-                            &bool_like_vars,
-                            &float_valued_outputs,
-                            &str_like_vars,
-                        ),
-                        Some(ScalarLane::Float)
-                    );
-                    let is_alias_of_float = matches!(
-                        op.kind.as_str(),
-                        "copy_var" | "copy" | "load_var" | "identity_alias"
-                    ) && op
-                        .args
-                        .as_ref()
-                        .and_then(|args| args.first())
-                        .is_some_and(|src| float_valued_outputs.contains(src))
-                        || matches!(op.kind.as_str(), "copy_var" | "load_var")
-                            && op
-                                .var
-                                .as_ref()
-                                .is_some_and(|src| float_valued_outputs.contains(src));
-                    if (is_seed_float || is_alias_of_float)
-                        && float_valued_outputs.insert(out.clone())
-                    {
-                        flt_changed = true;
-                    }
-                }
-            }
-            let mut float_store_targets: std::collections::BTreeSet<String> =
-                std::collections::BTreeSet::new();
-            float_store_targets.extend(store_var_targets_all_sources_in(
+            // targets whose source is proven float.  Uses the same scalar
+            // store-target contract as int/bool so lane-specific shadows
+            // cannot drift apart.
+            let float_store_targets = scalar_lane_store_target_names(
                 &func_ir,
-                &float_valued_outputs,
-            ));
+                ScalarLane::Float,
+                &int_like_vars,
+                &bool_like_vars,
+                &float_like_vars,
+                &str_like_vars,
+            );
             let zero_f = builder.ins().f64const(0.0);
             for name in float_store_targets
                 .iter()
@@ -3609,54 +3595,14 @@ impl SimpleBackend {
             // Bool store targets outside bool_primary_vars keep shadow I64
             // Variables. Bool-primary names carry raw 0/1 in their main
             // Variable, so a parallel shadow would be a second source of truth.
-            let mut bool_valued_outputs: std::collections::BTreeSet<String> =
-                std::collections::BTreeSet::new();
-            let mut bool_changed = true;
-            while bool_changed {
-                bool_changed = false;
-                if propagate_store_var_targets_in(&func_ir, &mut bool_valued_outputs) {
-                    bool_changed = true;
-                }
-                for op in &func_ir.ops {
-                    if op.kind == "store_var" {
-                        continue;
-                    }
-                    let Some(ref out) = op.out else { continue };
-                    let is_seed_bool = matches!(
-                        infer_scalar_lane(
-                            op,
-                            &int_like_vars,
-                            &bool_valued_outputs,
-                            &float_like_vars,
-                            &str_like_vars,
-                        ),
-                        Some(ScalarLane::Bool)
-                    );
-                    let is_alias_of_bool = matches!(
-                        op.kind.as_str(),
-                        "copy_var" | "copy" | "load_var" | "identity_alias"
-                    ) && op
-                        .args
-                        .as_ref()
-                        .and_then(|args| args.first())
-                        .is_some_and(|src| bool_valued_outputs.contains(src))
-                        || matches!(op.kind.as_str(), "copy_var" | "load_var")
-                            && op
-                                .var
-                                .as_ref()
-                                .is_some_and(|src| bool_valued_outputs.contains(src));
-                    if (is_seed_bool || is_alias_of_bool) && bool_valued_outputs.insert(out.clone())
-                    {
-                        bool_changed = true;
-                    }
-                }
-            }
-            let mut bool_store_targets: std::collections::BTreeSet<String> =
-                std::collections::BTreeSet::new();
-            bool_store_targets.extend(store_var_targets_all_sources_in(
+            let bool_store_targets = scalar_lane_store_target_names(
                 &func_ir,
-                &bool_valued_outputs,
-            ));
+                ScalarLane::Bool,
+                &int_like_vars,
+                &bool_like_vars,
+                &float_like_vars,
+                &str_like_vars,
+            );
             let zero_b = builder.ins().iconst(types::I64, 0);
             for name in bool_store_targets
                 .iter()
@@ -36515,7 +36461,8 @@ mod tests {
         collect_slot_backed_join_names, infer_scalar_lane, is_cold_module_chunk_function,
         live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
         op_produces_raw_bool_for_bool_primary, preanalyze_function_ir, protect_cleanup_names,
-        scan_loop_int_sum_reduction, switch_to_block_materialized, switch_to_block_with_rebind,
+        scalar_lane_store_target_names, scan_loop_int_sum_reduction, switch_to_block_materialized,
+        switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
     use cranelift_codegen::isa::CallConv;
@@ -36789,6 +36736,140 @@ mod tests {
                 "mixed dynamic/scalar join target {name} must stay boxed",
             );
         }
+    }
+
+    #[test]
+    fn scalar_store_target_collector_keeps_lanes_separate_and_requires_all_sources() {
+        let func = FunctionIR {
+            name: "scalar_store_targets".to_string(),
+            params: vec!["callable".to_string(), "args".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("i_seed".to_string()),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    args: Some(vec!["i_seed".to_string()]),
+                    out: Some("i_copy".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("i_slot".to_string()),
+                    args: Some(vec!["i_copy".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_float".to_string(),
+                    out: Some("f_seed".to_string()),
+                    f_value: Some(1.25),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some("f_seed".to_string()),
+                    out: Some("f_copy".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("f_slot".to_string()),
+                    args: Some(vec!["f_copy".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_bool".to_string(),
+                    out: Some("b_seed".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "identity_alias".to_string(),
+                    args: Some(vec!["b_seed".to_string()]),
+                    out: Some("b_copy".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("b_slot".to_string()),
+                    args: Some(vec!["b_copy".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("s_seed".to_string()),
+                    s_value: Some("lane".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy".to_string(),
+                    args: Some(vec!["s_seed".to_string()]),
+                    out: Some("s_copy".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("s_slot".to_string()),
+                    args: Some(vec!["s_copy".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("mixed_slot".to_string()),
+                    args: Some(vec!["i_seed".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("mixed_slot".to_string()),
+                    args: Some(vec!["f_seed".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_indirect".to_string(),
+                    args: Some(vec!["callable".to_string(), "args".to_string()]),
+                    out: Some("dynamic".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("dynamic_slot".to_string()),
+                    args: Some(vec!["dynamic".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let empty = BTreeSet::new();
+
+        assert_eq!(
+            scalar_lane_store_target_names(&func, ScalarLane::Int, &empty, &empty, &empty, &empty,),
+            BTreeSet::from(["i_slot".to_string()]),
+        );
+        assert_eq!(
+            scalar_lane_store_target_names(
+                &func,
+                ScalarLane::Float,
+                &empty,
+                &empty,
+                &empty,
+                &empty,
+            ),
+            BTreeSet::from(["f_slot".to_string()]),
+        );
+        assert_eq!(
+            scalar_lane_store_target_names(&func, ScalarLane::Bool, &empty, &empty, &empty, &empty,),
+            BTreeSet::from(["b_slot".to_string()]),
+        );
+        assert_eq!(
+            scalar_lane_store_target_names(&func, ScalarLane::Str, &empty, &empty, &empty, &empty,),
+            BTreeSet::from(["s_slot".to_string()]),
+        );
     }
 
     #[test]

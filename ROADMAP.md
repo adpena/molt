@@ -74,7 +74,10 @@ This file is forward-looking only.
   keeping the existing index-fast-path selection separate from output
   representation. Unknown-list getitem truthiness uses an explicit conditional
   list-bool carrier for the runtime list/list_bool split; finish the residual
-  non-primary float shadow lane instead of adding per-op fallback hints.
+  non-primary float shadow lane instead of adding per-op fallback hints. Native
+  scalar store-target discovery is now shared across int, float, bool, and str
+  lanes, preserving the all-sources rule so non-primary float shadows cannot
+  drift from the scalar lane contract used by the other raw carriers.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 

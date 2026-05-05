@@ -84,9 +84,11 @@ It is current-state only. For forward-looking priorities, use
   index-lowering lane selection with output representation. Unknown-list
   getitem truthiness now uses an explicit conditional list-bool carrier whose
   payload is raw `0/1` only on the runtime list_bool arm and otherwise remains
-  the NaN-boxed element for the normal truthiness path. Residual non-primary
-  bool shadows are limited to boxed-variable cases that still require explicit
-  raw 0/1 side channels.
+  the NaN-boxed element for the normal truthiness path. Scalar store-target
+  discovery is shared across int, float, bool, and str lanes with the same
+  all-sources rule; non-primary float shadows and residual non-primary bool
+  shadows are limited to boxed-variable cases that still require explicit raw
+  side channels.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.
