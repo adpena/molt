@@ -988,6 +988,11 @@ fn scalar_handle_helpers_roundtrip() {
     assert_eq!(molt_float_as_f64(float_bits), 3.5);
     assert_eq!(molt_float_as_f64(int_bits), -42.0);
 
+    let heap_nan_bits = crate::with_gil_entry_nopanic!(_py, { float_result_bits(_py, f64::NAN) });
+    assert!(molt_float_as_f64(heap_nan_bits).is_nan());
+    assert_eq!(obj_from_bits(molt_eq(heap_nan_bits, heap_nan_bits)).as_bool(), Some(false));
+    assert_eq!(obj_from_bits(molt_ne(heap_nan_bits, heap_nan_bits)).as_bool(), Some(true));
+
     crate::with_gil_entry_nopanic!(_py, {
         assert_eq!(molt_int_as_i64(float_bits), -1);
         assert_eq!(molt_err_pending(), 1);
@@ -999,6 +1004,7 @@ fn scalar_handle_helpers_roundtrip() {
         dec_ref_bits(_py, false_bits);
         dec_ref_bits(_py, int_bits);
         dec_ref_bits(_py, float_bits);
+        dec_ref_bits(_py, heap_nan_bits);
     });
 }
 

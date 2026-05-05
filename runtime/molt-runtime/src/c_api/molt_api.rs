@@ -102,7 +102,7 @@ pub extern "C" fn molt_float_from_f64(value: f64) -> MoltHandle {
 pub extern "C" fn molt_float_as_f64(value_bits: MoltHandle) -> f64 {
     crate::with_gil_entry_nopanic!(_py, {
         let value_obj = obj_from_bits(value_bits);
-        if let Some(value) = value_obj.as_float() {
+        if let Some(value) = as_float_extended(value_obj) {
             return value;
         }
         if let Some(value) = to_i64(value_obj) {
