@@ -72,7 +72,8 @@ This file is forward-looking only.
   binding, while unsafe join slots remain boxed. Proven-bool list indexing now
   enters the same bool-primary contract when the index operand is raw-primary,
   keeping the existing index-fast-path selection separate from output
-  representation; finish the residual conditional list-bool shadow cases and
+  representation. Unknown-list getitem truthiness uses an explicit conditional
+  list-bool carrier for the runtime list/list_bool split; finish the residual
   non-primary float shadow lane instead of adding per-op fallback hints.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.

@@ -81,9 +81,12 @@ It is current-state only. For forward-looking priorities, use
   for scalar slot exclusion remain boxed. Proven-bool list indexing is admitted
   to bool-primary only when the index operand is raw-primary, so the inline
   list/list_bool codegen path can define raw `0/1` without conflating
-  index-lowering lane selection with output representation. Residual
-  non-primary bool shadows are limited to conditional list-bool and other
-  boxed-variable cases that still require explicit raw 0/1 side channels.
+  index-lowering lane selection with output representation. Unknown-list
+  getitem truthiness now uses an explicit conditional list-bool carrier whose
+  payload is raw `0/1` only on the runtime list_bool arm and otherwise remains
+  the NaN-boxed element for the normal truthiness path. Residual non-primary
+  bool shadows are limited to boxed-variable cases that still require explicit
+  raw 0/1 side channels.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.
