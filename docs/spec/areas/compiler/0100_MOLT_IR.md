@@ -22,10 +22,11 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
   contract.
 - Backend-specific shadow state or side-channel unboxed tracking is
   implementation debt and must not be treated as a stable interface.
-- Native int and float lowering have retired their raw scalar shadow lanes:
-  `int_primary_vars` and `float_primary_vars` are the only raw I64/F64
-  authorities in the current native backend. Non-primary float values are
-  represented immediately in their main boxed I64 variable.
+- Native int, bool, and float lowering have retired their raw scalar shadow
+  lanes: `int_primary_vars`, `bool_primary_vars`, and `float_primary_vars`
+  are the only raw I64/bool/F64 authorities in the current native backend.
+  Non-primary bool and float values are represented immediately in their main
+  boxed I64 variable.
 
 ## Implementation layout
 - Keep Rust crate entrypoints (`lib.rs`) thin; implement runtime/backend subsystems in focused modules under `src/` and re-export from `lib.rs`.

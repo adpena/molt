@@ -278,6 +278,43 @@ def test_native_runtime_regressions_match_cpython(profile: str, source: str) -> 
 
 
 @pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_bool_primary_loop_and_list_paths_match_cpython(profile: str) -> None:
+    source = textwrap.dedent(
+        """
+        def flip(flag):
+            out = []
+            i = 0
+            current = flag
+            values = [True, False, True, True]
+            while i < 4:
+                if current:
+                    out.append(values[i])
+                else:
+                    out.append(not values[i])
+                current = not current
+                i = i + 1
+            values[1] = current
+            values[2] = not current
+            print(out)
+            print(values)
+            return current
+
+        print(flip(True))
+        print(flip(False))
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile) == expected
+
+
+@pytest.mark.parametrize("profile", ["dev", "release"])
 def test_native_exception_loop_with_prints_matches_cpython(profile: str) -> None:
     source = textwrap.dedent(
         """

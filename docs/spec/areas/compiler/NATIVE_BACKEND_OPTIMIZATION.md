@@ -82,9 +82,10 @@ default.
 `fast_float` / `raw_int` / `type_hint` fields may still appear on the SimpleIR
 transport, but native scalar representation is not allowed to recover its
 authority from those fields. The native backend now uses static raw-primary
-sets for int and float variables; `float_primary_vars` is the only raw-F64
-authority, and non-primary float results are boxed immediately in their main
-I64 variables instead of being tracked through a side-channel shadow map.
+sets for int, bool, and float variables. `bool_primary_vars` and
+`float_primary_vars` are the only raw-bool/raw-F64 authorities, and
+non-primary bool/float results are boxed immediately in their main I64
+variables instead of being tracked through side-channel shadow maps.
 
 This is an implementation compromise, not the desired endpoint. Upstream TIR
 type refinement and type facts can prove richer representation facts than a
@@ -94,6 +95,9 @@ facts before native codegen.
 **How native raw-primary lowering works**:
 - `int_primary_vars` names carry raw i64 in their main Cranelift Variable.
   Boxing happens at explicit escape points, with overflow-safe BigInt handling.
+- `bool_primary_vars` names carry raw 0/1 in their main Cranelift Variable.
+  Non-primary bools stay boxed in their main I64 Variable and recover payload
+  bits only through explicit boxed-bool extraction at use sites.
 - `float_primary_vars` names carry raw f64 in their main Cranelift Variable.
   Non-primary floats stay boxed in their main I64 Variable and recover raw f64
   by bitcast only at proven float use sites.
@@ -102,7 +106,7 @@ facts before native codegen.
 
 | Issue | Location | Impact | Effort |
 |-------|----------|--------|--------|
-| **Specialization still crosses a legacy SimpleIR transport**. Native int and float lanes no longer use raw scalar shadow maps, but the TIR/LIR representation plan is still lowered through SimpleIR before native codegen. This leaves duplicated representation recovery logic in native. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
+| **Specialization still crosses a legacy SimpleIR transport**. Native int, bool, and float lanes no longer use raw scalar shadow maps, but the TIR/LIR representation plan is still lowered through SimpleIR before native codegen. This leaves duplicated representation recovery logic in native. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
 | **Float specialization is native-only and set-driven**. Float arithmetic has raw-F64 primary lowering, but the final architecture is a shared LIR representation plan consumed by every backend rather than native-local `float_primary_vars`. | TIR/LIR bridge, native backend lowering, wasm/llvm/luau parity | High | High |
 | **No container element type specialization**. `container_elem_hints` and `dict_key_hints` are tracked (frontend line 963-965) but not used for specialization. A list known to contain only ints could use a packed representation. | Frontend type tracking, backend container ops | Medium-High for numeric workloads | High |
 | **No return type propagation across calls**. If `def foo() -> int` is annotated, callers of `foo()` don't get `fast_int` on the result. The type facts system supports this but it's not wired to the call site specialization. | `FunctionFacts.returns` (type_facts.py:24), call lowering in frontend | Medium | Medium |
