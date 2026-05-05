@@ -16,10 +16,9 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
   required.
 - `Box`, `Unbox`, `Cast`, and `Widen` are first-class boundary operations. They
   are the canonical way to cross representation boundaries.
-- The current `SimpleIR` transport and hint fields such as `fast_int`,
-  `fast_float`, `raw_int`, and `type_hint` are transitional compatibility
-  details for existing transport consumers, not the long-term semantic
-  contract.
+- The current `SimpleIR` transport still accepts scalar hint metadata such as
+  `fast_int`, `fast_float`, and `type_hint` for legacy consumers. These fields
+  are transitional compatibility details, not the long-term semantic contract.
 - Backend-specific shadow state or side-channel unboxed tracking is
   implementation debt and must not be treated as a stable interface.
 - Native int, bool, and float lowering have retired their raw scalar shadow

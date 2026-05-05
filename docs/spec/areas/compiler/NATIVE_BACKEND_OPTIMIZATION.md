@@ -79,10 +79,10 @@ module/function/variable to type strings with trust levels (`advisory`,
 default.
 
 **Current transport-level specialization mechanism**: Legacy `fast_int` /
-`fast_float` / `raw_int` / `type_hint` fields may still appear on the SimpleIR
-transport, but native scalar representation is not allowed to recover its
-authority from those fields. The native backend now uses static raw-primary
-sets for int, bool, and float variables. `bool_primary_vars` and
+`fast_float` / `type_hint` fields may still appear on the SimpleIR transport,
+but native scalar representation is not allowed to recover its authority from
+those fields. The native backend now uses static raw-primary sets for int,
+bool, and float variables. `bool_primary_vars` and
 `float_primary_vars` are the only raw-bool/raw-F64 authorities, and
 non-primary bool/float results are boxed immediately in their main I64
 variables instead of being tracked through side-channel shadow maps.
