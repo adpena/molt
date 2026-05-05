@@ -63,10 +63,10 @@ This file is forward-looking only.
   contracts. Native int codegen has retired the raw-int shadow transport in
   favor of `int_primary_vars`, and native float-primary codegen now treats
   `float_primary_vars` as the single static authority for F64-primary variables.
-  Native bool codegen has started the same migration with a raw-closed
-  `bool_primary_vars` subset for constants and alias/store propagation; finish
-  moving comparison/truthiness bool outputs and the non-primary float shadow lane
-  onto static representation contracts instead of adding per-op fallback hints.
+  Native bool codegen has the same raw-closed `bool_primary_vars` contract for
+  constants, alias/store propagation, comparisons, identity checks, and
+  truthiness casts; finish the residual non-primary bool/list shadow cases and
+  non-primary float shadow lane instead of adding per-op fallback hints.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 
