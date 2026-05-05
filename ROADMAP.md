@@ -61,8 +61,10 @@ This file is forward-looking only.
   longer accepts an external type map for scalar hint reseeding; remaining
   performance work must flow through shared representation-aware TIR/LIR
   contracts. Native int codegen has retired the raw-int shadow transport in
-  favor of `int_primary_vars`; finish the same structural cleanup for remaining
-  bool/float shadow lanes instead of adding per-op fallback hints.
+  favor of `int_primary_vars`, and native float-primary codegen now treats
+  `float_primary_vars` as the single static authority for F64-primary variables;
+  finish the same structural cleanup for the remaining bool shadow lane and
+  non-primary float shadow lane instead of adding per-op fallback hints.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 

@@ -806,7 +806,7 @@ fn var_get_boxed_overflow_safe(
     vars: &BTreeMap<String, Variable>,
     name: &str,
     int_primary_vars: &std::collections::BTreeSet<String>,
-    raw_primary_float: &std::collections::BTreeSet<String>,
+    float_primary_vars: &std::collections::BTreeSet<String>,
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
 ) -> Option<crate::VarValue> {
@@ -825,7 +825,7 @@ fn var_get_boxed_overflow_safe(
             name,
         );
         Some(VarValue(boxed))
-    } else if raw_primary_float.contains(name) {
+    } else if float_primary_vars.contains(name) {
         let var = *vars.get(name)?;
         let val = builder.use_var(var);
         let bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
@@ -883,10 +883,10 @@ fn ensure_boxed_primitive_safe(
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
     int_primary_vars: &std::collections::BTreeSet<String>,
-    raw_primary_float: &std::collections::BTreeSet<String>,
+    float_primary_vars: &std::collections::BTreeSet<String>,
     name: &str,
 ) -> Value {
-    if raw_primary_float.contains(name) {
+    if float_primary_vars.contains(name) {
         *var_get_boxed_overflow_safe(
             module,
             import_ids,
@@ -896,7 +896,7 @@ fn ensure_boxed_primitive_safe(
             vars,
             name,
             int_primary_vars,
-            raw_primary_float,
+            float_primary_vars,
             box_int_mask_var,
             box_int_tag_var,
         )
@@ -944,6 +944,30 @@ fn shadow_float_for(
         .or_else(|| raw_float_shadow.get(name).map(|&var| builder.use_var(var)))
 }
 
+/// Record a raw f64 shadow only for non-primary float variables.
+///
+/// `float_primary_vars` names already store raw f64 in their main Cranelift
+/// Variable, so writing them into the shadow maps would reintroduce a second
+/// authority for the same representation fact.
+#[cfg(feature = "native-backend")]
+fn record_float_shadow_if_needed(
+    builder: &mut FunctionBuilder<'_>,
+    float_primary_vars: &BTreeSet<String>,
+    raw_float_shadow: &BTreeMap<String, Variable>,
+    raw_float_shadow_vals: &mut BTreeMap<String, Value>,
+    name: &str,
+    raw_f64: Value,
+) {
+    if float_primary_vars.contains(name) {
+        raw_float_shadow_vals.remove(name);
+        return;
+    }
+    if let Some(&shadow_var) = raw_float_shadow.get(name) {
+        builder.def_var(shadow_var, raw_f64);
+    }
+    raw_float_shadow_vals.insert(name.to_string(), raw_f64);
+}
+
 /// Get a raw f64 value from a variable, checking float-primary Variables
 /// first (no bitcast needed), then falling back to the shadow system.
 /// This eliminates redundant bitcast(F64→I64)→bitcast(I64→F64) round-trips
@@ -952,13 +976,13 @@ fn shadow_float_for(
 fn float_value_for(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
-    raw_primary_float: &std::collections::BTreeSet<String>,
+    float_primary_vars: &std::collections::BTreeSet<String>,
     raw_float_shadow: &BTreeMap<String, Variable>,
     raw_float_shadow_vals: &BTreeMap<String, Value>,
     name: &str,
 ) -> Option<Value> {
     // Float-primary: Variable is F64, use_var yields raw f64 directly.
-    if raw_primary_float.contains(name) {
+    if float_primary_vars.contains(name) {
         return vars.get(name).map(|&var| builder.use_var(var));
     }
     // Fall back to two-tier shadow system.
@@ -990,7 +1014,7 @@ fn float_value_for_mixed(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    raw_primary_float: &std::collections::BTreeSet<String>,
+    float_primary_vars: &std::collections::BTreeSet<String>,
     raw_float_shadow: &BTreeMap<String, Variable>,
     raw_float_shadow_vals: &BTreeMap<String, Value>,
     int_primary_vars: &std::collections::BTreeSet<String>,
@@ -1005,7 +1029,7 @@ fn float_value_for_mixed(
     if let Some(f_val) = float_value_for(
         builder,
         vars,
-        raw_primary_float,
+        float_primary_vars,
         raw_float_shadow,
         raw_float_shadow_vals,
         name,
@@ -1033,7 +1057,7 @@ fn float_value_for_mixed(
             vars,
             name,
             int_primary_vars,
-            raw_primary_float,
+            float_primary_vars,
             box_int_mask_var,
             box_int_tag_var,
         )
@@ -1052,7 +1076,7 @@ fn float_value_for_mixed(
         vars,
         name,
         int_primary_vars,
-        raw_primary_float,
+        float_primary_vars,
         box_int_mask_var,
         box_int_tag_var,
     )
@@ -2266,12 +2290,12 @@ fn cleanup_name_excluded(
     protected_names: Option<&BTreeSet<String>>,
     param_name_set: &BTreeSet<&str>,
     int_primary_vars: &BTreeSet<String>,
-    raw_primary_float: &BTreeSet<String>,
+    float_primary_vars: &BTreeSet<String>,
 ) -> bool {
     protected_names.is_some_and(|protected| protected.contains(name))
         || param_name_set.contains(name)
         || int_primary_vars.contains(name)
-        || raw_primary_float.contains(name)
+        || float_primary_vars.contains(name)
 }
 
 #[cfg(feature = "native-backend")]
@@ -2520,7 +2544,7 @@ impl SimpleBackend {
         // are declared as F64 so the primary Cranelift Variable carries the raw
         // f64 value.  This eliminates bitcast(f64->i64) on every store and
         // bitcast(i64->f64) on every load in hot float loops (e.g. mandelbrot).
-        // Boxing is deferred to escape points via var_get_boxed / raw_primary_float.
+        // Boxing is deferred to escape points via var_get_boxed / float_primary_vars.
         //
         // SAFETY: exclude variables assigned by generic ops (via type_hint) that
         // produce NaN-boxed I64 values -- only ops with explicit float codegen
@@ -2913,9 +2937,10 @@ impl SimpleBackend {
             std::collections::BTreeMap::new();
         // Phase 1d: int_primary_vars (declared above ~line 2665 via the
         // operand-recursive fixpoint) is the immutable source of truth for
-        // "vars[name] holds raw i64". The dynamic int_primary_vars set was
-        // eliminated. Float remains a dynamic set pending the Phase 3 mirror.
-        let mut raw_primary_float: std::collections::BTreeSet<String> = float_primary_vars.clone();
+        // "vars[name] holds raw i64". Float primary lowering follows the
+        // same static-set rule for the F64-primary subset.
+        // `float_primary_vars` is the immutable source of truth for F64-primary Variables.
+        // Non-primary float values continue to use the explicit shadow maps below.
         // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
         // Valid only while the list is not resized (no append/insert inside the loop).
@@ -3169,7 +3194,10 @@ impl SimpleBackend {
                 &float_valued_outputs,
             ));
             let zero_f = builder.ins().f64const(0.0);
-            for name in &float_store_targets {
+            for name in float_store_targets
+                .iter()
+                .filter(|name| !float_primary_vars.contains(*name))
+            {
                 let v = builder.declare_var(types::F64);
                 builder.def_var(v, zero_f);
                 raw_float_shadow.insert(name.clone(), v);
@@ -3463,7 +3491,7 @@ impl SimpleBackend {
                 &vars,
                 "self",
                 &int_primary_vars,
-                &raw_primary_float,
+                &float_primary_vars,
                 box_int_mask_var,
                 box_int_tag_var,
             )
@@ -4208,7 +4236,6 @@ impl SimpleBackend {
                             // Variable.  Boxing deferred to escape points via
                             // var_get_boxed.
                             def_var_named(&mut builder, &vars, out__, raw_f64);
-                            raw_primary_float.insert(out__.clone());
                         } else {
                             let boxed = box_float(val);
                             let iconst = builder.ins().iconst(types::I64, boxed);
@@ -4216,10 +4243,14 @@ impl SimpleBackend {
                         }
                         // Seed raw f64 shadow so downstream float ops chain
                         // without NaN-box round-trips.
-                        if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                            builder.def_var(shadow_var, raw_f64);
-                        }
-                        raw_float_shadow_vals.insert(out__.clone(), raw_f64);
+                        record_float_shadow_if_needed(
+                            &mut builder,
+                            &float_primary_vars,
+                            &raw_float_shadow,
+                            &mut raw_float_shadow_vals,
+                            out__,
+                            raw_f64,
+                        );
                     }
                 }
                 "const_str" => {
@@ -4346,7 +4377,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4360,7 +4391,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4393,7 +4424,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -4411,7 +4442,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -4424,17 +4455,20 @@ impl SimpleBackend {
                         );
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         if let Some(ref out__) = op.out {
-                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                builder.def_var(shadow_var, result_f);
-                            }
-                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                out__,
+                                result_f,
+                            );
                         }
                         if op
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o))
                         {
-                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
                             result_f
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
@@ -4499,7 +4533,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -4513,7 +4547,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -4564,7 +4598,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4578,7 +4612,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4677,7 +4711,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4691,7 +4725,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4717,7 +4751,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -4735,7 +4769,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -4748,17 +4782,20 @@ impl SimpleBackend {
                         );
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         if let Some(ref out__) = op.out {
-                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                builder.def_var(shadow_var, result_f);
-                            }
-                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                out__,
+                                result_f,
+                            );
                         }
                         if op
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o))
                         {
-                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
                             result_f
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
@@ -4804,7 +4841,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4818,7 +4855,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4876,7 +4913,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4890,7 +4927,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -4983,7 +5020,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -4997,7 +5034,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5027,7 +5064,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5041,7 +5078,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5071,7 +5108,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5085,7 +5122,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5099,7 +5136,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5129,7 +5166,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5143,7 +5180,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5157,7 +5194,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5187,7 +5224,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5201,7 +5238,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5231,7 +5268,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5245,7 +5282,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5275,7 +5312,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5289,7 +5326,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5319,7 +5356,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5333,7 +5370,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5363,7 +5400,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5377,7 +5414,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5391,7 +5428,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5421,7 +5458,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5435,7 +5472,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5449,7 +5486,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5479,7 +5516,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5493,7 +5530,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5523,7 +5560,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5537,7 +5574,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5567,7 +5604,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5581,7 +5618,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5611,7 +5648,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5625,7 +5662,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5655,7 +5692,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5669,7 +5706,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5683,7 +5720,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5713,7 +5750,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5727,7 +5764,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5741,7 +5778,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5771,7 +5808,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5785,7 +5822,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5815,7 +5852,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5829,7 +5866,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5859,7 +5896,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5873,7 +5910,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5887,7 +5924,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5917,7 +5954,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5931,7 +5968,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5945,7 +5982,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5975,7 +6012,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -5989,7 +6026,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6019,7 +6056,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6033,7 +6070,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6063,7 +6100,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6077,7 +6114,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6091,7 +6128,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6121,7 +6158,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6135,7 +6172,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6149,7 +6186,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -6182,7 +6219,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -6200,7 +6237,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -6213,17 +6250,20 @@ impl SimpleBackend {
                         );
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         if let Some(ref out__) = op.out {
-                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                builder.def_var(shadow_var, result_f);
-                            }
-                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                out__,
+                                result_f,
+                            );
                         }
                         if op
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o))
                         {
-                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
                             result_f
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
@@ -6286,7 +6326,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -6302,7 +6342,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -6355,7 +6395,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -6369,7 +6409,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -6467,7 +6507,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -6485,7 +6525,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -6498,17 +6538,20 @@ impl SimpleBackend {
                         );
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         if let Some(ref out__) = op.out {
-                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                builder.def_var(shadow_var, result_f);
-                            }
-                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                out__,
+                                result_f,
+                            );
                         }
                         if op
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o))
                         {
-                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
                             result_f
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
@@ -6551,7 +6594,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -6567,7 +6610,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -6627,7 +6670,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -6641,7 +6684,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -6737,7 +6780,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -6755,7 +6798,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -6768,17 +6811,20 @@ impl SimpleBackend {
                         );
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         if let Some(ref out__) = op.out {
-                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                builder.def_var(shadow_var, result_f);
-                            }
-                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                out__,
+                                result_f,
+                            );
                         }
                         if op
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o))
                         {
-                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
                             result_f
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
@@ -6841,7 +6887,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -6855,7 +6901,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -6903,7 +6949,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -6917,7 +6963,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7014,7 +7060,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -7032,7 +7078,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -7045,17 +7091,20 @@ impl SimpleBackend {
                         );
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         if let Some(ref out__) = op.out {
-                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                builder.def_var(shadow_var, result_f);
-                            }
-                            raw_float_shadow_vals.insert(out__.clone(), result_f);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                out__,
+                                result_f,
+                            );
                         }
                         if op
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o))
                         {
-                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
                             result_f
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
@@ -7097,7 +7146,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7111,7 +7160,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7166,7 +7215,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7180,7 +7229,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7296,7 +7345,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -7310,7 +7359,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -7368,7 +7417,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7382,7 +7431,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7454,7 +7503,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -7468,7 +7517,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -7606,7 +7655,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -7620,7 +7669,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -7678,7 +7727,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7692,7 +7741,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -7764,7 +7813,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -7778,7 +7827,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -7916,7 +7965,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -7930,7 +7979,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -7988,7 +8037,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8002,7 +8051,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8074,7 +8123,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -8088,7 +8137,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -8229,7 +8278,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -8243,7 +8292,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -8299,7 +8348,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -8313,7 +8362,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -8343,7 +8392,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -8357,7 +8406,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -8399,7 +8448,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -8417,7 +8466,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -8452,7 +8501,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8466,7 +8515,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8502,20 +8551,27 @@ impl SimpleBackend {
                         if out_is_float_primary {
                             let merged_raw_f = builder.block_params(merge_block)[0];
                             if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw_f);
-                                }
-                                raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
-                                raw_primary_float.insert(out__.clone());
+                                record_float_shadow_if_needed(
+                                    &mut builder,
+                                    &float_primary_vars,
+                                    &raw_float_shadow,
+                                    &mut raw_float_shadow_vals,
+                                    out__,
+                                    merged_raw_f,
+                                );
                             }
                             merged_raw_f
                         } else {
                             let merged_raw_f = builder.block_params(merge_block)[1];
                             if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw_f);
-                                }
-                                raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                                record_float_shadow_if_needed(
+                                    &mut builder,
+                                    &float_primary_vars,
+                                    &raw_float_shadow,
+                                    &mut raw_float_shadow_vals,
+                                    out__,
+                                    merged_raw_f,
+                                );
                             }
                             builder.block_params(merge_block)[0]
                         }
@@ -8535,7 +8591,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8549,7 +8605,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8610,20 +8666,27 @@ impl SimpleBackend {
                         if div_out_is_float_primary {
                             let merged_raw_f = builder.block_params(merge_block)[0];
                             if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw_f);
-                                }
-                                raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
-                                raw_primary_float.insert(out__.clone());
+                                record_float_shadow_if_needed(
+                                    &mut builder,
+                                    &float_primary_vars,
+                                    &raw_float_shadow,
+                                    &mut raw_float_shadow_vals,
+                                    out__,
+                                    merged_raw_f,
+                                );
                             }
                             merged_raw_f
                         } else {
                             let merged_raw_f = builder.block_params(merge_block)[1];
                             if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw_f);
-                                }
-                                raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                                record_float_shadow_if_needed(
+                                    &mut builder,
+                                    &float_primary_vars,
+                                    &raw_float_shadow,
+                                    &mut raw_float_shadow_vals,
+                                    out__,
+                                    merged_raw_f,
+                                );
                             }
                             builder.block_params(merge_block)[0]
                         }
@@ -8641,7 +8704,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8655,7 +8718,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8747,20 +8810,27 @@ impl SimpleBackend {
                         if gen_div_out_fp {
                             let merged_raw_f = builder.block_params(merge_block)[0];
                             if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw_f);
-                                }
-                                raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
-                                raw_primary_float.insert(out__.clone());
+                                record_float_shadow_if_needed(
+                                    &mut builder,
+                                    &float_primary_vars,
+                                    &raw_float_shadow,
+                                    &mut raw_float_shadow_vals,
+                                    out__,
+                                    merged_raw_f,
+                                );
                             }
                             merged_raw_f
                         } else {
                             let merged_raw_f = builder.block_params(merge_block)[1];
                             if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw_f);
-                                }
-                                raw_float_shadow_vals.insert(out__.clone(), merged_raw_f);
+                                record_float_shadow_if_needed(
+                                    &mut builder,
+                                    &float_primary_vars,
+                                    &raw_float_shadow,
+                                    &mut raw_float_shadow_vals,
+                                    out__,
+                                    merged_raw_f,
+                                );
                             }
                             builder.block_params(merge_block)[0]
                         }
@@ -8836,7 +8906,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -8850,7 +8920,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -8878,7 +8948,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -8892,7 +8962,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -8959,7 +9029,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -8973,7 +9043,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -9119,7 +9189,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -9133,7 +9203,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -9160,7 +9230,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -9174,7 +9244,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -9239,7 +9309,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -9253,7 +9323,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -9341,7 +9411,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9355,7 +9425,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9522,7 +9592,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -9536,7 +9606,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -9564,7 +9634,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -9578,7 +9648,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -9676,7 +9746,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -9690,7 +9760,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -9721,7 +9791,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9735,7 +9805,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9749,7 +9819,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9779,7 +9849,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9793,7 +9863,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9807,7 +9877,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9839,7 +9909,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9884,7 +9954,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -9931,7 +10001,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9961,7 +10031,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -9991,7 +10061,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10067,7 +10137,7 @@ impl SimpleBackend {
                             &vars,
                             name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -10110,7 +10180,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10124,7 +10194,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10154,7 +10224,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10168,7 +10238,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10199,7 +10269,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10213,7 +10283,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10227,7 +10297,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10259,7 +10329,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10273,7 +10343,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10303,7 +10373,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10317,7 +10387,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10347,7 +10417,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10361,7 +10431,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10375,7 +10445,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10405,7 +10475,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10419,7 +10489,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10433,7 +10503,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10471,7 +10541,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -10499,7 +10569,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -10541,7 +10611,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10598,7 +10668,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10618,7 +10688,7 @@ impl SimpleBackend {
                         box_int_mask_var,
                         box_int_tag_var,
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         &args[1],
                     );
                     let callee = Self::import_func_id_split(
@@ -10651,7 +10721,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10665,7 +10735,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10700,7 +10770,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10714,7 +10784,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10749,7 +10819,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10763,7 +10833,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10777,7 +10847,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10813,7 +10883,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10827,7 +10897,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10863,7 +10933,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10893,7 +10963,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10923,7 +10993,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10953,7 +11023,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10967,7 +11037,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -10997,7 +11067,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11011,7 +11081,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11041,7 +11111,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11055,7 +11125,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11069,7 +11139,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11083,7 +11153,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11115,7 +11185,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11172,7 +11242,7 @@ impl SimpleBackend {
                             &vars,
                             &pair[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -11186,7 +11256,7 @@ impl SimpleBackend {
                             &vars,
                             &pair[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -11207,7 +11277,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11264,7 +11334,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -11315,7 +11385,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -11339,7 +11409,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11353,7 +11423,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11367,7 +11437,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11397,7 +11467,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11411,7 +11481,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11425,7 +11495,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11455,7 +11525,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11469,7 +11539,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11483,7 +11553,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11513,7 +11583,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11527,7 +11597,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11541,7 +11611,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11571,7 +11641,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11585,7 +11655,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11599,7 +11669,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11631,7 +11701,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11645,7 +11715,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11659,7 +11729,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11673,7 +11743,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11705,7 +11775,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11719,7 +11789,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11733,7 +11803,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11747,7 +11817,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11779,7 +11849,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11793,7 +11863,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11807,7 +11877,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11837,7 +11907,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11851,7 +11921,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11881,7 +11951,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11895,7 +11965,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11925,7 +11995,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11955,7 +12025,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -11985,7 +12055,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12015,7 +12085,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12029,7 +12099,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12059,7 +12129,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12073,7 +12143,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12103,7 +12173,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12117,7 +12187,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12147,7 +12217,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12161,7 +12231,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12191,7 +12261,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12205,7 +12275,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12235,7 +12305,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12265,7 +12335,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12279,7 +12349,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12309,7 +12379,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12323,7 +12393,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12353,7 +12423,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12367,7 +12437,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12397,7 +12467,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12411,7 +12481,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12441,7 +12511,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12471,7 +12541,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12501,7 +12571,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12531,7 +12601,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12545,7 +12615,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12575,7 +12645,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12589,7 +12659,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12619,7 +12689,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12649,7 +12719,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12663,7 +12733,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12677,7 +12747,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12709,7 +12779,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12742,7 +12812,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -12869,7 +12939,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13058,7 +13128,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13088,7 +13158,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13133,7 +13203,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13147,7 +13217,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13177,7 +13247,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13191,7 +13261,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13221,7 +13291,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13251,7 +13321,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13281,7 +13351,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13311,7 +13381,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -13357,7 +13427,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -13371,7 +13441,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -14095,7 +14165,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14109,7 +14179,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14123,7 +14193,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14656,7 +14726,7 @@ impl SimpleBackend {
                             box_int_mask_var,
                             box_int_tag_var,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &args[2],
                         );
                         let callee = Self::import_func_id_split(
@@ -14685,7 +14755,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14699,7 +14769,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14713,7 +14783,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14805,7 +14875,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14819,7 +14889,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14833,7 +14903,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14865,7 +14935,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14879,7 +14949,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14909,7 +14979,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14923,7 +14993,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14937,7 +15007,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14967,7 +15037,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14981,7 +15051,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -14995,7 +15065,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15025,7 +15095,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15039,7 +15109,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15069,7 +15139,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15083,7 +15153,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15097,7 +15167,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15111,7 +15181,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15125,7 +15195,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15139,7 +15209,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15179,7 +15249,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15193,7 +15263,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15223,7 +15293,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15237,7 +15307,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15251,7 +15321,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15265,7 +15335,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15279,7 +15349,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15293,7 +15363,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15333,7 +15403,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15347,7 +15417,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15361,7 +15431,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15375,7 +15445,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15407,7 +15477,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15421,7 +15491,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15451,7 +15521,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15465,7 +15535,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15479,7 +15549,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15493,7 +15563,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15507,7 +15577,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15521,7 +15591,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15561,7 +15631,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15575,7 +15645,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15605,7 +15675,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15619,7 +15689,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15649,7 +15719,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15663,7 +15733,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15677,7 +15747,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15691,7 +15761,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15705,7 +15775,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15719,7 +15789,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15759,7 +15829,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15773,7 +15843,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15803,7 +15873,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15817,7 +15887,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15831,7 +15901,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15845,7 +15915,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15859,7 +15929,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15873,7 +15943,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15913,7 +15983,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15927,7 +15997,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15957,7 +16027,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15971,7 +16041,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15985,7 +16055,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -15999,7 +16069,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16013,7 +16083,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16027,7 +16097,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16067,7 +16137,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16081,7 +16151,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16111,7 +16181,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16125,7 +16195,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16139,7 +16209,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16153,7 +16223,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16167,7 +16237,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16181,7 +16251,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16221,7 +16291,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16235,7 +16305,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16265,7 +16335,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16279,7 +16349,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16293,7 +16363,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16307,7 +16377,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16321,7 +16391,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16335,7 +16405,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16375,7 +16445,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16389,7 +16459,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16419,7 +16489,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16433,7 +16503,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16447,7 +16517,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16461,7 +16531,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16475,7 +16545,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16489,7 +16559,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16529,7 +16599,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16543,7 +16613,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16573,7 +16643,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16587,7 +16657,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16617,7 +16687,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16631,7 +16701,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16661,7 +16731,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16675,7 +16745,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16689,7 +16759,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16703,7 +16773,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16717,7 +16787,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16731,7 +16801,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16771,7 +16841,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16785,7 +16855,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16799,7 +16869,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16813,7 +16883,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16827,7 +16897,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16841,7 +16911,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16881,7 +16951,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16895,7 +16965,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16909,7 +16979,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16923,7 +16993,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16937,7 +17007,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16951,7 +17021,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -16991,7 +17061,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17005,7 +17075,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17035,7 +17105,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17049,7 +17119,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17079,7 +17149,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17093,7 +17163,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17123,7 +17193,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17137,7 +17207,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17151,7 +17221,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17183,7 +17253,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17197,7 +17267,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17211,7 +17281,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17225,7 +17295,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17239,7 +17309,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17271,7 +17341,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17285,7 +17355,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17299,7 +17369,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17313,7 +17383,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17327,7 +17397,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17359,7 +17429,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17389,7 +17459,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17419,7 +17489,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17449,7 +17519,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17463,7 +17533,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17493,7 +17563,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17507,7 +17577,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17537,7 +17607,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17551,7 +17621,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17581,7 +17651,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17595,7 +17665,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17609,7 +17679,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17623,7 +17693,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17655,7 +17725,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17669,7 +17739,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17699,7 +17769,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17713,7 +17783,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17727,7 +17797,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17759,7 +17829,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17773,7 +17843,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17803,7 +17873,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17817,7 +17887,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17831,7 +17901,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17863,7 +17933,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17877,7 +17947,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17891,7 +17961,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17905,7 +17975,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17937,7 +18007,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17951,7 +18021,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17965,7 +18035,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -17979,7 +18049,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18011,7 +18081,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18041,7 +18111,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18055,7 +18125,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18069,7 +18139,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18101,7 +18171,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18131,7 +18201,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18145,7 +18215,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18159,7 +18229,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18191,7 +18261,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18221,7 +18291,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18235,7 +18305,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18249,7 +18319,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18279,7 +18349,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18293,7 +18363,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18307,7 +18377,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18337,7 +18407,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18367,7 +18437,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18397,7 +18467,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18427,7 +18497,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18441,7 +18511,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18455,7 +18525,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18469,7 +18539,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18501,7 +18571,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18515,7 +18585,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18529,7 +18599,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18559,7 +18629,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18573,7 +18643,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18587,7 +18657,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18617,7 +18687,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18631,7 +18701,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18645,7 +18715,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18659,7 +18729,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18689,7 +18759,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18703,7 +18773,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18733,7 +18803,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18763,7 +18833,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18793,7 +18863,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18823,7 +18893,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18837,7 +18907,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18851,7 +18921,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18865,7 +18935,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18897,7 +18967,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18911,7 +18981,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18941,7 +19011,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18955,7 +19025,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18969,7 +19039,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -18999,7 +19069,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -19013,7 +19083,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -19068,7 +19138,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -19085,7 +19155,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -19107,7 +19177,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -19125,7 +19195,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -19149,7 +19219,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19163,7 +19233,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19183,7 +19253,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19197,7 +19267,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19300,7 +19370,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -19317,7 +19387,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -19339,7 +19409,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -19357,7 +19427,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -19381,7 +19451,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19395,7 +19465,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19418,7 +19488,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19432,7 +19502,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19537,7 +19607,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -19554,7 +19624,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -19576,7 +19646,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -19594,7 +19664,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -19618,7 +19688,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19632,7 +19702,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19654,7 +19724,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19668,7 +19738,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19772,7 +19842,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -19789,7 +19859,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -19811,7 +19881,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -19829,7 +19899,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -19853,7 +19923,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19867,7 +19937,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19890,7 +19960,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -19904,7 +19974,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20013,7 +20083,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -20030,7 +20100,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -20052,7 +20122,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -20070,7 +20140,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -20095,7 +20165,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20109,7 +20179,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20129,7 +20199,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20143,7 +20213,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20228,7 +20298,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -20245,7 +20315,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -20267,7 +20337,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -20285,7 +20355,7 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &int_primary_vars,
@@ -20310,7 +20380,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20324,7 +20394,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20344,7 +20414,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20358,7 +20428,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20423,7 +20493,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -20437,7 +20507,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -20468,7 +20538,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -20482,7 +20552,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -20533,7 +20603,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20560,7 +20630,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20579,7 +20649,7 @@ impl SimpleBackend {
                         let src_f = float_value_for(
                             &mut builder,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &args[0],
@@ -20594,7 +20664,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -20603,17 +20673,20 @@ impl SimpleBackend {
                         });
                         let neg_f = builder.ins().fneg(src_f);
                         if let Some(ref out__) = op.out {
-                            if let Some(&shadow_var) = raw_float_shadow.get(out__) {
-                                builder.def_var(shadow_var, neg_f);
-                            }
-                            raw_float_shadow_vals.insert(out__.clone(), neg_f);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                out__,
+                                neg_f,
+                            );
                         }
                         if op
                             .out
                             .as_ref()
                             .is_some_and(|o| float_primary_vars.contains(o))
                         {
-                            raw_primary_float.insert(op.out.as_ref().unwrap().clone());
                             neg_f
                         } else {
                             box_float_value_unchecked(&mut builder, neg_f)
@@ -20646,7 +20719,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -20704,7 +20777,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20756,7 +20829,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -20816,7 +20889,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20866,7 +20939,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -20891,7 +20964,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20941,7 +21014,7 @@ impl SimpleBackend {
                                         &vars,
                                         &args[0],
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -20963,7 +21036,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -20991,7 +21064,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21022,7 +21095,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21036,7 +21109,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21096,7 +21169,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21110,7 +21183,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21166,7 +21239,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21180,7 +21253,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21218,7 +21291,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     ) {
@@ -21254,7 +21327,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21292,7 +21365,7 @@ impl SimpleBackend {
                         &vars,
                         &format!("{}_len", arg_name),
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     ) {
@@ -21305,7 +21378,7 @@ impl SimpleBackend {
                             &vars,
                             &format!("{}_ptr", arg_name),
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21319,7 +21392,7 @@ impl SimpleBackend {
                                 &vars,
                                 arg_name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -21368,7 +21441,7 @@ impl SimpleBackend {
                             &vars,
                             arg_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21401,7 +21474,7 @@ impl SimpleBackend {
                             &vars,
                             arg_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21433,7 +21506,7 @@ impl SimpleBackend {
                         &vars,
                         &format!("{}_len", arg_name),
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     ) {
@@ -21446,7 +21519,7 @@ impl SimpleBackend {
                             &vars,
                             &format!("{}_ptr", arg_name),
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21460,7 +21533,7 @@ impl SimpleBackend {
                                 &vars,
                                 arg_name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -21509,7 +21582,7 @@ impl SimpleBackend {
                             &vars,
                             arg_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21542,7 +21615,7 @@ impl SimpleBackend {
                             &vars,
                             arg_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21574,7 +21647,7 @@ impl SimpleBackend {
                         &vars,
                         &format!("{}_len", arg_name),
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     ) {
@@ -21587,7 +21660,7 @@ impl SimpleBackend {
                             &vars,
                             &format!("{}_ptr", arg_name),
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21601,7 +21674,7 @@ impl SimpleBackend {
                                 &vars,
                                 arg_name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -21650,7 +21723,7 @@ impl SimpleBackend {
                             &vars,
                             arg_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21683,7 +21756,7 @@ impl SimpleBackend {
                             &vars,
                             arg_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -21714,7 +21787,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21780,7 +21853,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21798,7 +21871,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[1],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -21816,7 +21889,7 @@ impl SimpleBackend {
                                     &vars,
                                     &args[1],
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -21831,7 +21904,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[2],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -21848,7 +21921,7 @@ impl SimpleBackend {
                         &vars,
                         "self",
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21971,7 +22044,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -21986,7 +22059,7 @@ impl SimpleBackend {
                         &vars,
                         "self",
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22039,7 +22112,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22053,7 +22126,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22067,7 +22140,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22082,7 +22155,7 @@ impl SimpleBackend {
                         &vars,
                         "self",
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22179,7 +22252,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22193,7 +22266,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22208,7 +22281,7 @@ impl SimpleBackend {
                         &vars,
                         "self",
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22305,7 +22378,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22335,7 +22408,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22362,7 +22435,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22388,7 +22461,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22418,7 +22491,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22444,7 +22517,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22470,7 +22543,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22496,7 +22569,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22522,7 +22595,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22536,7 +22609,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22562,7 +22635,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22603,7 +22676,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22617,7 +22690,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22643,7 +22716,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22657,7 +22730,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22683,7 +22756,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22697,7 +22770,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22711,7 +22784,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22743,7 +22816,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22757,7 +22830,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22783,7 +22856,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22813,7 +22886,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -22891,7 +22964,7 @@ impl SimpleBackend {
                                     &vars,
                                     name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -22910,7 +22983,7 @@ impl SimpleBackend {
                                     &vars,
                                     name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -22973,7 +23046,7 @@ impl SimpleBackend {
                                     &vars,
                                     arg_name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -23180,7 +23253,7 @@ impl SimpleBackend {
                         &vars,
                         closure_name,
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23294,7 +23367,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23308,7 +23381,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23322,7 +23395,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23336,7 +23409,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23350,7 +23423,7 @@ impl SimpleBackend {
                         &vars,
                         &args[4],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23364,7 +23437,7 @@ impl SimpleBackend {
                         &vars,
                         &args[5],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23378,7 +23451,7 @@ impl SimpleBackend {
                         &vars,
                         &args[6],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23392,7 +23465,7 @@ impl SimpleBackend {
                         &vars,
                         &args[7],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23443,7 +23516,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23471,7 +23544,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23529,7 +23602,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23543,7 +23616,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23601,7 +23674,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23615,7 +23688,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23723,7 +23796,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -23816,7 +23889,7 @@ impl SimpleBackend {
                                         &vars,
                                         &name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -23852,7 +23925,7 @@ impl SimpleBackend {
                                         &vars,
                                         &name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -23893,7 +23966,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23924,7 +23997,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -23938,7 +24011,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -24005,7 +24078,7 @@ impl SimpleBackend {
                             box_int_mask_var,
                             box_int_tag_var,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             name,
                         );
                         args.push(val);
@@ -24076,7 +24149,7 @@ impl SimpleBackend {
                             &vars,
                             func_obj_var,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -24362,7 +24435,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -24387,7 +24460,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -24487,7 +24560,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -24508,7 +24581,7 @@ impl SimpleBackend {
                             &vars,
                             func_obj_var,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -24613,7 +24686,7 @@ impl SimpleBackend {
                             &vars,
                             src_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -24640,7 +24713,7 @@ impl SimpleBackend {
                             &vars,
                             src_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -24672,7 +24745,7 @@ impl SimpleBackend {
                             &vars,
                             src_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -24713,7 +24786,7 @@ impl SimpleBackend {
                         &vars,
                         src_name,
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -24741,7 +24814,7 @@ impl SimpleBackend {
                             let raw_f64 = float_value_for(
                                 &mut builder,
                                 &vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 &raw_float_shadow,
                                 &raw_float_shadow_vals,
                                 src_name,
@@ -24756,7 +24829,7 @@ impl SimpleBackend {
                                     &vars,
                                     src_name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -24764,11 +24837,14 @@ impl SimpleBackend {
                                 builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
                             });
                             def_var_named(&mut builder, &vars, out_name.clone(), raw_f64);
-                            raw_primary_float.insert(out_name.clone());
-                            if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str()) {
-                                builder.def_var(dst_var, raw_f64);
-                            }
-                            raw_float_shadow_vals.insert(out_name.clone(), raw_f64);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                out_name,
+                                raw_f64,
+                            );
                         } else {
                             let src = *var_get_boxed_overflow_safe(
                                 &mut self.module,
@@ -24779,7 +24855,7 @@ impl SimpleBackend {
                                 &vars,
                                 src_name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -24804,7 +24880,7 @@ impl SimpleBackend {
                         &vars,
                         &args_names[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -24821,7 +24897,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -24842,7 +24918,7 @@ impl SimpleBackend {
                             &vars,
                             func_obj_var,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -25165,7 +25241,7 @@ impl SimpleBackend {
                         &vars,
                         &args_names[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -25182,7 +25258,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -25434,7 +25510,7 @@ impl SimpleBackend {
                         &vars,
                         &args_names[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -25451,7 +25527,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -25535,7 +25611,7 @@ impl SimpleBackend {
                         &vars,
                         &args_names[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -25549,7 +25625,7 @@ impl SimpleBackend {
                         &vars,
                         &args_names[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -25636,7 +25712,7 @@ impl SimpleBackend {
                         &vars,
                         &args_names[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -25653,7 +25729,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -25838,7 +25914,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -25868,7 +25944,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -25906,7 +25982,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -25927,7 +26003,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1 + i],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -25952,7 +26028,7 @@ impl SimpleBackend {
                             &vars,
                             &args[attrs_base + i * 2],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -25966,7 +26042,7 @@ impl SimpleBackend {
                             &vars,
                             &args[attrs_base + i * 2 + 1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -26030,7 +26106,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26060,7 +26136,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26090,7 +26166,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26120,7 +26196,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26150,7 +26226,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26164,7 +26240,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26198,7 +26274,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26212,7 +26288,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26226,7 +26302,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26260,7 +26336,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26274,7 +26350,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26304,7 +26380,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26318,7 +26394,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26382,7 +26458,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26451,7 +26527,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26574,7 +26650,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26588,7 +26664,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26618,7 +26694,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26648,7 +26724,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26662,7 +26738,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26692,7 +26768,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26722,7 +26798,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26752,7 +26828,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26766,7 +26842,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26780,7 +26856,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26812,7 +26888,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26827,7 +26903,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26857,7 +26933,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26887,7 +26963,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26921,7 +26997,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26935,7 +27011,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26963,7 +27039,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -26989,7 +27065,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27026,7 +27102,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -27062,7 +27138,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27076,7 +27152,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27106,7 +27182,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27120,7 +27196,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27152,7 +27228,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27166,7 +27242,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27196,7 +27272,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27213,7 +27289,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -27228,7 +27304,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27261,7 +27337,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27275,7 +27351,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27301,7 +27377,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27331,7 +27407,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27361,7 +27437,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27375,7 +27451,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27405,7 +27481,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27435,7 +27511,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27480,7 +27556,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27494,7 +27570,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27599,7 +27675,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27631,7 +27707,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27708,7 +27784,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27738,7 +27814,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27783,7 +27859,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27828,7 +27904,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27842,7 +27918,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27872,7 +27948,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27886,7 +27962,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27916,7 +27992,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27930,7 +28006,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -27960,7 +28036,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28005,7 +28081,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28035,7 +28111,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28065,7 +28141,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28095,7 +28171,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28109,7 +28185,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28139,7 +28215,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28169,7 +28245,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28183,7 +28259,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28213,7 +28289,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28243,7 +28319,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28348,7 +28424,7 @@ impl SimpleBackend {
                                     &vars,
                                     &name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -28403,7 +28479,7 @@ impl SimpleBackend {
                                     &vars,
                                     &name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -28491,7 +28567,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28505,7 +28581,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28535,7 +28611,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28549,7 +28625,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28579,7 +28655,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28593,7 +28669,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28623,7 +28699,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28653,7 +28729,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28683,7 +28759,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -28741,7 +28817,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -28764,7 +28840,7 @@ impl SimpleBackend {
                                         &vars,
                                         &args[0],
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -28782,7 +28858,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -29091,7 +29167,7 @@ impl SimpleBackend {
                                     &vars,
                                     name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -29202,7 +29278,7 @@ impl SimpleBackend {
                                         &vars,
                                         then_name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -29223,7 +29299,7 @@ impl SimpleBackend {
                                         &vars,
                                         then_name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -29243,7 +29319,7 @@ impl SimpleBackend {
                                     &vars,
                                     name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -29417,7 +29493,7 @@ impl SimpleBackend {
                                             &vars,
                                             else_name,
                                             &int_primary_vars,
-                                            &raw_primary_float,
+                                            &float_primary_vars,
                                             box_int_mask_var,
                                             box_int_tag_var,
                                         )
@@ -29441,7 +29517,7 @@ impl SimpleBackend {
                                             &vars,
                                             else_name,
                                             &int_primary_vars,
-                                            &raw_primary_float,
+                                            &float_primary_vars,
                                             box_int_mask_var,
                                             box_int_tag_var,
                                         )
@@ -29463,7 +29539,7 @@ impl SimpleBackend {
                                         &vars,
                                         name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -29601,7 +29677,7 @@ impl SimpleBackend {
                                             &vars,
                                             then_name,
                                             &int_primary_vars,
-                                            &raw_primary_float,
+                                            &float_primary_vars,
                                             box_int_mask_var,
                                             box_int_tag_var,
                                         )
@@ -29625,7 +29701,7 @@ impl SimpleBackend {
                                             &vars,
                                             then_name,
                                             &int_primary_vars,
-                                            &raw_primary_float,
+                                            &float_primary_vars,
                                             box_int_mask_var,
                                             box_int_tag_var,
                                         )
@@ -29647,7 +29723,7 @@ impl SimpleBackend {
                                         &vars,
                                         name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -29788,7 +29864,7 @@ impl SimpleBackend {
                                             &vars,
                                             else_name,
                                             &int_primary_vars,
-                                            &raw_primary_float,
+                                            &float_primary_vars,
                                             box_int_mask_var,
                                             box_int_tag_var,
                                         )
@@ -29812,7 +29888,7 @@ impl SimpleBackend {
                                             &vars,
                                             else_name,
                                             &int_primary_vars,
-                                            &raw_primary_float,
+                                            &float_primary_vars,
                                             box_int_mask_var,
                                             box_int_tag_var,
                                         )
@@ -29834,7 +29910,7 @@ impl SimpleBackend {
                                         &vars,
                                         name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -30060,11 +30136,14 @@ impl SimpleBackend {
                                     let f64_val =
                                         builder.ins().bitcast(types::F64, MemFlags::new(), param);
                                     def_var_named(&mut builder, &vars, out, f64_val);
-                                    raw_primary_float.insert(out.clone());
-                                    if let Some(&shadow_var) = raw_float_shadow.get(out.as_str()) {
-                                        builder.def_var(shadow_var, f64_val);
-                                    }
-                                    raw_float_shadow_vals.insert(out.clone(), f64_val);
+                                    record_float_shadow_if_needed(
+                                        &mut builder,
+                                        &float_primary_vars,
+                                        &raw_float_shadow,
+                                        &mut raw_float_shadow_vals,
+                                        out.as_str(),
+                                        f64_val,
+                                    );
                                 } else {
                                     def_var_named(&mut builder, &vars, out, param);
                                 }
@@ -30232,7 +30311,7 @@ impl SimpleBackend {
                                     &vars,
                                     list_name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 ) else {
@@ -30277,7 +30356,7 @@ impl SimpleBackend {
                                     &vars,
                                     list_name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 ) else {
@@ -30455,7 +30534,7 @@ impl SimpleBackend {
                                             &vars,
                                             out,
                                             &int_primary_vars,
-                                            &raw_primary_float,
+                                            &float_primary_vars,
                                             box_int_mask_var,
                                             box_int_tag_var,
                                         )
@@ -30551,7 +30630,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -30610,7 +30689,7 @@ impl SimpleBackend {
                                     &vars,
                                     list_name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 ) else {
@@ -30655,7 +30734,7 @@ impl SimpleBackend {
                                     &vars,
                                     list_name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 ) else {
@@ -30753,7 +30832,7 @@ impl SimpleBackend {
                                             &vars,
                                             &reduction.acc_operand_name,
                                             &int_primary_vars,
-                                            &raw_primary_float,
+                                            &float_primary_vars,
                                             box_int_mask_var,
                                             box_int_tag_var,
                                         )
@@ -31047,7 +31126,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -31073,7 +31152,7 @@ impl SimpleBackend {
                                     &vars,
                                     &args[0],
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -31091,7 +31170,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -31256,7 +31335,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -31282,7 +31361,7 @@ impl SimpleBackend {
                                     &vars,
                                     &args[0],
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -31300,7 +31379,7 @@ impl SimpleBackend {
                                 &vars,
                                 &args[0],
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -31431,7 +31510,7 @@ impl SimpleBackend {
                                         &vars,
                                         &name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -31463,7 +31542,7 @@ impl SimpleBackend {
                                         &vars,
                                         &name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -31492,7 +31571,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -31568,7 +31647,7 @@ impl SimpleBackend {
                                                 &vars,
                                                 src_name,
                                                 &int_primary_vars,
-                                                &raw_primary_float,
+                                                &float_primary_vars,
                                                 box_int_mask_var,
                                                 box_int_tag_var,
                                             )
@@ -31607,7 +31686,7 @@ impl SimpleBackend {
                                         &vars,
                                         &name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -31639,7 +31718,7 @@ impl SimpleBackend {
                                         &vars,
                                         &name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -31668,7 +31747,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -31805,7 +31884,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -31839,7 +31918,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -31873,7 +31952,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -31949,7 +32028,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -32029,7 +32108,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32043,7 +32122,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32060,7 +32139,7 @@ impl SimpleBackend {
                                 None,
                                 &param_name_set,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                             ) {
                                 continue;
                             }
@@ -32074,7 +32153,7 @@ impl SimpleBackend {
                                     &vars,
                                     &name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -32089,7 +32168,7 @@ impl SimpleBackend {
                                 None,
                                 &param_name_set,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                             ) {
                                 continue;
                             }
@@ -32103,7 +32182,7 @@ impl SimpleBackend {
                                     &vars,
                                     &name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -32289,7 +32368,7 @@ impl SimpleBackend {
                             None,
                             &param_name_set,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                         ) {
                             continue;
                         }
@@ -32303,7 +32382,7 @@ impl SimpleBackend {
                                 &vars,
                                 &name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -32318,7 +32397,7 @@ impl SimpleBackend {
                             None,
                             &param_name_set,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                         ) {
                             continue;
                         }
@@ -32332,7 +32411,7 @@ impl SimpleBackend {
                                 &vars,
                                 &name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -32382,7 +32461,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32396,7 +32475,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32413,7 +32492,7 @@ impl SimpleBackend {
                                 None,
                                 &param_name_set,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                             ) {
                                 continue;
                             }
@@ -32427,7 +32506,7 @@ impl SimpleBackend {
                                     &vars,
                                     &name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -32442,7 +32521,7 @@ impl SimpleBackend {
                                 None,
                                 &param_name_set,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                             ) {
                                 continue;
                             }
@@ -32456,7 +32535,7 @@ impl SimpleBackend {
                                     &vars,
                                     &name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -32550,7 +32629,7 @@ impl SimpleBackend {
                             None,
                             &param_name_set,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                         ) {
                             continue;
                         }
@@ -32564,7 +32643,7 @@ impl SimpleBackend {
                                 &vars,
                                 &name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -32579,7 +32658,7 @@ impl SimpleBackend {
                             None,
                             &param_name_set,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                         ) {
                             continue;
                         }
@@ -32593,7 +32672,7 @@ impl SimpleBackend {
                                 &vars,
                                 &name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -32620,7 +32699,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32654,7 +32733,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32687,7 +32766,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32701,7 +32780,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32733,7 +32812,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32762,7 +32841,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32777,7 +32856,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32791,7 +32870,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32859,7 +32938,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32874,7 +32953,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32888,7 +32967,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32902,7 +32981,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32973,7 +33052,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -32988,7 +33067,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33002,7 +33081,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33016,7 +33095,7 @@ impl SimpleBackend {
                         &vars,
                         &args[3],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33114,7 +33193,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -33128,7 +33207,7 @@ impl SimpleBackend {
                             &vars,
                             &args[1],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -33155,7 +33234,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33170,7 +33249,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33184,7 +33263,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33216,7 +33295,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33350,7 +33429,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33414,7 +33493,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33469,7 +33548,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33485,7 +33564,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33519,7 +33598,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33535,7 +33614,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33549,7 +33628,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33581,7 +33660,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33597,7 +33676,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33627,7 +33706,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33643,7 +33722,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33657,7 +33736,7 @@ impl SimpleBackend {
                         &vars,
                         &args[2],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33687,7 +33766,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33704,7 +33783,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33755,7 +33834,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33771,7 +33850,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33822,7 +33901,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33876,7 +33955,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33929,7 +34008,7 @@ impl SimpleBackend {
                         &vars,
                         &args[0],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33945,7 +34024,7 @@ impl SimpleBackend {
                         &vars,
                         &args[1],
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
@@ -33995,7 +34074,7 @@ impl SimpleBackend {
                                         None,
                                         &param_name_set,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                     ) || !mark_cleanup_root_once(
                                         &alias_roots,
                                         &mut already_decrefed,
@@ -34025,7 +34104,7 @@ impl SimpleBackend {
                                         None,
                                         &param_name_set,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                     ) || !mark_cleanup_root_once(
                                         &alias_roots,
                                         &mut already_decrefed,
@@ -34055,7 +34134,7 @@ impl SimpleBackend {
                                 None,
                                 &param_name_set,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                             ) {
                                 continue;
                             }
@@ -34068,7 +34147,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             ) && mark_cleanup_root_once(
@@ -34085,7 +34164,7 @@ impl SimpleBackend {
                                 None,
                                 &param_name_set,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                             ) {
                                 continue;
                             }
@@ -34098,7 +34177,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             ) && mark_cleanup_root_once(
@@ -34134,7 +34213,7 @@ impl SimpleBackend {
                         box_int_mask_var,
                         box_int_tag_var,
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         var_name,
                     );
                     let ret_root = alias_roots
@@ -34157,7 +34236,7 @@ impl SimpleBackend {
                                     Some(&protected_return_aliases),
                                     &param_name_set,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                 ) || !mark_cleanup_root_once(
                                     &alias_roots,
                                     &mut already_decrefed,
@@ -34175,7 +34254,7 @@ impl SimpleBackend {
                                         &vars,
                                         &name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -34194,7 +34273,7 @@ impl SimpleBackend {
                                     Some(&protected_return_aliases),
                                     &param_name_set,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                 ) || !mark_cleanup_root_once(
                                     &alias_roots,
                                     &mut already_decrefed,
@@ -34212,7 +34291,7 @@ impl SimpleBackend {
                                         &vars,
                                         &name,
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -34237,7 +34316,7 @@ impl SimpleBackend {
                             Some(&protected_return_aliases),
                             &param_name_set,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                         ) {
                             continue;
                         }
@@ -34251,7 +34330,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -34269,7 +34348,7 @@ impl SimpleBackend {
                             Some(&protected_return_aliases),
                             &param_name_set,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                         ) {
                             continue;
                         }
@@ -34283,7 +34362,7 @@ impl SimpleBackend {
                                 &vars,
                                 name,
                                 &int_primary_vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
@@ -34313,7 +34392,7 @@ impl SimpleBackend {
                                     None,
                                     &param_name_set,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                 ) || !mark_cleanup_root_once(
                                     &alias_roots,
                                     &mut already_decrefed,
@@ -34339,7 +34418,7 @@ impl SimpleBackend {
                                     None,
                                     &param_name_set,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                 ) || !mark_cleanup_root_once(
                                     &alias_roots,
                                     &mut already_decrefed,
@@ -34365,7 +34444,7 @@ impl SimpleBackend {
                             None,
                             &param_name_set,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                         ) {
                             continue;
                         }
@@ -34381,7 +34460,7 @@ impl SimpleBackend {
                             None,
                             &param_name_set,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                         ) {
                             continue;
                         }
@@ -34427,7 +34506,7 @@ impl SimpleBackend {
                                     &vars,
                                     &name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -34465,7 +34544,7 @@ impl SimpleBackend {
                                     &vars,
                                     &name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -34525,7 +34604,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -34547,7 +34626,7 @@ impl SimpleBackend {
                                         &vars,
                                         &args[0],
                                         &int_primary_vars,
-                                        &raw_primary_float,
+                                        &float_primary_vars,
                                         box_int_mask_var,
                                         box_int_tag_var,
                                     )
@@ -34565,7 +34644,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -34908,7 +34987,7 @@ impl SimpleBackend {
                             let raw_f64 = float_value_for(
                                 &mut builder,
                                 &vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 &raw_float_shadow,
                                 &raw_float_shadow_vals,
                                 &args[0],
@@ -34924,7 +35003,7 @@ impl SimpleBackend {
                                     &vars,
                                     &args[0],
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -34932,12 +35011,6 @@ impl SimpleBackend {
                                 builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
                             });
                             def_var_named(&mut builder, &vars, name, raw_f64);
-                            raw_primary_float.insert(name.to_string());
-                            // Propagate float shadow to destination.
-                            if let Some(&dst_var) = raw_float_shadow.get(name) {
-                                builder.def_var(dst_var, raw_f64);
-                            }
-                            raw_float_shadow_vals.insert(name.to_string(), raw_f64);
                             // No refcount ops needed -- raw f64 is not a heap pointer.
                             continue;
                         }
@@ -34951,7 +35024,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -35012,9 +35085,6 @@ impl SimpleBackend {
                             builder.ins().call(inc_local, &[*val]);
                         }
                         def_var_named(&mut builder, &vars, name, *val);
-                        if !raw_primary_float.contains(&args[0]) {
-                            raw_primary_float.remove(name);
-                        }
                         // Propagate raw_bool_shadow through store_var:
                         // Same two-tier pattern as other non-int shadows.
                         if let Some(raw_val) = shadow_lookup(
@@ -35033,15 +35103,19 @@ impl SimpleBackend {
                         if let Some(raw_val) = float_value_for(
                             &mut builder,
                             &vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
                             &args[0],
                         ) {
-                            if let Some(&dst_var) = raw_float_shadow.get(name) {
-                                builder.def_var(dst_var, raw_val);
-                            }
-                            raw_float_shadow_vals.insert(name.to_string(), raw_val);
+                            record_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                name,
+                                raw_val,
+                            );
                         }
                     } else {
                         // No destination variable name — still need to evaluate
@@ -35056,7 +35130,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         );
@@ -35078,12 +35152,6 @@ impl SimpleBackend {
                                     let f64_val =
                                         builder.ins().bitcast(types::F64, MemFlags::new(), val);
                                     def_var_named(&mut builder, &vars, out_name, f64_val);
-                                    raw_primary_float.insert(out_name.clone());
-                                    if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str())
-                                    {
-                                        builder.def_var(dst_var, f64_val);
-                                    }
-                                    raw_float_shadow_vals.insert(out_name.clone(), f64_val);
                                 } else {
                                     def_var_named(&mut builder, &vars, out_name, val);
                                 }
@@ -35127,7 +35195,7 @@ impl SimpleBackend {
                             let raw_f64 = float_value_for(
                                 &mut builder,
                                 &vars,
-                                &raw_primary_float,
+                                &float_primary_vars,
                                 &raw_float_shadow,
                                 &raw_float_shadow_vals,
                                 var_name,
@@ -35142,7 +35210,7 @@ impl SimpleBackend {
                                     &vars,
                                     var_name,
                                     &int_primary_vars,
-                                    &raw_primary_float,
+                                    &float_primary_vars,
                                     box_int_mask_var,
                                     box_int_tag_var,
                                 )
@@ -35151,11 +35219,6 @@ impl SimpleBackend {
                             });
                             let out_name = op.out.as_ref().unwrap();
                             def_var_named(&mut builder, &vars, out_name, raw_f64);
-                            raw_primary_float.insert(out_name.clone());
-                            if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str()) {
-                                builder.def_var(dst_var, raw_f64);
-                            }
-                            raw_float_shadow_vals.insert(out_name.clone(), raw_f64);
                             continue;
                         }
                         let val = var_get_boxed_overflow_safe(
@@ -35167,7 +35230,7 @@ impl SimpleBackend {
                             &vars,
                             var_name,
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -35209,24 +35272,29 @@ impl SimpleBackend {
                                 .or_else(|| raw_float_shadow_vals.get(var_name.as_str()).copied());
                             if let Some(raw_fv) = raw_float_val {
                                 if src_float_var.is_some() {
-                                    let dst_fvar = if let Some(&dst_var) =
-                                        raw_float_shadow.get(out_name.as_str())
-                                    {
-                                        dst_var
-                                    } else {
-                                        let dst_var = builder.declare_var(types::F64);
-                                        builder.def_var(dst_var, raw_fv);
-                                        raw_float_shadow.insert(out_name.clone(), dst_var);
-                                        dst_var
-                                    };
-                                    builder.def_var(dst_fvar, raw_fv);
+                                    if !float_primary_vars.contains(out_name) {
+                                        let dst_fvar = if let Some(&dst_var) =
+                                            raw_float_shadow.get(out_name.as_str())
+                                        {
+                                            dst_var
+                                        } else {
+                                            let dst_var = builder.declare_var(types::F64);
+                                            builder.def_var(dst_var, raw_fv);
+                                            raw_float_shadow.insert(out_name.clone(), dst_var);
+                                            dst_var
+                                        };
+                                        builder.def_var(dst_fvar, raw_fv);
+                                    }
                                     raw_float_shadow_vals.remove(out_name);
                                 } else {
-                                    if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str())
-                                    {
-                                        builder.def_var(dst_var, raw_fv);
-                                    }
-                                    raw_float_shadow_vals.insert(out_name.clone(), raw_fv);
+                                    record_float_shadow_if_needed(
+                                        &mut builder,
+                                        &float_primary_vars,
+                                        &raw_float_shadow,
+                                        &mut raw_float_shadow_vals,
+                                        out_name,
+                                        raw_fv,
+                                    );
                                 }
                             }
                         }
@@ -35271,7 +35339,7 @@ impl SimpleBackend {
                             &vars,
                             &args[0],
                             &int_primary_vars,
-                            &raw_primary_float,
+                            &float_primary_vars,
                             box_int_mask_var,
                             box_int_tag_var,
                         )
@@ -35313,24 +35381,29 @@ impl SimpleBackend {
                                 .or_else(|| raw_float_shadow_vals.get(&args[0]).copied());
                             if let Some(raw_fv) = raw_float_val {
                                 if src_float_var.is_some() {
-                                    let dst_fvar = if let Some(&dst_var) =
-                                        raw_float_shadow.get(out_name.as_str())
-                                    {
-                                        dst_var
-                                    } else {
-                                        let dst_var = builder.declare_var(types::F64);
-                                        builder.def_var(dst_var, raw_fv);
-                                        raw_float_shadow.insert(out_name.clone(), dst_var);
-                                        dst_var
-                                    };
-                                    builder.def_var(dst_fvar, raw_fv);
+                                    if !float_primary_vars.contains(out_name) {
+                                        let dst_fvar = if let Some(&dst_var) =
+                                            raw_float_shadow.get(out_name.as_str())
+                                        {
+                                            dst_var
+                                        } else {
+                                            let dst_var = builder.declare_var(types::F64);
+                                            builder.def_var(dst_var, raw_fv);
+                                            raw_float_shadow.insert(out_name.clone(), dst_var);
+                                            dst_var
+                                        };
+                                        builder.def_var(dst_fvar, raw_fv);
+                                    }
                                     raw_float_shadow_vals.remove(out_name);
                                 } else {
-                                    if let Some(&dst_var) = raw_float_shadow.get(out_name.as_str())
-                                    {
-                                        builder.def_var(dst_var, raw_fv);
-                                    }
-                                    raw_float_shadow_vals.insert(out_name.clone(), raw_fv);
+                                    record_float_shadow_if_needed(
+                                        &mut builder,
+                                        &float_primary_vars,
+                                        &raw_float_shadow,
+                                        &mut raw_float_shadow_vals,
+                                        out_name,
+                                        raw_fv,
+                                    );
                                 }
                             }
                         }
@@ -35533,7 +35606,7 @@ impl SimpleBackend {
                         &vars,
                         name,
                         &int_primary_vars,
-                        &raw_primary_float,
+                        &float_primary_vars,
                         box_int_mask_var,
                         box_int_tag_var,
                     ) {
@@ -35565,7 +35638,7 @@ impl SimpleBackend {
                     None,
                     &param_name_set,
                     &int_primary_vars,
-                    &raw_primary_float,
+                    &float_primary_vars,
                 ) {
                     continue;
                 }
@@ -35581,7 +35654,7 @@ impl SimpleBackend {
                     None,
                     &param_name_set,
                     &int_primary_vars,
-                    &raw_primary_float,
+                    &float_primary_vars,
                 ) {
                     continue;
                 }
