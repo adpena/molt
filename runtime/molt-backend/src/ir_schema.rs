@@ -1,5 +1,107 @@
 use crate::OpIR;
 
+const SCALAR_FAST_INT_KINDS: &[&str] = &[
+    "abs",
+    "add",
+    "bit_and",
+    "bit_or",
+    "bit_xor",
+    "bool",
+    "builtin_abs",
+    "builtin_bool",
+    "const",
+    "copy",
+    "copy_var",
+    "eq",
+    "floordiv",
+    "ge",
+    "gpu_block_dim",
+    "gpu_block_id",
+    "gpu_grid_dim",
+    "gpu_thread_id",
+    "gt",
+    "identity_alias",
+    "index",
+    "inplace_add",
+    "inplace_bit_and",
+    "inplace_bit_or",
+    "inplace_bit_xor",
+    "inplace_floordiv",
+    "inplace_mod",
+    "inplace_mul",
+    "inplace_sub",
+    "invert",
+    "le",
+    "len",
+    "load_var",
+    "loop_index_next",
+    "loop_index_start",
+    "lshift",
+    "lt",
+    "mod",
+    "mul",
+    "ne",
+    "neg",
+    "not",
+    "pos",
+    "rshift",
+    "shl",
+    "shr",
+    "sub",
+];
+
+const SCALAR_FAST_FLOAT_KINDS: &[&str] = &[
+    "abs",
+    "add",
+    "builtin_abs",
+    "const_float",
+    "copy",
+    "copy_var",
+    "div",
+    "eq",
+    "float_from_obj",
+    "ge",
+    "gt",
+    "identity_alias",
+    "inplace_add",
+    "inplace_div",
+    "inplace_mul",
+    "inplace_sub",
+    "le",
+    "load_var",
+    "lt",
+    "mul",
+    "ne",
+    "neg",
+    "pos",
+    "sub",
+];
+
+const CONTAINER_TYPES: &[&str] = &[
+    "bytearray",
+    "bytes",
+    "dict",
+    "frozenset",
+    "list",
+    "list_bool",
+    "list_float",
+    "list_int",
+    "range",
+    "set",
+    "str",
+    "tuple",
+];
+
+const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
+const BCE_SAFE_CONTAINER_TYPES: &[&str] = &["list", "list_bool", "list_float", "list_int", "tuple"];
+const ARENA_ELIGIBLE_KINDS: &[&str] = &[
+    "alloc",
+    "alloc_class",
+    "alloc_class_static",
+    "alloc_class_trusted",
+    "object_new_bound",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OpFieldSchema {
     pub family: &'static str,
@@ -34,6 +136,7 @@ fn schema_for_kind(kind: &str) -> Option<&'static OpFieldSchema> {
 }
 
 pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
+    validate_representation_fields(op)?;
     let Some(schema) = schema_for_kind(op.kind.as_str()) else {
         return Ok(());
     };
@@ -66,6 +169,91 @@ pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_function_param_types(
+    function_name: &str,
+    params: &[String],
+    param_types: Option<&[String]>,
+) -> Result<(), String> {
+    let Some(param_types) = param_types else {
+        return Ok(());
+    };
+    if param_types.len() != params.len() {
+        return Err(format!(
+            "function `{function_name}` has {} params but {} param_types",
+            params.len(),
+            param_types.len()
+        ));
+    }
+    for (idx, ty) in param_types.iter().enumerate() {
+        validate_clean_symbol(
+            ty,
+            &format!("function `{function_name}` param_types[{idx}]"),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
+    if op.fast_int == Some(true) && op.fast_float == Some(true) {
+        return Err(format!(
+            "op `{}` cannot set both fast_int and fast_float",
+            op.kind
+        ));
+    }
+    if op.fast_int == Some(true) && !SCALAR_FAST_INT_KINDS.contains(&op.kind.as_str()) {
+        return Err(format!(
+            "op `{}` does not own fast_int scalar specialization",
+            op.kind
+        ));
+    }
+    if op.fast_float == Some(true) && !SCALAR_FAST_FLOAT_KINDS.contains(&op.kind.as_str()) {
+        return Err(format!(
+            "op `{}` does not own fast_float scalar specialization",
+            op.kind
+        ));
+    }
+    if let Some(container_type) = op.container_type.as_deref() {
+        validate_clean_symbol(container_type, &format!("op `{}` container_type", op.kind))?;
+        if !CONTAINER_TYPES.contains(&container_type) {
+            return Err(format!(
+                "op `{}` has unsupported container_type `{container_type}`",
+                op.kind
+            ));
+        }
+    }
+    if op.bce_safe == Some(true) {
+        if !BCE_SAFE_KINDS.contains(&op.kind.as_str()) {
+            return Err(format!("op `{}` cannot carry bce_safe", op.kind));
+        }
+        let Some(container_type) = op.container_type.as_deref() else {
+            return Err(format!("op `{}` bce_safe requires container_type", op.kind));
+        };
+        if !BCE_SAFE_CONTAINER_TYPES.contains(&container_type) {
+            return Err(format!(
+                "op `{}` bce_safe does not support container_type `{container_type}`",
+                op.kind
+            ));
+        }
+    }
+    if op.arena_eligible == Some(true) && !ARENA_ELIGIBLE_KINDS.contains(&op.kind.as_str()) {
+        return Err(format!("op `{}` cannot carry arena_eligible", op.kind));
+    }
+    if let Some(type_hint) = op.type_hint.as_deref() {
+        validate_clean_symbol(type_hint, &format!("op `{}` type_hint", op.kind))?;
+    }
+    Ok(())
+}
+
+fn validate_clean_symbol(value: &str, label: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{label} must be nonempty"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{label} must not contain control characters"));
     }
     Ok(())
 }
