@@ -46,6 +46,15 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+from bench_evidence import (  # noqa: E402
+    native_molt_time,
+    valid_positive_number,
+    validated_runtime_samples,
+)
 
 # ---------------------------------------------------------------------------
 # Threshold configuration
@@ -425,44 +434,19 @@ def _load_baselines_from_dir(dir_path: Path) -> list[tuple[Path, dict[str, Any]]
 
 def _extract_metric(bench_entry: dict[str, Any], metric: str) -> float | None:
     """Extract a metric value from a benchmark entry."""
+    if metric == "runtime":
+        return native_molt_time(bench_entry)
     field_name, _ = METRIC_FIELDS.get(metric, (None, None))
     if field_name is None:
         return None
-    value = bench_entry.get(field_name)
-    if value is None or not isinstance(value, (int, float)):
-        return None
-    if value <= 0:
-        return None
-    return float(value)
+    return valid_positive_number(bench_entry.get(field_name))
 
 
 def _extract_samples(bench_entry: dict[str, Any], metric: str) -> list[float] | None:
     """Extract validated raw samples from super_stats if available."""
     if metric != "runtime":
         return None
-
-    super_stats = bench_entry.get("super_stats", {})
-    runner = "molt"
-    stats = super_stats.get(runner)
-    if stats is None:
-        return None
-
-    if "samples_s" not in stats:
-        return None
-
-    raw_samples = stats["samples_s"]
-    if not isinstance(raw_samples, list) or not raw_samples:
-        raise ValueError("invalid raw sample array for runtime metric")
-
-    samples: list[float] = []
-    for sample in raw_samples:
-        if isinstance(sample, bool) or not isinstance(sample, (int, float)):
-            raise ValueError(f"invalid raw sample for runtime metric: {sample!r}")
-        value = float(sample)
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError(f"invalid raw sample for runtime metric: {sample!r}")
-        samples.append(value)
-    return samples
+    return validated_runtime_samples(bench_entry)
 
 
 # ---------------------------------------------------------------------------
