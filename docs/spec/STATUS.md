@@ -91,6 +91,18 @@ It is current-state only. For forward-looking priorities, use
   disabling unrelated proven-float locals in the same function. The raw-bool
   shadow lane has been removed: `bool_primary_vars` is the only raw-bool
   authority, and non-primary bools stay boxed in their main I64 variables.
+  Native fixed-layout field stores now share a single direct-write proof for
+  fresh stack and sized heap objects: `store_init` is direct for non-heap
+  values, later `store` is direct only when the slot's prior direct write is
+  known non-heap, and any unknown/control/escaping use drops the object from
+  the direct-write set.
+  Function-local loops lazily cache same-module stable class bindings when the
+  whole module proves that the class name is defined once, is not rebound or
+  deleted, does not escape through `globals()`/`vars()`, and keeps a stable
+  layout. The cache is initialized to `missing` before the loop and resolves
+  the module attribute only on the first executed iteration, preserving
+  zero-iteration exception timing while removing repeated constructor global
+  lookups from hot loops.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.

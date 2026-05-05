@@ -101,6 +101,19 @@ facts before native codegen.
 - `float_primary_vars` names carry raw f64 in their main Cranelift Variable.
   Non-primary floats stay boxed in their main I64 Variable and recover raw f64
   by bitcast only at proven float use sites.
+- Fixed-layout object stores use a native direct-write proof instead of a
+  profile/header/tag slow path when the object root is fresh
+  (`object_new_bound_stack` or sized `object_new_bound`), the value is proven
+  non-heap, and the target slot was either just initialized or previously
+  direct-written with a non-heap value. Any control boundary, unknown op, heap
+  value, or escaping use removes the root from direct-write eligibility.
+- Same-module class constructor loops use a frontend lazy static-binding cache
+  when whole-module analysis proves the class name is defined exactly once, not
+  rebound/deleted/global-mutated, not exposed through `globals()`/`vars()`, and
+  layout-stable. The cache stores `missing` before the loop and performs the
+  `module_get_attr` only on the first executed iteration, so zero-iteration
+  loops retain CPython exception timing while hot iterations reuse a local
+  `store_var`/`load_var` class reference.
 
 **Bottlenecks and opportunities**:
 
@@ -156,7 +169,7 @@ progressively disables expensive passes when time budget is exceeded.
 | Issue | Location | Impact | Effort |
 |-------|----------|--------|--------|
 | **No heap-aware SCCP**. Any operation that reads from or writes to the heap (attribute access, subscript, container mutation) immediately makes the result overdefined. This prevents constant-folding through `self.x` patterns, `dict[key]` lookups with known keys, etc. | `eval_lattice_value` in SCCP (line 31940+) | High — class-heavy code gets almost no constant propagation | High |
-| **No escape analysis**. Objects that don't escape the current function could be stack-allocated. The backend has `elide_dead_struct_allocs` (lib.rs:480) but it only catches completely unused allocations, not escape-bounded ones. | Backend `elide_dead_struct_allocs` | Medium-High — eliminates heap allocation + refcount overhead for temporaries | High |
+| **Escape-bounded object allocation is still incomplete**. TIR escape analysis can rewrite some local `ObjectNewBound` values to stack objects, and native direct-write preanalysis removes field-store runtime dispatch for fresh fixed-layout stack or sized heap objects carrying non-heap values. Broader object lifetime elimination still needs all-backend representation planning instead of native-local recovery. | TIR escape analysis, native direct field-store preanalysis | Medium-High — eliminates heap allocation/refcount/field-dispatch overhead for temporaries | High |
 | **Stdlib modules skip midend entirely**. Line 29451: `if self._source_is_stdlib_module: return ops`. Stdlib wrappers get zero optimization. This is intentional for correctness but means stdlib call-heavy code sees unoptimized call sequences. | `_run_ir_midend_passes` line 29451 | Low-Medium — stdlib is mostly thin wrappers over intrinsics | Low |
 | **Fixed-point convergence can degrade**. The budget system (line 34486) progressively disables passes (CSE, edge threading, guard hoisting, LICM) when time budget is exceeded. For Tier B/C functions, this means most optimizations never run. | `maybe_apply_budget_degrade` | Medium | Low |
 | **No strength reduction**. Multiplications by powers of 2 are not converted to shifts. Modular arithmetic patterns are not recognized. Division by constants is not converted to multiply-high. | Not implemented | Low-Medium — Cranelift handles some of this internally | Medium |
