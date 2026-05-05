@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 import sys
 from datetime import datetime
@@ -13,6 +12,17 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+from bench_evidence import (  # noqa: E402
+    comparator_time,
+    native_molt_speedup,
+    native_molt_time,
+    valid_positive_number,
+    wasm_molt_time,
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -36,18 +46,11 @@ def _safe_div(num: float | None, den: float | None) -> float | None:
 
 
 def _valid_positive_time(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    normalized = float(value)
-    if not math.isfinite(normalized) or normalized <= 0:
-        return None
-    return normalized
+    return valid_positive_number(value)
 
 
 def _wasm_time_if_ok(entry: dict[str, Any]) -> float | None:
-    if not entry.get("molt_wasm_ok"):
-        return None
-    return _valid_positive_time(entry.get("molt_wasm_time_s"))
+    return wasm_molt_time(entry)
 
 
 def _format_time(value: float | None) -> str:
@@ -192,18 +195,16 @@ def _status_summary(
     wasm_bench: dict[str, Any],
 ) -> str:
     speedups = [
-        (name, entry["molt_speedup"])
+        (name, speedup)
         for name, entry in native_bench.items()
-        if entry.get("molt_ok") and entry.get("molt_speedup") is not None
+        if (speedup := native_molt_speedup(entry)) is not None
     ]
     speedups.sort(key=lambda item: item[1], reverse=True)
 
     regressions = [
-        (name, entry["molt_speedup"])
+        (name, speedup)
         for name, entry in native_bench.items()
-        if entry.get("molt_ok")
-        and entry.get("molt_speedup") is not None
-        and entry["molt_speedup"] < 1.0
+        if (speedup := native_molt_speedup(entry)) is not None and speedup < 1.0
     ]
     regressions.sort(key=lambda item: item[1])
 
@@ -300,9 +301,9 @@ def _render_report_markdown(
     wasm_ok = sum(1 for entry in wasm_bench.values() if entry.get("molt_wasm_ok"))
 
     native_speedups = [
-        entry["molt_speedup"]
+        speedup
         for entry in native_bench.values()
-        if entry.get("molt_ok") and entry.get("molt_speedup")
+        if (speedup := native_molt_speedup(entry)) is not None
     ]
 
     wasm_speedups: list[float] = []
@@ -313,9 +314,9 @@ def _render_report_markdown(
     for name in names:
         n_entry = native_bench.get(name, {})
         w_entry = wasm_bench.get(name, {})
-        molt_time = n_entry.get("molt_time_s")
+        molt_time = native_molt_time(n_entry)
         cpython_time = n_entry.get("cpython_time_s")
-        speedup = n_entry.get("molt_speedup")
+        speedup = native_molt_speedup(n_entry)
         wasm_time = _wasm_time_if_ok(w_entry)
 
         wasm_speedup = _safe_div(cpython_time, wasm_time)
@@ -332,11 +333,11 @@ def _render_report_markdown(
         if speedup is not None and speedup < 1.0:
             regressions.append((name, speedup, molt_time, cpython_time))
 
-        if not n_entry.get("molt_ok") or molt_time is None or molt_time <= 0:
+        if molt_time is None:
             continue
         for lane in lane_labels:
-            lane_time = n_entry.get(f"{lane}_time_s")
-            if n_entry.get(f"{lane}_ok") and lane_time is not None and lane_time > 0:
+            lane_time = comparator_time(n_entry, lane)
+            if lane_time is not None:
                 comparator_rows[lane].append(
                     (name, molt_time, lane_time, molt_time / lane_time)
                 )
@@ -459,16 +460,16 @@ def _render_report_markdown(
         n_entry = native_bench.get(name, {})
         w_entry = wasm_bench.get(name, {})
         cpython_time = n_entry.get("cpython_time_s")
-        pypy_time = n_entry.get("pypy_time_s")
+        pypy_time = comparator_time(n_entry, "pypy")
         codon_build = n_entry.get("codon_build_s")
-        codon_time = n_entry.get("codon_time_s")
+        codon_time = comparator_time(n_entry, "codon")
         codon_size = n_entry.get("codon_size_kb")
         nuitka_build = n_entry.get("nuitka_build_s")
-        nuitka_time = n_entry.get("nuitka_time_s")
+        nuitka_time = comparator_time(n_entry, "nuitka")
         nuitka_size = n_entry.get("nuitka_size_kb")
-        pyodide_time = n_entry.get("pyodide_time_s")
+        pyodide_time = comparator_time(n_entry, "pyodide")
         molt_build = n_entry.get("molt_build_s")
-        molt_time = n_entry.get("molt_time_s")
+        molt_time = native_molt_time(n_entry)
         molt_size = n_entry.get("molt_size_kb")
         wasm_time = _wasm_time_if_ok(w_entry)
         wasm_native_ratio = _safe_div(wasm_time, molt_time)

@@ -9,14 +9,18 @@ def _payload(
     *,
     value: float,
     samples_s: list[object] | None = None,
+    top_level_samples_s: list[object] | None = None,
+    molt_ok: bool = True,
     summary_only: bool = False,
 ) -> dict:
     entry: dict = {
-        "molt_ok": True,
+        "molt_ok": molt_ok,
         "molt_time_s": value,
         "molt_build_s": 1.0,
         "molt_size_kb": 100.0,
     }
+    if top_level_samples_s is not None:
+        entry["molt_samples_s"] = top_level_samples_s
     if samples_s is not None or summary_only:
         stats = {
             "mean_s": value,
@@ -63,6 +67,28 @@ def test_raw_super_stats_samples_enable_statistical_fields() -> None:
     assert runtime.cohens_d is not None
     assert runtime.min_detectable_effect is not None
     assert runtime.statistically_significant is not None
+
+
+def test_top_level_raw_samples_enable_statistical_fields() -> None:
+    comparisons = perf_regression.compare_benchmarks(
+        _payload(value=1.2, top_level_samples_s=[1.1, 1.2, 1.3]),
+        _payload(value=1.0, top_level_samples_s=[0.9, 1.0, 1.1]),
+        perf_regression.DEFAULT_THRESHOLDS,
+    )
+
+    runtime = next(c for c in comparisons if c.metric == "runtime")
+    assert runtime.ci_low is not None
+    assert runtime.p_value is not None
+
+
+def test_failed_molt_ok_stale_runtime_and_samples_are_ignored() -> None:
+    comparisons = perf_regression.compare_benchmarks(
+        _payload(value=1.2, top_level_samples_s=[1.1, 1.2, 1.3], molt_ok=False),
+        _payload(value=1.0, top_level_samples_s=[0.9, 1.0, 1.1]),
+        perf_regression.DEFAULT_THRESHOLDS,
+    )
+
+    assert comparisons == []
 
 
 @pytest.mark.parametrize(

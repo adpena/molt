@@ -5,9 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+from bench_evidence import metric_is_comparable  # noqa: E402
 
 
 _LOWER_IS_BETTER = {
@@ -37,22 +44,6 @@ _LOWER_IS_BETTER = {
 
 _HIGHER_IS_BETTER = {
     "molt_speedup",
-}
-
-_METRIC_OK_GATES = {
-    "codon_time_s": ("codon_ok",),
-    "molt_codon_ratio": ("molt_ok", "codon_ok"),
-    "molt_cpython_ratio": ("molt_ok",),
-    "molt_nuitka_ratio": ("molt_ok", "nuitka_ok"),
-    "molt_pypy_ratio": ("molt_ok", "pypy_ok"),
-    "molt_pyodide_ratio": ("molt_ok", "pyodide_ok"),
-    "molt_speedup": ("molt_ok",),
-    "molt_time_s": ("molt_ok",),
-    "molt_wasm_control_time_s": ("molt_wasm_control_ok",),
-    "molt_wasm_time_s": ("molt_wasm_ok",),
-    "nuitka_time_s": ("nuitka_ok",),
-    "pypy_time_s": ("pypy_ok",),
-    "pyodide_time_s": ("pyodide_ok",),
 }
 
 _SKIP_METRICS = {
@@ -115,10 +106,6 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _metric_is_comparable(entry: dict[str, Any], metric: str) -> bool:
-    return all(entry.get(gate) is True for gate in _METRIC_OK_GATES.get(metric, ()))
-
-
 def _available_metrics(
     old_bench: dict[str, dict[str, Any]],
     new_bench: dict[str, dict[str, Any]],
@@ -137,8 +124,8 @@ def _available_metrics(
             if not (_is_number(old_entry[metric]) and _is_number(new_entry[metric])):
                 continue
             if require_comparable_rows and not (
-                _metric_is_comparable(old_entry, metric)
-                and _metric_is_comparable(new_entry, metric)
+                metric_is_comparable(old_entry, metric)
+                and metric_is_comparable(new_entry, metric)
             ):
                 continue
             metrics.add(metric)
@@ -165,8 +152,8 @@ def _compute_metric_diffs(
         old_raw = old_bench[benchmark].get(metric)
         new_raw = new_bench[benchmark].get(metric)
         if not (
-            _metric_is_comparable(old_bench[benchmark], metric)
-            and _metric_is_comparable(new_bench[benchmark], metric)
+            metric_is_comparable(old_bench[benchmark], metric)
+            and metric_is_comparable(new_bench[benchmark], metric)
             and _is_number(old_raw)
             and _is_number(new_raw)
         ):
