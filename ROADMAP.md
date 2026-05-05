@@ -69,9 +69,11 @@ This file is forward-looking only.
   through a dedicated raw-bool boxing helper instead of feeding I64 carriers to
   the b1-condition bool boxer. Raw-closed bool join carriers also stay on the
   main raw `0/1` Variable contract across store/load/copy and structured phi
-  binding, while unsafe join slots remain boxed; finish the residual
-  non-primary bool/list shadow cases and non-primary float shadow lane instead
-  of adding per-op fallback hints.
+  binding, while unsafe join slots remain boxed. Proven-bool list indexing now
+  enters the same bool-primary contract when the index operand is raw-primary,
+  keeping the existing index-fast-path selection separate from output
+  representation; finish the residual conditional list-bool shadow cases and
+  non-primary float shadow lane instead of adding per-op fallback hints.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 
