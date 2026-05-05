@@ -1488,7 +1488,7 @@ value = Point(3)
     assert _module_attr_reads_named(ops, "Point")
 
 
-def test_function_loop_static_class_call_uses_lazy_loop_cache() -> None:
+def test_function_loop_static_class_call_uses_eager_loop_preheader_cache() -> None:
     source = """
 class Point:
     def __init__(self, x):
@@ -1515,14 +1515,23 @@ def main():
     ]
     assert cache_vars
     assert len(set(cache_vars)) == 1
-    assert _module_attr_reads_named(func_ops, "Point")
     loop_start = next(
         i for i, op in enumerate(func_ops) if op.get("kind") == "loop_start"
     )
+    module_attr_reads = _module_attr_reads_named(func_ops, "Point")
+    assert len(module_attr_reads) == 1
+    module_attr_idx = next(
+        i for i, op in enumerate(func_ops) if op is module_attr_reads[0]
+    )
+    assert module_attr_idx < loop_start
     first_cache_store = next(
         i for i, op in enumerate(func_ops) if op.get("var") == cache_vars[0]
     )
     assert first_cache_store < loop_start
+    assert all(
+        op.get("kind") != "module_get_attr"
+        for op in func_ops[loop_start + 1 :]
+    )
 
 
 def test_effect_aware_cse_reuses_getattr_generic_obj_without_writes() -> None:
