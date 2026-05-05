@@ -502,7 +502,11 @@ fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>)
 /// their main Cranelift Variable as the raw 0/1 carrier; any op admitted here
 /// must have codegen that can define a raw bool for `op.out`.
 #[cfg(feature = "native-backend")]
-fn op_produces_raw_bool_for_bool_primary(op: &OpIR, candidates: &BTreeSet<String>) -> bool {
+fn op_produces_raw_bool_for_bool_primary(
+    op: &OpIR,
+    candidates: &BTreeSet<String>,
+    int_primary_vars: &BTreeSet<String>,
+) -> bool {
     let first_source = || {
         op.var.as_deref().or_else(|| {
             op.args
@@ -515,6 +519,14 @@ fn op_produces_raw_bool_for_bool_primary(op: &OpIR, candidates: &BTreeSet<String
         | "bool" | "cast_bool" | "builtin_bool" => true,
         "copy" | "copy_var" | "load_var" | "identity_alias" => {
             first_source().is_some_and(|s| candidates.contains(s))
+        }
+        "index" => {
+            op.container_type.as_deref() == Some("list")
+                && op
+                    .args
+                    .as_ref()
+                    .and_then(|args| args.get(1))
+                    .is_some_and(|idx| int_primary_vars.contains(idx))
         }
         _ => false,
     }
@@ -3041,27 +3053,12 @@ impl SimpleBackend {
             let mut unsafe_set = BTreeSet::new();
             for op in &func_ir.ops {
                 if let Some(ref out) = op.out {
-                    let is_safe_bool_op = matches!(
-                        op.kind.as_str(),
-                        "const_bool"
-                            | "lt"
-                            | "le"
-                            | "gt"
-                            | "ge"
-                            | "eq"
-                            | "ne"
-                            | "string_eq"
-                            | "is"
-                            | "not"
-                            | "bool"
-                            | "cast_bool"
-                            | "builtin_bool"
-                            | "copy"
-                            | "copy_var"
-                            | "load_var"
-                            | "identity_alias"
-                            | "store_var"
-                    );
+                    let is_safe_bool_op = op.kind == "store_var"
+                        || op_produces_raw_bool_for_bool_primary(
+                            op,
+                            &bool_like_vars,
+                            &int_primary_vars,
+                        );
                     if !is_safe_bool_op && bool_like_vars.contains(out) {
                         unsafe_set.insert(out.clone());
                     }
@@ -3089,7 +3086,15 @@ impl SimpleBackend {
                         &float_like_vars,
                         &str_like_vars,
                     );
-                    if lane != Some(ScalarLane::Bool) && bool_like_vars.contains(out) {
+                    let raw_bool_output = op_produces_raw_bool_for_bool_primary(
+                        op,
+                        &bool_like_vars,
+                        &int_primary_vars,
+                    );
+                    if lane != Some(ScalarLane::Bool)
+                        && !raw_bool_output
+                        && bool_like_vars.contains(out)
+                    {
                         non_bool.insert(out.clone());
                     }
                 }
@@ -3126,7 +3131,7 @@ impl SimpleBackend {
                     if candidates.contains(out) || !passes_filter(out) {
                         continue;
                     }
-                    if op_produces_raw_bool_for_bool_primary(op, &candidates)
+                    if op_produces_raw_bool_for_bool_primary(op, &candidates, &int_primary_vars)
                         && candidates.insert(out.clone())
                     {
                         changed = true;
@@ -36532,6 +36537,7 @@ mod tests {
     #[test]
     fn bool_primary_predicate_is_raw_closed() {
         let candidates = BTreeSet::from(["flag".to_string()]);
+        let int_primary_vars = BTreeSet::from(["idx".to_string()]);
         let const_bool = OpIR {
             kind: "const_bool".to_string(),
             out: Some("flag".to_string()),
@@ -36541,6 +36547,7 @@ mod tests {
         assert!(op_produces_raw_bool_for_bool_primary(
             &const_bool,
             &BTreeSet::new(),
+            &int_primary_vars,
         ));
 
         let copy = OpIR {
@@ -36549,7 +36556,11 @@ mod tests {
             out: Some("flag_copy".to_string()),
             ..OpIR::default()
         };
-        assert!(op_produces_raw_bool_for_bool_primary(&copy, &candidates));
+        assert!(op_produces_raw_bool_for_bool_primary(
+            &copy,
+            &candidates,
+            &int_primary_vars,
+        ));
 
         let comparison = OpIR {
             kind: "eq".to_string(),
@@ -36558,7 +36569,7 @@ mod tests {
             ..OpIR::default()
         };
         assert!(
-            op_produces_raw_bool_for_bool_primary(&comparison, &candidates),
+            op_produces_raw_bool_for_bool_primary(&comparison, &candidates, &int_primary_vars),
             "comparison handlers route every result path through def_bool_result",
         );
 
@@ -36569,8 +36580,43 @@ mod tests {
             ..OpIR::default()
         };
         assert!(
-            op_produces_raw_bool_for_bool_primary(&boolean_cast, &candidates),
+            op_produces_raw_bool_for_bool_primary(&boolean_cast, &candidates, &int_primary_vars),
             "truthiness handlers route every result path through def_bool_result",
+        );
+
+        let list_bool_index = OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["items".to_string(), "idx".to_string()]),
+            out: Some("item".to_string()),
+            container_type: Some("list".to_string()),
+            ..OpIR::default()
+        };
+        assert!(
+            op_produces_raw_bool_for_bool_primary(&list_bool_index, &candidates, &int_primary_vars),
+            "list bool getitem is raw-closed when the index operand is raw-primary",
+        );
+
+        let boxed_index = OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["items".to_string(), "boxed_idx".to_string()]),
+            out: Some("item".to_string()),
+            container_type: Some("list".to_string()),
+            ..OpIR::default()
+        };
+        assert!(
+            !op_produces_raw_bool_for_bool_primary(&boxed_index, &candidates, &int_primary_vars),
+            "boxed-index list getitem can fall back to boxed runtime output",
+        );
+
+        let generic_index = OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["items".to_string(), "idx".to_string()]),
+            out: Some("item".to_string()),
+            ..OpIR::default()
+        };
+        assert!(
+            !op_produces_raw_bool_for_bool_primary(&generic_index, &candidates, &int_primary_vars),
+            "generic indexing must not enter bool-primary",
         );
 
         let legacy_is_truthy = OpIR {
@@ -36580,7 +36626,11 @@ mod tests {
             ..OpIR::default()
         };
         assert!(
-            !op_produces_raw_bool_for_bool_primary(&legacy_is_truthy, &candidates),
+            !op_produces_raw_bool_for_bool_primary(
+                &legacy_is_truthy,
+                &candidates,
+                &int_primary_vars,
+            ),
             "is_truthy has no native codegen arm and must not enter bool_primary_vars",
         );
     }

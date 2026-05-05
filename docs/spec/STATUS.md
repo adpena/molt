@@ -78,9 +78,12 @@ It is current-state only. For forward-looking priorities, use
   so the b1-condition bool boxer is not used as a mixed raw/condition helper.
   Raw-closed bool join carriers use the same main-Variable raw `0/1` contract
   across store/load/copy and structured phi binding; join slots that are unsafe
-  for scalar slot exclusion remain boxed. Residual non-primary bool shadows are
-  limited to list-bool and other boxed-variable cases that still require
-  explicit raw 0/1 side channels.
+  for scalar slot exclusion remain boxed. Proven-bool list indexing is admitted
+  to bool-primary only when the index operand is raw-primary, so the inline
+  list/list_bool codegen path can define raw `0/1` without conflating
+  index-lowering lane selection with output representation. Residual
+  non-primary bool shadows are limited to conditional list-bool and other
+  boxed-variable cases that still require explicit raw 0/1 side channels.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.
