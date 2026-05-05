@@ -449,6 +449,54 @@ fn propagate_store_var_targets_in(
     changed
 }
 
+/// Phase 1d Step 0: predicate for the operand-recursive `int_primary_vars`
+/// fixpoint.  Returns `true` when this op's codegen WILL `def_var` a raw i64
+/// value into `vars[op.out]` given that `candidates` already contains every
+/// operand whose main Variable holds raw i64.
+///
+/// This is strictly stricter than `infer_scalar_lane(_, candidates, ...) ==
+/// Some(Int)`: the existing lane analysis goes through `name_is_int_like`
+/// which also accepts `bool_like_vars` membership (bool params count as
+/// int-like operands for arith).  The Phase 1d invariant requires
+/// `name ∈ int_primary_vars ⇒ vars[name] holds raw i64`, so an arith op
+/// whose operand is a boxed bool param (no raw shadow) must NOT promote its
+/// output into `int_primary_vars`.
+///
+/// The op kinds enumerated here mirror `is_safe_int_op` at the int_unsafe
+/// filter — every kind there has codegen that emits raw i64 when its
+/// operands satisfy the recursive raw-i64 precondition.  Anything not listed
+/// is filtered out by `int_unsafe_outputs` upstream and never reaches this
+/// predicate.
+#[cfg(feature = "native-backend")]
+fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>) -> bool {
+    let first_source = || {
+        op.var.as_deref().or_else(|| {
+            op.args
+                .as_ref()
+                .and_then(|args| args.first().map(String::as_str))
+        })
+    };
+    match op.kind.as_str() {
+        // Seeds: always emit raw i64 via iconst / runtime call returning i64.
+        "const" | "loop_index_start" | "loop_index_next" | "len" | "gpu_thread_id"
+        | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => true,
+        // Single-source: raw iff source is raw.
+        "copy" | "copy_var" | "load_var" | "identity_alias" | "neg" | "pos" | "abs"
+        | "builtin_abs" | "invert" => first_source().is_some_and(|s| candidates.contains(s)),
+        // Two-operand arith: raw iff BOTH operands are raw.
+        "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" | "floordiv"
+        | "mod" | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor"
+        | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" | "lshift" | "rshift"
+        | "shl" | "shr" => op.args.as_ref().is_some_and(|args| {
+            args.len() >= 2 && args.iter().all(|a| candidates.contains(a))
+        }),
+        // store_var is handled by `store_var_targets_all_sources_in` outside
+        // this predicate — its target's raw-ness is a function of EVERY
+        // store_var op for that target, not a single op.
+        _ => false,
+    }
+}
+
 #[cfg(feature = "native-backend")]
 fn infer_scalar_lane(
     op: &OpIR,
@@ -2669,24 +2717,65 @@ impl SimpleBackend {
                 // so the static set is empty for them too.
                 BTreeSet::new()
             } else {
-                // Phase 1c: join-slot names (`_bb*_arg*`) are now eligible
-                // for int_primary_vars when their definition sites are all
-                // raw-producing. The store_var fast path and loop_start
-                // demote both check int_primary_vars membership and skip
-                // boxing, so the loop-header phi sees raw i64 on both the
-                // entry-edge preheader and the back-edge — eliminating the
-                // box→unbox round trip per iteration that defeated proven-int
-                // accumulator perf.
-                int_like_vars
-                    .iter()
-                    .filter(|name| {
-                        !param_name_set.contains(name.as_str())
-                            && !int_unsafe_outputs.contains(*name)
-                            && !vars_with_non_int_defs.contains(*name)
-                            && !float_like_vars.contains(*name)
-                    })
-                    .cloned()
-                    .collect()
+                // Phase 1d Step 0: operand-recursive fixpoint.  A name is in
+                // int_primary_vars iff (a) it passes the structural filter
+                // (int_like, not param, not unsafe, not non-int-def, not
+                // float-like) AND (b) every op that defines it produces raw
+                // i64 in codegen — which (recursively) requires every operand
+                // of that op to itself be in int_primary_vars (see
+                // `op_produces_raw_i64_for_int_primary`).  store_var targets
+                // additionally require ALL store_var sources to be in the
+                // candidate set, computed by `store_var_targets_all_sources_in`.
+                //
+                // Without this tightening, the filter-only approach
+                // over-approximates: an op like `add(param1, param2)` (params
+                // excluded from int_primary_vars) would still mark its output
+                // as int_primary_vars, but the dynamic codegen takes the
+                // boxed proven-int fallback path and `def_var`s the boxed
+                // form into `vars[out]`, violating the Phase 1d invariant
+                // `name ∈ int_primary_vars ⇒ vars[name] holds raw i64`.
+                //
+                // Mirrors the existing `int_valued_outputs` fixpoint at the
+                // int pre-decl section but with a stricter operand predicate
+                // (this fixpoint requires operands to be in candidates, not
+                // merely int-like by name).
+                let passes_filter = |name: &str| {
+                    int_like_vars.contains(name)
+                        && !param_name_set.contains(name)
+                        && !int_unsafe_outputs.contains(name)
+                        && !vars_with_non_int_defs.contains(name)
+                        && !float_like_vars.contains(name)
+                };
+                let mut candidates: BTreeSet<String> = BTreeSet::new();
+                let mut changed = true;
+                while changed {
+                    changed = false;
+                    // Propagate through store_var targets (target raw iff
+                    // every store_var source is raw).
+                    let proven_targets =
+                        store_var_targets_all_sources_in(&func_ir, &candidates);
+                    for target in proven_targets {
+                        if passes_filter(&target) && candidates.insert(target) {
+                            changed = true;
+                        }
+                    }
+                    // Propagate through ops that produce raw i64.
+                    for op in &func_ir.ops {
+                        if op.kind == "store_var" {
+                            continue;
+                        }
+                        let Some(ref out) = op.out else { continue };
+                        if candidates.contains(out) || !passes_filter(out) {
+                            continue;
+                        }
+                        if op_produces_raw_i64_for_int_primary(op, &candidates)
+                            && candidates.insert(out.clone())
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+                candidates
             };
         for name in var_names.iter() {
             let var_type = if float_primary_vars.contains(name) {
