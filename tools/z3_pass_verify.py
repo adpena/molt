@@ -29,14 +29,24 @@ try:
         BitVec,
         BitVecVal,
         Context,
+        If,
         Solver,
         UDiv,
         URem,
         unsat,
     )
-except ImportError:
-    print("Install z3-solver: pip install z3-solver", file=sys.stderr)
-    sys.exit(1)
+except ImportError as exc:
+    _Z3_IMPORT_ERROR: ImportError | None = exc
+    BitVec = BitVecVal = Context = If = Solver = UDiv = URem = unsat = None  # type: ignore[assignment]
+else:
+    _Z3_IMPORT_ERROR = None
+
+
+def _require_z3() -> None:
+    if _Z3_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "z3-solver is required for TIR pass verification; install z3-solver"
+        ) from _Z3_IMPORT_ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +63,6 @@ class Op:
     f_value: float | None = None
     s_value: str | None = None
     fast_int: bool | None = None
-    raw_int: bool | None = None
 
 
 @dataclass
@@ -96,7 +105,6 @@ def _parse_op(raw: dict[str, Any]) -> Op:
         f_value=raw.get("f_value"),
         s_value=raw.get("s_value"),
         fast_int=raw.get("fast_int"),
-        raw_int=raw.get("raw_int"),
     )
 
 
@@ -143,6 +151,7 @@ class Z3Encoder:
     """Encode a sequence of integer TIR ops into Z3 bitvector formulas."""
 
     def __init__(self) -> None:
+        _require_z3()
         self.ctx = Context()
         self.env: dict[str, Any] = {}  # SSA name -> Z3 BitVec expression
         self._counter = 0
@@ -220,8 +229,6 @@ class Z3Encoder:
             lhs = self._get(args[0])
             rhs = self._get(args[1])
             # Comparisons produce a 1-bit result; extend to BV_WIDTH
-            from z3 import If
-
             cmp_expr = {
                 "lt": lhs < rhs,
                 "le": lhs <= rhs,
@@ -502,6 +509,7 @@ def verify_tir(
 
     Either *tir_json_path* (file path) or *data* (parsed dict) must be provided.
     """
+    _require_z3()
     if data is None:
         if tir_json_path is None:
             raise ValueError("either tir_json_path or data must be provided")
@@ -552,7 +560,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("either provide an input file or use --stdin")
         return 1
 
-    reports = verify_tir(data=data)
+    try:
+        reports = verify_tir(data=data)
+    except RuntimeError as exc:
+        if _Z3_IMPORT_ERROR is None:
+            raise
+        print(str(exc), file=sys.stderr)
+        return 1
 
     if args.json:
         output = []
