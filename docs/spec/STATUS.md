@@ -66,6 +66,11 @@ It is current-state only. For forward-looking priorities, use
   `type_hint` metadata is not backend-authoritative. The TIR-to-SimpleIR
   lowerer no longer accepts an external type-map channel, and opaque call
   returns refine only through structural TIR `return_type` metadata.
+- Native int-lane lowering now reads raw i64 values from the static
+  `int_primary_vars` contract instead of a separate raw-int shadow transport.
+  `CallArgs` builders own their argument slots independently; original argument
+  temporaries are released only by normal liveness cleanup, and branch-splitting
+  store paths must carry cleanup state through their merge blocks.
 - Benchmark reporting and compatibility rollups are being simplified so they are
   generated from canonical evidence instead of maintained by hand in multiple docs.
 
