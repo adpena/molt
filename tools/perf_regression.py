@@ -437,34 +437,32 @@ def _extract_metric(bench_entry: dict[str, Any], metric: str) -> float | None:
 
 
 def _extract_samples(bench_entry: dict[str, Any], metric: str) -> list[float] | None:
-    """Extract raw samples from super_stats if available."""
+    """Extract validated raw samples from super_stats if available."""
+    if metric != "runtime":
+        return None
+
     super_stats = bench_entry.get("super_stats", {})
     runner = "molt"
     stats = super_stats.get(runner)
     if stats is None:
         return None
 
-    # super_stats has mean/median/variance/range/min/max but not raw samples.
-    # We can reconstruct a rough distribution from mean + variance + count.
-    # For proper statistical tests, the benchmark should be run with --super.
-    # Here we synthesize samples from summary stats for bootstrap CI.
-    mean = stats.get("mean_s")
-    if mean is None:
+    if "samples_s" not in stats:
         return None
 
-    # The field depends on the metric
-    if metric != "runtime":
-        return None
+    raw_samples = stats["samples_s"]
+    if not isinstance(raw_samples, list) or not raw_samples:
+        raise ValueError("invalid raw sample array for runtime metric")
 
-    # If we only have summary stats, create synthetic samples
-    # by using mean +/- half-range evenly distributed
-    min_s = stats.get("min_s", mean)
-    max_s = stats.get("max_s", mean)
-    # Use 10 synthetic points spanning the observed range
-    if max_s <= min_s:
-        return [mean] * 10
-    step = (max_s - min_s) / 9.0
-    return [min_s + i * step for i in range(10)]
+    samples: list[float] = []
+    for sample in raw_samples:
+        if isinstance(sample, bool) or not isinstance(sample, (int, float)):
+            raise ValueError(f"invalid raw sample for runtime metric: {sample!r}")
+        value = float(sample)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"invalid raw sample for runtime metric: {sample!r}")
+        samples.append(value)
+    return samples
 
 
 # ---------------------------------------------------------------------------

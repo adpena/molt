@@ -594,7 +594,7 @@ def collect_samples(measure_fn, samples, warmup=0):
     return valid_times, bool(valid_times)
 
 
-def summarize_samples(samples: list[float]) -> dict[str, float]:
+def summarize_samples(samples: list[float]) -> dict[str, float | list[float]]:
     mean = statistics.mean(samples)
     median = statistics.median(samples)
     variance = statistics.pvariance(samples) if len(samples) > 1 else 0.0
@@ -607,6 +607,7 @@ def summarize_samples(samples: list[float]) -> dict[str, float]:
         "range_s": max_s - min_s,
         "min_s": min_s,
         "max_s": max_s,
+        "samples_s": list(samples),
     }
 
 

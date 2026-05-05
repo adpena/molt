@@ -192,3 +192,9 @@ def test_bench_cli_defaults_molt_profile_to_release(
     bench_tool.main()
 
     assert captured["molt_profile"] == "release"
+
+
+def test_summarize_samples_retains_raw_sample_evidence() -> None:
+    stats = bench_tool.summarize_samples([1.0, 1.2])
+
+    assert stats["samples_s"] == [1.0, 1.2]
