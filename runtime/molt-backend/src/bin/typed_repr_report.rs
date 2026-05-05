@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, Read};
 
 use molt_backend::tir::lir::{LirFunction, LirRepr};
+use molt_backend::tir::ops::{AttrValue, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::ValueId;
 use molt_backend::{rewrite_annotate_stubs, SimpleIR};
@@ -157,7 +158,7 @@ fn collect_function_stats(func: &LirFunction) -> FunctionStats {
         }
 
         for op in &block.ops {
-            let opcode_name = format!("{:?}", op.tir_op.opcode);
+            let opcode_name = report_opcode_name(&op.tir_op);
             let operand_tuple = op
                 .tir_op
                 .operands
@@ -200,6 +201,16 @@ fn collect_function_stats(func: &LirFunction) -> FunctionStats {
     }
 
     stats
+}
+
+fn report_opcode_name(op: &TirOp) -> String {
+    if op.opcode != OpCode::Copy {
+        return format!("{:?}", op.opcode);
+    }
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => format!("Copy::{kind}"),
+        _ => "Copy".to_string(),
+    }
 }
 
 fn record_value(
@@ -344,7 +355,7 @@ mod tests {
     use super::*;
     use molt_backend::tir::blocks::BlockId;
     use molt_backend::tir::lir::{LirBlock, LirOp, LirTerminator, LirValue};
-    use molt_backend::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+    use molt_backend::tir::ops::{AttrDict, Dialect};
 
     #[test]
     fn counts_lir_scalar_representations() {
@@ -402,6 +413,77 @@ mod tests {
         assert_eq!(stats.values_by_repr.get("i64").copied(), Some(3));
         assert_eq!(stats.opcodes["Add"].operand_repr_tuples["i64,i64"], 1);
         assert_eq!(stats.opcodes["Add"].result_reprs["i64"], 1);
+    }
+
+    #[test]
+    fn separates_plain_copy_from_fallback_semantic_copy() {
+        let entry = BlockId(0);
+        let mut fallback_attrs = AttrDict::new();
+        fallback_attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str("unpack_sequence".into()),
+        );
+        let mut blocks = HashMap::new();
+        blocks.insert(
+            entry,
+            LirBlock {
+                id: entry,
+                args: vec![LirValue {
+                    id: ValueId(0),
+                    ty: TirType::DynBox,
+                    repr: LirRepr::DynBox,
+                }],
+                ops: vec![
+                    LirOp {
+                        tir_op: TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::Copy,
+                            operands: vec![ValueId(0)],
+                            results: vec![ValueId(1)],
+                            attrs: AttrDict::new(),
+                            source_span: None,
+                        },
+                        result_values: vec![LirValue {
+                            id: ValueId(1),
+                            ty: TirType::DynBox,
+                            repr: LirRepr::DynBox,
+                        }],
+                    },
+                    LirOp {
+                        tir_op: TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::Copy,
+                            operands: vec![ValueId(1)],
+                            results: vec![ValueId(2)],
+                            attrs: fallback_attrs,
+                            source_span: None,
+                        },
+                        result_values: vec![LirValue {
+                            id: ValueId(2),
+                            ty: TirType::DynBox,
+                            repr: LirRepr::DynBox,
+                        }],
+                    },
+                ],
+                terminator: LirTerminator::Return {
+                    values: vec![ValueId(2)],
+                },
+            },
+        );
+        let lir_func = LirFunction {
+            name: "copy_kinds".into(),
+            param_names: vec!["value".into()],
+            param_types: vec![TirType::DynBox],
+            return_types: vec![TirType::DynBox],
+            blocks,
+            entry_block: entry,
+            label_id_map: HashMap::new(),
+        };
+
+        let stats = collect_function_stats(&lir_func);
+
+        assert_eq!(stats.opcodes["Copy"].total, 1);
+        assert_eq!(stats.opcodes["Copy::unpack_sequence"].total, 1);
     }
 
     #[test]
