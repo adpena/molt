@@ -100,13 +100,12 @@ It is current-state only. For forward-looking priorities, use
   values, later `store` is direct only when the slot's prior direct write is
   known non-heap, and any unknown/control/escaping use drops the object from
   the direct-write set.
-  Function-local loops lazily cache same-module stable class bindings when the
-  whole module proves that the class name is defined once, is not rebound or
-  deleted, does not escape through `globals()`/`vars()`, and keeps a stable
-  layout. The cache is initialized to `missing` before the loop and resolves
-  the module attribute only on the first executed iteration, preserving
-  zero-iteration exception timing while removing repeated constructor global
-  lookups from hot loops.
+  Function-local loops cache same-module stable class bindings when the whole
+  module proves that the class name is defined once, is not rebound or deleted,
+  does not escape through `globals()`/`vars()`, and keeps a stable layout. The
+  class reference is resolved once in the loop preheader and hot iterations load
+  the cached local directly, removing the missing-sentinel branch and repeated
+  constructor global lookup from proven-stable class loops.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.

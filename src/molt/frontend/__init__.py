@@ -1482,6 +1482,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_layout_guards: list[dict[str, tuple[str, MoltValue]]] = []
         self.loop_guard_assumptions: list[dict[str, tuple[str, bool]]] = []
         self.loop_static_class_refs: list[dict[str, MoltValue]] = []
+        self.loop_static_class_eager_refs: list[set[str]] = []
         self.loop_static_class_counter = 0
         self.active_exceptions: list[ActiveException] = []
         self.func_aliases: dict[str, str] = {}
@@ -1878,6 +1879,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_layout_guards = []
         self.loop_guard_assumptions = []
         self.loop_static_class_refs = []
+        self.loop_static_class_eager_refs = []
         self.loop_static_class_counter = 0
         self.active_exceptions = []
 
@@ -3134,6 +3136,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_slot_offset = None
         self.block_terminated = False
         self.loop_static_class_refs = []
+        self.loop_static_class_eager_refs = []
         if needs_return_slot:
             self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)
@@ -8288,11 +8291,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _push_loop_static_class_refs(self, body: list[ast.stmt]) -> None:
         refs: dict[str, MoltValue] = {}
+        eager_refs: set[str] = set()
         for class_name in self._collect_loop_static_class_candidates(body):
             self.loop_static_class_counter += 1
             slot = f"__molt_static_class_{self.loop_static_class_counter}_{class_name}"
-            init = MoltValue(self.next_var(), type_hint="missing")
-            self.emit(MoltOp(kind="MISSING", args=[], result=init))
+            init = self._emit_module_attr_get(class_name)
             self.emit(
                 MoltOp(
                     kind="STORE_VAR",
@@ -8302,14 +8305,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             refs[class_name] = MoltValue(slot, type_hint="type")
+            eager_refs.add(class_name)
         self.loop_static_class_refs.append(refs)
+        self.loop_static_class_eager_refs.append(eager_refs)
 
     def _pop_loop_static_class_refs(self) -> None:
         if self.loop_static_class_refs:
             self.loop_static_class_refs.pop()
+        if self.loop_static_class_eager_refs:
+            self.loop_static_class_eager_refs.pop()
 
     def _emit_loop_static_class_ref(self, class_name: str) -> MoltValue | None:
-        for refs in reversed(self.loop_static_class_refs):
+        for refs, eager_refs in zip(
+            reversed(self.loop_static_class_refs),
+            reversed(self.loop_static_class_eager_refs),
+            strict=True,
+        ):
             slot = refs.get(class_name)
             if slot is None:
                 continue
@@ -8322,6 +8333,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     metadata={"var": slot.name},
                 )
             )
+            if class_name in eager_refs:
+                return cached
             missing = MoltValue(self.next_var(), type_hint="missing")
             self.emit(MoltOp(kind="MISSING", args=[], result=missing))
             is_missing = MoltValue(self.next_var(), type_hint="bool")
