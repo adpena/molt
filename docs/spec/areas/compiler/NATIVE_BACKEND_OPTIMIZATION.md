@@ -100,7 +100,9 @@ facts before native codegen.
   bits only through explicit boxed-bool extraction at use sites.
 - `float_primary_vars` names carry raw f64 in their main Cranelift Variable.
   Non-primary floats stay boxed in their main I64 Variable and recover raw f64
-  by bitcast only at proven float use sites.
+  by bitcast only at proven float use sites. Cleanup scrubbing uses the same
+  representation contract: dead F64-primary variables are scrubbed with F64
+  zero, while boxed variables retain the boxed `None`/zero cleanup sentinel.
 - Fixed-layout object stores use a native direct-write proof instead of a
   profile/header/tag slow path when the object root is fresh
   (`object_new_bound_stack` or sized `object_new_bound`), the value is proven
