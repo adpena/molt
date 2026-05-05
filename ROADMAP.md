@@ -65,8 +65,11 @@ This file is forward-looking only.
   `float_primary_vars` as the single static authority for F64-primary variables.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
-  truthiness casts; finish the residual non-primary bool/list shadow cases and
-  non-primary float shadow lane instead of adding per-op fallback hints.
+  truthiness casts. Bool-primary escape points now box raw `0/1` carriers
+  through a dedicated raw-bool boxing helper instead of feeding I64 carriers to
+  the b1-condition bool boxer; finish the residual non-primary bool/list shadow
+  cases and non-primary float shadow lane instead of adding per-op fallback
+  hints.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 
