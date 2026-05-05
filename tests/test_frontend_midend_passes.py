@@ -1488,6 +1488,43 @@ value = Point(3)
     assert _module_attr_reads_named(ops, "Point")
 
 
+def test_function_loop_static_class_call_uses_lazy_loop_cache() -> None:
+    source = """
+class Point:
+    def __init__(self, x):
+        self.x = x
+
+def main():
+    i = 0
+    while i < 3:
+        point = Point(i)
+        i += 1
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"].endswith("main")
+    )
+
+    cache_vars = [
+        op.get("var")
+        for op in func_ops
+        if op.get("kind") == "store_var"
+        and str(op.get("var", "")).startswith("__molt_static_class_")
+    ]
+    assert cache_vars
+    assert len(set(cache_vars)) == 1
+    assert _module_attr_reads_named(func_ops, "Point")
+    loop_start = next(
+        i for i, op in enumerate(func_ops) if op.get("kind") == "loop_start"
+    )
+    first_cache_store = next(
+        i for i, op in enumerate(func_ops) if op.get("var") == cache_vars[0]
+    )
+    assert first_cache_store < loop_start
+
+
 def test_effect_aware_cse_reuses_getattr_generic_obj_without_writes() -> None:
     lowered = _lower_ops(
         [
