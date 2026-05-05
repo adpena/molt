@@ -72,9 +72,10 @@ It is current-state only. For forward-looking priorities, use
   the only authority for F64-primary Cranelift variables; float shadow maps are
   restricted to non-primary boxed-variable lanes that still require explicit
   loop-carried raw-f64 tracking. Native bool lowering now has a raw-closed
-  `bool_primary_vars` subset for constants and alias/store propagation; remaining
-  comparison/truthiness bool outputs stay on the non-primary bool shadow lane
-  until every boxed result path defines raw 0/1 after the boxed result.
+  `bool_primary_vars` subset for constants, alias/store propagation,
+  comparisons, identity checks, and truthiness casts. Residual non-primary bool
+  shadows are limited to list-bool and other boxed-variable cases that still
+  require explicit raw 0/1 side channels.
   `CallArgs` builders own their argument slots independently; original argument
   temporaries are released only by normal liveness cleanup, and branch-splitting
   store paths must carry cleanup state through their merge blocks.
