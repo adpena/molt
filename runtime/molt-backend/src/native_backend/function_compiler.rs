@@ -498,6 +498,27 @@ fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>)
     }
 }
 
+/// Predicate for the static bool-primary fixpoint.  Bool-primary Variables use
+/// their main Cranelift Variable as the raw 0/1 carrier; any op admitted here
+/// must have codegen that can define a raw bool for `op.out`.
+#[cfg(feature = "native-backend")]
+fn op_produces_raw_bool_for_bool_primary(op: &OpIR, candidates: &BTreeSet<String>) -> bool {
+    let first_source = || {
+        op.var.as_deref().or_else(|| {
+            op.args
+                .as_ref()
+                .and_then(|args| args.first().map(String::as_str))
+        })
+    };
+    match op.kind.as_str() {
+        "const_bool" => true,
+        "copy" | "copy_var" | "load_var" | "identity_alias" => {
+            first_source().is_some_and(|s| candidates.contains(s))
+        }
+        _ => false,
+    }
+}
+
 #[cfg(feature = "native-backend")]
 fn infer_scalar_lane(
     op: &OpIR,
@@ -732,11 +753,18 @@ fn shadow_lookup(
 #[cfg(feature = "native-backend")]
 fn record_bool_shadow(
     builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    bool_primary_vars: &BTreeSet<String>,
     raw_bool_values: &mut BTreeMap<String, Value>,
     raw_bool_shadow_vars: &BTreeMap<String, Variable>,
     name: &str,
     raw_bool: Value,
 ) {
+    if bool_primary_vars.contains(name) {
+        def_var_named(builder, vars, name, raw_bool);
+        raw_bool_values.remove(name);
+        return;
+    }
     if let Some(&shadow_var) = raw_bool_shadow_vars.get(name) {
         builder.def_var(shadow_var, raw_bool);
     }
@@ -748,10 +776,17 @@ fn record_bool_shadow(
 #[inline]
 fn bool_raw_value(
     builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    bool_primary_vars: &BTreeSet<String>,
     raw_bool_shadow_vars: &BTreeMap<String, Variable>,
     raw_bool_values: &BTreeMap<String, Value>,
     name: &str,
 ) -> Option<Value> {
+    if bool_primary_vars.contains(name)
+        && let Some(&var) = vars.get(name)
+    {
+        return Some(builder.use_var(var));
+    }
     shadow_lookup(builder, raw_bool_shadow_vars, raw_bool_values, name)
 }
 
@@ -763,11 +798,28 @@ fn bool_raw_value(
 #[cfg(feature = "native-backend")]
 fn propagate_bool_shadow(
     builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    bool_primary_vars: &BTreeSet<String>,
     raw_bool_values: &mut BTreeMap<String, Value>,
     raw_bool_shadow_vars: &mut BTreeMap<String, Variable>,
     src: &str,
     dst: &str,
 ) {
+    if bool_primary_vars.contains(src)
+        && let Some(&src_var) = vars.get(src)
+    {
+        let raw_bool = builder.use_var(src_var);
+        record_bool_shadow(
+            builder,
+            vars,
+            bool_primary_vars,
+            raw_bool_values,
+            raw_bool_shadow_vars,
+            dst,
+            raw_bool,
+        );
+        return;
+    }
     let src_shadow_var = raw_bool_shadow_vars.get(src).copied();
     let raw_bool = src_shadow_var
         .map(|var| builder.use_var(var))
@@ -790,6 +842,8 @@ fn propagate_bool_shadow(
     } else {
         record_bool_shadow(
             builder,
+            vars,
+            bool_primary_vars,
             raw_bool_values,
             raw_bool_shadow_vars,
             dst,
@@ -871,7 +925,7 @@ fn ensure_boxed_overflow_safe(
 /// already-NaN-boxed main Variable verbatim.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
-fn var_get_boxed_overflow_safe(
+fn var_get_boxed_overflow_safe_base(
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -913,21 +967,29 @@ fn var_get_boxed_overflow_safe(
 
 /// Box a known-bool variable's raw 0/1 value into a TAG_BOOL NaN-box.
 ///
-/// Bool-typed variables carry their raw 0/1 in the bool-specific
-/// `raw_bool_values` / `raw_bool_shadow_vars` (Phase 2 will mirror Phase 1d
-/// for bool, replacing these with a static `bool_primary_vars` set).
+/// Bool-primary variables carry raw 0/1 in their main Cranelift Variable.
+/// Remaining bool-typed variables use `raw_bool_values` /
+/// `raw_bool_shadow_vars`.
 #[cfg(feature = "native-backend")]
 fn ensure_boxed_bool_safe(
     builder: &mut FunctionBuilder<'_>,
     raw_bool_values: &std::collections::BTreeMap<String, Value>,
     raw_bool_shadow_vars: &std::collections::BTreeMap<String, Variable>,
     vars: &BTreeMap<String, Variable>,
+    bool_primary_vars: &BTreeSet<String>,
     int_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
     name: &str,
 ) -> Option<Value> {
-    let raw_val = bool_raw_value(builder, raw_bool_shadow_vars, raw_bool_values, name)
-        .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
+    let raw_val = bool_raw_value(
+        builder,
+        vars,
+        bool_primary_vars,
+        raw_bool_shadow_vars,
+        raw_bool_values,
+        name,
+    )
+    .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
     if let Some(raw_val) = raw_val {
         return Some(box_bool_value(builder, raw_val, nbc));
     }
@@ -945,6 +1007,7 @@ fn ensure_boxed_primitive_safe(
     raw_bool_values: &std::collections::BTreeMap<String, Value>,
     raw_bool_shadow_vars: &std::collections::BTreeMap<String, Variable>,
     bool_like_vars: &BTreeSet<String>,
+    bool_primary_vars: &BTreeSet<String>,
     vars: &BTreeMap<String, Variable>,
     nbc: &crate::NanBoxConsts,
     box_int_mask_var: Variable,
@@ -954,7 +1017,7 @@ fn ensure_boxed_primitive_safe(
     name: &str,
 ) -> Value {
     if float_primary_vars.contains(name) {
-        *var_get_boxed_overflow_safe(
+        *var_get_boxed_overflow_safe_base(
             module,
             import_ids,
             builder,
@@ -974,6 +1037,7 @@ fn ensure_boxed_primitive_safe(
             raw_bool_values,
             raw_bool_shadow_vars,
             vars,
+            bool_primary_vars,
             int_primary_vars,
             nbc,
             name,
@@ -1160,7 +1224,7 @@ fn float_value_for_mixed(
         // holds the already-NaN-boxed value.  Use overflow-safe boxing for
         // forward-compat (the int-box branch is reached only when name IS in
         // int_primary_vars, but we keep the call symmetric for safety).
-        let boxed = var_get_boxed_overflow_safe(
+        let boxed = var_get_boxed_overflow_safe_base(
             module,
             import_ids,
             builder,
@@ -1179,7 +1243,7 @@ fn float_value_for_mixed(
     }
 
     // 3. Not int — must be a NaN-boxed float without a shadow. Bitcast.
-    let boxed = var_get_boxed_overflow_safe(
+    let boxed = var_get_boxed_overflow_safe_base(
         module,
         import_ids,
         builder,
@@ -2899,6 +2963,92 @@ impl SimpleBackend {
             }
             candidates
         };
+        let bool_unsafe_outputs: BTreeSet<String> = {
+            let mut unsafe_set = BTreeSet::new();
+            for op in &func_ir.ops {
+                if let Some(ref out) = op.out {
+                    let is_safe_bool_op = matches!(
+                        op.kind.as_str(),
+                        "const_bool"
+                            | "copy"
+                            | "copy_var"
+                            | "load_var"
+                            | "identity_alias"
+                            | "store_var"
+                    );
+                    if !is_safe_bool_op && bool_like_vars.contains(out) {
+                        unsafe_set.insert(out.clone());
+                    }
+                }
+            }
+            unsafe_set
+        };
+        let vars_with_non_bool_defs: BTreeSet<String> = {
+            let mut non_bool = BTreeSet::new();
+            for op in &func_ir.ops {
+                if op.kind == "store_var" {
+                    let target = op.var.as_ref().or(op.out.as_ref());
+                    let source = op.args.as_ref().and_then(|a| a.first());
+                    if let (Some(t), Some(s)) = (target, source)
+                        && !bool_like_vars.contains(s)
+                    {
+                        non_bool.insert(t.clone());
+                    }
+                }
+                if let Some(ref out) = op.out {
+                    let lane = infer_scalar_lane(
+                        op,
+                        &int_like_vars,
+                        &bool_like_vars,
+                        &float_like_vars,
+                        &str_like_vars,
+                    );
+                    if lane != Some(ScalarLane::Bool) && bool_like_vars.contains(out) {
+                        non_bool.insert(out.clone());
+                    }
+                }
+            }
+            non_bool
+        };
+        let bool_primary_vars: BTreeSet<String> = if is_cold_module_chunk_function(&func_ir.name) {
+            BTreeSet::new()
+        } else {
+            let passes_filter = |name: &str| {
+                bool_like_vars.contains(name)
+                    && !param_name_set.contains(name)
+                    && !bool_unsafe_outputs.contains(name)
+                    && !vars_with_non_bool_defs.contains(name)
+                    && !int_like_vars.contains(name)
+                    && !float_like_vars.contains(name)
+                    && !str_like_vars.contains(name)
+                    && !is_join_slot_name(name)
+            };
+            let mut candidates: BTreeSet<String> = BTreeSet::new();
+            let mut changed = true;
+            while changed {
+                changed = false;
+                for target in store_var_targets_all_sources_in(&func_ir, &candidates) {
+                    if passes_filter(&target) && candidates.insert(target) {
+                        changed = true;
+                    }
+                }
+                for op in &func_ir.ops {
+                    if op.kind == "store_var" {
+                        continue;
+                    }
+                    let Some(ref out) = op.out else { continue };
+                    if candidates.contains(out) || !passes_filter(out) {
+                        continue;
+                    }
+                    if op_produces_raw_bool_for_bool_primary(op, &candidates)
+                        && candidates.insert(out.clone())
+                    {
+                        changed = true;
+                    }
+                }
+            }
+            candidates
+        };
         for name in var_names.iter() {
             let var_type = if float_primary_vars.contains(name) {
                 types::F64
@@ -3088,7 +3238,8 @@ impl SimpleBackend {
         // because the shadow Value from the getitem merge dominates the `if` op.
         let mut list_bool_raw_shadow: std::collections::BTreeMap<String, (String, Value)> =
             std::collections::BTreeMap::new();
-        // Raw bool values from proven list_bool getitem or const_bool.
+        // Non-primary raw bool values from proven list_bool getitem or const_bool.
+        // Bool-primary names keep the raw 0/1 value in their main Variable.
         // Stores the raw 0/1 as an I64 Value so downstream `if`/`br_if`/
         // `loop_break_if_{true,false}` can branch directly on the raw value
         // without NaN-box extraction (band + icmp → just icmp).
@@ -3098,9 +3249,8 @@ impl SimpleBackend {
         // scope.  For loop-carried values, prefer raw_bool_shadow_vars.
         let mut raw_bool_values: std::collections::BTreeMap<String, Value> =
             std::collections::BTreeMap::new();
-        // Variable-tier raw bool shadows for loop-carried phi correctness.
-        // Parallels raw_int_shadow: declared once, def'd at each definition
-        // site, use_var'd at each consumer.  Survives loop back-edges.
+        // Variable-tier raw bool shadows for non-primary loop-carried phi
+        // correctness. Bool-primary names use their main Variable instead.
         let mut raw_bool_shadow_vars: std::collections::BTreeMap<String, Variable> =
             std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
@@ -3315,10 +3465,9 @@ impl SimpleBackend {
                 raw_float_shadow.insert(name.clone(), v);
             }
 
-            // Bool store targets: pre-declare shadow I64 Variables for store_var
-            // targets whose source is proven bool.  Same two-tier pattern as int
-            // shadows — Variable tier survives loop back-edges via phi nodes,
-            // Value tier (raw_bool_values) is cleared at loop_start.
+            // Bool store targets outside bool_primary_vars keep shadow I64
+            // Variables. Bool-primary names carry raw 0/1 in their main
+            // Variable, so a parallel shadow would be a second source of truth.
             let mut bool_valued_outputs: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
             let mut bool_changed = true;
@@ -3368,7 +3517,10 @@ impl SimpleBackend {
                 &bool_valued_outputs,
             ));
             let zero_b = builder.ins().iconst(types::I64, 0);
-            for name in &bool_store_targets {
+            for name in bool_store_targets
+                .iter()
+                .filter(|name| !bool_primary_vars.contains(*name))
+            {
                 let v = builder.declare_var(types::I64);
                 builder.def_var(v, zero_b);
                 raw_bool_shadow_vars.insert(name.clone(), v);
@@ -3578,6 +3730,40 @@ impl SimpleBackend {
         let tag_init = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
         builder.def_var(box_int_mask_var, mask_init);
         builder.def_var(box_int_tag_var, tag_init);
+
+        let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+                                           import_ids: &mut BTreeMap<
+            &'static str,
+            (cranelift_module::FuncId, ImportSignatureShape),
+        >,
+                                           builder: &mut FunctionBuilder<'_>,
+                                           import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                           sealed_blocks: &mut BTreeSet<Block>,
+                                           vars: &BTreeMap<String, Variable>,
+                                           name: &str,
+                                           int_primary_vars: &BTreeSet<String>,
+                                           float_primary_vars: &BTreeSet<String>,
+                                           box_int_mask_var: Variable,
+                                           box_int_tag_var: Variable|
+         -> Option<crate::VarValue> {
+            if bool_primary_vars.contains(name) {
+                let raw = vars.get(name).map(|&var| builder.use_var(var))?;
+                return Some(crate::VarValue(box_bool_value(builder, raw, &nbc)));
+            }
+            var_get_boxed_overflow_safe_base(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                name,
+                int_primary_vars,
+                float_primary_vars,
+                box_int_mask_var,
+                box_int_tag_var,
+            )
+        };
 
         if let Some((data_id, name_len_i64)) = trace_data {
             let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
@@ -4299,6 +4485,8 @@ impl SimpleBackend {
                         // Also store in raw_bool_values for proven-bool consumers.
                         record_bool_shadow(
                             &mut builder,
+                            &vars,
+                            &bool_primary_vars,
                             &mut raw_bool_values,
                             &raw_bool_shadow_vars,
                             out__,
@@ -10798,6 +10986,7 @@ impl SimpleBackend {
                         &raw_bool_values,
                         &raw_bool_shadow_vars,
                         &bool_like_vars,
+                        &bool_primary_vars,
                         &vars,
                         &nbc,
                         box_int_mask_var,
@@ -13982,6 +14171,8 @@ impl SimpleBackend {
                                         def_var_named(&mut builder, &vars, out__, bool_elem);
                                         record_bool_shadow(
                                             &mut builder,
+                                            &vars,
+                                            &bool_primary_vars,
                                             &mut raw_bool_values,
                                             &raw_bool_shadow_vars,
                                             out__,
@@ -14208,6 +14399,8 @@ impl SimpleBackend {
                                                 // with zero NaN-box overhead.
                                                 record_bool_shadow(
                                                     &mut builder,
+                                                    &vars,
+                                                    &bool_primary_vars,
                                                     &mut raw_bool_values,
                                                     &raw_bool_shadow_vars,
                                                     out__,
@@ -14620,6 +14813,8 @@ impl SimpleBackend {
                                 let baddr = builder.ins().iadd(data_ptr, raw_idx);
                                 let bv = if let Some(rb) = bool_raw_value(
                                     &mut builder,
+                                    &vars,
+                                    &bool_primary_vars,
                                     &raw_bool_shadow_vars,
                                     &raw_bool_values,
                                     &args[2],
@@ -14692,6 +14887,8 @@ impl SimpleBackend {
                                     let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
                                     let byte_val = if let Some(raw_val) = bool_raw_value(
                                         &mut builder,
+                                        &vars,
+                                        &bool_primary_vars,
                                         &raw_bool_shadow_vars,
                                         &raw_bool_values,
                                         &args[2],
@@ -14837,6 +15034,7 @@ impl SimpleBackend {
                             &raw_bool_values,
                             &raw_bool_shadow_vars,
                             &bool_like_vars,
+                            &bool_primary_vars,
                             &vars,
                             &nbc,
                             box_int_mask_var,
@@ -19452,6 +19650,8 @@ impl SimpleBackend {
                         if let Some(raw_b) = lt_raw_bool {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 out__,
@@ -19691,6 +19891,8 @@ impl SimpleBackend {
                         if let Some(raw_b) = le_raw_bool {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 out__,
@@ -19929,6 +20131,8 @@ impl SimpleBackend {
                         if let Some(raw_b) = gt_raw_bool {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 out__,
@@ -20171,6 +20375,8 @@ impl SimpleBackend {
                         if let Some(raw_b) = ge_raw_bool {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 out__,
@@ -20390,6 +20596,8 @@ impl SimpleBackend {
                         if let Some(raw_b) = eq_raw_bool {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 out__,
@@ -20608,6 +20816,8 @@ impl SimpleBackend {
                         if let Some(raw_b) = ne_raw_bool {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 out__,
@@ -20709,6 +20919,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
+                        &vars,
+                        &bool_primary_vars,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
                         &args[0],
@@ -20722,6 +20934,8 @@ impl SimpleBackend {
                         if let Some(ref out__) = op.out {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 out__,
@@ -21126,6 +21340,8 @@ impl SimpleBackend {
                     let mut bool_raw: Option<Value> = None;
                     let res = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
+                        &vars,
+                        &bool_primary_vars,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
                         &args[0],
@@ -21216,6 +21432,8 @@ impl SimpleBackend {
                         if let Some(raw_b) = bool_raw {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 out__,
@@ -21256,6 +21474,8 @@ impl SimpleBackend {
                     .expect("RHS not found");
                     let cond = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
+                        &vars,
+                        &bool_primary_vars,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
                         &args[0],
@@ -21330,6 +21550,8 @@ impl SimpleBackend {
                     .expect("RHS not found");
                     let cond = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
+                        &vars,
+                        &bool_primary_vars,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
                         &args[0],
@@ -24213,6 +24435,7 @@ impl SimpleBackend {
                             &raw_bool_values,
                             &raw_bool_shadow_vars,
                             &bool_like_vars,
+                            &bool_primary_vars,
                             &vars,
                             &nbc,
                             box_int_mask_var,
@@ -28939,6 +29162,8 @@ impl SimpleBackend {
                     // Inline truthiness for bool/int types to avoid function call overhead.
                     let cond_bool = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
+                        &vars,
+                        &bool_primary_vars,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
                         &args[0],
@@ -31249,6 +31474,8 @@ impl SimpleBackend {
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
                         let cond_bool = if let Some(raw_val) = bool_raw_value(
                             &mut builder,
+                            &vars,
+                            &bool_primary_vars,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
                             cond_name,
@@ -31458,6 +31685,8 @@ impl SimpleBackend {
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
                         let cond_bool = if let Some(raw_val) = bool_raw_value(
                             &mut builder,
+                            &vars,
+                            &bool_primary_vars,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
                             cond_name,
@@ -32283,22 +32512,24 @@ impl SimpleBackend {
                             ) {
                                 continue;
                             }
-                            if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
-                                var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    &name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .map(|v| *v)
-                            }) {
+                            if let Some(cleanup_val) =
+                                entry_vars.get(&name).copied().or_else(|| {
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &name,
+                                        &int_primary_vars,
+                                        &float_primary_vars,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .map(|v| *v)
+                                })
+                            {
                                 builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
                             }
                         }
@@ -32312,22 +32543,24 @@ impl SimpleBackend {
                             ) {
                                 continue;
                             }
-                            if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
-                                var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    &name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .map(|v| *v)
-                            }) {
+                            if let Some(cleanup_val) =
+                                entry_vars.get(&name).copied().or_else(|| {
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &name,
+                                        &int_primary_vars,
+                                        &float_primary_vars,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .map(|v| *v)
+                                })
+                            {
                                 builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
                             }
                         }
@@ -32636,22 +32869,24 @@ impl SimpleBackend {
                             ) {
                                 continue;
                             }
-                            if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
-                                var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    &name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .map(|v| *v)
-                            }) {
+                            if let Some(cleanup_val) =
+                                entry_vars.get(&name).copied().or_else(|| {
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &name,
+                                        &int_primary_vars,
+                                        &float_primary_vars,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .map(|v| *v)
+                                })
+                            {
                                 builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
                             }
                         }
@@ -32665,22 +32900,24 @@ impl SimpleBackend {
                             ) {
                                 continue;
                             }
-                            if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
-                                var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    &name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .map(|v| *v)
-                            }) {
+                            if let Some(cleanup_val) =
+                                entry_vars.get(&name).copied().or_else(|| {
+                                    var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &name,
+                                        &int_primary_vars,
+                                        &float_primary_vars,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .map(|v| *v)
+                                })
+                            {
                                 builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
                             }
                         }
@@ -34348,6 +34585,7 @@ impl SimpleBackend {
                         &raw_bool_values,
                         &raw_bool_shadow_vars,
                         &bool_like_vars,
+                        &bool_primary_vars,
                         &vars,
                         &nbc,
                         box_int_mask_var,
@@ -34726,6 +34964,8 @@ impl SimpleBackend {
                     let cond_name = &args[0];
                     let cond_bool = if let Some(raw_val) = bool_raw_value(
                         &mut builder,
+                        &vars,
+                        &bool_primary_vars,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
                         cond_name,
@@ -35229,12 +35469,16 @@ impl SimpleBackend {
                         // Same two-tier pattern as other non-int shadows.
                         if let Some(raw_val) = bool_raw_value(
                             &mut builder,
+                            &vars,
+                            &bool_primary_vars,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
                             &args[0],
                         ) {
                             record_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &raw_bool_shadow_vars,
                                 name,
@@ -35382,6 +35626,8 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out_name, *val);
                             propagate_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &mut raw_bool_shadow_vars,
                                 var_name,
@@ -35446,6 +35692,8 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out_name, *val);
                             propagate_bool_shadow(
                                 &mut builder,
+                                &vars,
+                                &bool_primary_vars,
                                 &mut raw_bool_values,
                                 &mut raw_bool_shadow_vars,
                                 &args[0],
@@ -36048,15 +36296,60 @@ mod tests {
     use super::{
         ScalarLane, alias_root_name, cleanup_roots_for_names, collect_slot_backed_join_names,
         infer_scalar_lane, is_cold_module_chunk_function, live_exception_rebind_vars_for_op,
-        mark_cleanup_root_once, materialize_label_block, preanalyze_function_ir,
-        protect_cleanup_names, scan_loop_int_sum_reduction, switch_to_block_materialized,
-        switch_to_block_with_rebind,
+        mark_cleanup_root_once, materialize_label_block, op_produces_raw_bool_for_bool_primary,
+        preanalyze_function_ir, protect_cleanup_names, scan_loop_int_sum_reduction,
+        switch_to_block_materialized, switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
     use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
     use cranelift_codegen::isa::CallConv;
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn bool_primary_predicate_is_raw_closed() {
+        let candidates = BTreeSet::from(["flag".to_string()]);
+        let const_bool = OpIR {
+            kind: "const_bool".to_string(),
+            out: Some("flag".to_string()),
+            value: Some(1),
+            ..OpIR::default()
+        };
+        assert!(op_produces_raw_bool_for_bool_primary(
+            &const_bool,
+            &BTreeSet::new(),
+        ));
+
+        let copy = OpIR {
+            kind: "copy_var".to_string(),
+            var: Some("flag".to_string()),
+            out: Some("flag_copy".to_string()),
+            ..OpIR::default()
+        };
+        assert!(op_produces_raw_bool_for_bool_primary(&copy, &candidates));
+
+        let comparison = OpIR {
+            kind: "eq".to_string(),
+            args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+            out: Some("cmp".to_string()),
+            ..OpIR::default()
+        };
+        assert!(
+            !op_produces_raw_bool_for_bool_primary(&comparison, &candidates),
+            "comparison handlers still have boxed/runtime paths and must not enter bool_primary_vars",
+        );
+
+        let boolean_cast = OpIR {
+            kind: "bool".to_string(),
+            args: Some(vec!["flag".to_string()]),
+            out: Some("casted".to_string()),
+            ..OpIR::default()
+        };
+        assert!(
+            !op_produces_raw_bool_for_bool_primary(&boolean_cast, &candidates),
+            "truthiness handlers must stay non-primary until every result path defines raw 0/1 after the boxed result",
+        );
+    }
 
     #[test]
     fn scalar_lane_does_not_classify_unbounded_int_pow_as_inline_int() {
