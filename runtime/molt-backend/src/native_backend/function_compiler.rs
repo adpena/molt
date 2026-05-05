@@ -724,6 +724,25 @@ fn shadow_lookup(
         .or_else(|| shadow_vars.get(name).map(|&var| builder.use_var(var)))
 }
 
+/// Record a raw 0/1 bool value in the remaining bool shadow lane.
+///
+/// The Value tier serves same-block consumers; the optional Variable tier is
+/// predeclared for loop-carried/store-backed bool values so Cranelift can form
+/// the required phis.
+#[cfg(feature = "native-backend")]
+fn record_bool_shadow(
+    builder: &mut FunctionBuilder<'_>,
+    raw_bool_values: &mut BTreeMap<String, Value>,
+    raw_bool_shadow_vars: &BTreeMap<String, Variable>,
+    name: &str,
+    raw_bool: Value,
+) {
+    if let Some(&shadow_var) = raw_bool_shadow_vars.get(name) {
+        builder.def_var(shadow_var, raw_bool);
+    }
+    raw_bool_values.insert(name.to_string(), raw_bool);
+}
+
 /// Produce a correctly NaN-boxed value for a variable in `int_primary_vars`
 /// whose raw i64 may exceed the 47-bit inline range.
 ///
@@ -4185,10 +4204,13 @@ impl SimpleBackend {
                         // list_int setitem can use them without NaN-unboxing.
                         let raw = builder.ins().iconst(types::I64, val);
                         // Also store in raw_bool_values for proven-bool consumers.
-                        raw_bool_values.insert(out__.clone(), raw);
-                        if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                            builder.def_var(bvar, raw);
-                        }
+                        record_bool_shadow(
+                            &mut builder,
+                            &mut raw_bool_values,
+                            &raw_bool_shadow_vars,
+                            out__,
+                            raw,
+                        );
                     }
                 }
                 "const_none" => {
@@ -13865,12 +13887,13 @@ impl SimpleBackend {
                                     let bool_elem = builder.ins().bor(bool_tag, byte_ext);
                                     if let Some(ref out__) = op.out {
                                         def_var_named(&mut builder, &vars, out__, bool_elem);
-                                        raw_bool_values.insert(out__.to_string(), byte_ext);
-                                        if let Some(&bvar) =
-                                            raw_bool_shadow_vars.get(out__.as_str())
-                                        {
-                                            builder.def_var(bvar, byte_ext);
-                                        }
+                                        record_bool_shadow(
+                                            &mut builder,
+                                            &mut raw_bool_values,
+                                            &raw_bool_shadow_vars,
+                                            out__,
+                                            byte_ext,
+                                        );
                                     }
                                 } else if bce_safe_list && out_is_non_bool {
                                     // BCE-proven safe + proven non-bool list: straight-line
@@ -19334,10 +19357,13 @@ impl SimpleBackend {
                         // Propagate raw bool shadow so loop branches and
                         // if-conditions skip NaN-box extraction entirely.
                         if let Some(raw_b) = lt_raw_bool {
-                            raw_bool_values.insert(out__.clone(), raw_b);
-                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                                builder.def_var(bvar, raw_b);
-                            }
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out__,
+                                raw_b,
+                            );
                         }
                     }
                 }
@@ -19570,10 +19596,13 @@ impl SimpleBackend {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                         if let Some(raw_b) = le_raw_bool {
-                            raw_bool_values.insert(out__.clone(), raw_b);
-                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                                builder.def_var(bvar, raw_b);
-                            }
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out__,
+                                raw_b,
+                            );
                         }
                     }
                 }
@@ -19805,10 +19834,13 @@ impl SimpleBackend {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                         if let Some(raw_b) = gt_raw_bool {
-                            raw_bool_values.insert(out__.clone(), raw_b);
-                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                                builder.def_var(bvar, raw_b);
-                            }
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out__,
+                                raw_b,
+                            );
                         }
                     }
                 }
@@ -20044,10 +20076,13 @@ impl SimpleBackend {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                         if let Some(raw_b) = ge_raw_bool {
-                            raw_bool_values.insert(out__.clone(), raw_b);
-                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                                builder.def_var(bvar, raw_b);
-                            }
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out__,
+                                raw_b,
+                            );
                         }
                     }
                 }
@@ -20260,10 +20295,13 @@ impl SimpleBackend {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                         if let Some(raw_b) = eq_raw_bool {
-                            raw_bool_values.insert(out__.clone(), raw_b);
-                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                                builder.def_var(bvar, raw_b);
-                            }
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out__,
+                                raw_b,
+                            );
                         }
                     }
                 }
@@ -20475,10 +20513,13 @@ impl SimpleBackend {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                         if let Some(raw_b) = ne_raw_bool {
-                            raw_bool_values.insert(out__.clone(), raw_b);
-                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                                builder.def_var(bvar, raw_b);
-                            }
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out__,
+                                raw_b,
+                            );
                         }
                     }
                 }
@@ -20586,10 +20627,13 @@ impl SimpleBackend {
                         let negated = builder.ins().bxor_imm(raw_val, 1);
                         let negated_masked = builder.ins().band_imm(negated, 1);
                         if let Some(ref out__) = op.out {
-                            raw_bool_values.insert(out__.clone(), negated_masked);
-                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                                builder.def_var(bvar, negated_masked);
-                            }
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out__,
+                                negated_masked,
+                            );
                         }
                         result
                     } else if op_prefers_bool_lane(&op) {
@@ -21077,10 +21121,13 @@ impl SimpleBackend {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                         if let Some(raw_b) = bool_raw {
-                            raw_bool_values.insert(out__.clone(), raw_b);
-                            if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
-                                builder.def_var(bvar, raw_b);
-                            }
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out__,
+                                raw_b,
+                            );
                         }
                     }
                 }
@@ -35093,10 +35140,13 @@ impl SimpleBackend {
                             &raw_bool_values,
                             &args[0],
                         ) {
-                            if let Some(&dst_var) = raw_bool_shadow_vars.get(name) {
-                                builder.def_var(dst_var, raw_val);
-                            }
-                            raw_bool_values.insert(name.to_string(), raw_val);
+                            record_bool_shadow(
+                                &mut builder,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                name,
+                                raw_val,
+                            );
                         }
                         // Propagate raw_float_shadow through store_var:
                         // Same two-tier pattern as int shadows.
@@ -35257,12 +35307,13 @@ impl SimpleBackend {
                                     builder.def_var(dst_bvar, raw_bv);
                                     raw_bool_values.remove(out_name);
                                 } else {
-                                    if let Some(&dst_var) =
-                                        raw_bool_shadow_vars.get(out_name.as_str())
-                                    {
-                                        builder.def_var(dst_var, raw_bv);
-                                    }
-                                    raw_bool_values.insert(out_name.clone(), raw_bv);
+                                    record_bool_shadow(
+                                        &mut builder,
+                                        &mut raw_bool_values,
+                                        &raw_bool_shadow_vars,
+                                        out_name,
+                                        raw_bv,
+                                    );
                                 }
                             }
                             // Propagate float shadow: same two-tier pattern.
@@ -35366,12 +35417,13 @@ impl SimpleBackend {
                                     builder.def_var(dst_bvar, raw_bv);
                                     raw_bool_values.remove(out_name);
                                 } else {
-                                    if let Some(&dst_var) =
-                                        raw_bool_shadow_vars.get(out_name.as_str())
-                                    {
-                                        builder.def_var(dst_var, raw_bv);
-                                    }
-                                    raw_bool_values.insert(out_name.clone(), raw_bv);
+                                    record_bool_shadow(
+                                        &mut builder,
+                                        &mut raw_bool_values,
+                                        &raw_bool_shadow_vars,
+                                        out_name,
+                                        raw_bv,
+                                    );
                                 }
                             }
                             // Propagate float shadow: same two-tier pattern.
