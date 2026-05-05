@@ -320,6 +320,11 @@ fn allows_undefined_value(op: &OpIR, name: &str, position: usize) -> bool {
 
 pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
     for func in &ir.functions {
+        ir_schema::validate_function_param_types(
+            &func.name,
+            &func.params,
+            func.param_types.as_deref(),
+        )?;
         let mut defined: BTreeSet<&str> = func.params.iter().map(String::as_str).collect();
         for op in &func.ops {
             ir_schema::validate_required_fields(op)?;

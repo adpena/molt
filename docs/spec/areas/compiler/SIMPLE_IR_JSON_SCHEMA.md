@@ -7,8 +7,8 @@ Formal schema for the SimpleIR interchange format between the Python frontend
 > Scope note: this document describes the current transport format only. The
 > canonical IR architecture and representation contract live in
 > `docs/spec/areas/compiler/0100_MOLT_IR.md`. Fields such as `fast_int`,
-> `fast_float`, `raw_int`, and `type_hint` are transitional compatibility
-> hints for transport consumers; they are not a substitute for
+> `fast_float`, and `type_hint` are transitional compatibility hints for
+> transport consumers; they are not a substitute for
 > representation-aware SSA.
 
 ## Transport Formats
@@ -89,22 +89,33 @@ so absent fields deserialize to `None`/default.
 | `out`             | `string?`  | `null`  | Result value name (SSA definition)                             |
 | `fast_int`        | `bool?`    | `null`  | Hint: operands are known integers, use unboxed fast path       |
 | `fast_float`      | `bool?`    | `null`  | Hint: operands are known floats, use unboxed fast path         |
-| `raw_int`         | `bool?`    | `null`  | Operands are raw (unboxed) i64. Mutually exclusive with `fast_int`. Allowed only on: `add`, `box_from_raw_int`, `const`, `loop_index_next`, `loop_index_start`, `lt`, `unbox_to_raw_int` |
 | `stack_eligible`  | `bool?`    | `null`  | Hint: result can be stack-allocated                            |
 | `task_kind`       | `string?`  | `null`  | Async task classification                                      |
 | `container_type`  | `string?`  | `null`  | For `contains`: known container type (`set`, `frozenset`, `dict`, `list`, `str`) |
 | `type_hint`       | `string?`  | `null`  | Type annotation from source                                    |
 | `ic_index`        | `i64?`     | `null`  | Inline cache site index for `get_attr_generic_ptr`. Transmitted inside a nested `metadata` object in JSON: `{"metadata": {"ic_index": N}}` |
 
-`fast_int`, `fast_float`, `raw_int`, and `type_hint` exist to describe
+`fast_int`, `fast_float`, and `type_hint` exist to describe
 compatibility metadata on the current backend transport. New lowering work
 should prefer preserving explicit representation in typed IR over introducing
 additional transport-only hint fields.
 
 ### Validation Constraints
 
-- `fast_int` and `raw_int` cannot both be `true` on the same op.
-- `raw_int` is only valid on ops listed above.
+- `param_types`, when present, must have the same length as `params`.
+- `fast_int` and `fast_float` cannot both be `true` on the same op.
+- `fast_int` / `fast_float` are accepted only on op families that own scalar
+  specialization. Generic calls and container mutators must not smuggle scalar
+  representation through these transport flags.
+- `container_type` must be one of the canonical container tags accepted by the
+  backend contract: `bytearray`, `bytes`, `dict`, `frozenset`, `list`,
+  `list_bool`, `list_float`, `list_int`, `range`, `set`, `str`, or `tuple`.
+- `bce_safe=true` is valid only on `index` / `store_index`, and only when paired
+  with an indexable `container_type`: `list`, `list_bool`, `list_float`,
+  `list_int`, or `tuple`.
+- `arena_eligible=true` is valid only on allocation operations.
+- `type_hint`, `container_type`, and `param_types` entries must be nonempty and
+  must not contain control characters.
 - Every value name in `args` / `var` must be defined by a prior op's `out` or
   by the function's `params`, with limited exceptions (`dict_set`, `index` at
   position 0).
