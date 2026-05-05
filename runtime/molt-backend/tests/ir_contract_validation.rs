@@ -102,6 +102,128 @@ fn validate_simple_ir_accepts_fast_int_flags_on_arithmetic_ops() {
 }
 
 #[test]
+fn validate_simple_ir_rejects_param_type_arity_mismatch() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_param_types".to_string(),
+            params: vec!["x".to_string()],
+            ops: vec![op("ret_void")],
+            param_types: Some(vec!["int".to_string(), "bool".to_string()]),
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected param type arity rejection");
+    assert!(err.contains("has 1 params but 2 param_types"));
+}
+
+#[test]
+fn validate_simple_ir_rejects_conflicting_fast_scalar_flags() {
+    let mut scalar = op("add");
+    scalar.args = Some(vec!["lhs".to_string(), "rhs".to_string()]);
+    scalar.out = Some("sum".to_string());
+    scalar.fast_int = Some(true);
+    scalar.fast_float = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_conflicting_scalar_flags".to_string(),
+            params: vec!["lhs".to_string(), "rhs".to_string()],
+            ops: vec![scalar],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected scalar flag rejection");
+    assert!(err.contains("cannot set both fast_int and fast_float"));
+}
+
+#[test]
+fn validate_simple_ir_rejects_fast_int_on_non_scalar_owner() {
+    let mut call = op("call");
+    call.s_value = Some("opaque".to_string());
+    call.out = Some("v0".to_string());
+    call.fast_int = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![test_func("molt_test_validate_fast_int_owner", vec![call])],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected fast_int owner rejection");
+    assert!(err.contains("does not own fast_int scalar specialization"));
+}
+
+#[test]
+fn validate_simple_ir_rejects_unknown_container_type() {
+    let mut idx = op("index");
+    idx.args = Some(vec!["seq".to_string(), "idx".to_string()]);
+    idx.out = Some("item".to_string());
+    idx.container_type = Some("vectorish".to_string());
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_container_type".to_string(),
+            params: vec!["seq".to_string(), "idx".to_string()],
+            ops: vec![idx],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected container type rejection");
+    assert!(err.contains("unsupported container_type `vectorish`"));
+}
+
+#[test]
+fn validate_simple_ir_rejects_bce_safe_without_indexable_container() {
+    let mut idx = op("index");
+    idx.args = Some(vec!["seq".to_string(), "idx".to_string()]);
+    idx.out = Some("item".to_string());
+    idx.container_type = Some("dict".to_string());
+    idx.bce_safe = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_bce_container".to_string(),
+            params: vec!["seq".to_string(), "idx".to_string()],
+            ops: vec![idx],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected bce container rejection");
+    assert!(err.contains("bce_safe does not support container_type `dict`"));
+}
+
+#[test]
+fn validate_simple_ir_rejects_arena_eligible_on_non_allocation() {
+    let mut add = op("add");
+    add.args = Some(vec!["lhs".to_string(), "rhs".to_string()]);
+    add.out = Some("sum".to_string());
+    add.arena_eligible = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_arena_owner".to_string(),
+            params: vec!["lhs".to_string(), "rhs".to_string()],
+            ops: vec![add],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected arena owner rejection");
+    assert!(err.contains("cannot carry arena_eligible"));
+}
+
+#[test]
 fn tree_shake_luau_rewrites_main_and_drops_runtime_bootstrap_helpers() {
     let mut main_runtime_init = op("call");
     main_runtime_init.s_value = Some("molt_runtime_init".to_string());
