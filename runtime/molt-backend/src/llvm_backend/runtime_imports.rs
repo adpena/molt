@@ -157,10 +157,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     // fall back to the GIL-wrapped path for unexpected types.  They
     // are read-only from LLVM's perspective (no allocation, no visible
     // mutation).
-    for name in &[
-        "molt_is_truthy_int",
-        "molt_is_truthy_bool",
-    ] {
+    for name in &["molt_is_truthy_int", "molt_is_truthy_bool"] {
         let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
         let func = module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
         add_nounwind(ctx, func);
@@ -174,10 +171,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     // memory but never write.
     //
     // Note: molt_is_truthy_* return i64 (0 or 1), not u64.
-    for name in &[
-        "molt_is_truthy_int_nogil",
-        "molt_is_truthy_bool_nogil",
-    ] {
+    for name in &["molt_is_truthy_int_nogil", "molt_is_truthy_bool_nogil"] {
         let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
         let func = module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
         add_nounwind(ctx, func);

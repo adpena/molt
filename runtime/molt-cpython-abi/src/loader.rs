@@ -130,11 +130,11 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
             // Fall through to the per-bridge map for foreign-object PyObject*
             // headers (legacy callers that did not go through PyModule_New).
             let bridge = GLOBAL_BRIDGE.lock();
-            bridge
-                .pyobj_to_handle(module_ptr)
-                .ok_or_else(|| LoadError::InitReturnedUnmappedObject {
+            bridge.pyobj_to_handle(module_ptr).ok_or_else(|| {
+                LoadError::InitReturnedUnmappedObject {
                     name: name.to_owned(),
-                })?
+                }
+            })?
         }
     };
 

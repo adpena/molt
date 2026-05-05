@@ -1346,10 +1346,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
     // to avoid rescanning the entire ops array for every match.
     let unbound_error_names: HashSet<&str> = ops
         .iter()
-        .filter(|op| {
-            op.kind == "const_str"
-                && op.s_value.as_deref() == Some("UnboundLocalError")
-        })
+        .filter(|op| op.kind == "const_str" && op.s_value.as_deref() == Some("UnboundLocalError"))
         .filter_map(|op| op.out.as_deref())
         .collect();
 
@@ -1373,7 +1370,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         let is_args = match ops[i].args.as_ref() {
             Some(args) if args.len() == 2 => args,
             _ => {
-                    i = base + 1;
+                i = base + 1;
                 continue;
             }
         };
@@ -1388,7 +1385,6 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
                 continue;
             }
         };
-
 
         // ── Variant B: is → if → tuple_new → exception_new → raise → end_if ──
         // The frontend emits `if` directly (before TIR adds jump/label/br_if).
@@ -1409,9 +1405,11 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
                         "tuple_new" if !found_tuple_new => found_tuple_new = true,
                         "exception_new" if found_tuple_new && !found_exc_new => {
                             if let Some(args) = ops[k].args.as_ref()
-                                && !args.is_empty() && unbound_error_names.contains(args[0].as_str()) {
-                                    found_exc_new = true;
-                                }
+                                && !args.is_empty()
+                                && unbound_error_names.contains(args[0].as_str())
+                            {
+                                found_exc_new = true;
+                            }
                         }
                         "raise" if found_exc_new && !found_raise => found_raise = true,
                         "end_if" | "else" if found_raise => {
@@ -1547,15 +1545,19 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             .enumerate()
             .filter(|&(idx, _)| !remove[idx])
             .flat_map(|(_, op)| {
-                op.args.as_ref().into_iter().flat_map(|a| a.iter().map(String::as_str))
+                op.args
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|a| a.iter().map(String::as_str))
             })
             .collect();
         for (idx, op) in ops.iter().enumerate() {
             if op.kind == "missing"
                 && let Some(out) = op.out.as_deref()
-                    && !surviving_args.contains(out) {
-                        remove[idx] = true;
-                    }
+                && !surviving_args.contains(out)
+            {
+                remove[idx] = true;
+            }
         }
     }
 
@@ -1572,7 +1574,10 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_TRACE_UNBOUND_ELIM").is_ok() {
         let surviving_missing = func_ir.ops.iter().filter(|op| op.kind == "missing").count();
         if surviving_missing > 0 {
-            eprintln!("UNBOUND_ELIM: {} removed={} surviving_missing={}", func_ir.name, count, surviving_missing);
+            eprintln!(
+                "UNBOUND_ELIM: {} removed={} surviving_missing={}",
+                func_ir.name, count, surviving_missing
+            );
         }
     }
 }
@@ -1607,20 +1612,49 @@ pub fn eliminate_redundant_guard_tags(func_ir: &mut FunctionIR) {
     for op in ops.iter() {
         let guaranteed = matches!(
             op.kind.as_str(),
-            "const" | "const_int" | "const_float" | "const_bool" | "const_none"
-                | "const_str" | "const_bytes"
-                | "add" | "sub" | "mul" | "div" | "floordiv" | "mod"
-                | "pow" | "neg" | "unary_neg"
-                | "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is"
-                | "and" | "or" | "not"
-                | "band" | "bor" | "bxor" | "lshift" | "rshift" | "invert"
-                | "list_new" | "tuple_new" | "dict_new" | "set_new"
-                | "list_getitem" | "tuple_getitem" | "dict_getitem"
+            "const"
+                | "const_int"
+                | "const_float"
+                | "const_bool"
+                | "const_none"
+                | "const_str"
+                | "const_bytes"
+                | "add"
+                | "sub"
+                | "mul"
+                | "div"
+                | "floordiv"
+                | "mod"
+                | "pow"
+                | "neg"
+                | "unary_neg"
+                | "lt"
+                | "le"
+                | "gt"
+                | "ge"
+                | "eq"
+                | "ne"
+                | "is"
+                | "and"
+                | "or"
+                | "not"
+                | "band"
+                | "bor"
+                | "bxor"
+                | "lshift"
+                | "rshift"
+                | "invert"
+                | "list_new"
+                | "tuple_new"
+                | "dict_new"
+                | "set_new"
+                | "list_getitem"
+                | "tuple_getitem"
+                | "dict_getitem"
         );
-        if guaranteed
-            && let Some(out) = op.out.as_ref() {
-                typed_outputs.insert(out.clone());
-            }
+        if guaranteed && let Some(out) = op.out.as_ref() {
+            typed_outputs.insert(out.clone());
+        }
     }
 
     let mut remove = vec![false; len];

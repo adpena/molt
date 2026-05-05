@@ -93,7 +93,9 @@ impl std::fmt::Display for NativeSnapshotError {
                 )
             }
             Self::IntegrityError => write!(f, "native snapshot integrity check failed (SHA-256)"),
-            Self::DeserializeError(msg) => write!(f, "native snapshot deserialization failed: {msg}"),
+            Self::DeserializeError(msg) => {
+                write!(f, "native snapshot deserialization failed: {msg}")
+            }
             Self::CountMismatch { expected, found } => {
                 write!(
                     f,
@@ -265,15 +267,9 @@ mod tests {
 
     #[test]
     fn strings_are_sorted() {
-        let snapshot = NativeSnapshot::from_strings(vec![
-            "zebra".into(),
-            "alpha".into(),
-            "middle".into(),
-        ]);
-        assert_eq!(
-            snapshot.interned_strings,
-            vec!["alpha", "middle", "zebra"]
-        );
+        let snapshot =
+            NativeSnapshot::from_strings(vec!["zebra".into(), "alpha".into(), "middle".into()]);
+        assert_eq!(snapshot.interned_strings, vec!["alpha", "middle", "zebra"]);
     }
 
     #[test]
@@ -355,6 +351,9 @@ mod tests {
         };
         let bytes1 = snap1.serialize().unwrap();
         let bytes2 = snap2.serialize().unwrap();
-        assert_eq!(bytes1, bytes2, "identical snapshots must produce identical bytes");
+        assert_eq!(
+            bytes1, bytes2,
+            "identical snapshots must produce identical bytes"
+        );
     }
 }

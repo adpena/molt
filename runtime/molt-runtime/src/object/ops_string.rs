@@ -20,11 +20,11 @@ use wtf8::{CodePoint, Wtf8};
 use std::sync::Arc;
 
 use super::ops::{
-    bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title,
-    dict_like_bits_from_ptr, format_with_spec, parse_codec_arg,
-    parse_format_spec, repeat_sequence, simd_has_any_ascii_lower, simd_has_any_ascii_upper,
-    simd_is_all_ascii_alnum, simd_is_all_ascii_alpha, simd_is_all_ascii_digit,
-    simd_is_all_ascii_printable, simd_is_all_ascii_whitespace, slice_bounds_from_args, slice_match,
+    bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title, dict_like_bits_from_ptr,
+    format_with_spec, parse_codec_arg, parse_format_spec, repeat_sequence,
+    simd_has_any_ascii_lower, simd_has_any_ascii_upper, simd_is_all_ascii_alnum,
+    simd_is_all_ascii_alpha, simd_is_all_ascii_digit, simd_is_all_ascii_printable,
+    simd_is_all_ascii_whitespace, slice_bounds_from_args, slice_match,
 };
 
 #[unsafe(no_mangle)]
@@ -728,8 +728,10 @@ pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64
             if let Some(needle_ptr) = needle.as_ptr() {
                 let needle_type = object_type_id(needle_ptr);
                 if needle_type == TYPE_ID_STRING {
-                    let needle_bytes =
-                        std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+                    let needle_bytes = std::slice::from_raw_parts(
+                        string_bytes(needle_ptr),
+                        string_len(needle_ptr),
+                    );
                     return MoltObject::from_bool(hay_bytes.starts_with(needle_bytes)).bits();
                 }
                 if needle_type == TYPE_ID_TUPLE {
@@ -782,8 +784,10 @@ pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
             if let Some(needle_ptr) = needle.as_ptr() {
                 let needle_type = object_type_id(needle_ptr);
                 if needle_type == TYPE_ID_STRING {
-                    let needle_bytes =
-                        std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+                    let needle_bytes = std::slice::from_raw_parts(
+                        string_bytes(needle_ptr),
+                        string_len(needle_ptr),
+                    );
                     return MoltObject::from_bool(hay_bytes.ends_with(needle_bytes)).bits();
                 }
                 if needle_type == TYPE_ID_TUPLE {

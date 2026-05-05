@@ -488,9 +488,11 @@ mod tests {
         let result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry
-            .ops
-            .push(make_op(OpCode::ModuleCacheGet, vec![module_name], vec![result]));
+        entry.ops.push(make_op(
+            OpCode::ModuleCacheGet,
+            vec![module_name],
+            vec![result],
+        ));
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);
@@ -550,9 +552,11 @@ mod tests {
         let result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry
-            .ops
-            .push(make_op(OpCode::ModuleGetName, vec![module, name], vec![result]));
+        entry.ops.push(make_op(
+            OpCode::ModuleGetName,
+            vec![module, name],
+            vec![result],
+        ));
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = run(&mut func);

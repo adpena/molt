@@ -241,7 +241,8 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
-                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_LIST_INT {
+                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_LIST_INT
+                {
                     let _ = molt_list_extend(a, b);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
@@ -533,7 +534,11 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     // giving 8x cache-line density for iteration-heavy patterns like
                     // sieve of Eratosthenes.
                     if val_obj.is_bool() {
-                        let fill: u8 = if val_obj.as_bool().unwrap_or(false) { 1 } else { 0 };
+                        let fill: u8 = if val_obj.as_bool().unwrap_or(false) {
+                            1
+                        } else {
+                            0
+                        };
                         let vec = vec![fill; total];
                         let storage_ptr = crate::object::layout::ListBoolStorage::from_vec(vec);
                         let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
@@ -566,8 +571,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                             drop((*Box::from_raw(storage_ptr)).into_vec());
                             return raise_exception::<_>(_py, "MemoryError", "out of memory");
                         }
-                        *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) =
-                            storage_ptr;
+                        *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
                         return Some(MoltObject::from_ptr(out_ptr).bits());
                     }
 
@@ -637,10 +641,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 };
                 // ListIntSliceRef stores raw (data, len) — reconstruct a
                 // slice for bulk copy without depending on Vec layout.
-                let src = std::slice::from_raw_parts(
-                    elems.iter().as_slice().as_ptr(),
-                    elems.len(),
-                );
+                let src = std::slice::from_raw_parts(elems.iter().as_slice().as_ptr(), elems.len());
                 let mut combined = Vec::with_capacity(total);
                 for _ in 0..times {
                     combined.extend_from_slice(src);
@@ -888,7 +889,11 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
-                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_LIST_BOOL || ltype == TYPE_ID_LIST_INT || ltype == TYPE_ID_BYTEARRAY {
+                if ltype == TYPE_ID_LIST
+                    || ltype == TYPE_ID_LIST_BOOL
+                    || ltype == TYPE_ID_LIST_INT
+                    || ltype == TYPE_ID_BYTEARRAY
+                {
                     let rhs_type = type_name(_py, obj_from_bits(b));
                     let msg = format!("can't multiply sequence by non-int of type '{rhs_type}'");
                     let count = index_i64_from_obj(_py, b, &msg);
