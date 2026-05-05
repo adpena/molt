@@ -19,6 +19,12 @@ import sys
 from html import escape as html_escape
 from pathlib import Path
 
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+from bench_evidence import native_molt_speedup, native_molt_time  # noqa: E402
+
 
 def load_benchmarks(path: Path) -> dict:
     """Load benchmark results from a JSON file, returning the benchmarks dict."""
@@ -42,7 +48,7 @@ def status_label(entry: dict) -> str:
     """Return pass/fail/skip status for a benchmark entry."""
     if not entry.get("molt_ok"):
         return "FAIL"
-    if entry.get("molt_time_s") is None or entry.get("molt_time_s") == 0:
+    if native_molt_time(entry) is None:
         return "SKIP"
     return "PASS"
 
@@ -50,24 +56,25 @@ def status_label(entry: dict) -> str:
 def speedup_value(entry: dict) -> float | None:
     """Extract the molt speedup value, normalizing various schemas."""
     # Try molt_speedup first (baseline.json style: cpython/molt)
-    s = entry.get("molt_speedup")
-    if s is not None and s != 0:
-        return float(s)
+    if (speedup := native_molt_speedup(entry)) is not None:
+        return speedup
     # Fall back to computing from times
     cpython = entry.get("cpython_time_s")
-    molt = entry.get("molt_time_s")
-    if cpython and molt and molt > 0:
+    molt = native_molt_time(entry)
+    if cpython and molt:
         return cpython / molt
     return None
 
 
 def ratio_value(entry: dict) -> float | None:
     """Extract the molt/cpython ratio (>1 means slower than CPython)."""
+    if not entry.get("molt_ok"):
+        return None
     r = entry.get("molt_cpython_ratio")
-    if r is not None:
+    if r is not None and r > 0:
         return float(r)
     cpython = entry.get("cpython_time_s")
-    molt = entry.get("molt_time_s")
+    molt = native_molt_time(entry)
     if cpython and molt and cpython > 0:
         return molt / cpython
     return None
@@ -106,13 +113,13 @@ def build_rows(results: dict) -> list[dict]:
         entry = results[name]
         st = status_label(entry)
         cpython_t = entry.get("cpython_time_s")
-        molt_t = entry.get("molt_time_s")
+        molt_t = native_molt_time(entry)
         sp = speedup_value(entry)
         rows.append(
             {
                 "name": name,
                 "cpython_time": cpython_t,
-                "molt_time": molt_t if molt_t and molt_t != 0 else None,
+                "molt_time": molt_t,
                 "speedup": sp,
                 "status": st,
             }

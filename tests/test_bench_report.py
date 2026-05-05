@@ -335,3 +335,59 @@ def test_wasm_time_filter_rejects_invalid_numeric_values() -> None:
         assert module._valid_positive_time(value) is None
 
     assert module._valid_positive_time(1.25) == 1.25
+
+
+def test_failed_native_stale_values_do_not_feed_report_ratios(tmp_path: Path) -> None:
+    module = _load_module()
+    module.ROOT = tmp_path
+    native_path = tmp_path / "native.json"
+    wasm_path = tmp_path / "wasm.json"
+    native = {
+        "benchmarks": {
+            "failed.py": {
+                "molt_ok": False,
+                "molt_time_s": 0.01,
+                "cpython_time_s": 1.0,
+                "molt_speedup": 100.0,
+                "pypy_ok": False,
+                "pypy_time_s": 0.01,
+            }
+        }
+    }
+    wasm = {"benchmarks": {}}
+
+    report = module._render_report_markdown(native_path, wasm_path, native, wasm)
+
+    assert "Median native speedup vs CPython: -." in report
+    assert "| failed | no | 1.000000 | - |" in report
+    assert "| - | - | - | no |" in report
+    assert "100.00x" not in report
+
+
+def test_failed_comparator_stale_values_do_not_feed_ratio_tables(tmp_path: Path) -> None:
+    module = _load_module()
+    module.ROOT = tmp_path
+    native_path = tmp_path / "native.json"
+    wasm_path = tmp_path / "wasm.json"
+    native = {
+        "benchmarks": {
+            "bench.py": {
+                "molt_ok": True,
+                "molt_time_s": 0.5,
+                "cpython_time_s": 1.0,
+                "molt_speedup": 2.0,
+                "codon_ok": False,
+                "codon_time_s": 0.01,
+            }
+        }
+    }
+    wasm = {"benchmarks": {}}
+
+    report = module._render_report_markdown(native_path, wasm_path, native, wasm)
+
+    assert "## Molt vs Codon" in report
+    codon_section = report.split("## Molt vs Codon", maxsplit=1)[1].split(
+        "## Molt vs Nuitka", maxsplit=1
+    )[0]
+    assert "| - | - | - | - |" in codon_section
+    assert "0.010000" not in codon_section
