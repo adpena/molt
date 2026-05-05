@@ -798,6 +798,42 @@ fn def_bool_result(
     );
 }
 
+#[cfg(feature = "native-backend")]
+fn def_raw_bool_value(
+    builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    bool_primary_vars: &BTreeSet<String>,
+    raw_bool_values: &mut BTreeMap<String, Value>,
+    raw_bool_shadow_vars: &BTreeMap<String, Variable>,
+    out: &str,
+    raw_bool: Value,
+    nbc: &crate::NanBoxConsts,
+) {
+    if bool_primary_vars.contains(out) {
+        record_bool_shadow(
+            builder,
+            vars,
+            bool_primary_vars,
+            raw_bool_values,
+            raw_bool_shadow_vars,
+            out,
+            raw_bool,
+        );
+        return;
+    }
+    let boxed = box_raw_bool_value(builder, raw_bool, nbc);
+    def_bool_result(
+        builder,
+        vars,
+        bool_primary_vars,
+        raw_bool_values,
+        raw_bool_shadow_vars,
+        out,
+        boxed,
+        Some(raw_bool),
+    );
+}
+
 /// Read a raw 0/1 bool from the remaining bool shadow lane.
 #[cfg(feature = "native-backend")]
 #[inline]
@@ -3071,7 +3107,7 @@ impl SimpleBackend {
                     && !int_like_vars.contains(name)
                     && !float_like_vars.contains(name)
                     && !str_like_vars.contains(name)
-                    && !is_join_slot_name(name)
+                    && !scalar_slot_exclusion_unsafe.contains(name)
             };
             let mut candidates: BTreeSet<String> = BTreeSet::new();
             let mut changed = true;
@@ -30569,7 +30605,21 @@ impl SimpleBackend {
                                     def_var_named(&mut builder, &vars, out, param);
                                 }
                                 if let Some(Some(join_name)) = phi_join_slot_names.get(idx) {
-                                    def_var_named(&mut builder, &vars, join_name, param);
+                                    if bool_primary_vars.contains(join_name) {
+                                        let raw_bool = builder.ins().band_imm(param, 1);
+                                        def_raw_bool_value(
+                                            &mut builder,
+                                            &vars,
+                                            &bool_primary_vars,
+                                            &mut raw_bool_values,
+                                            &raw_bool_shadow_vars,
+                                            join_name,
+                                            raw_bool,
+                                            &nbc,
+                                        );
+                                    } else {
+                                        def_var_named(&mut builder, &vars, join_name, param);
+                                    }
                                 }
                             }
                             // Refcount tracking is name-based. A `phi` output is a new name for a
@@ -35450,6 +35500,39 @@ impl SimpleBackend {
                             // No refcount ops needed -- raw f64 is not a heap pointer.
                             continue;
                         }
+                        // --- Raw-primary bool fast path ---
+                        // Bool-primary store targets keep raw 0/1 in their
+                        // main Cranelift Variable, including proven join
+                        // carriers. The static fixpoint only admits targets
+                        // whose store sources are themselves raw-closed.
+                        if bool_primary_vars.contains(name)
+                            && scalar_fast_paths_enabled
+                            && !slot_backed_join_slots.contains_key(name)
+                        {
+                            let raw_bool = bool_raw_value(
+                                &mut builder,
+                                &vars,
+                                &bool_primary_vars,
+                                &raw_bool_shadow_vars,
+                                &raw_bool_values,
+                                &args[0],
+                            )
+                            .unwrap_or_else(|| {
+                                panic!("store_var: bool-primary src missing raw bool: {}", args[0])
+                            });
+                            def_raw_bool_value(
+                                &mut builder,
+                                &vars,
+                                &bool_primary_vars,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                name,
+                                raw_bool,
+                                &nbc,
+                            );
+                            // No refcount ops needed -- raw bool is an inline scalar.
+                            continue;
+                        }
                         // --- Slot-backed join slots ---
                         let val = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -35664,6 +35747,35 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out_name, raw_f64);
                             continue;
                         }
+                        // --- Raw-primary bool fast path ---
+                        if bool_primary_vars.contains(var_name.as_str())
+                            && scalar_fast_paths_enabled
+                            && op.out.as_ref().is_some_and(|o| bool_like_vars.contains(o))
+                        {
+                            let raw_bool = bool_raw_value(
+                                &mut builder,
+                                &vars,
+                                &bool_primary_vars,
+                                &raw_bool_shadow_vars,
+                                &raw_bool_values,
+                                var_name,
+                            )
+                            .unwrap_or_else(|| {
+                                panic!("load_var: bool-primary src missing raw bool: {var_name}")
+                            });
+                            let out_name = op.out.as_ref().unwrap();
+                            def_raw_bool_value(
+                                &mut builder,
+                                &vars,
+                                &bool_primary_vars,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out_name,
+                                raw_bool,
+                                &nbc,
+                            );
+                            continue;
+                        }
                         let val = var_get_boxed_overflow_safe(
                             &mut self.module,
                             &mut self.import_ids,
@@ -35728,6 +35840,35 @@ impl SimpleBackend {
                             });
                             let out_name = op.out.as_ref().unwrap();
                             def_var_named(&mut builder, &vars, out_name, raw_val);
+                            continue;
+                        }
+                        // --- Raw-primary bool fast path (args-based copy_var) ---
+                        if bool_primary_vars.contains(&args[0])
+                            && scalar_fast_paths_enabled
+                            && op.out.as_ref().is_some_and(|o| bool_like_vars.contains(o))
+                        {
+                            let raw_bool = bool_raw_value(
+                                &mut builder,
+                                &vars,
+                                &bool_primary_vars,
+                                &raw_bool_shadow_vars,
+                                &raw_bool_values,
+                                &args[0],
+                            )
+                            .unwrap_or_else(|| {
+                                panic!("copy_var: bool-primary src missing raw bool: {}", args[0])
+                            });
+                            let out_name = op.out.as_ref().unwrap();
+                            def_raw_bool_value(
+                                &mut builder,
+                                &vars,
+                                &bool_primary_vars,
+                                &mut raw_bool_values,
+                                &raw_bool_shadow_vars,
+                                out_name,
+                                raw_bool,
+                                &nbc,
+                            );
                             continue;
                         }
                         let val = var_get_boxed_overflow_safe(

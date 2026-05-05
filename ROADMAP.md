@@ -67,9 +67,11 @@ This file is forward-looking only.
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
   through a dedicated raw-bool boxing helper instead of feeding I64 carriers to
-  the b1-condition bool boxer; finish the residual non-primary bool/list shadow
-  cases and non-primary float shadow lane instead of adding per-op fallback
-  hints.
+  the b1-condition bool boxer. Raw-closed bool join carriers also stay on the
+  main raw `0/1` Variable contract across store/load/copy and structured phi
+  binding, while unsafe join slots remain boxed; finish the residual
+  non-primary bool/list shadow cases and non-primary float shadow lane instead
+  of adding per-op fallback hints.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 
