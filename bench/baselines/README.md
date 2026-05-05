@@ -49,7 +49,10 @@ structure is:
 
 When `--super` mode is used, each benchmark entry also contains a
 `super_stats` block with per-runner `mean_s`, `median_s`, `variance_s`,
-`range_s`, `min_s`, `max_s` — used for distribution-based statistical tests.
+`range_s`, `min_s`, `max_s`, and `samples_s`. Distribution-based statistical
+tests use only explicit raw `samples_s`; summary-only historical artifacts
+remain valid for point-estimate threshold checks but do not produce confidence
+intervals, p-values, or effect-size claims.
 
 ## Creating a baseline
 
